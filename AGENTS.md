@@ -6,12 +6,12 @@ A Rust workspace for a local-first WSL2 CLI that converts reviewed technical les
 
 These instructions apply to the entire repository. A more specific `AGENTS.md` within a subdirectory governs work in that directory.
 
-The repository is currently in the architecture phase. `docs/ADR-0001-production-rust-study-guide-tts.md` is authoritative until the planned workspace and supporting documents exist. Do not describe planned crates, commands, schemas, or behavior as implemented before they are present and verified.
+The repository is currently in the architecture phase. `ADR-0001-production-rust-study-guide-tts.md` is authoritative until the planned workspace and supporting documents exist. Do not describe planned crates, commands, schemas, or behavior as implemented before they are present and verified.
 
 ## Rules
 
 - Read the relevant implementation, tests, and documentation before editing.
-- Read `docs/ADR-0001-production-rust-study-guide-tts.md` before making an architectural or cross-cutting change.
+- Read `ADR-0001-production-rust-study-guide-tts.md` before making an architectural or cross-cutting change.
 - Follow established repository patterns unless the task explicitly changes them.
 - Make the smallest coherent change that satisfies the request.
 - Preserve unrelated changes. Do not reformat, rename, or reorganize unrelated code.
@@ -58,7 +58,7 @@ Ask before:
 These constraints must remain true unless the task explicitly updates the controlling ADR:
 
 - **Rust owns durable decisions.** Lesson validation, planning, cache identity, job state, recovery, audio validation, manifests, and CLI behavior belong to the Rust application.
-- **One production TTS backend.** Select Kokoro-82M ONNX or Chatterbox Nano through the defined CPU bake-off. Do not ship both, add a backend collection, or add Qwen3-TTS, Chatterbox Turbo, or Dia without measured evidence and a new decision record.
+- **One production TTS backend.** Use the standard Chatterbox model. Do not add Chatterbox Nano, Kokoro-82M ONNX, Qwen3-TTS, Chatterbox Turbo, Dia, or a backend collection without measured evidence and a new decision record.
 - **Replaceable worker boundary.** Model inference runs in one persistent child process behind the versioned newline-delimited JSON protocol. Model-specific fields must not enter the lesson or planning domain.
 - **Offline rendering.** Normal rendering performs no network access after installation. A future hosted or remote path requires an explicit ADR.
 - **Validation before side effects.** Validate the lesson before starting the worker. Validate synthesized audio before publishing it to the cache.
@@ -96,7 +96,7 @@ The following is the approved target structure. Create it incrementally; absent 
 | When looking for | Start here | Source of truth |
 |---|---|---|
 | Architecture, scope, and boundaries | `ADR-0001-production-rust-study-guide-tts.md` | Accepted ADRs, with the newest explicit superseding decision controlling |
-| Model selection | `docs/adr/ADR-0002*.md` when created | Recorded bake-off result, immutable revision, voices, and target hardware |
+| Chatterbox qualification | `docs/adr/ADR-0002*.md` when created | Pinned revision, measured qualification result, voices, parameters, and target hardware |
 | Audio formats and loudness | `docs/adr/ADR-0003*.md` when created | Canonical sample rate, loudness target, codecs, and supported FFmpeg versions |
 | Voice consent and watermark policy | `docs/adr/ADR-0004*.md` when created | Voice policy ADR and the individual voice profile |
 | Domain model and render planning | `crates/study-tts-core/` | Rust types plus checked-in schemas |

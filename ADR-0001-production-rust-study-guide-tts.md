@@ -1,18 +1,18 @@
 # ADR-0001: Minimal Production Architecture for a Rust Technical Study-Guide TTS Pipeline
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-15
 - **Decision owner:** Project maintainer
 - **Development environment:** Ubuntu 24.04 under WSL2
 - **Initial deployment:** Single-user, local-first WSL2 CLI
-- **Review trigger:** Completion of the TTS bake-off, failure of the 60-minute soak test, or expansion beyond a single local user
+- **Review trigger:** Failure of Chatterbox qualification, failure of the 60-minute soak test, or expansion beyond a single local user
 
 ## 1. Decision
 
 Build the first production-capable version with four runtime elements:
 
 1. **one Rust application** for ingestion, lesson validation, technical speech normalization, orchestration, caching, recovery, audio validation, and the CLI;
-2. **one replaceable TTS worker** selected through a short model bake-off, with a persistent process and a versioned newline-delimited JSON protocol;
+2. **one replaceable Chatterbox TTS worker**, with a persistent process and a versioned newline-delimited JSON protocol;
 3. **the filesystem plus atomic JSON manifests** for job state, content-addressed segment caching, recovery, and provenance;
 4. **FFmpeg and ffprobe** for canonical audio conversion, assembly, loudness normalization, inspection, and final encoding.
 
@@ -92,9 +92,9 @@ Not every lesson needs every stage. The program will not add dialogue merely to 
 - Ubuntu 24.04 under WSL2 is the first development and runtime environment.
 - The repository lives in the WSL2 Linux filesystem rather than under `/mnt/c` because Rust builds and dependency-heavy worker environments perform better there.
 - Native Linux compatibility is retained; native Windows packaging is deferred.
-- English is the initial content language unless the model bake-off establishes another requirement.
+- English is the initial content language.
 - Source material and lesson text are available locally.
-- A GPU may be available, but CPU fallback is part of model selection rather than a requirement to install two models.
+- Chatterbox must run correctly on CPU, although accelerated execution may be added after the CPU path is qualified.
 - Model weights and worker dependencies may be installed before offline use.
 - The user reviews lesson text before producing a final long-form build.
 
@@ -122,7 +122,7 @@ ffprobe -version
 
 All five commands must succeed before the Rust workspace or model worker is diagnosed. The exact versions are recorded by `study-tts doctor` and included in diagnostic bundles; release manifests record versions that can affect generated artifacts.
 
-GPU acceleration is not part of bootstrap. The first complete pipeline uses the fake worker, then evaluates Kokoro and Chatterbox Nano on CPU. AMD GPU or ROCm work requires a separate measured decision because WSL2 device access and model-runtime compatibility add an independent support surface.
+GPU acceleration is not part of bootstrap. The first complete pipeline uses the fake worker, then qualifies Chatterbox on CPU. AMD GPU or ROCm work requires a separate measured decision because WSL2 device access and model-runtime compatibility add an independent support surface.
 
 ## 4. Scope
 
@@ -185,27 +185,23 @@ The first production release shall:
 - bit-identical model output across GPU models and driver versions;
 - support for every technical notation in version 1.0.
 
-## 5. Model-selection decision
+## 5. Model-backend decision
 
-The architecture selects one backend through a bake-off before model-specific integration begins. Candidate experiments may use existing upstream scripts, but only the winner becomes an application dependency.
+Version 1 uses the standard Chatterbox model as its only production TTS backend. Chatterbox Nano and Kokoro-82M ONNX are no longer candidates, benchmark fixtures, fallback installations, or runtime dependencies.
 
-### 5.1 Decided shortlist
+This decision favors Chatterbox voice quality, expressive control, and voice-cloning capability over the smaller installation and faster CPU-oriented path offered by Nano or Kokoro. The cost is higher inference demand and a more substantial Python worker environment. That tradeoff is accepted.
 
-| Candidate | Best reason to choose it | Principal risk |
-|---|---|---|
-| Chatterbox Nano | CPU-oriented, expressive English speech within the Chatterbox family | Voice and pacing must remain stable across hundreds of independent turns |
-| Kokoro-82M ONNX | Small, fast, offline CPU inference with a mature ONNX path | Delivery may sound synthetic during extended explanations |
+The Rust boundary remains capability-based and replaceable, but replaceability is an architectural safeguard rather than a reason to build unused adapters. A second backend requires evidence that Chatterbox cannot meet a defined hardware, quality, licensing, or reliability requirement.
 
-Relevant upstream references:
+Relevant upstream reference:
 
 - [Chatterbox official repository](https://github.com/resemble-ai/chatterbox)
-- [Kokoro ONNX model card](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX)
 
-Qwen3-TTS, Chatterbox Turbo, and Dia are not version 1 candidates. Qwen3-TTS and Chatterbox Turbo create a more demanding GPU/runtime path on the target WSL2 machine, while Dia changes the unit of retry, correction, cache invalidation, and quality review. None is justified before the CPU-oriented candidates have failed a measured requirement.
+Chatterbox Nano, Kokoro-82M ONNX, Qwen3-TTS, Chatterbox Turbo, and Dia are not version 1 candidates. Dia also changes the unit of retry, correction, cache invalidation, and quality review. None will be integrated without a separate decision record supported by a measured failure of the Chatterbox path.
 
-### 5.2 Selection procedure
+### 5.1 Chatterbox qualification procedure
 
-Before integrating a worker, render the same reviewed 3–5 minute lesson through Kokoro and Chatterbox Nano using isolated worker environments. Normalize playback loudness and conceal model identities from listeners.
+Before production integration is accepted, render the reviewed 3–5 minute qualification lesson through a pinned Chatterbox environment on the target WSL2 machine. Use the intended Nadia and Tom voice profiles, normalize playback loudness for review, and record the exact model, tokenizer or codec, worker, dependency, voice-profile, and device identities.
 
 The fixture must include:
 
@@ -229,19 +225,19 @@ Hard gates:
 - acceptable runtime on the target machine;
 - compatible license and local/offline deployment.
 
-Weighted decision criteria:
+Qualification scorecard:
 
-| Criterion | Weight |
-|---|---:|
-| Technical pronunciation and intelligibility | 25% |
-| Long-listening naturalness and fatigue | 25% |
-| Voice consistency | 15% |
-| Pacing and instructional prosody | 15% |
-| Reliability across repeated segments | 10% |
-| Target-machine performance | 5% |
-| Installation and maintenance cost | 5% |
+| Criterion | Release evidence |
+|---|---|
+| Technical pronunciation and intelligibility | No protected-term defect or loss of meaning in the reviewed fixture |
+| Long-listening naturalness and fatigue | Listener scores and defect notes from the qualification and soak tests |
+| Voice consistency | Nadia and Tom remain recognizable across repeated independent turns |
+| Pacing and instructional prosody | Explanations, corrections, recaps, and recall prompts remain distinct and usable |
+| Reliability across repeated segments | Three complete qualification renders without backend failure |
+| Target-machine performance | Measured real-time factor, peak RAM, and acceptable completion time on CPU |
+| Installation and maintenance cost | Reproducible locked environment, offline render, and documented repair path |
 
-The model that clears every hard gate and wins the weighted comparison becomes the only production backend. The losing model remains a benchmark fixture, not an installed runtime dependency. A follow-up ADR records the winner, immutable revision, runtime, voice policy, and target hardware.
+Chatterbox must clear every hard gate before the real worker becomes the default backend. Failure pauses production qualification; it does not silently substitute Nano, Kokoro, or another model. ADR-0002 records the immutable Chatterbox revision, runtime, voices, generation parameters, target hardware, and measured qualification results.
 
 ## 6. System architecture
 
@@ -765,7 +761,7 @@ All worker output becomes:
 
 - WAV container;
 - mono PCM;
-- one project sample rate selected after the model bake-off;
+- one project sample rate selected during Chatterbox qualification;
 - 24-bit integer or 32-bit float during assembly;
 - no lossy intermediate encoding.
 
@@ -1138,7 +1134,7 @@ Final package:
 
 These checks detect broken audio. They do not establish naturalness.
 
-### 17.12 Human model bake-off
+### 17.12 Human Chatterbox qualification
 
 At least three listeners score anonymized, loudness-matched samples from 1–5 on:
 
@@ -1152,7 +1148,7 @@ At least three listeners score anonymized, loudness-matched samples from 1–5 o
 - listening fatigue;
 - study usefulness.
 
-Record every defect against its lesson segment. Evaluate at least three complete renders per candidate because stochastic systems can hide instability in a single favorable sample.
+Record every defect against its lesson segment. Evaluate at least three complete Chatterbox renders because stochastic systems can hide instability in a single favorable sample.
 
 ### 17.13 Long-form soak test
 
@@ -1279,17 +1275,17 @@ Version 1.0 is ready when:
 
 ## 19. Implementation plan
 
-### Phase 0: Model and audio evidence
+### Phase 0: Chatterbox and audio evidence
 
 - verify the WSL2 Ubuntu environment and target CPU hardware;
 - run `gcc --version`, `cmake --version`, `python3 --version`, `ffmpeg -version`, and `ffprobe -version`;
-- create the reviewed bake-off lesson;
-- test Chatterbox Nano and Kokoro through isolated CPU worker environments;
-- select one backend and two stable voices;
+- create the reviewed Chatterbox qualification lesson;
+- install a pinned Chatterbox environment and test it on CPU;
+- select two stable Chatterbox voice profiles for Nadia and Tom;
 - verify licenses, immutable revisions, offline operation, and hardware requirements;
 - choose the initial sample rate and listening formats.
 
-**Exit:** one model and voice configuration pass the hard gates. Record them in ADR-0002.
+**Exit:** the pinned Chatterbox and voice configuration pass every hard gate. Record the evidence in ADR-0002.
 
 ### Phase 1: Deterministic walking skeleton
 
@@ -1456,7 +1452,7 @@ Add ASR only if:
 
 ## 23. Follow-up decisions
 
-1. **ADR-0002:** selected TTS model, immutable revision, runtime, target hardware, voices, and measured bake-off result.
+1. **ADR-0002:** pinned Chatterbox revision, runtime, target hardware, voices, generation parameters, and measured qualification result.
 2. **ADR-0003:** canonical sample rate, loudness target, codecs, and supported FFmpeg versions.
 3. **ADR-0004:** voice consent, reference storage, watermark, and permitted-use policy.
 4. **ADR-0005:** first evidence-based extension, only when an extension threshold is met.
@@ -1482,6 +1478,6 @@ Add ASR only if:
 
 ## 25. Final recommendation
 
-Start with a CPU bake-off between Kokoro and Chatterbox Nano under WSL2, then build the deterministic Rust walking skeleton around the winner. The first meaningful milestone is not a sophisticated model router; it is one reviewed technical lesson that can be rendered, interrupted, resumed, corrected at one segment, rebuilt without unnecessary inference, and listened to for an hour without technical or acoustic failure.
+Build the deterministic Rust walking skeleton with a fake worker, then qualify and integrate the standard Chatterbox model under WSL2. The first meaningful milestone is not a sophisticated model router; it is one reviewed technical lesson that Chatterbox can render, interrupt, resume, correct at one segment, rebuild without unnecessary inference, and sustain for an hour without technical or acoustic failure.
 
 That establishes the product. Everything else is an extension.
