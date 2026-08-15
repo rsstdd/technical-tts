@@ -2,7 +2,7 @@
 
 ## Repository
 
-A Rust workspace for a local-first WSL2 CLI that converts reviewed technical lessons into long-form study-guide audio through one replaceable Python TTS worker and FFmpeg.
+A Rust workspace for a local-first WSL2 CLI that converts reviewed technical lessons into long-form study-guide audio through a resource-governed Chatterbox worker pool, an in-process Rust ASR verifier, and FFmpeg.
 
 These instructions apply to the entire repository. A more specific `AGENTS.md` within a subdirectory governs work in that directory.
 
@@ -59,14 +59,16 @@ These constraints must remain true unless the task explicitly updates the contro
 
 - **Rust owns durable decisions.** Lesson validation, planning, cache identity, job state, recovery, audio validation, manifests, and CLI behavior belong to the Rust application.
 - **One production TTS backend.** Use the standard Chatterbox model. Do not add Chatterbox Nano, Kokoro-82M ONNX, Qwen3-TTS, Chatterbox Turbo, Dia, or a backend collection without measured evidence and a new decision record.
-- **Replaceable worker boundary.** Model inference runs in one persistent child process behind the versioned newline-delimited JSON protocol. Model-specific fields must not enter the lesson or planning domain.
+- **Replaceable worker boundary.** Model inference runs in a configurable pool of persistent child processes behind the versioned newline-delimited JSON protocol. Each process accepts one request at a time; the asynchronous Rust executor leases individually synchronized clients. Model-specific fields must not enter the lesson or planning domain.
+- **Resource-governed concurrency.** Worker-pool size and per-worker threads must satisfy both measured aggregate-RAM and WSL-visible physical-core budgets. Explicitly limit PyTorch and native numerical-library threads. Drain and unload the TTS pool before ASR.
 - **Offline rendering.** Normal rendering performs no network access after installation. A future hosted or remote path requires an explicit ADR.
-- **Validation before side effects.** Validate the lesson before starting the worker. Validate synthesized audio before publishing it to the cache.
+- **Post-render verification.** Validate the lesson before starting workers. Structurally validate and atomically cache synthesized audio before ASR. After all selected audio is rendered, verify cached segments with the pinned in-process `whisper-rs` stack. Missing or stale verification must never invoke Chatterbox.
 - **Filesystem is authoritative.** Atomic JSON documents, checksummed artifacts, and per-job locking own version 1 state. Do not introduce SQLite, a database queue, or distributed coordination without satisfying an ADR extension threshold.
-- **Complete cache identity.** Every speech-affecting input belongs in the BLAKE3 cache key. Display-only metadata does not.
+- **Separate identities.** Every speech-affecting input belongs in the synthesis key, including the mechanically derived worker-bundle hash. ASR dependencies, decoder controls, input conversion, expected patterns, normalizer, and thresholds belong in a separate verification key. Display-only metadata belongs in neither.
+- **Explicit take selection.** A versioned `<lesson-stem>.takes.json` is the production selection source of truth, including for take zero. Reject stale base keys, propagate selected keys and checksums into plan and manifest, and treat accepted takes and published manifests as prune roots.
 - **No blind cache trust.** Verify the artifact manifest, checksum, WAV structure, sample format, and quality checks before reusing cached audio.
 - **Managed-path containment.** Canonicalize all paths, reject traversal and symlink escape, and confine worker writes to the assigned staging root.
-- **No shell command construction.** Invoke the worker, FFmpeg, and ffprobe with an executable plus discrete checked arguments.
+- **No shell command construction.** Invoke workers, FFmpeg, and ffprobe with an executable plus discrete checked arguments. ASR is an in-process Rust dependency, not an external CLI.
 - **Canonical master first.** Assemble and validate one lossless master WAV. Derive M4A and MP3 independently from that master, never from another lossy export.
 - **Reviewed text only.** Never send raw Markdown directly to TTS, add unsupported technical claims during deterministic compilation, or promote an unreviewed lesson to a production build.
 - **Bounded failure behavior.** Retries, timeouts, message sizes, segment sizes, disk use, and process lifetime must be bounded. Preserve valid completed work and keep terminal failures visible.
@@ -81,10 +83,10 @@ The following is the approved target structure. Create it incrementally; absent 
 | `Cargo.toml` | Rust workspace definition and shared dependency policy | Commit `Cargo.lock`; keep the initial workspace small. |
 | `crates/study-tts-cli/` | Executable, commands, configuration, and user diagnostics | Keep orchestration thin; support human-readable and JSON output. |
 | `crates/study-tts-core/` | Lesson types, normalization, render planning, and cache keys | Must not depend on Python, a model SDK, CUDA, or FFmpeg bindings. |
-| `crates/study-tts-runtime/` | Filesystem state, worker client, process control, and FFmpeg adapter | Own containment, atomic publication, recovery, and external-process boundaries. |
+| `crates/study-tts-runtime/` | Filesystem state, worker pool, in-process ASR, PCM handling, process control, and FFmpeg adapter | Own containment, atomic publication, recovery, verification, and external-process boundaries. |
 | `crates/study-tts-testkit/` | Fixtures, fake worker, fault injection, and audio test helpers | Production crates must not depend on it outside tests. |
 | `worker/` | Selected backend adapter and locked Python environment | One production backend only; stdout is protocol-only and stderr carries diagnostics. |
-| `schemas/` | Versioned lesson, worker, job, and manifest JSON Schemas | Checked-in schemas must remain aligned with Rust types and fixtures. |
+| `schemas/` | Versioned lesson, worker, takes, verification, job, and manifest JSON Schemas | Checked-in schemas must remain aligned with Rust types and fixtures. |
 | `fixtures/` | Reviewed lessons, pronunciation cases, and deterministic audio fixtures | Keep fixtures small, licensed, non-sensitive, and stable. |
 | `docs/adr/` | Durable architecture decisions after repository bootstrap | ADRs supersede earlier decisions explicitly; do not silently contradict them. |
 | `docs/operations/` | Installation, diagnostics, recovery, pruning, rollback, and release runbooks | Commands must be exercised on clean Ubuntu 24.04 under WSL2. |
@@ -97,13 +99,14 @@ The following is the approved target structure. Create it incrementally; absent 
 |---|---|---|
 | Architecture, scope, and boundaries | `ADR-0001-production-rust-study-guide-tts.md` | Accepted ADRs, with the newest explicit superseding decision controlling |
 | Chatterbox qualification | `docs/adr/ADR-0002*.md` when created | Pinned revision, measured qualification result, voices, parameters, and target hardware |
-| Audio formats and loudness | `docs/adr/ADR-0003*.md` when created | Canonical sample rate, loudness target, codecs, and supported FFmpeg versions |
+| Audio formats and loudness | `docs/adr/ADR-0003*.md` when created | Silence and transition thresholds, frozen voice/style loudness references, codecs, and supported FFmpeg versions; canonical sample rate is fixed by ADR-0001 |
 | Voice consent and watermark policy | `docs/adr/ADR-0004*.md` when created | Voice policy ADR and the individual voice profile |
+| ASR verification | `docs/adr/ADR-0005*.md` when created | Exact dependency/model identities, decoder and conversion settings, approved term patterns, calibration corpus, and measured gates |
 | Domain model and render planning | `crates/study-tts-core/` | Rust types plus checked-in schemas |
 | Worker contract | `schemas/worker-v1.schema.json` and `worker/` | Versioned protocol schema and shared contract tests |
 | Configuration | `crates/study-tts-cli/` | Parsed configuration types and documented precedence |
 | Job state, cache, and recovery | `crates/study-tts-runtime/` | Runtime implementation, manifest schemas, and recovery tests |
-| External process safety | `crates/study-tts-runtime/` | Worker and FFmpeg adapters plus containment tests |
+| External process safety | `crates/study-tts-runtime/` | Worker-pool and FFmpeg adapters plus containment tests; ASR uses the in-process verifier |
 | Testing patterns | `crates/study-tts-testkit/` and colocated tests | Representative fake-worker, property, contract, and recovery tests |
 | Operations and diagnostics | `docs/operations/` | Exercised runbooks and `study-tts doctor` behavior |
 | Production diagnostics | Local `events.ndjson`, `job.json`, `manifest.json`, and `quality-report.json` | Redacted local artifacts; do not upload source text or voice-reference paths by default |
@@ -142,8 +145,10 @@ Choose verification according to the change:
 | Documentation only | Review rendered Markdown, links, paths, commands, and consistency with accepted ADRs |
 | Core types or deterministic logic | Targeted unit and property tests, schema consistency, `cargo check`, formatting, and Clippy |
 | Worker protocol or backend | Shared contract tests, malformed-message tests, cancellation and timeout tests, offline check, and short real-backend render on named hardware |
-| Job state, cache, or recovery | Targeted tests plus fault injection at each write boundary, checksum validation, restart, and one-segment invalidation |
-| FFmpeg or export behavior | Integration tests with the supported FFmpeg version, ffprobe assertions, deterministic timeline checks, and playback of representative exports |
+| Worker pool or CPU governance | Actual parallel dispatch through the `&self` executor, process isolation, thread-limit assertions, RAM/core oversubscription rejection, and single-worker RTF qualification |
+| ASR verification | Exact pinned-stack and decoder assertions, ASR-only invalidation, expected-pattern promotion review, seeded defect-class gates, repeated-run stability, and segment-order invariance |
+| Job state, cache, takes, or recovery | Targeted tests plus fault injection at each write boundary and pipeline state, checksum validation, stale-take rejection, prune protection, restart, and one-segment invalidation |
+| PCM, FFmpeg, or export behavior | Edge padding/ramp and Rust assembly tests, supported-FFmpeg integration, ffprobe assertions, frozen-loudness-reference checks, deterministic timeline checks, and playback of representative exports |
 | User-visible CLI behavior | Relevant tests plus an actual CLI exercise in WSL2, including `--json` and exit-code behavior |
 | Security boundary | Traversal, symlink escape, command-injection, oversized-input, hostile-worker, redaction, and child-process cleanup tests plus human review |
 | Model, voice, or synthesis parameter | Cache-key compatibility review, short contract render, blind quality sample, license check, and consent check where applicable |
@@ -159,7 +164,7 @@ For changes that affect spoken output, automated checks are necessary but insuff
 - Enforce file-size, nesting, segment-count, message-size, duration, retry, timeout, and disk limits at their owning boundaries.
 - Resolve and validate managed paths before access. Reject absolute paths, traversal, symlink escape, and Windows-mount escape where the operation requires containment.
 - Pass external-process arguments directly. Never interpolate user-controlled data into a shell command.
-- Pin Rust, Python, model, tokenizer, codec, and voice revisions as applicable. Verify model, voice, cache, and published-output checksums.
+- Pin Rust, Python, model, tokenizer, codec, voice, and ASR revisions as applicable. Derive the worker-bundle hash from executable worker inputs. Verify model, voice, cache, verification, and published-output checksums.
 - Prefer safe tensor formats. Do not load untrusted pickle-style model files when a safe format is available.
 - Keep rendering offline and test that the worker cannot make network requests.
 - Do not add credentials, tokens, personal data, source content, production audio, or voice-reference files to source, fixtures, logs, examples, or diagnostic bundles.
@@ -173,9 +178,11 @@ For changes that affect spoken output, automated checks are necessary but insuff
 - **Naming:** Use the `study-tts-*` crate prefix, stable lowercase kebab-case CLI names, versioned schemas such as `lesson-v1`, and stable segment IDs that do not depend on mutable display text.
 - **Errors:** Use typed internal errors and source-aware user diagnostics. Classify invalid input, missing dependency, incompatible environment, worker failure, audio-quality failure, cancellation, resource exhaustion, integrity failure, and internal error distinctly. Never silently fall back to another model or device.
 - **Logging:** Use structured `tracing` events with `job_id`, stage, segment ID, attempt, worker/model identity, duration, and error class where applicable. Keep terminal output concise and reserve worker stdout for protocol messages.
-- **Types and schemas:** Represent durable lesson, worker, job, and manifest data with explicit versioned Rust types and JSON Schemas. Reject unknown or incompatible versions at the boundary unless a tested migration exists.
-- **Async and processes:** Bound queues and concurrent work. The parent owns the worker process tree, deadlines, cancellation, restart budget, and cleanup.
-- **Filesystem writes:** Stage, flush, validate, and atomically publish authoritative state and cache artifacts. Quarantine invalid artifacts; do not overwrite or delete them automatically.
+- **Types and schemas:** Represent durable lesson, worker, takes, verification, job, and manifest data with explicit versioned Rust types and JSON Schemas. Reject unknown or incompatible versions at the boundary unless a tested migration exists.
+- **Async and processes:** Use the object-safe `TtsExecutor` with `&self`; bound queues and concurrent work. The pool owns individually synchronized worker clients. The parent owns every worker process tree, deadline, cancellation, restart budget, thread budget, and cleanup. Unload the pool before starting ASR.
+- **Verification:** Use the pinned in-process `whisper-rs` stack with one model context and an independent decoder state per segment. Compare against the approved expected-ASR lattice. Never learn patterns automatically or let ASR mutate approved text.
+- **Filesystem writes:** Stage, flush, validate, and atomically publish authoritative state and cache artifacts. Store verification evidence separately. Use collision-free quarantine paths; do not overwrite or delete invalid artifacts automatically.
+- **Audio edges and loudness:** Rust owns silence insertion, PCM concatenation, edge padding, transition ramps, and float-range validation. Use committed frozen voice/style loudness references; unrelated edits must not change unrelated gain decisions.
 - **Dependencies:** Add a dependency only when it removes more risk than it introduces. Pin through `Cargo.lock` or the worker lockfile, review licenses and advisories, and avoid duplicate libraries for the same narrow concern.
 - **Generated code and schemas:** Produce generated artifacts through a checked-in deterministic command. CI must fail when generated schemas drift from authoritative Rust types.
 - **Compatibility:** Support Ubuntu 24.04 under WSL2 first while retaining native Linux compatibility. Native Windows packaging, GPU acceleration, remote execution, and multi-user operation are deferred.

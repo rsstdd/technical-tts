@@ -5,30 +5,31 @@
 - **Decision owner:** Project maintainer
 - **Development environment:** Ubuntu 24.04 under WSL2
 - **Initial deployment:** Single-user, local-first WSL2 CLI
-- **Review trigger:** Failure of Chatterbox qualification, failure of the 60-minute soak test, or expansion beyond a single local user
+- **Review trigger:** Failure of a Phase 0 Chatterbox gate, failure of the 60-minute soak test, or expansion beyond a single local user
 
 ## 1. Decision
 
-Build the first production-capable version with four runtime elements:
+Build the first production-capable version with five runtime elements:
 
 1. **one Rust application** for ingestion, lesson validation, technical speech normalization, orchestration, caching, recovery, audio validation, and the CLI;
-2. **one replaceable Chatterbox TTS worker**, with a persistent process and a versioned newline-delimited JSON protocol;
+2. **one replaceable Chatterbox worker implementation**, running as a configurable pool of persistent processes with a versioned newline-delimited JSON protocol and a default pool size of one;
 3. **the filesystem plus atomic JSON manifests** for job state, content-addressed segment caching, recovery, and provenance;
-4. **FFmpeg and ffprobe** for canonical audio conversion, assembly, loudness normalization, inspection, and final encoding.
+4. **one pinned in-process Rust ASR verifier**, built with `whisper-rs 0.16.0` and its Cargo-locked `whisper-rs-sys`/`whisper.cpp` stack, for non-authoritative post-render text-integrity triage;
+5. **FFmpeg and ffprobe** for canonical audio conversion, loudness normalization, inspection, metadata, and final encoding.
 
-Do not implement SQLite, multiple installed TTS backends, Dia, LLM lesson generation, automatic speech recognition, a desktop interface, remote workers, or a distributed scheduler in the initial release. Preserve narrow extension points for them, but add each only after a measured need appears.
+Do not implement SQLite, multiple installed TTS backends, Dia, LLM lesson generation, a desktop interface, remote workers, or a distributed scheduler in the initial release. ASR is included only as a quality-control sensor: it cannot alter approved text, approve a release, or silently reject valid speech.
 
 This is intentionally small. Production quality will come from explicit schemas, atomic writes, deterministic planning, cache correctness, process isolation, bounded retries, rigorous validation, complete manifests, and long-form listening tests rather than from a large toolchain.
 
 ## 2. Executive rationale
 
-The product must generate long-form audio study guides that teach technical material accurately and remain comfortable during repeated listening. It does not need four speech models, a database, an LLM, and an ASR model to do that. Those tools expand failure modes before the core workflow has proved useful.
+The product must generate long-form audio study guides that teach technical material accurately and remain comfortable during repeated listening. It does not need four speech models, a database, or an LLM to do that. It does need a bounded local ASR check because omissions, repetitions, insertions, and hallucinated continuations are characteristic TTS failures, while structural audio checks cannot detect them and exclusive reliance on manual review makes the primary correctness gate unnecessarily expensive.
 
 The controlling architecture therefore separates three responsibilities:
 
 - the **lesson layer** decides what should be taught and how it should be spoken;
 - the **TTS worker** turns one approved segment into speech;
-- the **audio layer** controls pauses, sequencing, normalization, encoding, and output validation.
+- the **verification and audio layer** checks text integrity, controls pauses and sequencing, normalizes loudness, encodes outputs, and validates the package.
 
 The Rust application owns every durable decision. The model worker remains replaceable because current high-quality open-source TTS implementations are Python-first, model APIs change quickly, and inference should not contaminate the domain model.
 
@@ -55,7 +56,7 @@ Two stable speakers are supported at the lesson level even though the TTS worker
 - **Nadia:** instructor, definition, explanation, example, correction, pseudocode, and synthesis.
 - **Tom:** learner, interruption, challenge, plausible error, clarification, recap, and recall cue.
 
-Each turn is rendered separately with a stable voice profile. The backend may support multiple voices, but the application still uses one backend implementation and one persistent worker process.
+Each turn is rendered separately with a stable voice profile. The application uses one backend implementation through a configurable persistent worker pool whose default and qualification size is one.
 
 The default study sequence is:
 
@@ -94,7 +95,7 @@ Not every lesson needs every stage. The program will not add dialogue merely to 
 - Native Linux compatibility is retained; native Windows packaging is deferred.
 - English is the initial content language.
 - Source material and lesson text are available locally.
-- Chatterbox must run correctly on CPU, although accelerated execution may be added after the CPU path is qualified.
+- Chatterbox must run correctly on CPU at a measured real-time factor no greater than `6.0` on the named reference machine. A slower result makes GPU acceleration a prerequisite or reopens the backend decision before application integration.
 - Model weights and worker dependencies may be installed before offline use.
 - The user reviews lesson text before producing a final long-form build.
 
@@ -122,7 +123,7 @@ ffprobe -version
 
 All five commands must succeed before the Rust workspace or model worker is diagnosed. The exact versions are recorded by `study-tts doctor` and included in diagnostic bundles; release manifests record versions that can affect generated artifacts.
 
-GPU acceleration is not part of bootstrap. The first complete pipeline uses the fake worker, then qualifies Chatterbox on CPU. AMD GPU or ROCm work requires a separate measured decision because WSL2 device access and model-runtime compatibility add an independent support surface.
+GPU acceleration is not part of bootstrap. The first complete pipeline uses the fake worker, then qualifies Chatterbox on CPU. Any AMD GPU or ROCm proposal must first identify the exact GPU, WSL2 exposure, supported ROCm and PyTorch versions, and a passing Chatterbox smoke render; acceleration is not an assumed fallback.
 
 ## 4. Scope
 
@@ -141,6 +142,8 @@ The first production release shall:
 - cache every valid segment by its complete synthesis identity;
 - resume after interruption without regenerating valid segments;
 - regenerate one selected segment without invalidating unrelated audio;
+- request and retain a distinct numbered take without corrupting content-addressed cache semantics;
+- verify every selected cached segment locally after rendering, and route material text mismatches or uncalibrated protected terms to review;
 - assemble pauses and speech into a canonical master WAV;
 - export M4A/AAC and MP3 from that master;
 - write chapters, transcript, captions where practical, quality results, and a complete provenance manifest;
@@ -166,7 +169,7 @@ The first production release shall:
 | Dia or dialogue-native generation | Do not build | Independent turns demonstrably fail conversational quality and block-level regeneration is acceptable |
 | SQLite | Do not build | Multiple concurrent jobs, queryable history, UI state, or JSON recovery becomes materially unreliable |
 | LLM lesson generation | Do not build | Authored/deterministic compilation is stable and review controls can prevent unsupported claims |
-| Automatic speech recognition | Do not ship | Manual QA becomes the release bottleneck and ASR triage demonstrates useful precision |
+| ASR as an authoritative acceptance oracle | Do not build | A calibrated local verifier may route defects to review, but only approved text and human adjudication establish correctness |
 | Desktop or web UI | Do not build | CLI workflow and schemas stabilize through real use |
 | Remote workers or hosted TTS | Do not build | Local hardware cannot meet measured needs or remote deployment becomes an explicit product requirement |
 | Native Rust model reimplementation | Do not build | Worker packaging becomes the dominant problem and a maintained native runtime proves parity |
@@ -193,15 +196,23 @@ This decision favors Chatterbox voice quality, expressive control, and voice-clo
 
 The Rust boundary remains capability-based and replaceable, but replaceability is an architectural safeguard rather than a reason to build unused adapters. A second backend requires evidence that Chatterbox cannot meet a defined hardware, quality, licensing, or reliability requirement.
 
-Relevant upstream reference:
+Relevant primary references:
 
 - [Chatterbox official repository](https://github.com/resemble-ai/chatterbox)
+- [Chatterbox standard TTS implementation](https://github.com/resemble-ai/chatterbox/blob/master/src/chatterbox/tts.py)
+- [PyTorch reproducibility guidance](https://docs.pytorch.org/docs/stable/notes/randomness.html)
+- [Hugging Face offline-mode guidance](https://huggingface.co/docs/transformers/installation#offline-mode)
+- [`whisper.cpp` official repository](https://github.com/ggml-org/whisper.cpp)
+- [`whisper-rs` 0.16.0 `FullParams` documentation](https://docs.rs/whisper-rs/0.16.0/whisper_rs/struct.FullParams.html)
+- [`hound` WAV reader documentation](https://docs.rs/hound/latest/hound/struct.WavReader.html)
+- [FFmpeg `loudnorm` filter documentation](https://ffmpeg.org/ffmpeg-filters.html#loudnorm)
+- [Microsoft WSL filesystem guidance](https://learn.microsoft.com/windows/wsl/filesystems)
 
 Chatterbox Nano, Kokoro-82M ONNX, Qwen3-TTS, Chatterbox Turbo, and Dia are not version 1 candidates. Dia also changes the unit of retry, correction, cache invalidation, and quality review. None will be integrated without a separate decision record supported by a measured failure of the Chatterbox path.
 
 ### 5.1 Chatterbox qualification procedure
 
-Before production integration is accepted, render the reviewed 3–5 minute qualification lesson through a pinned Chatterbox environment on the target WSL2 machine. Use the intended Nadia and Tom voice profiles, normalize playback loudness for review, and record the exact model, tokenizer or codec, worker, dependency, voice-profile, and device identities.
+Before production integration is accepted, render the reviewed 3–5 minute qualification lesson through a pinned Chatterbox environment on the target WSL2 machine. Use the intended Nadia and Tom voice profiles, normalize playback loudness for review, and record the exact model, tokenizer or codec, worker, dependency, voice-profile, and device identities. Hand-author the fixture's `spoken_text` in the exact normalized form the production normalizer is expected to emit.
 
 The fixture must include:
 
@@ -222,7 +233,8 @@ Hard gates:
 - no persistent voice-identity failure;
 - no severe pronunciation defect in a protected term;
 - no backend failure across three complete renders;
-- acceptable runtime on the target machine;
+- CPU real-time factor no greater than `6.0`, measured as synthesis wall time divided by generated-audio duration, excluding one-time installation and model download;
+- median dialogue-credibility score of at least `4/5`, with no majority finding that the result sounds like unrelated monologues intercut;
 - compatible license and local/offline deployment.
 
 Qualification scorecard:
@@ -234,27 +246,52 @@ Qualification scorecard:
 | Voice consistency | Nadia and Tom remain recognizable across repeated independent turns |
 | Pacing and instructional prosody | Explanations, corrections, recaps, and recall prompts remain distinct and usable |
 | Reliability across repeated segments | Three complete qualification renders without backend failure |
-| Target-machine performance | Measured real-time factor, peak RAM, and acceptable completion time on CPU |
+| Target-machine performance | CPU `RTF <= 6.0`, peak RAM, model-load time, thread count, and projected 60-minute completion time |
+| Dialogue credibility | Median score at least `4/5` across at least three listeners and no majority intercut-monologue defect |
 | Installation and maintenance cost | Reproducible locked environment, offline render, and documented repair path |
 
-Chatterbox must clear every hard gate before the real worker becomes the default backend. Failure pauses production qualification; it does not silently substitute Nano, Kokoro, or another model. ADR-0002 records the immutable Chatterbox revision, runtime, voices, generation parameters, target hardware, and measured qualification results.
+Chatterbox must clear every hard gate before the real worker becomes the default backend. `RTF > 6.0` makes supported GPU acceleration a prerequisite or reopens the backend decision. Failure of dialogue credibility changes the version 1 format to single-instructor narration, with learner questions rewritten as instructor-voiced rhetorical prompts; it does not force adoption of a dialogue-native model. Other failures pause production qualification and do not silently substitute Nano, Kokoro, or another model. ADR-0002 records the immutable Chatterbox revision, runtime, voice sources and conditionals, generation parameters, target hardware, and measured qualification results.
+
+### 5.2 Voice-profile prerequisite
+
+Chatterbox includes one packaged default conditioning profile, but one profile cannot provide two distinct, provenance-ready Nadia and Tom voices. Qualification cannot begin until both production profiles have an accepted source:
+
+- the maintainer's own recording with an explicit permitted-use declaration;
+- a commissioned recording with a signed release covering local synthesis and distribution; or
+- a specifically identified permissively licensed recording whose dataset and speaker terms have been reviewed and retained.
+
+Each voice directory contains the immutable reference WAV, its source and consent record, and a precomputed Chatterbox conditional artifact. The conditional is generated once with a pinned extractor stack, loaded through a weights-only path, checksummed, and used for synthesis without recomputing it at worker startup. The profile identity includes the conditional hash and extractor identity; the reference hash remains provenance rather than the immediate synthesis identity. A generic claim that audio is public, synthetic, or included in a corpus is not sufficient evidence of permission.
 
 ## 6. System architecture
+
+The controlling stage order is:
+
+```text
+Plan
+  -> render and cache every valid segment
+  -> drain and unload the Chatterbox worker pool
+  -> verify cached segments with ASR
+  -> adjudicate or retake flagged segments
+  -> assemble verified selections
+  -> normalize, encode, and publish
+```
 
 ### 6.1 System context
 
 ```mermaid
 flowchart LR
     U["Author or learner"] -->|"Markdown or lesson JSON"| A["Rust study-tts application"]
-    A -->|"Approved segment request"| W["One persistent TTS worker"]
+    A -->|"Approved segment request"| W["Chatterbox worker pool (default: 1)"]
     W -->|"Segment WAV"| A
+    A -->|"Selected cached segment"| V["In-process Rust ASR verifier"]
+    V -->|"Transcript, lattice match, and review evidence"| A
     A -->|"Checked process arguments"| F["FFmpeg and ffprobe"]
-    F -->|"Master and encoded audio"| A
+    F -->|"Converted, normalized, and encoded audio"| A
     A <--> S["Local job and cache directories"]
     A --> O["Study-guide package"]
 ```
 
-Only the Rust application owns job state and final artifacts. The worker may write one staged WAV beneath a path assigned by the parent, while FFmpeg receives explicit input and output paths from the application.
+Only the Rust application owns job state and final artifacts. Each worker may write one staged WAV beneath a path assigned by the parent. The application validates and publishes canonical segments before verification, drains and unloads the worker pool, and then verifies immutable cache artifacts. FFmpeg receives explicit input and output paths from the application.
 
 ### 6.2 Internal components
 
@@ -266,13 +303,18 @@ flowchart TB
     APP --> PRO["Pronunciation and speech normalization"]
     APP --> PLAN["Segment and timeline planner"]
     APP --> JOB["Atomic JSON job repository"]
-    APP --> CACHE["Content-addressed WAV cache"]
-    APP --> WC["TTS worker client"]
+    APP --> CACHE["Content-addressed WAV and verification caches"]
+    APP --> WC["Asynchronous TTS executor"]
+    APP --> ASR["In-process whisper-rs verifier"]
+    APP --> TAKE["Explicit take-selection repository"]
+    APP --> ASM["Rust PCM timeline assembler"]
     APP --> AV["Audio validator"]
     APP --> FF["FFmpeg adapter"]
-    WC --> WP["External model worker"]
+    WC --> WP["N synchronized Chatterbox worker clients"]
+    ASR --> WM["Pinned whisper.cpp model context"]
     JOB --> FS["Filesystem"]
     CACHE --> FS
+    TAKE --> FS
     FF --> PKG["WAV, M4A, MP3, transcript, chapters, manifest"]
 ```
 
@@ -285,9 +327,10 @@ sequenceDiagram
     actor User
     participant CLI as Rust CLI
     participant Job as JSON job repository
-    participant Worker as TTS worker
-    participant Cache as WAV cache
-    participant Audio as FFmpeg and ffprobe
+    participant Worker as Chatterbox worker pool
+    participant Verify as In-process ASR verifier
+    participant Cache as WAV and verification caches
+    participant Audio as Rust assembler and FFmpeg
 
     User->>CLI: render lesson.json
     CLI->>CLI: parse, normalize, and validate lesson
@@ -304,6 +347,20 @@ sequenceDiagram
             CLI->>Job: atomically mark segment complete
         end
     end
+    CLI->>Worker: drain requests and unload pool
+    loop Each selected cached segment
+        CLI->>Cache: resolve verification key
+        alt Valid verification hit
+            Cache-->>CLI: prior result and evidence
+        else Missing or stale verification
+            CLI->>Audio: convert 24 kHz float WAV to managed 16 kHz mono PCM
+            Audio-->>CLI: converted PCM and provenance
+            CLI->>Verify: transcribe with independent decoder state
+            Verify-->>CLI: transcript and lattice-match evidence
+            CLI->>Cache: atomically publish verification result
+        end
+    end
+    CLI->>CLI: adjudicate or stop in NeedsReview
     CLI->>Audio: assemble canonical master
     Audio-->>CLI: master WAV and probe data
     CLI->>Audio: normalize and encode outputs
@@ -324,13 +381,20 @@ stateDiagram-v2
     Rendering --> Rendered: every required segment is valid
     Rendering --> Failed: retry budget exhausted
     Rendering --> Cancelled: user cancellation
-    Rendered --> Assembling
+    Rendered --> Verifying
+    Verifying --> Verifying: cached segment verified
+    Verifying --> Verified: every selected segment passes or is accepted
+    Verifying --> NeedsReview: mismatch, uncalibrated term, or quality finding
+    Verifying --> Failed: verifier failure
+    Verified --> Assembling
+    Verified --> Verifying: verification identity changes
     Assembling --> QualityChecked
     Assembling --> Failed
     QualityChecked --> Published
-    QualityChecked --> NeedsReview
-    NeedsReview --> Planned: selected segments invalidated
-    Failed --> Planned: corrected and resumed
+    NeedsReview --> Verified: findings accepted without synthesis changes
+    NeedsReview --> Planned: text, voice, or selected take changes
+    Failed --> Verifying: verifier repaired and synthesis remains valid
+    Failed --> Planned: input or rendering corrected and resumed
     Cancelled --> Planned: resumed
     Published --> [*]
 ```
@@ -347,7 +411,7 @@ technical-tts/
   crates/
     study-tts-cli/        executable, commands, diagnostics, configuration
     study-tts-core/       lesson types, normalization, planning, cache keys
-    study-tts-runtime/    filesystem state, worker client, FFmpeg adapter
+    study-tts-runtime/    filesystem state, worker pool, ASR, PCM, FFmpeg adapters
     study-tts-testkit/    fixtures, fake worker, audio test helpers
   worker/
     pyproject.toml
@@ -356,6 +420,8 @@ technical-tts/
   schemas/
     lesson-v1.schema.json
     worker-v1.schema.json
+    takes-v1.schema.json
+    verification-v1.schema.json
     manifest-v1.schema.json
   fixtures/
     lessons/
@@ -373,6 +439,7 @@ Split crates further only when compile times, dependency boundaries, ownership, 
 | Concern | Candidate | Reason |
 |---|---|---|
 | Async process and I/O | `tokio` | Persistent worker, cancellation, timeouts, bounded task orchestration |
+| Object-safe async port | `async-trait` | Stable `TtsExecutor` boundary with concurrent `&self` requests |
 | Serialization | `serde`, `serde_json` | Canonical lesson, protocol, job, and manifest formats |
 | Schema generation | `schemars` | Keep Rust types and checked-in JSON Schema aligned |
 | CLI | `clap` | Stable subcommands and non-interactive use |
@@ -380,7 +447,8 @@ Split crates further only when compile times, dependency boundaries, ownership, 
 | Hashing | `blake3` | Fast content identities and cache keys |
 | Logging | `tracing`, `tracing-subscriber` | Structured events with job and segment context |
 | Temporary files | `tempfile` | Safe staged writes |
-| WAV inspection | `hound` or equivalent | Narrow validation without invoking FFmpeg for every header check |
+| WAV and PCM | `hound` or equivalent | Validate and assemble canonical 24 kHz mono 32-bit IEEE-float WAV without a concat subprocess |
+| In-process ASR | `whisper-rs 0.16.0` | One pinned model context, explicit decoder controls, and independent per-segment states |
 | Markdown parsing | `pulldown-cmark` or equivalent | Structural parsing rather than regular expressions |
 
 Dependency versions are pinned through `Cargo.lock`. A crate is added only when it removes more risk than it introduces.
@@ -394,6 +462,8 @@ study-tts lesson validate lesson.json
 study-tts render lesson.json --format m4a
 study-tts resume <job-id>
 study-tts inspect <job-id>
+study-tts retake <job-id> --segment seg-0042
+study-tts takes accept <job-id> --segment seg-0042 --out <lesson>.takes.json
 study-tts invalidate <job-id> --segment seg-0042
 study-tts export <job-id> --format wav,m4a,mp3
 study-tts cache verify
@@ -413,6 +483,8 @@ Configuration precedence:
 5. compiled safe default.
 
 Configuration files contain no secrets in version 1. Network credentials do not exist because normal rendering is offline.
+
+Resource configuration names the worker-pool size, threads per worker, maximum aggregate worker RAM, ASR threads, job/cache/output roots, and offline mode. `worker_pool_size` defaults to `1`. Preflight rejects a configuration if its measured aggregate memory exceeds the limit or if `worker_pool_size * threads_per_worker` exceeds the available physical-core budget.
 
 ## 8. Lesson representation
 
@@ -548,7 +620,11 @@ The lexicon wins over generic rules. Conflicting exact rules fail validation rat
 
 ### 10.1 Process boundary
 
-The selected model runs as one persistent child process. For a Python-first model, it has its own locked Python environment and loads one pinned model revision once per worker lifetime.
+The selected model runs in a configurable pool of `N` persistent child processes. Each Python process has its own locked environment, loads one pinned model revision once per lifetime, and accepts one request at a time. The pool owns `N` individually synchronized clients and leases one client for each synthesis request; its default and qualification size is one.
+
+Before loading the model, every worker calls `torch.set_num_threads(threads_per_worker)` and `torch.set_num_interop_threads(1)`. The launcher sets `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, and `NUMEXPR_NUM_THREADS` to the same per-worker value.
+
+`study-tts doctor` obtains WSL-visible physical-core topology from `lscpu`. If topology is unavailable, it uses half the visible logical processors, with a minimum of one. It reserves one physical core when more than one is available. Preflight enforces both the RAM limit and `pool_size * threads_per_worker <= available_physical_cores`. ASR starts only after the TTS pool is drained and unloaded, and uses the same available-core budget.
 
 Use newline-delimited JSON over standard input and standard output because a local HTTP server would add port allocation, firewall behavior, service ownership, authentication, and orphaned listeners without solving a current requirement.
 
@@ -566,7 +642,7 @@ Standard output is protocol-only. Structured diagnostics use standard error.
 Example:
 
 ```json
-{"v":1,"id":"req-42","method":"synthesize","params":{"text":"...","voice":"nadia-v1","style":"calm_explanatory","seed":42,"output":"C:\\jobs\\...\\staged.wav"}}
+{"v":1,"id":"req-42","method":"synthesize","params":{"text":"...","voice":"nadia-v1","style":"calm_explanatory","seed":42,"take":0,"output":"/home/user/.local/share/study-tts/jobs/.../staged.wav"}}
 {"v":1,"id":"req-42","event":"progress","progress":0.6}
 {"v":1,"id":"req-42","result":{"sample_rate":24000,"channels":1,"frames":187200,"model_revision":"..."}}
 ```
@@ -581,28 +657,62 @@ Example:
 - every success includes model, tokenizer/codec, worker, and voice-profile identities;
 - heartbeat and synthesis deadlines detect hangs;
 - parent owns process lifetime and terminates the full child process tree;
-- one synthesis request at a time in version 1;
+- one synthesis request at a time per worker process;
+- pool size is configurable, defaults to one, and may exceed one only after `doctor` verifies both aggregate RAM and physical-core budgets;
 - worker restart after protocol corruption, timeout, GPU error, or repeated invalid audio;
 - no network access during rendering;
 - no untrusted pickle-style model loading when a safe format is available.
+
+Protocol-only standard output is enforced mechanically rather than by convention. At worker startup, Python duplicates the original standard-output file descriptor for protocol frames, redirects file descriptor `1` and `sys.stdout` to standard error, and writes NDJSON only through the retained descriptor. This contains Python prints, native-library writes, progress bars, and warnings. A contract test imports and exercises the pinned model stack while asserting that every byte on the protocol channel belongs to a valid frame.
+
+Offline rendering uses only verified local model paths and Chatterbox's local loader. The worker sets `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, and `HF_HUB_DISABLE_PROGRESS_BARS=1`; any applicable load call uses `local_files_only=True`. Network egress is denied independently during the offline contract test, so configuration mistakes fail before a release.
 
 ### 10.4 Backend abstraction
 
 The Rust domain depends on capabilities rather than a model name:
 
 ```rust
-pub trait TtsBackend {
+#[async_trait]
+pub trait TtsExecutor: Send + Sync {
     fn descriptor(&self) -> BackendDescriptor;
+    fn capacity(&self) -> usize;
     fn validate(&self, request: &SynthesisRequest) -> Result<(), BackendError>;
     async fn synthesize(
-        &mut self,
+        &self,
         request: SynthesisRequest,
         destination: &Path,
     ) -> Result<SynthesisReport, BackendError>;
 }
 ```
 
-Version 1 has one implementation. The trait exists to keep model-specific fields outside the lesson and planning layers, not to justify building unused adapters.
+Version 1 has one implementation backed by the worker pool. The object-safe asynchronous interface permits actual parallel dispatch without exposing mutable backend ownership to callers. The trait exists to keep model-specific fields outside the lesson and planning layers, not to justify building unused adapters.
+
+### 10.5 Post-render ASR verifier
+
+Version 1 integrates pinned `whisper-rs 0.16.0` into the Rust runtime. Its exact transitive `whisper-rs-sys` revision, and therefore the bound `whisper.cpp` implementation, is locked through `Cargo.lock`. One pinned English ASR model context remains loaded for the complete verification stage. Synthesis and verification never compete for the resource budget: the application renders and caches every structurally valid segment, drains and unloads the Chatterbox pool, then verifies the selected cache artifacts.
+
+Each cached 24 kHz float WAV is converted to managed 16 kHz mono PCM with fixed FFmpeg arguments before ASR. Verification provenance records the FFmpeg version, effective arguments, input checksum, output format, and conversion-identity hash. Conversion output is transient and never replaces the canonical cache artifact.
+
+The decoder uses fixed settings: greedy decoding with `best_of = 1`; English language; translation disabled; `no_context = true`; no initial prompt; `temperature = 0.0`; `temperature_inc = 0.0`; explicit ASR thread count; and one independent decoder state per segment. ADR-0005 freezes every setting and compilation feature.
+
+Whisper output is compared with an expected-ASR token lattice, not directly with `spoken_text`. Ordinary words use deterministic comparison normalization. Each protected term maps to one or more human-approved ASR token sequences, including approved expansions and stable recognition variants. An uncalibrated protected term routes to review once and remains unapproved until a listener confirms that the source audio pronounced it correctly and explicitly adds its pattern. The application never learns a pattern automatically from arbitrary model output.
+
+Verification reports omissions, insertions, substitutions, repetitions, unexpected continuations, uncalibrated terms, and the selected lattice path. Results are written atomically to `cache/verifications/<verification-key>/result.json`. Missing or stale evidence is regenerated without invoking Chatterbox. A verifier crash leaves synthesis artifacts valid and resumes at `Verifying`; findings that need adjudication stop the job in `NeedsReview` and prevent final publication.
+
+ADR-0005 qualifies the verifier with at least 100 human-verified clean segments, including at least 50 protected-term segments, plus 50 seeded examples for each defect class. The release-control gates are:
+
+| Measurement | Required result |
+|---|---:|
+| False-positive rate on clean segments | `<= 5%` |
+| Omission detection | `>= 95%` |
+| Insertion detection | `>= 95%` |
+| Unexpected-continuation detection | `>= 95%` |
+| Substitution detection | `>= 90%` |
+| Repetition detection | `>= 80%` |
+| Repeated identical-input transcript | Identical in `5/5` runs |
+| Segment-order invariance | `100%` |
+
+Failure of any class prevents acceptance of ASR as a release control. Development may continue with complete human review, but version 1 cannot claim automated text-integrity coverage without an ADR amendment or an improved verifier. ASR remains a triage sensor: it never changes approved text or independently establishes correctness.
 
 ## 11. Segmentation and rendering
 
@@ -620,16 +730,21 @@ Rules:
 - reject a segment that cannot be split safely;
 - retain source and parent-segment references for every child;
 - avoid crossfades across ordinary speech turns because they can smear consonants;
+- analyze each edge in 5 ms RMS frames using the audio-profile silence threshold, add zero samples until each edge has at least 10 ms of silence, and smooth each silence-to-signal transition with a raised-cosine ramp no longer than 5 ms;
+- record head/tail padding and ramp sample counts, require exposed endpoints to be zero, and verify every join against the audio-profile discontinuity threshold;
 - add silence explicitly through the timeline.
 
 ### 11.2 Voice stability
 
 - Nadia and Tom use fixed voice-profile files;
-- reference audio, if used, is immutable and checksum-pinned;
+- reference audio and its consent or license evidence are immutable and checksum-pinned;
+- precomputed conditioning artifacts are generated once by a pinned extractor, checksum-pinned, and loaded directly for synthesis;
 - model revision, seed, style, and decoding parameters are recorded;
 - random voice selection is forbidden;
 - periodic long-form review compares early, middle, and late segments;
 - changing a voice profile invalidates every segment rendered with it.
+
+The worker validates the conditioning artifact against the profile before initialization. An identical reference WAV processed by a different extractor stack is a different profile revision, while reformatting provenance metadata without changing the approved conditional does not invalidate speech.
 
 ### 11.3 Retry policy
 
@@ -642,6 +757,8 @@ Default per segment:
 
 Invalid input, unsupported capabilities, checksum failure, unsafe path, and schema failure never retry. A fallback model does not exist in version 1, so the system cannot conceal a backend failure through an unreviewed voice change.
 
+Automatic retries preserve the same synthesis identity and `take`. A requested alternate performance increments the segment's `take` integer, produces a new cache key, and retains the prior artifact. After a mid-lesson retake, automated loudness and speaking-rate comparisons plus a listening check evaluate both joins. If no candidate take matches its neighbors, the target and immediate neighbors are regenerated as a reviewable continuity group with new take values; version 1 does not silently time-stretch speech.
+
 ## 12. Filesystem state, cache, and recovery
 
 ### 12.1 Directory layout
@@ -653,15 +770,26 @@ data/
     nadia-v1/
       profile.json
       reference.wav
+      conditionals.pt
+      consent.json
     tom-v1/
       profile.json
       reference.wav
+      conditionals.pt
+      consent.json
   models/
     <backend>/<immutable-revision>/
+    whisper/<immutable-revision>/
   cache/
     segments/<key-prefix>/<cache-key>/
       audio.wav
       artifact.json
+    verifications/<verification-key>/
+      result.json
+  quarantine/
+    <job-id>/<segment-id>/take-<take>/attempt-<attempt>-<request-id>/
+      rejected.wav
+      evidence.json
   jobs/
     <job-id>/
       job.json
@@ -680,19 +808,39 @@ data/
         quality-report.json
 ```
 
-### 12.2 Atomic state writes
+Each authored lesson has a versioned `<lesson-stem>.takes.json` sibling. Accepted takes files and published manifests are durable cache-prune roots.
+
+### 12.2 Explicit take selection
+
+Take zero is the synthesis default, but a production release requires an explicit versioned takes file even when every selection remains zero. Each selected segment records:
+
+```json
+{
+  "segment_id": "seg-0042",
+  "synthesis_base_key": "...",
+  "selected_take": 2,
+  "selected_cache_key": "...",
+  "audio_blake3": "..."
+}
+```
+
+The application rejects a selection whose synthesis base key no longer matches the current plan. `study-tts takes accept <job-id> --segment <id> --out <lesson>.takes.json` records an accepted cache artifact without changing it. `plan.json` and the published `manifest.json` repeat the selected take, selected cache key, and audio checksum for every segment.
+
+The takes file reproduces the human selection decision. Byte-identical reconstruction additionally requires the referenced cached artifact or an archived segment bundle; rerunning a nondeterministic model from the same synthesis request is not a byte-reconstruction guarantee. Cache pruning treats every artifact referenced by an accepted takes file or published manifest as live.
+
+### 12.3 Atomic state writes
 
 For every JSON state change:
 
 1. serialize canonical JSON to a sibling temporary file;
 2. flush file contents;
-3. atomically replace the destination where the platform supports it;
-4. flush the containing directory where supported;
+3. atomically rename the temporary file over the destination on the qualified WSL2 Linux filesystem;
+4. flush the containing directory;
 5. append a diagnostic event after the authoritative state is durable.
 
-Only one process may own a job. A per-job lock file contains process identity and creation metadata; stale-lock recovery verifies that the owner is gone before taking ownership.
+Only one Rust process may own a job. A per-job lock file contains process identity and creation metadata; stale-lock recovery verifies that the owner is gone before taking ownership. The owner may have multiple in-flight segments, but it serializes authoritative job-document replacement and cache publication. Recovery guarantees apply only to the qualified WSL2 Linux filesystem, not DrvFS mounts.
 
-### 12.3 Job document
+### 12.4 Job document
 
 `job.json` contains:
 
@@ -700,32 +848,49 @@ Only one process may own a job. A per-job lock file contains process identity an
 - state and last successful stage;
 - lesson and plan hashes;
 - selected worker and model identities;
-- segment statuses, attempts, cache keys, and artifact hashes;
+- segment statuses, attempts, synthesis base keys, selected takes, cache keys, and artifact hashes;
+- ASR verification keys, token-diff results, and adjudications;
 - final output identities;
 - timestamps and application version;
 - failure classification and safe recovery action.
 
-### 12.4 Cache key
+### 12.5 Synthesis and verification identities
 
 The cache key is BLAKE3 over canonical serialization of every speech-affecting input:
 
 ```text
 cache schema version
-render-planning version
-worker adapter version
+worker bundle hash
 model repository and immutable revision
 tokenizer or codec revision
-voice-profile or approved reference-audio hash
+voice-conditioning artifact hash
 language
 exact spoken text
 style and generation parameters
 seed and determinism class
+take integer
 target intermediate sample format
 ```
 
-It excludes display-only fields such as lesson title and source formatting.
+`worker_bundle_hash` is computed deterministically from production worker source and imported project-owned modules, the production Python lockfile, the worker protocol schema, launcher configuration that affects inference, and Python runtime and platform ABI identity. Any change to executable project code, locked dependencies, protocol interpretation, inference-affecting launch settings, or runtime ABI invalidates synthesis without relying on a maintainer-controlled revision marker.
 
-### 12.5 Cache acceptance
+It excludes display-only fields such as lesson title and source formatting. It also excludes normalizer, lexicon, compiler, and render-planner versions because their speech-affecting results are already represented by exact `spoken_text`, segment boundaries, and parameters. Those upstream versions remain in the job and artifact manifests for provenance. A planner or rule change therefore invalidates only segments whose resolved synthesis inputs change.
+
+The key identifies a requested synthesis take, not reproducible audio bytes. The cached WAV and its checksum memoize the accepted result. Seed, thread count, PyTorch version, numerical libraries, device, and determinism settings are recorded because identical seeds do not guarantee identical output across dependency, platform, or execution changes.
+
+ASR evidence has a separate verification key over:
+
+- cached audio checksum and exact `spoken_text`;
+- `whisper-rs`, `whisper-rs-sys`, bound `whisper.cpp`, and ASR-model identities;
+- compilation features and execution device;
+- every decoder parameter and ASR thread count;
+- ASR input-conversion identity, including FFmpeg version and effective arguments;
+- expected-pattern profile hash;
+- comparison-normalizer hash and threshold-profile hash.
+
+Changing any verification input reruns verification without regenerating speech or invoking Chatterbox. A cached segment with missing or stale verification evidence remains reusable audio but cannot satisfy the current release gate until reverified and, where required, adjudicated.
+
+### 12.6 Cache acceptance
 
 A cache entry is used only when:
 
@@ -733,12 +898,12 @@ A cache entry is used only when:
 - stored audio checksum matches;
 - WAV container and sample data validate;
 - sample rate and channel count match the plan;
-- duration, silence, peak, and finite-sample checks pass;
+- duration, silence, edge, `max(abs(sample)) <= 1.0`, and finite-sample checks pass;
 - model and worker identities match the request.
 
-Invalid entries move to a quarantine directory. They are not overwritten or deleted automatically.
+Invalid entries move to a collision-free `quarantine/<job-id>/<segment-id>/take-<take>/attempt-<attempt>-<request-id>/` directory. They are not overwritten or deleted automatically.
 
-### 12.6 Recovery
+### 12.7 Recovery
 
 On `resume`:
 
@@ -748,8 +913,10 @@ On `resume`:
 4. reconcile an artifact that was atomically published before `job.json` was updated;
 5. mark an interrupted attempt abandoned;
 6. verify every completed segment rather than trusting state alone;
-7. continue from the first missing or invalid artifact;
-8. rebuild final outputs if any segment or timeline identity changed.
+7. continue rendering from the first missing or invalid artifact, or resume directly at verification when rendering is complete;
+8. reuse valid verification evidence and regenerate only missing or stale results;
+9. preserve `NeedsReview` findings until accepted or invalidated by a text, voice, or take change;
+10. rebuild final outputs if any selected segment or timeline identity changed.
 
 The absence of SQLite is deliberate. Atomic documents are sufficient because one process owns one local job and job history does not require queries.
 
@@ -760,12 +927,12 @@ The absence of SQLite is deliberate. Atomic documents are sufficient because one
 All worker output becomes:
 
 - WAV container;
-- mono PCM;
-- one project sample rate selected during Chatterbox qualification;
-- 24-bit integer or 32-bit float during assembly;
+- mono, 24 kHz, 32-bit IEEE-float PCM, matching standard Chatterbox's native 24 kHz synthesis rate;
 - no lossy intermediate encoding.
 
 If the worker already emits the canonical format, no conversion occurs. Otherwise, FFmpeg converts once before cache publication.
+
+`hound` remains the initial Rust WAV implementation because its public API supports 32-bit IEEE-float samples. Phase 1 fixtures must nevertheless round-trip the exact worker, cache, assembled-master, and FFmpeg-produced WAV variants; an unsupported header or extensible-format variant triggers a bounded switch to `symphonia` or an equivalent decoder.
 
 ### 13.2 Timeline plan
 
@@ -773,9 +940,10 @@ Rust produces an explicit edit-decision list containing:
 
 - ordered cache artifact paths;
 - expected artifact checksums;
+- synthesis base keys, selected takes, and selected cache keys;
 - start and end calculations;
 - pauses after segments;
-- optional gain corrections;
+- frozen voice/style loudness references and measured per-segment gain corrections;
 - chapter boundaries;
 - transcript and caption timing;
 - complete plan hash.
@@ -793,11 +961,11 @@ Default pause ranges:
 
 Production builds use explicit selected values, not runtime randomness.
 
+Rust assembles canonical segments and generated silence directly into the master WAV. It verifies each checksum before reading, performs checked sample-count arithmetic, applies the edit-decision list without path-string manifests, and derives every segment boundary from the exact written sample count.
+
 ### 13.3 FFmpeg responsibilities
 
 - convert backend WAV into the canonical intermediate when required;
-- generate exact silence segments;
-- concatenate canonical segments according to the plan;
 - run measured loudness normalization;
 - encode M4A/AAC and MP3 from the normalized master WAV;
 - embed chapters and metadata where supported;
@@ -807,9 +975,15 @@ FFmpeg is invoked without a shell. Every argument is a separate process argument
 
 ### 13.4 Loudness
 
-Begin evaluation around a podcast-oriented integrated target near `-16 LUFS`, with true peak no higher than `-1.5 dBTP`. The final target is established through listening tests and recorded in a follow-up audio-profile decision.
+Begin evaluation around a podcast-oriented integrated target near `-16 LUFS`, with true peak no higher than `-1.5 dBTP`. ADR-0003 owns the final target, silence threshold, transition-discontinuity threshold, and frozen loudness profile.
 
-Use two-pass EBU R128 normalization on the assembled master. Do not normalize every segment aggressively because doing so can flatten intentional emphasis and amplify quiet artifacts.
+The first accepted calibration build computes candidate medians and freezes one LUFS reference for each voice-profile hash and style in the committed quality profile. A new voice or style cannot enter production until calibrated. Later builds measure each segment against that frozen reference, apply gain only when deviation exceeds `2 LU`, cap correction at `+/-6 dB`, and route cases that would violate the true-peak ceiling or require a larger correction to review. The plan and manifest record the frozen reference and applied gain for each segment.
+
+A retake can change its own required gain and the final-master normalization measurement, but it cannot change gain decisions for unrelated segments. Do not apply per-segment compression, limiting, or automatic time stretching. This removes accidental level jumps without allowing lesson composition to redefine a voice's target.
+
+Use two-pass EBU R128 normalization on the assembled master. Parse the second-pass JSON and require `normalization_type` to be `linear`; a dynamic fallback is a quality event that fails automatic publication pending review or a revised audio profile.
+
+Do not crossfade adjacent speech. Rust measures 5 ms edge frames, inserts any missing zero padding, and applies raised-cosine transition ramps no longer than 5 ms. It records the padding and ramp sample counts, requires exposed endpoints to be zero, and verifies joins against the ADR-0003 discontinuity threshold.
 
 ### 13.5 Output package
 
@@ -817,12 +991,14 @@ Use two-pass EBU R128 normalization on the assembled master. Do not normalize ev
 - `lesson.m4a`: default listening file;
 - `lesson.mp3`: compatibility output;
 - `transcript.txt`: readable speaker-labelled transcript;
-- `transcript.vtt`: approximate segment-level captions;
+- `transcript.vtt`: sample-exact segment-level captions derived from the assembled timeline;
 - `chapters.ffmetadata`: chapter source metadata;
 - `manifest.json`: provenance, inputs, tools, artifacts, and checksums;
 - `quality-report.json`: automated checks and review status.
 
 Never derive one lossy format from another.
+
+The qualification pipeline tests Chatterbox's PerTh watermark on the canonical cached segment, normalized master, M4A, and MP3 outputs. If detection does not survive the selected gain, two-pass normalization, and encode path, the release must state that preservation is unverified and reopen the processing profile; postprocessing never intentionally removes or bypasses watermarking.
 
 ### 13.6 FFmpeg licensing
 
@@ -852,7 +1028,7 @@ Required measurements:
 - real-time factor;
 - cache hits and misses;
 - retry and restart counts;
-- segment duration, peak, silence ratio, and clipping checks;
+- segment duration, maximum absolute sample, silence ratio, edge padding, transition ramps, and join-discontinuity checks;
 - assembly and encoding durations;
 - output sizes and checksums;
 - peak RAM and VRAM where the operating environment exposes them reliably.
@@ -862,11 +1038,14 @@ Required measurements:
 - WSL2 and supported Ubuntu version;
 - supported OS and architecture;
 - writable job, cache, model, and output directories;
+- job, cache, staging, and output directories reside on the WSL2 Linux filesystem and are not DrvFS mounts such as `/mnt/c`;
 - free disk space;
 - successful execution and parsed versions for `gcc`, `cmake`, and `python3`;
 - FFmpeg and ffprobe presence and versions;
 - worker runtime and locked dependencies;
 - model and voice-profile checksums;
+- pinned `whisper-rs`, `whisper-rs-sys`/`whisper.cpp`, compilation-feature, and ASR-model identities;
+- visible physical-core topology, reserved-core policy, pool size, per-worker threads, ASR threads, and oversubscription result;
 - GPU or CPU device compatibility;
 - offline mode;
 - short end-to-end smoke render.
@@ -898,7 +1077,7 @@ Logs do not contain full source text, spoken text, or raw voice-reference paths 
 - treat worker responses as untrusted input;
 - pin model and dependency revisions and verify checksums;
 - prefer safe tensor formats where available;
-- disable worker network access during rendering through configuration and test it;
+- load models from verified local paths, set the named Hugging Face offline variables, disable progress bars, deny worker egress during the offline test, and fail on any attempted download;
 - restrict voice-reference permissions;
 - redact content from routine logs;
 - terminate the complete worker process tree on shutdown or timeout;
@@ -914,7 +1093,7 @@ A cloned voice profile requires:
 - creation date and consent status;
 - an audit event for each build that uses it.
 
-Default voices should be licensed built-in or synthetic designed voices. Public-figure cloning is prohibited. If the selected backend adds a watermark, postprocessing must not intentionally remove it.
+Nadia and Tom must use the approved sources and precomputed conditionals defined in Section 5.2. The packaged Chatterbox default may be used only as a single voice if its model terms and conditioning provenance satisfy the release review; it cannot be relabeled as two distinct speakers. Public-figure cloning is prohibited. PerTh watermark detection is tested across the complete output pipeline, and postprocessing must not intentionally remove it.
 
 ### 15.4 Data retention
 
@@ -935,8 +1114,10 @@ Default voices should be licensed built-in or synthetic designed voices. Public-
 | Unsupported voice, style, or text length | Permanent request | Stop affected segment without retry |
 | Worker timeout or exit | Transient/systemic | Retry, restart once, then fail while preserving valid cache |
 | GPU out of memory | Resource | Restart once; fail with measured requirement rather than silently changing model |
-| Empty, truncated, NaN, or clipped WAV | Invalid output | Quarantine and retry within budget |
-| Pronunciation defect | Quality | Mark segment for review and invalidate only its cache identity |
+| Empty, truncated, non-finite, over-range float PCM, or invalid edge conditioning | Invalid output | Move to a unique quarantine path and retry within budget |
+| Pronunciation or take-quality defect | Quality | Keep the existing artifact, increment `take`, and render a distinct cache identity for review |
+| ASR text mismatch or uncalibrated protected term | Quality signal | Preserve cached audio, route lattice evidence to review, and do not publish until adjudicated |
+| ASR verifier crash | Verification failure | Preserve cached audio, enter `Failed`, and resume directly at verification after repair |
 | FFmpeg failure | Environment/output | Preserve master inputs and exact process diagnostic |
 | Disk full | Resource | Stop new writes and preserve last durable job state |
 | User cancellation | Expected | Terminate safely and leave job resumable |
@@ -946,15 +1127,16 @@ Retries never continue indefinitely. Failure must remain visible.
 
 ## 17. Testing plan
 
-The tests distinguish five questions:
+The tests distinguish six questions:
 
 1. Is the lesson technically correct?
 2. Did deterministic normalization preserve meaning?
-3. Did orchestration produce the requested segments and recover correctly?
-4. Is the audio structurally valid?
-5. Is the finished lesson natural and useful after extended listening?
+3. Does the synthesized speech preserve the approved `spoken_text`?
+4. Did orchestration produce the requested segments and recover correctly?
+5. Is the audio structurally valid?
+6. Is the finished lesson natural and useful after extended listening?
 
-No single metric answers all five.
+No single metric answers all six.
 
 ### 17.1 Test layers
 
@@ -962,8 +1144,8 @@ No single metric answers all five.
 flowchart TB
     A["Release acceptance: 45–60 minute study lesson"]
     B["Blind listening and learning-usefulness review"]
-    C["Real-model end-to-end and soak tests"]
-    D["Worker contracts, recovery, FFmpeg, and cache integration"]
+    C["ASR calibration gates and real-model soak tests"]
+    D["Pool, verification, takes, recovery, PCM, FFmpeg, and cache integration"]
     E["Schema, golden, property, and unit tests"]
     A --> B --> C --> D --> E
 ```
@@ -987,6 +1169,9 @@ Test pure domain behavior:
 - timeline arithmetic;
 - output-name sanitation;
 - manifest checksum generation;
+- expected-ASR lattice construction and comparison;
+- frozen loudness-reference lookup and gain calculation;
+- raised-cosine ramp and edge-padding calculations;
 - path containment.
 
 ### 17.3 Property-based tests
@@ -1001,6 +1186,8 @@ Use `proptest` or an equivalent framework:
 - IDs remain unique;
 - changing any speech-affecting field changes the cache key;
 - changing display-only metadata does not change the cache key;
+- changing a provenance-only rule or planner version without changing resolved synthesis inputs does not change the cache key;
+- incrementing `take` always changes the cache key;
 - timeline starts are monotonic and non-overlapping;
 - durations and pause sums do not overflow;
 - managed artifact paths never escape their root;
@@ -1008,7 +1195,7 @@ Use `proptest` or an equivalent framework:
 
 ### 17.4 Schema and compatibility tests
 
-- validate every lesson, worker, job, and manifest fixture against JSON Schema;
+- validate every lesson, worker, takes file, verification result, job, and manifest fixture against JSON Schema;
 - reject unknown major versions;
 - enforce the minor-version compatibility rule;
 - preserve fixtures for every released schema;
@@ -1051,10 +1238,15 @@ Run the same black-box suite against the fake worker and selected real backend:
 - initialization and capability report meet deadlines;
 - unsupported requests fail deterministically;
 - standard output contains protocol messages only;
+- native and Python writes to file descriptor `1` are redirected away from the retained protocol descriptor;
 - worker cannot write outside staging;
 - immutable model and worker revisions are reported;
 - valid requests produce valid WAV and matching metadata;
 - multiple sequential requests do not corrupt state;
+- configured parallel workers return independently correlated request IDs while Rust serializes durable job updates;
+- concurrent calls through the `&self` executor produce actual parallel synthesis at capacity greater than one;
+- oversubscribed pool/thread configurations are rejected before worker startup;
+- worker-bundle identity changes after worker source, lockfile, protocol, launcher, or Python-runtime identity changes;
 - cancellation and shutdown work;
 - timeout causes process-tree termination;
 - restart restores service;
@@ -1077,14 +1269,21 @@ Run the same black-box suite against the fake worker and selected real backend:
 - Linux paths with spaces, Unicode, long components, and unusual but valid bytes;
 - symlink and mounted-filesystem escape attempts;
 - simultaneous attempts to own one job;
+- refusal to place durable job, cache, staging, or output roots on DrvFS;
 - cancellation followed by resume;
 - one-segment invalidation followed by selective rebuild.
+- interruption and recovery during `Rendering`, `Verifying`, `NeedsReview`, and `Assembling`;
+- synthesis-cache publication succeeds while verification is pending or unavailable;
 
 ### 17.9 Cache tests
 
 - identical input produces a hit;
 - one spoken-text character change produces a miss;
-- voice, style, seed, model, worker, tokenizer, sample format, or rule-version changes produce misses;
+- voice conditional, style, seed, take, model, worker bundle, tokenizer, or sample-format changes produce misses;
+- normalizer, lexicon, compiler, and planner version changes remain hits when resolved synthesis inputs are identical;
+- decoder, ASR thread, expected-pattern, comparison-normalizer, or threshold-profile changes preserve the audio hit and invalidate only verification evidence;
+- ASR recalibration and reverification never invoke Chatterbox;
+- takes-file round trips preserve every selection, reject stale synthesis base keys, propagate selections into plan and manifest, and protect referenced artifacts from pruning;
 - lesson title and non-spoken notes do not invalidate segments;
 - a corrupt WAV never produces a hit;
 - a valid artifact not referenced by a job remains reusable;
@@ -1097,16 +1296,32 @@ Run the same black-box suite against the fake worker and selected real backend:
 - detect supported and unsupported FFmpeg versions;
 - invoke paths containing spaces and Unicode safely;
 - convert worker output to canonical WAV;
-- insert exact silence durations within tolerance;
-- concatenate without missing or duplicated samples beyond format constraints;
+- convert canonical 24 kHz float WAV to fixed 16 kHz mono PCM for ASR and record the conversion identity;
 - normalize using measured two-pass parameters;
+- reject or route a second pass whose reported `normalization_type` is not `linear`;
 - encode M4A and MP3 from the master;
 - embed ordered chapters;
 - probe and verify every output;
 - fail safely when FFmpeg is absent, killed, or returns a nonzero code;
 - never interpret metadata or paths through a shell.
 
-### 17.11 Automated audio checks
+### 17.11 ASR text-integrity tests
+
+- pin `whisper-rs 0.16.0`, the exact Cargo-locked `whisper-rs-sys`/`whisper.cpp` stack, compilation features, and ASR-model checksum;
+- assert every fixed decoder setting and one independent decoder state per segment;
+- exercise approved alternatives and pronunciation expansions for `HTTP 429`, `Result<T, E>`, `O(n log n)`, identifiers, and other protected terms;
+- route an uncalibrated term to review and require explicit human-confirmed pattern promotion;
+- prove that no path learns expected patterns automatically from model output;
+- calibrate with at least 100 human-verified clean segments, including at least 50 protected-term segments, and 50 seeded examples for each defect class;
+- meet `<= 5%` false positives on clean segments, `>= 95%` omission detection, `>= 95%` insertion detection, `>= 95%` unexpected-continuation detection, `>= 90%` substitution detection, and `>= 80%` repetition detection;
+- produce identical transcripts in `5/5` repeated identical-input runs and `100%` identical results across segment-order permutations;
+- report aligned lattice-path and defect evidence with segment, dependency, model, conversion, pattern, normalizer, threshold, device, thread, and decoder identities;
+- route threshold failures to review without altering `spoken_text` or deleting an otherwise valid cache artifact;
+- verify ASR-only invalidation and direct verification-stage recovery;
+- verify that denial of ASR network access does not change behavior;
+- keep ASR time materially below synthesis time on the named CPU.
+
+### 17.12 Automated audio checks
 
 Per segment:
 
@@ -1115,8 +1330,12 @@ Per segment:
 - finite samples only;
 - nonzero duration;
 - voiced content above a conservative energy threshold;
-- leading and trailing silence within policy;
-- peak below clipping;
+- 5 ms RMS edge analysis uses the selected silence threshold;
+- short edges receive enough zero samples to provide at least 10 ms of silence;
+- silence-to-signal transitions use recorded raised-cosine ramps no longer than 5 ms;
+- exposed endpoints are zero and joins remain below the discontinuity threshold;
+- `max(abs(sample)) <= 1.0` for float PCM;
+- Rust inserts exact silence sample counts and concatenates segments without missing or duplicated samples;
 - DC offset below threshold;
 - broad duration expectation relative to text length;
 - no unexpected multi-channel output.
@@ -1127,14 +1346,21 @@ Final package:
 - duration equals timeline within tolerance;
 - chapter timestamps are ordered and within duration;
 - transcript/caption timestamps are monotonic;
+- segment-level caption boundaries equal the assembled sample boundaries;
 - integrated loudness and true peak meet the selected profile;
+- per-segment gain corrections follow the `2 LU` threshold and `+/-6 dB` cap;
+- each gain uses the committed frozen reference for its voice-profile hash and style;
+- unrelated edits and retakes do not alter other segments' frozen references or gain decisions;
+- the second loudness pass reports linear normalization;
 - no discontinuity or click at joins above the selected detection threshold;
+- PerTh watermark detection passes on the selected qualification artifacts and exports;
 - checksums match the manifest;
-- each lossy output traces to the master WAV.
+- each lossy output traces to the master WAV;
+- quarantine paths remain unique across repeated attempts and request IDs.
 
 These checks detect broken audio. They do not establish naturalness.
 
-### 17.12 Human Chatterbox qualification
+### 17.13 Human Chatterbox qualification
 
 At least three listeners score anonymized, loudness-matched samples from 1–5 on:
 
@@ -1150,7 +1376,9 @@ At least three listeners score anonymized, loudness-matched samples from 1–5 o
 
 Record every defect against its lesson segment. Evaluate at least three complete Chatterbox renders because stochastic systems can hide instability in a single favorable sample.
 
-### 17.13 Long-form soak test
+Dialogue credibility is a Phase 0 hard gate: median score must be at least `4/5`, and a majority may not classify the result as unrelated monologues intercut. Failure selects the single-instructor fallback defined in Section 5.1 before orchestration phases proceed.
+
+### 17.14 Long-form soak test
 
 Before release, render and review a 45–60 minute lesson with at least 150 segments.
 
@@ -1166,11 +1394,12 @@ Measure:
 - total render time and real-time factor;
 - no-op rebuild time;
 - one-segment rebuild time;
+- continuity after deliberately replacing a middle segment with a new take, including both joins;
 - listener fatigue at 10, 30, and 60 minutes.
 
 No unbounded resource growth is acceptable. If the worker leaks materially but otherwise passes, controlled recycling may be added and documented without adding a second model.
 
-### 17.14 Learning-usefulness pilot
+### 17.15 Learning-usefulness pilot
 
 After audio quality stabilizes:
 
@@ -1184,15 +1413,16 @@ After audio quality stabilizes:
 
 The purpose is to remove pedagogical features that sound attractive but do not improve recall.
 
-### 17.15 Performance tests
+### 17.16 Performance tests
 
 Track on named hardware:
 
 - cold and warm worker startup;
 - model load time;
 - time to first completed segment;
-- real-time factor by text length;
+- single-worker real-time factor at pool size one, with physical-core budget and thread counts recorded;
 - peak RAM and VRAM;
+- pool throughput, defined as end-to-end pool wall time divided by total generated-audio duration, and peak aggregate RAM at pool sizes `1`, `2`, and the largest safe configured value;
 - output size per audio hour;
 - cache lookup and verification time;
 - assembly and encoding time for 10, 30, and 60 minutes;
@@ -1200,13 +1430,18 @@ Track on named hardware:
 
 Initial budgets, subject to calibration:
 
+- CPU synthesis real-time factor: no greater than `6.0` in the single-worker, pool-size-one qualification run on the named reference machine;
+- projected cold synthesis time for 60 minutes of generated speech: no greater than 6 hours based only on that single-worker measurement, excluding installation, review, and optional alternate takes;
+- local ASR verification time: less than `0.5` times real time and less than 20 percent of measured synthesis wall time;
 - no-op rebuild of a cached 60-minute lesson: under 5 seconds;
 - unexpected segment failure in the soak corpus: below 1 percent;
 - cache and recovery correctness under fault injection: 100 percent;
 - final assembly and encoding: under 0.25 times real time on the reference workstation;
 - worker startup diagnostic: enough progress reporting that a user never sees unexplained silence beyond 10 seconds.
 
-### 17.16 Security tests
+Pool throughput is a separate capacity measurement. Parallel execution cannot retroactively satisfy a failed single-worker RTF or six-hour projection gate.
+
+### 17.17 Security tests
 
 - path traversal, absolute-path, UNC, symlink, and reparse-point attacks;
 - command-injection characters in paths and metadata;
@@ -1221,13 +1456,13 @@ Initial budgets, subject to calibration:
 - dependency advisory, license, and SBOM checks;
 - scheduled parser and protocol fuzzing.
 
-### 17.17 CI and release gates
+### 17.18 CI and release gates
 
 Pull-request CI:
 
 - format and lint;
 - compile with warnings denied for project code;
-- unit, property, schema, golden, fake-worker, recovery, and FFmpeg tests;
+- unit, property, schema, golden, fake-worker, recovery, Rust PCM assembly, and FFmpeg tests;
 - Ubuntu 24.04 native and WSL2-compatible test environment;
 - checked-in schema consistency;
 - dependency advisory and license policy checks;
@@ -1238,6 +1473,7 @@ Scheduled CI:
 - fuzz smoke tests;
 - long fake-worker recovery scenarios;
 - real-backend contract and short render on named hardware;
+- pinned ASR contract and corruption-detection fixtures;
 - performance trend capture;
 - dependency and model revision review.
 
@@ -1247,9 +1483,14 @@ Release gate:
 - clean Ubuntu 24.04 installation under WSL2;
 - `doctor` passes;
 - pinned model and worker install verifies checksums;
+- pinned ASR dependency stack, compilation features, model, decoder settings, input conversion, expected-pattern profile, normalizer, and thresholds verify their identities;
+- Phase 0 CPU and selected-format dialogue gates remain satisfied on the named release configuration;
 - 45–60 minute soak test passes;
-- human review finds no technical omission, insertion, or protected-term error;
-- loudness, chapters, transcripts, containers, and checksums pass;
+- ADR-0005's complete ASR calibration corpus passes every per-class numerical gate, stability check, and order-invariance check;
+- ASR triage completes for every selected cache artifact and human adjudication finds no surviving technical omission, insertion, substitution, repetition, continuation, or protected-term error;
+- an explicit current takes file covers every production segment and all selected artifacts are prune-protected;
+- every production voice/style pair has a committed frozen loudness reference;
+- loudness, watermark, chapters, transcripts, containers, and checksums pass;
 - cancellation, crash recovery, and one-segment rebuild are demonstrated;
 - SBOM, licenses, model terms, voice consent, and FFmpeg policy are complete;
 - signed application binaries and published checksums;
@@ -1263,10 +1504,16 @@ Version 1.0 is ready when:
 - interruption loses no completed valid segment;
 - the same build reuses every valid segment;
 - editing one segment regenerates only that segment and final assembled outputs;
+- requesting a retake creates a distinct cache identity and preserves the prior take;
 - no raw Markdown syntax is spoken accidentally;
 - no unapproved claim enters the lesson through compilation;
 - no omitted, duplicated, inserted, or materially mispronounced technical content survives review;
+- post-render ASR triage runs for every selected cached segment and records its verification identity, lattice evidence, findings, and adjudication;
+- the Chatterbox pool is unloaded before verification and is not invoked by ASR-only invalidation or recalibration;
+- production selection is explicit in a current takes file, and the plan and manifest record each selected take, cache key, and audio checksum;
+- each production voice/style pair uses a calibrated frozen loudness reference;
 - Nadia and Tom remain recognizable throughout the lesson;
+- the selected two-speaker format passes the Phase 0 dialogue gate, or the build uses the approved single-instructor fallback;
 - automated audio checks pass for every segment and export;
 - output packages contain valid manifests and checksums;
 - offline rendering is verified;
@@ -1280,10 +1527,17 @@ Version 1.0 is ready when:
 - verify the WSL2 Ubuntu environment and target CPU hardware;
 - run `gcc --version`, `cmake --version`, `python3 --version`, `ffmpeg -version`, and `ffprobe -version`;
 - create the reviewed Chatterbox qualification lesson;
+- hand-author its `spoken_text` in expected normalizer-output form;
+- resolve source, consent or license, and immutable conditionals for Nadia and Tom before rendering;
 - install a pinned Chatterbox environment and test it on CPU;
+- enforce the CPU `RTF <= 6.0` gate and record projected 60-minute synthesis time;
+- if the CPU gate fails and AMD acceleration is proposed, verify the exact GPU, WSL2 device exposure, ROCm/PyTorch support matrix, and Chatterbox render before treating acceleration as available;
 - select two stable Chatterbox voice profiles for Nadia and Tom;
+- pin `whisper-rs 0.16.0`, its Cargo-locked native stack, compilation features, and an English ASR model; define fixed decoder and 16 kHz conversion identities;
+- build the expected-ASR lattice corpus and run ADR-0005's clean, protected-term, seeded-defect, repeated-run, and order-invariance gates;
+- score dialogue credibility and select the single-instructor fallback if the two-speaker hard gate fails;
 - verify licenses, immutable revisions, offline operation, and hardware requirements;
-- choose the initial sample rate and listening formats.
+- confirm the 24 kHz canonical format and choose listening formats.
 
 **Exit:** the pinned Chatterbox and voice configuration pass every hard gate. Record the evidence in ADR-0002.
 
@@ -1293,8 +1547,9 @@ Version 1.0 is ready when:
 - implement lesson schema and canonical serialization;
 - implement job directories, locks, atomic JSON state, event log, and manifests;
 - implement the fake worker protocol;
-- implement deterministic segment planning and cache keys;
-- assemble fixture WAVs with FFmpeg;
+- implement deterministic segment planning, synthesis identities, and `take`-aware cache keys;
+- implement versioned explicit takes files, stale-selection rejection, manifest propagation, and prune roots;
+- assemble canonical fixture WAVs and exact silence in Rust;
 - emit a complete output package.
 
 **Exit:** a fake-worker lesson builds, fails, cancels, resumes, invalidates one segment, and rebuilds correctly.
@@ -1315,14 +1570,19 @@ Version 1.0 is ready when:
 - implement initialization, capabilities, synthesis, cancellation, health, and shutdown;
 - add model, voice, and device verification;
 - enforce offline rendering and staging containment;
+- implement the object-safe asynchronous worker pool with a default size of one, physical-core budgeting, explicit library thread limits, and aggregate-memory preflight;
+- compute the deterministic worker-bundle hash from source, lockfile, protocol, launcher, and Python runtime/platform ABI;
+- integrate post-render in-process ASR verification, the separate verification cache, and review routing after pool unload;
 - pass the shared worker contract suite.
 
 **Exit:** a complete short study guide renders through the selected backend.
 
 ### Phase 4: Audio and recovery hardening
 
-- implement WAV validation and quarantine;
-- implement canonical conversion, timeline, silence, two-pass loudness normalization, chapters, M4A, and MP3;
+- implement WAV validation and collision-free quarantine;
+- implement 5 ms edge analysis, missing zero padding, bounded raised-cosine transition ramps, over-range float detection, and join validation;
+- implement canonical conversion, frozen-reference segment gain, Rust PCM timeline assembly and silence, linear two-pass loudness normalization, chapters, M4A, and MP3;
+- verify PerTh watermark survival through the selected output pipeline;
 - complete atomic recovery and fault-injection tests;
 - add `doctor`, inspection, cache verification, and pruning.
 
@@ -1343,7 +1603,7 @@ Consider one change at a time:
 
 - second backend;
 - SQLite;
-- ASR triage;
+- a different or additional ASR engine only if the pinned verifier misses material defects;
 - LLM lesson drafting;
 - UI;
 - remote execution;
@@ -1370,9 +1630,9 @@ Each requires a separate ADR that identifies the observed limitation, measures t
 
 **Rejected.** It is the fastest model prototype, but it does not satisfy the Rust-program objective and places durable orchestration inside the least stable dependency environment. Python remains appropriate inside one isolated worker if the selected model requires it.
 
-### 20.5 FFmpeg replacement with Rust audio crates
+### 20.5 FFmpeg-based concatenation or complete FFmpeg replacement
 
-**Rejected for version 1.** Pure Rust can cover WAV processing and some codecs, but replacing FFmpeg also assumes responsibility for AAC/M4A, MP3, chapters, probing, resampling, loudness normalization, and cross-platform container compatibility. FFmpeg is one external dependency with a narrow, testable boundary.
+**Partially rejected.** Once segments are canonical mono 24 kHz PCM, Rust can assemble samples and silence with exact arithmetic, avoiding concat-list escaping and making caption boundaries exact. FFmpeg remains responsible for conversion when needed, EBU R128 normalization, AAC/M4A and MP3 encoding, chapters, metadata, and probing because replacing those capabilities would enlarge the version 1 codec and container surface.
 
 ### 20.6 LLM-generated lesson scripts
 
@@ -1406,15 +1666,15 @@ Each requires a separate ADR that identifies the observed limitation, measures t
 - JSON job history becomes awkward if concurrency or a UI appears;
 - Python packaging may remain necessary;
 - FFmpeg installation is an external prerequisite;
-- manual listening remains part of release qualification;
+- ASR reduces but does not eliminate manual listening and adjudication;
 - lesson creation is authored or deterministic rather than automatically generated.
 
 ### Accepted risks
 
 - upstream model packages may change; immutable pins and contract tests limit impact;
 - AMD GPU acceleration under WSL2 may remain difficult and is not required for version 1;
-- stochastic speech may vary across hardware even with a fixed seed;
-- independent speaker turns may sound less conversational than a dialogue-native model;
+- stochastic speech may vary with PyTorch, numerical libraries, thread count, kernels, platform, or hardware even with a fixed seed;
+- an isolated retake may not match neighboring prosody; seam review and continuity-group regeneration limit but do not eliminate this risk;
 - filesystem recovery code requires the same rigor normally expected from a database;
 - FFmpeg distribution and model/voice licensing require explicit review.
 
@@ -1444,18 +1704,19 @@ Add an LLM only if:
 - the system can prove that no unapproved claim reaches production;
 - local versus hosted privacy and licensing are decided separately.
 
-Add ASR only if:
+Replace or augment the ASR verifier only if:
 
-- the manual defect rate and review time are measured;
-- a pinned ASR model detects relevant omissions or insertions reliably;
-- false-positive handling routes to review rather than blocking valid audio blindly.
+- the pinned verifier's false-negative rate misses material seeded defects;
+- false-positive review time becomes a measured bottleneck;
+- the proposed verifier improves the protected-term and insertion/omission test corpus enough to justify another model or runtime.
 
 ## 23. Follow-up decisions
 
-1. **ADR-0002:** pinned Chatterbox revision, runtime, target hardware, voices, generation parameters, and measured qualification result.
-2. **ADR-0003:** canonical sample rate, loudness target, codecs, and supported FFmpeg versions.
+1. **ADR-0002:** pinned Chatterbox revision, runtime, target hardware, voice sources and conditionals, generation parameters, CPU and dialogue gate results, and selected one- or two-speaker format.
+2. **ADR-0003:** loudness target, silence threshold, transition-discontinuity threshold, frozen voice/style loudness references, codecs, supported FFmpeg versions, and PerTh preservation results; the canonical sample rate is already fixed at 24 kHz.
 3. **ADR-0004:** voice consent, reference storage, watermark, and permitted-use policy.
-4. **ADR-0005:** first evidence-based extension, only when an extension threshold is met.
+4. **ADR-0005:** exact `whisper-rs`, `whisper-rs-sys`, `whisper.cpp`, compilation-feature, device, and model identities; decoder and conversion parameters; approved expected-term patterns; calibration corpus; per-class confusion rates; stability; and order-invariance evidence.
+5. **ADR-0006:** first evidence-based extension, only when an extension threshold is met.
 
 ## 24. Implementation rules
 
@@ -1463,7 +1724,13 @@ Add ASR only if:
 - Keep model-specific fields outside the lesson schema.
 - Do not start the worker until lesson validation passes.
 - Do not cache output until audio validation passes.
+- Publish structurally valid canonical audio before ASR and keep synthesis validity independent from verification status.
 - Include every speech-affecting field in the cache key.
+- Derive the worker-bundle hash mechanically; do not depend on a human-managed revision marker.
+- Keep provenance-only compiler and planner versions out of the cache key when resolved synthesis inputs are unchanged.
+- Increment `take` for a distinct performance; never delete or overwrite an existing take to force stochastic regeneration.
+- Require an explicit current takes file for production and protect its referenced artifacts from pruning.
+- Never claim byte-identical reconstruction from a takes file unless the selected artifacts or an archived segment bundle are retained.
 - Never use a cache entry without checksum and media validation.
 - Never construct process commands through a shell string.
 - Never permit worker writes outside the assigned staging root.
@@ -1471,6 +1738,9 @@ Add ASR only if:
 - Never read source code mechanically when the lesson requires a conceptual explanation.
 - Never use a voice clone without a consent record.
 - Never derive one lossy export from another.
+- Never run ASR concurrently with a loaded Chatterbox pool.
+- Never promote an ASR recognition pattern without listener confirmation of correct source pronunciation.
+- Never publish while verification findings remain in `NeedsReview`.
 - Never retry indefinitely or hide a failure.
 - Never promote an unreviewed lesson to a production build.
 - Never add a deferred tool without measured evidence and a decision record.
@@ -1478,6 +1748,6 @@ Add ASR only if:
 
 ## 25. Final recommendation
 
-Build the deterministic Rust walking skeleton with a fake worker, then qualify and integrate the standard Chatterbox model under WSL2. The first meaningful milestone is not a sophisticated model router; it is one reviewed technical lesson that Chatterbox can render, interrupt, resume, correct at one segment, rebuild without unnecessary inference, and sustain for an hour without technical or acoustic failure.
+Resolve voice provenance and qualify standard Chatterbox against the single-worker CPU and dialogue gates before building beyond the deterministic Rust walking skeleton. Then integrate the resource-governed Chatterbox worker pool and post-render in-process Rust ASR verifier under WSL2. The first meaningful milestone is one reviewed technical lesson that the system can render and cache, unload synthesis, verify independently, adjudicate, assemble, interrupt, resume, retake at one segment, rebuild without unnecessary inference, and sustain for an hour without technical or acoustic failure.
 
 That establishes the product. Everything else is an extension.
