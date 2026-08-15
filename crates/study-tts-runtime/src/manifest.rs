@@ -5,6 +5,8 @@ use serde::Serialize;
 use crate::{
     BuildError,
     cache::{CachedSegment, hash_file, write_json_atomically},
+    export::ToolExecution,
+    tools::ToolIdentity,
 };
 
 #[derive(Serialize)]
@@ -15,6 +17,7 @@ struct Manifest<'a> {
     plan_hash: &'a str,
     segments: Vec<ManifestSegment<'a>>,
     artifacts: Artifacts,
+    tools: Tools<'a>,
 }
 
 #[derive(Serialize)]
@@ -38,6 +41,26 @@ struct Artifact {
     blake3: String,
 }
 
+#[derive(Serialize)]
+struct Tools<'a> {
+    ffmpeg: ToolUse<'a>,
+    ffprobe: ToolUse<'a>,
+}
+
+#[derive(Serialize)]
+struct ToolUse<'a> {
+    resolved_executable: String,
+    version: &'a str,
+    arguments: &'a [String],
+}
+
+pub(crate) struct ToolRecords<'a> {
+    pub ffmpeg: &'a ToolIdentity,
+    pub ffmpeg_execution: &'a ToolExecution,
+    pub ffprobe: &'a ToolIdentity,
+    pub ffprobe_execution: &'a ToolExecution,
+}
+
 pub(crate) fn write(
     destination: &Path,
     lesson_id: &str,
@@ -45,6 +68,7 @@ pub(crate) fn write(
     segments: &[CachedSegment],
     master_wav: &Path,
     m4a: &Path,
+    tool_records: ToolRecords<'_>,
 ) -> Result<(), BuildError> {
     let manifest = Manifest {
         schema_version: "0.1-skeleton",
@@ -69,6 +93,26 @@ pub(crate) fn write(
             m4a: Artifact {
                 path: "lesson.m4a",
                 blake3: hash_file(m4a)?,
+            },
+        },
+        tools: Tools {
+            ffmpeg: ToolUse {
+                resolved_executable: tool_records
+                    .ffmpeg
+                    .resolved_executable
+                    .display()
+                    .to_string(),
+                version: &tool_records.ffmpeg.version,
+                arguments: &tool_records.ffmpeg_execution.arguments,
+            },
+            ffprobe: ToolUse {
+                resolved_executable: tool_records
+                    .ffprobe
+                    .resolved_executable
+                    .display()
+                    .to_string(),
+                version: &tool_records.ffprobe.version,
+                arguments: &tool_records.ffprobe_execution.arguments,
             },
         },
     };

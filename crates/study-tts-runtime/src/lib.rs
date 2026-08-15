@@ -4,8 +4,11 @@ mod export;
 mod manifest;
 mod pipeline;
 mod synthesis;
+mod tools;
 
-pub use pipeline::{BuildRequest, BuildResult, build_preview};
+pub use pipeline::{
+    BuildRequest, BuildResult, build_preview, publish, validate_production_manifest,
+};
 pub use synthesis::{SegmentSynthesizer, SynthesisError, SynthesisReport};
 
 use std::{io, path::PathBuf};
@@ -33,6 +36,28 @@ pub enum BuildError {
         executable: PathBuf,
         source: io::Error,
     },
+    #[error("required tool {tool} was not found or is not executable at `{requested}`")]
+    MissingTool { tool: String, requested: PathBuf },
+    #[error("could not inspect {tool} at `{executable}`: {source}")]
+    InspectTool {
+        tool: String,
+        executable: PathBuf,
+        source: io::Error,
+    },
+    #[error("{tool} version probe failed with status {status}: {stderr}")]
+    ToolProbeFailed {
+        tool: String,
+        status: String,
+        stderr: String,
+    },
+    #[error("ffprobe failed with status {status}: {stderr}")]
+    Ffprobe { status: String, stderr: String },
+    #[error("encoded output failed structural validation: {0}")]
+    InvalidEncodedOutput(String),
+    #[error("production publication is refused: {reason}")]
+    PublicationRefused { reason: String },
+    #[error("manifest version `{version}` is not a production manifest")]
+    UnsupportedProductionManifest { version: String },
     #[error("manifest serialization failed: {0}")]
     Manifest(#[from] serde_json::Error),
 }

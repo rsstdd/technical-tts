@@ -17,9 +17,13 @@ pub struct Lesson {
 pub struct LessonSegment {
     pub id: String,
     pub speaker: String,
+    pub role: String,
+    pub source_refs: Vec<String>,
+    pub display_text: String,
     pub spoken_text: String,
     pub style: String,
     pub pause_after_ms: u32,
+    pub review_status: String,
 }
 
 #[derive(Debug, Error)]
@@ -36,6 +40,10 @@ pub enum LessonError {
     InvalidSegmentId(String),
     #[error("segment `{0}` has empty spoken_text")]
     MissingSpokenText(String),
+    #[error("segment `{0}` must contain display text, a role, and at least one source reference")]
+    MissingReviewContext(String),
+    #[error("segment `{0}` is not approved for synthesis")]
+    UnapprovedSegment(String),
     #[error("segment `{0}` must declare a speaker and style")]
     MissingSynthesisSelection(String),
     #[error("segment `{0}` pause exceeds the provisional 10-second limit")]
@@ -68,6 +76,19 @@ impl Lesson {
             if segment.spoken_text.trim().is_empty() {
                 return Err(LessonError::MissingSpokenText(segment.id.clone()));
             }
+            if segment.display_text.trim().is_empty()
+                || segment.role.trim().is_empty()
+                || segment.source_refs.is_empty()
+                || segment
+                    .source_refs
+                    .iter()
+                    .any(|source_ref| source_ref.trim().is_empty())
+            {
+                return Err(LessonError::MissingReviewContext(segment.id.clone()));
+            }
+            if segment.review_status != "approved" {
+                return Err(LessonError::UnapprovedSegment(segment.id.clone()));
+            }
             if segment.speaker.trim().is_empty() || segment.style.trim().is_empty() {
                 return Err(LessonError::MissingSynthesisSelection(segment.id.clone()));
             }
@@ -91,8 +112,8 @@ mod tests {
             "lesson_id":"duplicate",
             "title":"Duplicate",
             "segments":[
-                {"id":"seg-1","speaker":"nadia","spoken_text":"one","style":"calm","pause_after_ms":0},
-                {"id":"seg-1","speaker":"tom","spoken_text":"two","style":"calm","pause_after_ms":0}
+                {"id":"seg-1","speaker":"nadia","role":"explanation","source_refs":["block-1"],"display_text":"one","spoken_text":"one","style":"calm","pause_after_ms":0,"review_status":"approved"},
+                {"id":"seg-1","speaker":"tom","role":"recap","source_refs":["block-2"],"display_text":"two","spoken_text":"two","style":"calm","pause_after_ms":0,"review_status":"approved"}
             ]
         }"#;
 

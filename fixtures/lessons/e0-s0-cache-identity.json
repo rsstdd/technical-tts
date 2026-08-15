@@ -1,0 +1,51 @@
+{
+  "schema_version": "1.0",
+  "lesson_id": "e0-s0-cache-identity",
+  "title": "Cache Identity",
+  "segments": [
+    {
+      "id": "seg-a",
+      "speaker": "nadia",
+      "role": "explanation",
+      "source_refs": ["block-001"],
+      "display_text": "Same speech.",
+      "spoken_text": "Same speech.",
+      "style": "calm",
+      "pause_after_ms": 25,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-b",
+      "speaker": "nadia",
+      "role": "recap",
+      "source_refs": ["block-002"],
+      "display_text": "Same speech.",
+      "spoken_text": "Same speech.",
+      "style": "calm",
+      "pause_after_ms": 50,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-c",
+      "speaker": "nadia",
+      "role": "explanation",
+      "source_refs": ["block-003"],
+      "display_text": "Same speech!",
+      "spoken_text": "Same speech!",
+      "style": "calm",
+      "pause_after_ms": 25,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-d",
+      "speaker": "nadia",
+      "role": "explanation",
+      "source_refs": ["block-004"],
+      "display_text": "Same speech.",
+      "spoken_text": "Same speech.",
+      "style": "emphatic",
+      "pause_after_ms": 25,
+      "review_status": "approved"
+    }
+  ]
+}

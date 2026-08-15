@@ -67,3 +67,7 @@ impl SegmentSynthesizer for DeterministicToneWorker {
 pub fn walking_skeleton_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/lessons/e0-s0-two-segment.json")
 }
+
+pub fn cache_identity_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/lessons/e0-s0-cache-identity.json")
+}
