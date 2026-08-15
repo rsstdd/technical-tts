@@ -6,7 +6,7 @@ A Rust workspace for a local-first WSL2 CLI that converts reviewed technical les
 
 These instructions apply to the entire repository. A more specific `AGENTS.md` within a subdirectory governs work in that directory.
 
-The repository is currently in the architecture phase. `ADR-0001-production-rust-study-guide-tts.md` is authoritative until the planned workspace and supporting documents exist. Do not describe planned crates, commands, schemas, or behavior as implemented before they are present and verified.
+The repository is currently in the architecture phase. `ADR-0001-production-rust-study-guide-tts.md` is authoritative for architecture, scope, and production invariants. `DELIVERY-PLAN.md` is authoritative for milestone scope, backlog order, tests, evidence, and sign-offs. Do not describe planned crates, commands, schemas, or behavior as implemented before they are present and verified.
 
 ## Rules
 
@@ -98,6 +98,7 @@ The following is the approved target structure. Create it incrementally; absent 
 | When looking for | Start here | Source of truth |
 |---|---|---|
 | Architecture, scope, and boundaries | `ADR-0001-production-rust-study-guide-tts.md` | Accepted ADRs, with the newest explicit superseding decision controlling |
+| Delivery sequence, milestones, and story acceptance | `DELIVERY-PLAN.md` | Approved backlog and its traceability to ADR requirements |
 | Chatterbox qualification | `docs/adr/ADR-0002*.md` when created | Pinned revision, measured qualification result, voices, parameters, and target hardware |
 | Audio formats and loudness | `docs/adr/ADR-0003*.md` when created | Silence and transition thresholds, frozen voice/style loudness references, codecs, and supported FFmpeg versions; canonical sample rate is fixed by ADR-0001 |
 | Voice consent and watermark policy | `docs/adr/ADR-0004*.md` when created | Voice policy ADR and the individual voice profile |
@@ -191,6 +192,7 @@ For changes that affect spoken output, automated checks are necessary but insuff
 Authoritative guides:
 
 - Architecture: `ADR-0001-production-rust-study-guide-tts.md`
+- Delivery: `DELIVERY-PLAN.md`
 - Code style: repository `rustfmt.toml` and Clippy configuration when created
 - Python worker policy: `worker/pyproject.toml` and its lockfile when created
 - Operations: `docs/operations/` when created
