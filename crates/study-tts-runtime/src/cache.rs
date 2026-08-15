@@ -9,6 +9,8 @@ use tempfile::Builder;
 
 use crate::{BuildError, SegmentSynthesizer, io_error};
 
+const CACHE_SCHEMA_VERSION: &str = "0.1-skeleton";
+
 #[derive(Clone, Debug)]
 pub(crate) struct CachedSegment {
     pub segment_id: String,
@@ -20,6 +22,7 @@ pub(crate) struct CachedSegment {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct CacheArtifact {
     schema_version: String,
     cache_key: String,
@@ -70,7 +73,7 @@ pub(crate) fn resolve(
         .map_err(|error| io_error(&audio_path, error.error))?;
 
     let artifact = CacheArtifact {
-        schema_version: "0.1-skeleton".to_owned(),
+        schema_version: CACHE_SCHEMA_VERSION.to_owned(),
         cache_key: segment.cache_key.clone(),
         audio_blake3: audio_blake3.clone(),
         sample_rate: CANONICAL_SAMPLE_RATE,
@@ -96,7 +99,22 @@ fn load_validated(
     artifact_path: &Path,
 ) -> Result<CachedSegment, BuildError> {
     let bytes = fs::read(artifact_path).map_err(|error| io_error(artifact_path, error))?;
-    let artifact: CacheArtifact = serde_json::from_slice(&bytes)?;
+    let artifact: CacheArtifact = serde_json::from_slice(&bytes).map_err(|error| {
+        BuildError::InvalidCache(format!(
+            "could not parse `{}`: {error}",
+            artifact_path.display()
+        ))
+    })?;
+    if artifact.schema_version != CACHE_SCHEMA_VERSION
+        || artifact.sample_rate != CANONICAL_SAMPLE_RATE
+        || artifact.channels != 1
+        || artifact.sample_format != "f32le"
+    {
+        return Err(BuildError::InvalidCache(format!(
+            "incompatible cache artifact metadata for segment `{}`",
+            segment.id
+        )));
+    }
     if artifact.cache_key != segment.cache_key {
         return Err(BuildError::InvalidCache(format!(
             "cache-key mismatch for segment `{}`",

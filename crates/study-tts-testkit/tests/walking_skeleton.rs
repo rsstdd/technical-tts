@@ -302,6 +302,66 @@ fn t4_e0_unapproved_content_fails_before_tools_and_synthesis() {
     assert_eq!(worker.synthesis_count(), 0);
 }
 
+#[test]
+fn t4_e0_cache_metadata_mismatch_is_rejected() {
+    let (workspace, result, worker) = run_skeleton();
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(result.manifest).expect("read preview manifest"))
+            .expect("parse preview manifest");
+    let cache_key = manifest["segments"][0]["cache_key"]
+        .as_str()
+        .expect("segment cache key");
+    let artifact_path = workspace
+        .path()
+        .join("cache/segments")
+        .join(&cache_key[..2])
+        .join(cache_key)
+        .join("artifact.json");
+    let original: Value =
+        serde_json::from_slice(&std::fs::read(&artifact_path).expect("read cache artifact"))
+            .expect("parse cache artifact");
+
+    let mutations = [
+        ("schema_version", Value::String("future".to_owned())),
+        ("sample_rate", Value::from(48_000)),
+        ("channels", Value::from(2)),
+        ("sample_format", Value::String("s16le".to_owned())),
+    ];
+    for (field, replacement) in mutations {
+        let mut mutated = original.clone();
+        mutated[field] = replacement;
+        std::fs::write(
+            &artifact_path,
+            serde_json::to_vec_pretty(&mutated).expect("serialize corrupt artifact"),
+        )
+        .expect("write corrupt artifact");
+
+        assert!(matches!(
+            build_preview(
+                build_request(&walking_skeleton_fixture(), workspace.path()),
+                &worker
+            ),
+            Err(BuildError::InvalidCache(_))
+        ));
+    }
+
+    let mut unknown_field = original;
+    unknown_field["unexpected"] = Value::Bool(true);
+    std::fs::write(
+        &artifact_path,
+        serde_json::to_vec_pretty(&unknown_field).expect("serialize unknown cache field"),
+    )
+    .expect("write cache artifact with unknown field");
+    assert!(matches!(
+        build_preview(
+            build_request(&walking_skeleton_fixture(), workspace.path()),
+            &worker
+        ),
+        Err(BuildError::InvalidCache(_))
+    ));
+
+    assert_eq!(worker.synthesis_count(), 2);
+}
 
 #[test]
 fn t4_e0_private_preview_cannot_enter_production_publication() {

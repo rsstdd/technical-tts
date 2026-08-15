@@ -132,6 +132,7 @@ fn display_arguments(arguments: &[OsString]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use study_tts_core::CANONICAL_SAMPLE_RATE;
 
     #[test]
     fn t1_e0_ffmpeg_arguments_are_pinned_and_explicit() {
@@ -163,5 +164,27 @@ mod tests {
             .map(OsString::from)
             .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn t4_e0_ffprobe_rejects_non_aac_input() {
+        let workspace = tempfile::tempdir().expect("create ffprobe test workspace");
+        let wav = workspace.path().join("master.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: CANONICAL_SAMPLE_RATE,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut writer = hound::WavWriter::create(&wav, spec).expect("create test WAV");
+        writer.write_sample(0.0_f32).expect("write test sample");
+        writer.finalize().expect("finalize test WAV");
+        let ffprobe = crate::tools::inspect("ffprobe", Path::new("ffprobe"))
+            .expect("ffprobe must be available for the integration suite");
+
+        assert!(matches!(
+            probe_m4a(&ffprobe, &wav),
+            Err(BuildError::InvalidEncodedOutput(_))
+        ));
     }
 }
