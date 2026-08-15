@@ -275,6 +275,33 @@ fn t4_e0_managed_directory_symlink_escape_is_rejected() {
     assert_eq!(worker.synthesis_count(), 0);
 }
 
+#[cfg(unix)]
+#[test]
+fn t4_e0_leaf_symlink_escape_is_rejected_before_creating_anything() {
+    use std::os::unix::fs::symlink;
+
+    let outer = TempDir::new().expect("create symlink test root");
+    let workspace = outer.path().join("workspace");
+    let escape_target = outer.path().join("never-created");
+    std::fs::create_dir_all(workspace.join("previews")).expect("create previews root");
+    symlink(&escape_target, workspace.join("previews/e0-s0-walking-skeleton"))
+        .expect("create leaf symlink");
+    let worker = DeterministicToneWorker::default();
+
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), &workspace),
+        &worker,
+    )
+    .expect_err("leaf symlink escape must fail");
+
+    assert!(matches!(error, BuildError::ManagedPathEscape { .. }));
+    assert!(
+        !escape_target.exists(),
+        "the escape target must never be created"
+    );
+    assert_eq!(worker.synthesis_count(), 0);
+}
+
 #[test]
 fn t4_e0_unapproved_content_fails_before_tools_and_synthesis() {
     let workspace = TempDir::new().expect("create unapproved-content workspace");
