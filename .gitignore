@@ -1,0 +1,73 @@
+# Rust build output
+/target/
+**/*.rs.bk
+*.pdb
+
+# Python worker environments and caches
+/.venv/
+/worker/.venv/
+**/__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local models, voices, jobs, caches, and generated media
+/data/
+/models/
+/cache/
+/jobs/
+/output/
+/outputs/
+/artifacts/
+/benchmark-results/
+
+# Runtime and diagnostic files
+*.log
+*.pid
+*.sock
+events.ndjson
+quality-report.json
+
+# Temporary and staged files
+*.tmp
+*.temp
+*.part
+*.partial
+*.swp
+*.swo
+*~
+
+# IDE and editor state
+/.idea/
+/.vscode/
+*.code-workspace
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# WSL and Linux crash artifacts
+core
+core.*
+
+# Local profiling and coverage output
+/criterion/
+*.profraw
+*.profdata
+flamegraph.svg
+
+# Keep dependency lockfiles tracked for reproducible builds.
+# Cargo.lock and worker lockfiles must not be ignored.
