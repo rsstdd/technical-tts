@@ -25,6 +25,14 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
 Run the narrowest affected test first. Run broader checks after the target behavior is green. Product commands in AGENTS.md are authoritative only after their implementation exists.
 
+The permanent end-to-end integration check is:
+
+```bash
+cargo test --offline -p study-tts-testkit --test walking_skeleton --locked
+```
+
+Its stage order, provisional boundaries, and deferred capabilities are recorded in [`../architecture/WALKING-SKELETON.md`](../architecture/WALKING-SKELETON.md). Every later story must keep this check green.
+
 ## Pull request
 
 - Use the repository pull-request template.
@@ -45,4 +53,3 @@ Run the narrowest affected test first. Run broader checks after the target behav
 ## Completion
 
 Update issue checkboxes and attach verified results. If work remains, create a linked issue with an owner and acceptance criteria. Do not close a story with hidden follow-up work.
-

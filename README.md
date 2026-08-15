@@ -1,11 +1,11 @@
 # study-tts
 
-`study-tts` is a planned local-first Rust application for converting reviewed technical lessons into long-form audio study guides with natural speech, stable voices, resumable generation, and auditable quality controls.
+`study-tts` is a local-first Rust application under active development for converting reviewed technical lessons into long-form audio study guides with natural speech, stable voices, resumable generation, and auditable quality controls.
 
 The project targets software-engineering education, technical interview preparation, and repeated listening. It uses Rust for every durable decision, Chatterbox for speech synthesis, an in-process Whisper verifier for post-render text-integrity triage, and FFmpeg for final audio processing.
 
 > [!IMPORTANT]
-> This repository contains the initial four-crate Rust workspace and pinned dependency lockfile, but its crates still contain generated placeholder code. The Chatterbox worker, schemas, fixtures, and product CLI are not implemented. Planned commands and behavior are documented so implementation can proceed against explicit contracts; they are not claims of completed functionality.
+> This repository contains the tested E0-S0 walking skeleton. It uses a deterministic tone synthesizer, not Chatterbox, to exercise lesson loading, planning, validated WAV caching, Rust PCM assembly, real FFmpeg M4A export, and a minimal private-preview manifest. The Chatterbox worker, production schemas, hardened recovery, and product CLI are not implemented. Planned commands and behavior remain architectural intent rather than completed functionality.
 
 ## Goals
 
@@ -25,11 +25,11 @@ The priority order is technical correctness, comfortable listening, retention va
 |---|---|
 | Architecture | Accepted in [ADR-0001](docs/adr/ADR-0001-production-rust-study-guide-tts.md) |
 | Delivery backlog | Approved in [DELIVERY-PLAN.md](DELIVERY-PLAN.md) |
-| Rust workspace | Initial four-crate scaffold and `Cargo.lock` present |
+| Rust workspace | Four-crate workspace with a tested end-to-end skeleton |
 | Chatterbox worker | Not started |
 | ASR verifier | Not started |
-| CLI | Placeholder binary only |
-| Schemas and fixtures | Directories created; contracts not implemented |
+| CLI | Product commands not implemented |
+| Schemas and fixtures | Two-segment skeleton fixture present; production schemas not implemented |
 | Production qualification | Not started |
 
 The first delivery target is a private, human-reviewed MVP. It will accept canonical lesson JSON with hand-authored spoken text, use a single persistent Chatterbox worker, produce the complete audio package and run report, and record immutable human approval. It will remain mechanically marked as `private_preview`; ASR integration follows M2, and production publication stays disabled until the production verification, loudness, licensing, recovery, and long-form qualification gates pass.
@@ -43,7 +43,9 @@ The workspace declares these crates:
 - `study-tts-runtime`
 - `study-tts-testkit`
 
-The workspace can be checked, tested, formatted, and linted as a Rust scaffold. The binary currently prints generated placeholder output and does not synthesize speech.
+The T4 walking skeleton loads a reviewed two-segment JSON fixture, derives deterministic cache keys, synthesizes deterministic tone WAVs through a fake boundary, reuses validated cache entries, assembles exact PCM and silence in Rust, encodes AAC/M4A through the installed FFmpeg process, probes the result, and writes a checksummed minimal manifest. It runs without model artifacts or network access after dependency restoration.
+
+The boundary order and deliberate G1 deferrals are recorded in [E0-S0 Walking Skeleton](docs/architecture/WALKING-SKELETON.md).
 
 ## Architecture
 
@@ -148,7 +150,7 @@ ffprobe -version
 
 The exact supported system versions, model installation procedure, and Python worker lockfile will become authoritative during the G0 feasibility work.
 
-## Build the current scaffold
+## Verify the current implementation
 
 Run these commands from the repository root inside WSL2:
 
@@ -157,9 +159,10 @@ cargo check --workspace
 cargo test --workspace
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --offline -p study-tts-testkit --test walking_skeleton --locked
 ```
 
-These commands validate only the current workspace scaffold. They do not install Chatterbox, download model weights, or exercise the planned audio pipeline.
+These commands validate the Rust boundaries and the fake-worker audio path. They do not install Chatterbox, download model weights, or qualify natural speech.
 
 ## Planned CLI
 

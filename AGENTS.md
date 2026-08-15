@@ -6,7 +6,7 @@ A Rust workspace for a local-first WSL2 CLI that converts reviewed technical les
 
 These instructions apply to the entire repository. A more specific `AGENTS.md` within a subdirectory governs work in that directory.
 
-The repository is currently in the bootstrap phase. The four-crate Rust workspace and lockfile exist, but the crates still contain placeholder behavior and the delivery plan begins with the tested walking skeleton. `docs/adr/ADR-0001-production-rust-study-guide-tts.md` is authoritative for architecture, scope, and production invariants. `DELIVERY-PLAN.md` is authoritative for milestone scope, backlog order, tests, evidence, and sign-offs. Do not describe planned commands, schemas, worker behavior, or audio behavior as implemented before they are present and verified.
+The repository has completed the E0-S0 tested walking skeleton. The four-crate Rust workspace now loads and validates a two-segment lesson fixture, derives a provisional render plan, uses a deterministic fake tone synthesizer, validates and reuses cached WAVs, assembles PCM and silence in Rust, invokes real FFmpeg for M4A, and writes a minimal private-preview manifest. Product CLI commands, production schemas, Chatterbox, hardened recovery, and the complete output package remain unimplemented. `docs/adr/ADR-0001-production-rust-study-guide-tts.md` is authoritative for architecture, scope, and production invariants. `DELIVERY-PLAN.md` is authoritative for milestone scope, backlog order, tests, evidence, and sign-offs. Do not describe planned commands, schemas, worker behavior, or audio behavior as implemented before they are present and verified.
 
 ## Rules
 
@@ -129,7 +129,7 @@ The following is the approved target structure. Create it incrementally; absent 
 
 Run commands inside Ubuntu 24.04 under WSL2 from the repository root. Check `Cargo.toml`, worker lock files, repository scripts, and CI before changing or extending this table.
 
-The current bootstrap repository contains a compiling workspace and placeholder executable. Product commands below become authoritative only when their referenced behavior, files, and targets exist.
+The current repository contains the E0-S0 library walking skeleton and a non-product status executable. Product commands below become authoritative only when their referenced behavior, files, and targets exist.
 
 | Purpose | Command |
 |---|---|

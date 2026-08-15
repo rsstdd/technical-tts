@@ -20,6 +20,7 @@ This index routes work to the controlling document. ADR-0001 controls architectu
 | Test artifact provenance | [`testing/TEST-DATA-MANIFEST.md`](testing/TEST-DATA-MANIFEST.md) |
 | Qualification and evidence records | [`testing/EVIDENCE-AND-QUALIFICATION.md`](testing/EVIDENCE-AND-QUALIFICATION.md) |
 | Daily development workflow | [`operations/DEVELOPMENT-WORKFLOW.md`](operations/DEVELOPMENT-WORKFLOW.md) |
+| Executable E0-S0 integration order and provisional seams | [`architecture/WALKING-SKELETON.md`](architecture/WALKING-SKELETON.md) |
 | Reference-machine qualification record | [`operations/REFERENCE-ENVIRONMENT.md`](operations/REFERENCE-ENVIRONMENT.md) |
 | Upgrade and compatibility procedure | [`operations/UPGRADE-RUNBOOK.md`](operations/UPGRADE-RUNBOOK.md) |
 | Release, recovery, and rollback | [`operations/RELEASE-AND-ROLLBACK.md`](operations/RELEASE-AND-ROLLBACK.md) |
