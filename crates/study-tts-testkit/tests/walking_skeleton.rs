@@ -284,8 +284,11 @@ fn t4_e0_leaf_symlink_escape_is_rejected_before_creating_anything() {
     let workspace = outer.path().join("workspace");
     let escape_target = outer.path().join("never-created");
     std::fs::create_dir_all(workspace.join("previews")).expect("create previews root");
-    symlink(&escape_target, workspace.join("previews/e0-s0-walking-skeleton"))
-        .expect("create leaf symlink");
+    symlink(
+        &escape_target,
+        workspace.join("previews/e0-s0-walking-skeleton"),
+    )
+    .expect("create leaf symlink");
     let worker = DeterministicToneWorker::default();
 
     let error = build_preview(
