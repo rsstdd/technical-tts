@@ -1,7 +1,10 @@
 use std::{
     f32::consts::TAU,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use study_tts_core::{CANONICAL_SAMPLE_RATE, PlannedSegment};
@@ -12,11 +15,19 @@ const TONE_FRAMES: u32 = CANONICAL_SAMPLE_RATE / 10;
 #[derive(Debug, Default)]
 pub struct DeterministicToneWorker {
     synthesis_count: AtomicUsize,
+    synthesized_texts: Mutex<Vec<String>>,
 }
 
 impl DeterministicToneWorker {
     pub fn synthesis_count(&self) -> usize {
         self.synthesis_count.load(Ordering::SeqCst)
+    }
+
+    pub fn synthesized_texts(&self) -> Vec<String> {
+        self.synthesized_texts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 }
 
@@ -54,6 +65,10 @@ impl SegmentSynthesizer for DeterministicToneWorker {
         writer
             .finalize()
             .map_err(|error| SynthesisError::new(error.to_string()))?;
+        self.synthesized_texts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(segment.spoken_text.clone());
         self.synthesis_count.fetch_add(1, Ordering::SeqCst);
 
         Ok(SynthesisReport {

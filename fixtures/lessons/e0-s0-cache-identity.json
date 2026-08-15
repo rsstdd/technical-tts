@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "0.1-skeleton",
   "lesson_id": "e0-s0-cache-identity",
   "title": "Cache Identity",
   "segments": [
@@ -45,6 +45,17 @@
       "spoken_text": "Same speech.",
       "style": "emphatic",
       "pause_after_ms": 25,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-e",
+      "speaker": "nadia",
+      "role": "example",
+      "source_refs": ["block-005"],
+      "display_text": "Display-only wording is different.",
+      "spoken_text": "Same speech.",
+      "style": "calm",
+      "pause_after_ms": 75,
       "review_status": "approved"
     }
   ]

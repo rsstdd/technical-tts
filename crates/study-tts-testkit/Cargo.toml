@@ -7,6 +7,7 @@ edition = "2024"
 hound = "3.5.1"
 proptest = "1.11.0"
 serde_json = "1.0.151"
+sha2 = "0.10.9"
 study-tts-core = { version = "0.1.0", path = "../study-tts-core" }
 study-tts-runtime = { version = "0.1.0", path = "../study-tts-runtime" }
 tempfile = "3.27.0"

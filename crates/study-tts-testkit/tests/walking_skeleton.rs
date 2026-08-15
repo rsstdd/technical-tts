@@ -1,6 +1,8 @@
 use std::path::Path;
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use study_tts_core::LessonError;
 use study_tts_runtime::{
     BuildError, BuildRequest, build_preview, publish, validate_production_manifest,
 };
@@ -32,6 +34,21 @@ fn run_skeleton() -> (
     .expect("walking skeleton should build");
 
     (workspace, result, worker)
+}
+
+fn write_lesson_with_id(root: &Path, file_name: &str, lesson_id: &str) -> std::path::PathBuf {
+    let mut lesson: Value = serde_json::from_slice(
+        &std::fs::read(walking_skeleton_fixture()).expect("read walking-skeleton fixture"),
+    )
+    .expect("parse walking-skeleton fixture");
+    lesson["lesson_id"] = Value::String(lesson_id.to_owned());
+    let path = root.join(file_name);
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(&lesson).expect("serialize modified lesson"),
+    )
+    .expect("write modified lesson");
+    path
 }
 
 #[test]
@@ -90,9 +107,6 @@ fn t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest() {
 #[test]
 fn t4_e0_skeleton_runs_without_model_artifacts() {
     let workspace = TempDir::new().expect("create isolated no-model workspace");
-    let model_trap = workspace.path().join("models");
-    std::fs::write(&model_trap, b"model access is forbidden in E0-S0")
-        .expect("create model-path trap");
     let worker = DeterministicToneWorker::default();
 
     build_preview(
@@ -101,10 +115,18 @@ fn t4_e0_skeleton_runs_without_model_artifacts() {
     )
     .expect("walking skeleton must not access model artifacts");
 
-    assert_eq!(
-        std::fs::read(model_trap).expect("read unchanged model-path trap"),
-        b"model access is forbidden in E0-S0"
-    );
+    let mut entries = std::fs::read_dir(workspace.path())
+        .expect("read workspace tree")
+        .map(|entry| {
+            entry
+                .expect("read workspace entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    assert_eq!(entries, ["cache", "previews"]);
     assert_eq!(worker.synthesis_count(), 2);
 }
 
@@ -154,6 +176,15 @@ fn t4_e0_cache_identity_proves_hits_and_speech_affecting_misses() {
     assert_eq!(segments[0]["cache_key"], segments[1]["cache_key"]);
     assert_ne!(segments[0]["cache_key"], segments[2]["cache_key"]);
     assert_ne!(segments[0]["cache_key"], segments[3]["cache_key"]);
+    assert_eq!(
+        segments[0]["cache_key"], segments[4]["cache_key"],
+        "display-only metadata must not alter synthesis identity"
+    );
+    assert_eq!(
+        worker.synthesized_texts(),
+        ["Same speech.", "Same speech!", "Same speech."],
+        "the worker must receive spoken_text and never display_text"
+    );
 }
 
 #[test]
@@ -186,6 +217,93 @@ fn t4_e0_external_tool_preflight_names_missing_binary() {
 }
 
 #[test]
+fn t4_e0_lesson_id_cannot_escape_the_workspace() {
+    let outer = TempDir::new().expect("create traversal test root");
+    let workspace = outer.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("create traversal workspace");
+    let worker = DeterministicToneWorker::default();
+    let absolute_escape = outer.path().join("absolute-escape");
+    let cases = [
+        ("relative.json", "../../relative-escape".to_owned()),
+        (
+            "absolute.json",
+            absolute_escape.to_string_lossy().into_owned(),
+        ),
+    ];
+
+    for (file_name, lesson_id) in cases {
+        let lesson = write_lesson_with_id(outer.path(), file_name, &lesson_id);
+        let error = build_preview(build_request(&lesson, &workspace), &worker)
+            .expect_err("unsafe lesson ID must be rejected");
+        assert!(matches!(
+            error,
+            BuildError::Lesson(LessonError::InvalidLessonId(_))
+        ));
+    }
+
+    assert!(!outer.path().join("relative-escape").exists());
+    assert!(!absolute_escape.exists());
+    assert_eq!(worker.synthesis_count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn t4_e0_managed_directory_symlink_escape_is_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let outer = TempDir::new().expect("create symlink test root");
+    let workspace = outer.path().join("workspace");
+    let escape = outer.path().join("escape");
+    std::fs::create_dir(&workspace).expect("create symlink workspace");
+    std::fs::create_dir(&escape).expect("create symlink escape target");
+    symlink(&escape, workspace.join("previews")).expect("create previews symlink");
+    let worker = DeterministicToneWorker::default();
+
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), &workspace),
+        &worker,
+    )
+    .expect_err("managed-directory symlink escape must fail");
+
+    assert!(matches!(error, BuildError::ManagedPathEscape { .. }));
+    assert!(
+        std::fs::read_dir(&escape)
+            .expect("read escape target")
+            .next()
+            .is_none()
+    );
+    assert_eq!(worker.synthesis_count(), 0);
+}
+
+#[test]
+fn t4_e0_unapproved_content_fails_before_tools_and_synthesis() {
+    let workspace = TempDir::new().expect("create unapproved-content workspace");
+    let lesson = workspace.path().join("unapproved.json");
+    let mut value: Value = serde_json::from_slice(
+        &std::fs::read(walking_skeleton_fixture()).expect("read lesson fixture"),
+    )
+    .expect("parse lesson fixture");
+    value["segments"][0]["review_status"] = Value::String("draft".to_owned());
+    std::fs::write(
+        &lesson,
+        serde_json::to_vec_pretty(&value).expect("serialize unapproved lesson"),
+    )
+    .expect("write unapproved lesson");
+    let worker = DeterministicToneWorker::default();
+    let mut request = build_request(&lesson, workspace.path());
+    request.ffmpeg_executable = "study-tts-missing-ffmpeg".into();
+
+    let error = build_preview(request, &worker).expect_err("unapproved lesson must fail");
+
+    assert!(matches!(
+        error,
+        BuildError::Lesson(LessonError::UnapprovedSegment(_))
+    ));
+    assert_eq!(worker.synthesis_count(), 0);
+}
+
+
+#[test]
 fn t4_e0_private_preview_cannot_enter_production_publication() {
     let (_workspace, result, _worker) = run_skeleton();
     let manifest_bytes = std::fs::read(&result.manifest).expect("read preview manifest");
@@ -199,4 +317,27 @@ fn t4_e0_private_preview_cannot_enter_production_publication() {
         Err(BuildError::UnsupportedProductionManifest { ref version })
             if version == "0.1-skeleton"
     ));
+}
+
+#[test]
+fn t3_e0_registered_fixture_checksums_match_test_data_manifest() {
+    let repository_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let manifest_path = repository_root.join("docs/testing/TEST-DATA-MANIFEST.md");
+    let manifest = std::fs::read_to_string(&manifest_path).expect("read test-data manifest");
+
+    for fixture in [
+        "fixtures/lessons/e0-s0-two-segment.json",
+        "fixtures/lessons/e0-s0-cache-identity.json",
+    ] {
+        let bytes = std::fs::read(repository_root.join(fixture)).expect("read registered fixture");
+        let checksum = format!("{:x}", Sha256::digest(bytes));
+        let row = manifest
+            .lines()
+            .find(|line| line.contains(fixture))
+            .unwrap_or_else(|| panic!("missing test-data row for {fixture}"));
+        assert!(
+            row.contains(&format!("SHA-256 `{checksum}`")),
+            "test-data checksum is stale for {fixture}"
+        );
+    }
 }

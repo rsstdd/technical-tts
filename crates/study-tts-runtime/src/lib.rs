@@ -54,6 +54,8 @@ pub enum BuildError {
     Ffprobe { status: String, stderr: String },
     #[error("encoded output failed structural validation: {0}")]
     InvalidEncodedOutput(String),
+    #[error("managed path `{path}` resolves outside `{root}`")]
+    ManagedPathEscape { path: PathBuf, root: PathBuf },
     #[error("production publication is refused: {reason}")]
     PublicationRefused { reason: String },
     #[error("manifest version `{version}` is not a production manifest")]

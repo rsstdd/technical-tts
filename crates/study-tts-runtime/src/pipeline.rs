@@ -24,9 +24,6 @@ pub fn build_preview(
     request: BuildRequest,
     synthesizer: &dyn SegmentSynthesizer,
 ) -> Result<BuildResult, BuildError> {
-    let ffmpeg = tools::inspect("FFmpeg", &request.ffmpeg_executable)?;
-    let ffprobe = tools::inspect("ffprobe", &request.ffprobe_executable)?;
-
     let lesson_bytes = fs::read(&request.lesson_path).map_err(|source| BuildError::ReadFile {
         path: request.lesson_path.clone(),
         source,
@@ -34,10 +31,15 @@ pub fn build_preview(
     let lesson = Lesson::from_json(&lesson_bytes)?;
     let plan = RenderPlan::for_lesson(&lesson, synthesizer.identity());
 
-    let cache_root = request.workspace.join("cache");
-    let output_root = request.workspace.join("previews").join(&lesson.lesson_id);
-    fs::create_dir_all(&cache_root).map_err(|error| io_error(&cache_root, error))?;
-    fs::create_dir_all(&output_root).map_err(|error| io_error(&output_root, error))?;
+    let ffmpeg = tools::inspect("FFmpeg", &request.ffmpeg_executable)?;
+    let ffprobe = tools::inspect("ffprobe", &request.ffprobe_executable)?;
+
+    fs::create_dir_all(&request.workspace).map_err(|error| io_error(&request.workspace, error))?;
+    let workspace = fs::canonicalize(&request.workspace)
+        .map_err(|error| io_error(&request.workspace, error))?;
+    let cache_root = managed_subdirectory(&workspace, "cache")?;
+    let previews_root = managed_subdirectory(&workspace, "previews")?;
+    let output_root = managed_subdirectory(&previews_root, &lesson.lesson_id)?;
 
     let cached_segments = plan
         .segments
@@ -73,6 +75,19 @@ pub fn build_preview(
     })
 }
 
+fn managed_subdirectory(root: &std::path::Path, component: &str) -> Result<PathBuf, BuildError> {
+    let candidate = root.join(component);
+    fs::create_dir_all(&candidate).map_err(|error| io_error(&candidate, error))?;
+    let resolved = fs::canonicalize(&candidate).map_err(|error| io_error(&candidate, error))?;
+    if !resolved.starts_with(root) {
+        return Err(BuildError::ManagedPathEscape {
+            path: resolved,
+            root: root.to_path_buf(),
+        });
+    }
+    Ok(resolved)
+}
+
 pub fn publish(_preview: &BuildResult) -> Result<(), BuildError> {
     Err(BuildError::PublicationRefused {
         reason: "E0-S0 outputs are private previews and production gates are not implemented"
@@ -80,6 +95,7 @@ pub fn publish(_preview: &BuildResult) -> Result<(), BuildError> {
     })
 }
 
+/// Always refuses publication until the production manifest and release gates exist.
 pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
     let manifest: Value = serde_json::from_slice(bytes)?;
     let version = manifest["schema_version"]
