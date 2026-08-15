@@ -6,12 +6,12 @@ A Rust workspace for a local-first WSL2 CLI that converts reviewed technical les
 
 These instructions apply to the entire repository. A more specific `AGENTS.md` within a subdirectory governs work in that directory.
 
-The repository is currently in the architecture phase. `ADR-0001-production-rust-study-guide-tts.md` is authoritative until the planned workspace and supporting documents exist. Do not describe planned crates, commands, schemas, or behavior as implemented before they are present and verified.
+The repository is currently in the architecture phase. `docs/ADR-0001-production-rust-study-guide-tts.md` is authoritative until the planned workspace and supporting documents exist. Do not describe planned crates, commands, schemas, or behavior as implemented before they are present and verified.
 
 ## Rules
 
 - Read the relevant implementation, tests, and documentation before editing.
-- Read `ADR-0001-production-rust-study-guide-tts.md` before making an architectural or cross-cutting change.
+- Read `docs/ADR-0001-production-rust-study-guide-tts.md` before making an architectural or cross-cutting change.
 - Follow established repository patterns unless the task explicitly changes them.
 - Make the smallest coherent change that satisfies the request.
 - Preserve unrelated changes. Do not reformat, rename, or reorganize unrelated code.
