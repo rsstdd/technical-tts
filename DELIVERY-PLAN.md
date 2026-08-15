@@ -181,8 +181,10 @@ The arrows define prerequisites, not a requirement to serialize independent trac
 **Tests**
 
 - `t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest`
-- `t4_e0_skeleton_runs_offline_without_model_artifacts`
-- `t4_e0_skeleton_completes_within_integration_tier_budget`
+- `t4_e0_skeleton_runs_without_model_artifacts`
+- `t4_e0_cache_hit_avoids_synthesis_and_is_byte_identical`
+- `t4_e0_cache_identity_proves_hits_and_speech_affecting_misses`
+- CI check `t4_e0_skeleton_runs_offline_without_model_artifacts`, executed in an egress-denied network namespace under a 60-second workspace-suite deadline
 
 **Acceptance:** the real process boundaries execute end to end with fakes. MP3, chapters, captions, full provenance, and hardened conditioning remain G1 work rather than day-two scope.
 

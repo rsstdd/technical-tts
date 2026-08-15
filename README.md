@@ -43,7 +43,7 @@ The workspace declares these crates:
 - `study-tts-runtime`
 - `study-tts-testkit`
 
-The T4 walking skeleton loads a reviewed two-segment JSON fixture, derives deterministic cache keys, synthesizes deterministic tone WAVs through a fake boundary, reuses validated cache entries, assembles exact PCM and silence in Rust, encodes AAC/M4A through the installed FFmpeg process, probes the result, and writes a checksummed minimal manifest. It runs without model artifacts or network access after dependency restoration.
+The T4 walking skeleton loads reviewed JSON fixtures, derives deterministic cache keys, proves both cache hits and speech-affecting misses, synthesizes deterministic tone WAVs through a fake boundary, assembles exact PCM and silence in Rust, and writes outputs beneath `previews/<lesson-id>/`. It preflights FFmpeg and ffprobe before synthesis, encodes and validates mono AAC/M4A, records their resolved identities and effective arguments, and writes a checksummed minimal manifest. CI denies runtime network egress after dependency restoration, and the production publication entry point returns a typed refusal.
 
 The boundary order and deliberate G1 deferrals are recorded in [E0-S0 Walking Skeleton](docs/architecture/WALKING-SKELETON.md).
 
