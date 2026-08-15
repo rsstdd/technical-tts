@@ -6,12 +6,12 @@ A Rust workspace for a local-first WSL2 CLI that converts reviewed technical les
 
 These instructions apply to the entire repository. A more specific `AGENTS.md` within a subdirectory governs work in that directory.
 
-The repository is currently in the architecture phase. `ADR-0001-production-rust-study-guide-tts.md` is authoritative for architecture, scope, and production invariants. `DELIVERY-PLAN.md` is authoritative for milestone scope, backlog order, tests, evidence, and sign-offs. Do not describe planned crates, commands, schemas, or behavior as implemented before they are present and verified.
+The repository is currently in the bootstrap phase. The four-crate Rust workspace and lockfile exist, but the crates still contain placeholder behavior and the delivery plan begins with the tested walking skeleton. `docs/adr/ADR-0001-production-rust-study-guide-tts.md` is authoritative for architecture, scope, and production invariants. `DELIVERY-PLAN.md` is authoritative for milestone scope, backlog order, tests, evidence, and sign-offs. Do not describe planned commands, schemas, worker behavior, or audio behavior as implemented before they are present and verified.
 
 ## Rules
 
 - Read the relevant implementation, tests, and documentation before editing.
-- Read `ADR-0001-production-rust-study-guide-tts.md` before making an architectural or cross-cutting change.
+- Read `docs/adr/ADR-0001-production-rust-study-guide-tts.md` before making an architectural or cross-cutting change.
 - Follow established repository patterns unless the task explicitly changes them.
 - Make the smallest coherent change that satisfies the request.
 - Preserve unrelated changes. Do not reformat, rename, or reorganize unrelated code.
@@ -97,18 +97,31 @@ The following is the approved target structure. Create it incrementally; absent 
 
 | When looking for | Start here | Source of truth |
 |---|---|---|
-| Architecture, scope, and boundaries | `ADR-0001-production-rust-study-guide-tts.md` | Accepted ADRs, with the newest explicit superseding decision controlling |
+| Architecture, scope, and boundaries | `docs/adr/ADR-0001-production-rust-study-guide-tts.md` | Accepted ADRs, with the newest explicit superseding decision controlling |
 | Delivery sequence, milestones, and story acceptance | `DELIVERY-PLAN.md` | Approved backlog and its traceability to ADR requirements |
-| Chatterbox qualification | `docs/adr/ADR-0002*.md` when created | Pinned revision, measured qualification result, voices, parameters, and target hardware |
-| Audio formats and loudness | `docs/adr/ADR-0003*.md` when created | Silence and transition thresholds, frozen voice/style loudness references, codecs, and supported FFmpeg versions; canonical sample rate is fixed by ADR-0001 |
-| Voice consent and watermark policy | `docs/adr/ADR-0004*.md` when created | Voice policy ADR and the individual voice profile |
-| ASR verification | `docs/adr/ADR-0005*.md` when created | Exact dependency/model identities, decoder and conversion settings, approved term patterns, calibration corpus, and measured gates |
+| Complete documentation routing | `docs/INDEX.md` | Index routes to the controlling accepted decision or execution record |
+| Governance, approvals, and gate ownership | `docs/governance/PROJECT-EXECUTION-CHARTER.md` | Accepted ADR and Delivery Plan remain authoritative when a conflict exists |
+| Capability ownership and approval | `docs/governance/MILESTONE-CAPABILITY-MATRIX.md` | One delivery owner, approver, validation route, and first required gate per capability |
+| Decisions, failures, work, and artifacts | `docs/governance/ROUTING-TABLES.md` | Named owner, record, deadline, and blocking rule |
+| Requirement traceability | `docs/governance/TRACEABILITY-MATRIX.md` | ADR requirement to delivering story, validation, and gate |
+| Risks, questions, and descope | `docs/governance/RISK-OPEN-QUESTIONS-DESCOPE.md` | Ratified decisions only; proposed entries do not authorize scope changes |
+| Rights, data, and artifact handling | `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` | Individual approved rights records and ADR-0004 |
+| Interface freeze and contract changes | `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` | G1 freeze record and approved versioned changes |
+| GitHub backlog operation | `docs/governance/GITHUB-PROJECT-PLAYBOOK.md` | GitHub Project status plus repository acceptance evidence |
+| Chatterbox qualification | `docs/adr/ADR-0002-model-hardware-voice-format-qualification.md` | Proposed until pinned revisions and G0 measurements are approved |
+| Audio formats and loudness | `docs/adr/ADR-0003-production-audio-quality-profile.md` | Proposed until thresholds, codecs, and frozen references are calibrated and approved |
+| Voice consent and watermark policy | `docs/adr/ADR-0004-voice-content-and-retention-policy.md` | Proposed until individual rights records and retention decisions are approved |
+| ASR verification | `docs/adr/ADR-0005-asr-calibration-and-release-control.md` | Proposed until exact identities, corpus, decoder, patterns, and gates are measured and approved |
 | Domain model and render planning | `crates/study-tts-core/` | Rust types plus checked-in schemas |
 | Worker contract | `schemas/worker-v1.schema.json` and `worker/` | Versioned protocol schema and shared contract tests |
 | Configuration | `crates/study-tts-cli/` | Parsed configuration types and documented precedence |
 | Job state, cache, and recovery | `crates/study-tts-runtime/` | Runtime implementation, manifest schemas, and recovery tests |
 | External process safety | `crates/study-tts-runtime/` | Worker-pool and FFmpeg adapters plus containment tests; ASR uses the in-process verifier |
 | Testing patterns | `crates/study-tts-testkit/` and colocated tests | Representative fake-worker, property, contract, and recovery tests |
+| TDD and test tiers | `docs/testing/TEST-STRATEGY.md` | Delivery Plan named tests and tier policy |
+| Qualification and evidence | `docs/testing/EVIDENCE-AND-QUALIFICATION.md` | Immutable evidence reports and governed raw artifacts |
+| Test data provenance | `docs/testing/TEST-DATA-MANIFEST.md` | Stable IDs, checksums, rights, sensitivity, retention, and owner |
+| Threat model | `docs/security/THREAT-MODEL.md` | Trust boundaries, controls, validation, and residual risks |
 | Operations and diagnostics | `docs/operations/` | Exercised runbooks and `study-tts doctor` behavior |
 | Production diagnostics | Local `events.ndjson`, `job.json`, `manifest.json`, and `quality-report.json` | Redacted local artifacts; do not upload source text or voice-reference paths by default |
 
@@ -116,7 +129,7 @@ The following is the approved target structure. Create it incrementally; absent 
 
 Run commands inside Ubuntu 24.04 under WSL2 from the repository root. Check `Cargo.toml`, worker lock files, repository scripts, and CI before changing or extending this table.
 
-The current architecture-stage repository does not yet contain an executable workspace. The commands below become authoritative only when their referenced files and targets exist.
+The current bootstrap repository contains a compiling workspace and placeholder executable. Product commands below become authoritative only when their referenced behavior, files, and targets exist.
 
 | Purpose | Command |
 |---|---|
@@ -191,12 +204,14 @@ For changes that affect spoken output, automated checks are necessary but insuff
 
 Authoritative guides:
 
-- Architecture: `ADR-0001-production-rust-study-guide-tts.md`
+- Architecture: `docs/adr/ADR-0001-production-rust-study-guide-tts.md`
 - Delivery: `DELIVERY-PLAN.md`
+- Documentation routing: `docs/INDEX.md`
+- Project execution: `docs/governance/PROJECT-EXECUTION-CHARTER.md`
+- Contribution workflow: `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md`
 - Code style: repository `rustfmt.toml` and Clippy configuration when created
 - Python worker policy: `worker/pyproject.toml` and its lockfile when created
-- Operations: `docs/operations/` when created
-- Contribution workflow: repository contribution guide and CI configuration when created
+- Operations: `docs/operations/`
 
 ## Completion criteria
 

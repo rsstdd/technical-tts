@@ -30,8 +30,13 @@ htmlcov/
 /jobs/
 /output/
 /outputs/
+/previews/
+/publish/
 /artifacts/
 /benchmark-results/
+
+# Governed evidence reports may be committed; raw evidence remains external.
+/evidence/**/raw/
 
 # Runtime and diagnostic files
 *.log

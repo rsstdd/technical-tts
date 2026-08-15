@@ -23,7 +23,7 @@ The priority order is technical correctness, comfortable listening, retention va
 
 | Area | Status |
 |---|---|
-| Architecture | Accepted in [ADR-0001](ADR-0001-production-rust-study-guide-tts.md) |
+| Architecture | Accepted in [ADR-0001](docs/adr/ADR-0001-production-rust-study-guide-tts.md) |
 | Delivery backlog | Approved in [DELIVERY-PLAN.md](DELIVERY-PLAN.md) |
 | Rust workspace | Initial four-crate scaffold and `Cargo.lock` present |
 | Chatterbox worker | Not started |
@@ -32,7 +32,7 @@ The priority order is technical correctness, comfortable listening, retention va
 | Schemas and fixtures | Directories created; contracts not implemented |
 | Production qualification | Not started |
 
-The first delivery target is a private, human-reviewed MVP. It will accept canonical lesson JSON with hand-authored spoken text, use a single persistent Chatterbox worker, and produce the complete audio package. It will remain mechanically marked as `private_preview`; production publication stays disabled until the production verification, loudness, licensing, recovery, and long-form qualification gates pass.
+The first delivery target is a private, human-reviewed MVP. It will accept canonical lesson JSON with hand-authored spoken text, use a single persistent Chatterbox worker, produce the complete audio package and run report, and record immutable human approval. It will remain mechanically marked as `private_preview`; ASR integration follows M2, and production publication stays disabled until the production verification, loudness, licensing, recovery, and long-form qualification gates pass.
 
 ### What works today
 
@@ -71,7 +71,7 @@ The architecture has five runtime elements:
 
 Rust owns every durable decision. Model-specific code remains behind a versioned newline-delimited JSON protocol so the inference runtime cannot leak into the lesson domain.
 
-## Processing model
+## Production processing model
 
 ```text
 validate reviewed lesson
@@ -86,6 +86,8 @@ validate reviewed lesson
 ```
 
 Synthesis validity and verification status are separate. A structurally valid segment can remain cached while verification is missing, stale, or under review; changing ASR settings must not invoke Chatterbox again.
+
+The private MVP stops before ASR and uses recorded human review as its correctness authority. This removes the native ASR toolchain from the MVP critical path without changing the production architecture.
 
 ## Technical lesson model
 
@@ -209,10 +211,12 @@ technical-tts/
 
 | Gate | Target | Result |
 |---|---:|---|
-| **G0 — Feasibility** | End week 1 | Real Chatterbox smoke render, lawful voice path, reference machine, WAV compatibility, and initial performance evidence |
+| **G0a — Skeleton** | Day 2 | Minimal fake-worker WAV-to-M4A pipeline and manifest stay green in CI |
+| **G0 — Feasibility** | End week 1 | Real Chatterbox smoke render, lawful voice/content path, reference machine, WAV compatibility, performance and determinism evidence, and provisional contracts |
 | **G1 — Vertical slice** | End week 2 | Three real segments become a complete private-preview package |
-| **M2 — Private MVP** | Weeks 4–5 | Five-minute lesson with cache, resume, retake, advisory ASR, full outputs, and human approval |
-| **G3 — Production candidate** | Weeks 8–9 | Markdown authoring, calibrated ASR, frozen loudness references, and production state transitions |
+| **M2 candidate** | End week 3 | Feature-complete private preview enters correction and acceptance |
+| **M2 — Private MVP** | End week 4 | Five-minute lesson with cache, resume, retake, run report, full outputs, and immutable human approval |
+| **G3 — Production candidate** | Weeks 8–9 | Markdown authoring, integrated ASR with calibration result or amendment path, frozen loudness references, and production state transitions |
 | **M3 — Version 1.0** | Weeks 10–12 | Long-form qualification, recovery, rights, operations, and every ADR release gate |
 
 The schedule assumes one engineer and one project owner. G0 measurements control the forecast because model performance, voice availability, and media compatibility can reopen a fundamental decision.
@@ -262,11 +266,17 @@ These capabilities require measured evidence and a separate decision record. The
 
 ## Documentation
 
-- [ADR-0001](ADR-0001-production-rust-study-guide-tts.md) — architecture, scope, invariants, testing strategy, and production acceptance
-- [Delivery plan](DELIVERY-PLAN.md) — milestone scope, epic and story order, named tests, evidence, risks, and sign-offs
+- [Documentation index](docs/INDEX.md) — authoritative routing for governance, testing, operations, evidence, templates, and decision records
+- [ADR-0001](docs/adr/ADR-0001-production-rust-study-guide-tts.md) — accepted architecture, scope, invariants, testing strategy, and production acceptance
+- [Delivery plan](DELIVERY-PLAN.md) — approved milestone scope, epics, stories, tasks, named tests, evidence, risks, and sign-offs
+- [Project execution charter](docs/governance/PROJECT-EXECUTION-CHARTER.md) — release profiles, ownership, work-in-progress, readiness, completion, and approvals
+- [Traceability matrix](docs/governance/TRACEABILITY-MATRIX.md) — ADR requirement to story, validation, and gate mapping
+- [GitHub Project playbook](docs/governance/GITHUB-PROJECT-PLAYBOOK.md) — backlog operation and story start/close rules
+- [Test strategy](docs/testing/TEST-STRATEGY.md) — TDD, test tiers, required suites, and failure policy
+- [Development workflow](docs/operations/DEVELOPMENT-WORKFLOW.md) — implementation and pull-request workflow
 - [AGENTS.md](AGENTS.md) — repository implementation rules and source-of-truth routing
 
-Future measured decisions will be recorded as ADR-0002 through ADR-0005 for model qualification, production audio, voice policy, and ASR calibration.
+ADR-0002 through ADR-0005 now exist as proposed evidence records. They remain unaccepted until their required measurements and approvals are complete.
 
 ## License status
 
