@@ -202,7 +202,7 @@ For changes that affect spoken output, automated checks are necessary but insuff
 - **Compatibility:** Support Ubuntu 24.04 under WSL2 first while retaining native Linux compatibility. Native Windows packaging, GPU acceleration, remote execution, and multi-user operation are deferred.
 - **Unsafe Rust:** Avoid `unsafe`. Any required use needs a documented invariant, focused tests, and human review.
 
-Authoritative guides:
+## Authoritative guides:
 
 - Architecture: `docs/adr/ADR-0001-production-rust-study-guide-tts.md`
 - Delivery: `DELIVERY-PLAN.md`
