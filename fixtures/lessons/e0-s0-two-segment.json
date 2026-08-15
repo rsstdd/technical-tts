@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "lesson_id": "e0-s0-walking-skeleton",
+  "title": "Walking Skeleton",
+  "segments": [
+    {
+      "id": "seg-0001",
+      "speaker": "nadia",
+      "spoken_text": "A cache stores reusable work.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 75
+    },
+    {
+      "id": "seg-0002",
+      "speaker": "tom",
+      "spoken_text": "A cache hit avoids repeated synthesis.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 125
+    }
+  ]
+}
