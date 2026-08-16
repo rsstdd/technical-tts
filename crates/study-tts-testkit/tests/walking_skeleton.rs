@@ -7,7 +7,9 @@ use study_tts_runtime::{
     BuildError, BuildRequest, build_preview, cache_entry_dir, publish, validate_encoded_output,
     validate_production_manifest,
 };
-use study_tts_testkit::{DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture};
+use study_tts_testkit::{
+    DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture,
+};
 use tempfile::TempDir;
 
 fn repository_root() -> std::path::PathBuf {
@@ -469,8 +471,9 @@ fn t4_e0_private_preview_cannot_enter_production_publication() {
 #[test]
 fn t3_e0_registered_fixture_checksums_match_test_data_manifest() {
     let repository_root = repository_root();
-    let manifest = std::fs::read_to_string(repository_root.join("docs/testing/TEST-DATA-MANIFEST.md"))
-        .expect("read test-data manifest");
+    let manifest =
+        std::fs::read_to_string(repository_root.join("docs/testing/TEST-DATA-MANIFEST.md"))
+            .expect("read test-data manifest");
     let lessons = repository_root.join("fixtures/lessons");
 
     // Every committed fixture is discovered rather than listed, so a new fixture cannot be added

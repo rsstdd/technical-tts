@@ -38,8 +38,8 @@ pub fn build_preview(
     let ffprobe = tools::inspect("ffprobe", &request.ffprobe_executable)?;
 
     fs::create_dir_all(&request.workspace).map_err(|error| io_error(&request.workspace, error))?;
-    let workspace =
-        fs::canonicalize(&request.workspace).map_err(|error| io_error(&request.workspace, error))?;
+    let workspace = fs::canonicalize(&request.workspace)
+        .map_err(|error| io_error(&request.workspace, error))?;
     let cache_root = managed_subdirectory(&workspace, "cache")?;
     let previews_root = managed_subdirectory(&workspace, "previews")?;
     let output_root = managed_subdirectory(&previews_root, &lesson.lesson_id)?;

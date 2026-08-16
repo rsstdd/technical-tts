@@ -31,10 +31,7 @@ pub enum BuildError {
     FileSystem { path: PathBuf, source: io::Error },
 
     #[error("audio operation failed for `{path}`: {source}")]
-    AudioAt {
-        path: PathBuf,
-        source: hound::Error,
-    },
+    AudioAt { path: PathBuf, source: hound::Error },
 
     #[error(transparent)]
     Synthesis(#[from] SynthesisError),
