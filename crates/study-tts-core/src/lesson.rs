@@ -3,6 +3,10 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Identifiers reach the filesystem through `previews/<lesson-id>/`, so they are bounded well
+/// below `NAME_MAX` (255 on ext4) to leave room for the suffixes later stories append.
+const MAX_IDENTIFIER_LENGTH: usize = 64;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Lesson {
@@ -40,13 +44,21 @@ pub enum LessonError {
     InvalidJson(#[from] serde_json::Error),
     #[error("unsupported lesson schema version `{0}`")]
     UnsupportedSchema(String),
-    #[error("lesson_id `{0}` must be a non-empty portable identifier")]
+    #[error("lesson_id must not be empty")]
+    MissingLessonId,
+    #[error(
+        "lesson_id `{0}` must be 1-64 ASCII letters, digits, hyphen, underscore, or dot, and must \
+         not start with a dot, because it names an output directory"
+    )]
     InvalidLessonId(String),
     #[error("lesson must contain at least one segment")]
     MissingSegments,
     #[error("segment ID must not be empty")]
     MissingSegmentId,
-    #[error("segment ID `{0}` must be a portable identifier")]
+    #[error(
+        "segment ID `{0}` must be 1-64 ASCII letters, digits, hyphen, underscore, or dot, and must \
+         not start with a dot"
+    )]
     InvalidSegmentId(String),
     #[error("segment ID `{0}` is duplicated")]
     DuplicateSegmentId(String),
@@ -81,6 +93,11 @@ impl Lesson {
         if self.schema_version != "0.1-skeleton" {
             return Err(LessonError::UnsupportedSchema(self.schema_version.clone()));
         }
+        // An absent value and a malformed value are different authoring mistakes, so each keeps a
+        // distinct error. Both identifier kinds apply the same two checks in the same order.
+        if self.lesson_id.trim().is_empty() {
+            return Err(LessonError::MissingLessonId);
+        }
         if !is_portable_id(&self.lesson_id) {
             return Err(LessonError::InvalidLessonId(self.lesson_id.clone()));
         }
@@ -90,7 +107,7 @@ impl Lesson {
 
         let mut ids = HashSet::with_capacity(self.segments.len());
         for segment in &self.segments {
-            if segment.id.is_empty() {
+            if segment.id.trim().is_empty() {
                 return Err(LessonError::MissingSegmentId);
             }
             if !is_portable_id(&segment.id) {
@@ -136,10 +153,13 @@ impl Lesson {
     }
 }
 
+/// A leading dot is rejected because it produces a hidden directory, which also makes `.`, `..`,
+/// and `...` invalid without a special case for each. Length is measured in bytes, which is exact
+/// here because the byte-class check restricts the value to ASCII.
 fn is_portable_id(value: &str) -> bool {
     !value.is_empty()
-        && value != "."
-        && value != ".."
+        && value.len() <= MAX_IDENTIFIER_LENGTH
+        && !value.starts_with('.')
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
@@ -238,21 +258,77 @@ mod tests {
     }
 
     #[test]
-    fn t1_e0_non_portable_lesson_and_segment_ids_are_rejected() {
-        for unsafe_id in [".", "..", "../escape", "/tmp/escape", r"..\escape"] {
+    fn t1_e0_empty_identifiers_are_reported_as_missing_not_malformed() {
+        // Whitespace-only is treated as absent for both identifier kinds, so the two branches
+        // cannot drift apart the way `is_empty` versus `trim().is_empty()` previously allowed.
+        for absent in ["", "   "] {
             let mut value = fixture();
-            value["lesson_id"] = Value::String(unsafe_id.to_owned());
-            assert!(matches!(
-                parse(&value),
-                Err(LessonError::InvalidLessonId(_))
-            ));
+            value["lesson_id"] = Value::String(absent.to_owned());
+            assert!(
+                matches!(parse(&value), Err(LessonError::MissingLessonId)),
+                "lesson_id `{absent}` must be reported as missing"
+            );
 
             let mut value = fixture();
-            value["segments"][0]["id"] = Value::String(unsafe_id.to_owned());
-            assert!(matches!(
-                parse(&value),
-                Err(LessonError::InvalidSegmentId(_))
-            ));
+            value["segments"][0]["id"] = Value::String(absent.to_owned());
+            assert!(
+                matches!(parse(&value), Err(LessonError::MissingSegmentId)),
+                "segment ID `{absent}` must be reported as missing"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e0_non_portable_lesson_and_segment_ids_are_rejected() {
+        let rejected = [
+            ".".to_owned(),
+            "..".to_owned(),
+            "...".to_owned(),
+            ".hidden".to_owned(),
+            "../escape".to_owned(),
+            "/tmp/escape".to_owned(),
+            r"..\escape".to_owned(),
+            "with space".to_owned(),
+            "über".to_owned(),
+            "x".repeat(MAX_IDENTIFIER_LENGTH + 1),
+        ];
+
+        for unsafe_id in rejected {
+            let mut value = fixture();
+            value["lesson_id"] = Value::String(unsafe_id.clone());
+            assert!(
+                matches!(parse(&value), Err(LessonError::InvalidLessonId(_))),
+                "lesson_id `{unsafe_id}` must be rejected"
+            );
+
+            let mut value = fixture();
+            value["segments"][0]["id"] = Value::String(unsafe_id.clone());
+            assert!(
+                matches!(parse(&value), Err(LessonError::InvalidSegmentId(_))),
+                "segment ID `{unsafe_id}` must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e0_portable_ids_at_the_length_bound_are_accepted() {
+        // `lesson.v1` is pinned deliberately: interior dots stay legal, so a later attempt to
+        // reject every dot would fail here rather than silently breaking versioned identifiers.
+        let accepted = [
+            "a".to_owned(),
+            "seg-0001".to_owned(),
+            "e0_s0".to_owned(),
+            "lesson.v1".to_owned(),
+            "x".repeat(MAX_IDENTIFIER_LENGTH),
+        ];
+
+        for safe_id in accepted {
+            let mut value = fixture();
+            value["lesson_id"] = Value::String(safe_id.clone());
+            assert!(
+                parse(&value).is_ok(),
+                "lesson_id `{safe_id}` must be accepted"
+            );
         }
     }
 }

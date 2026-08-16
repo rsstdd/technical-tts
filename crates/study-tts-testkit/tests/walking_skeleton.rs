@@ -6,7 +6,9 @@ use study_tts_core::LessonError;
 use study_tts_runtime::{
     BuildError, BuildRequest, build_preview, publish, validate_production_manifest,
 };
-use study_tts_testkit::{DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture};
+use study_tts_testkit::{
+    DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture,
+};
 use tempfile::TempDir;
 
 fn build_request(lesson_path: &Path, workspace: &Path) -> BuildRequest {
