@@ -6,9 +6,7 @@ use study_tts_core::LessonError;
 use study_tts_runtime::{
     BuildError, BuildRequest, build_preview, publish, validate_production_manifest,
 };
-use study_tts_testkit::{
-    DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture,
-};
+use study_tts_testkit::{DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture};
 use tempfile::TempDir;
 
 fn build_request(lesson_path: &Path, workspace: &Path) -> BuildRequest {
@@ -163,27 +161,59 @@ fn t4_e0_cache_identity_proves_hits_and_speech_affecting_misses() {
     )
     .expect("cache identity fixture should build");
 
+    // seg-a synthesizes; seg-b and seg-e hit it; seg-c, seg-d, and seg-f each miss for a
+    // different speech-affecting reason.
     assert_eq!(
         worker.synthesis_count(),
-        3,
-        "pause, role, source, and segment ID must hit; spoken text and style must miss"
+        4,
+        "segment ID, pause, role, source refs, and display text must hit; spoken text, style, and \
+         speaker must miss"
     );
+
     let manifest: Value = serde_json::from_slice(
         &std::fs::read(result.manifest).expect("read cache identity manifest"),
     )
     .expect("parse cache identity manifest");
     let segments = manifest["segments"].as_array().expect("manifest segments");
-    assert_eq!(segments[0]["cache_key"], segments[1]["cache_key"]);
-    assert_ne!(segments[0]["cache_key"], segments[2]["cache_key"]);
-    assert_ne!(segments[0]["cache_key"], segments[3]["cache_key"]);
+    assert_eq!(segments.len(), 6);
+
+    assert_eq!(
+        segments[0]["cache_key"], segments[1]["cache_key"],
+        "segment ID, pause, role, and source refs must be excluded from synthesis identity"
+    );
+    assert_ne!(
+        segments[0]["cache_key"], segments[2]["cache_key"],
+        "spoken text must be included in synthesis identity"
+    );
+    assert_ne!(
+        segments[0]["cache_key"], segments[3]["cache_key"],
+        "style must be included in synthesis identity"
+    );
     assert_eq!(
         segments[0]["cache_key"], segments[4]["cache_key"],
         "display-only metadata must not alter synthesis identity"
     );
+    assert_ne!(
+        segments[0]["cache_key"], segments[5]["cache_key"],
+        "speaker must be included in synthesis identity"
+    );
+
+    // Order is meaningful while synthesis is sequential. E5-S2 introduces the configurable worker
+    // pool and will require a set comparison here.
+    let submitted = worker.synthesized_texts();
     assert_eq!(
-        worker.synthesized_texts(),
-        ["Same speech.", "Same speech!", "Same speech."],
+        submitted,
+        [
+            "Same speech.",
+            "Same speech!",
+            "Same speech.",
+            "Same speech."
+        ],
         "the worker must receive spoken_text and never display_text"
+    );
+    assert!(
+        !submitted.iter().any(|text| text.contains("Display-only")),
+        "display_text must never reach the synthesizer"
     );
 }
 
@@ -341,12 +371,12 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
     let cache_key = manifest["segments"][0]["cache_key"]
         .as_str()
         .expect("segment cache key");
-    let artifact_path = workspace
+    let entry_dir = workspace
         .path()
         .join("cache/segments")
         .join(&cache_key[..2])
-        .join(cache_key)
-        .join("artifact.json");
+        .join(cache_key);
+    let artifact_path = entry_dir.join("artifact.json");
     let original: Value =
         serde_json::from_slice(&std::fs::read(&artifact_path).expect("read cache artifact"))
             .expect("parse cache artifact");
@@ -366,13 +396,23 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         )
         .expect("write corrupt artifact");
 
-        assert!(matches!(
-            build_preview(
-                build_request(&walking_skeleton_fixture(), workspace.path()),
-                &worker
-            ),
-            Err(BuildError::InvalidCache(_))
-        ));
+        let error = build_preview(
+            build_request(&walking_skeleton_fixture(), workspace.path()),
+            &worker,
+        )
+        .expect_err("corrupt cache metadata must be rejected");
+
+        assert!(matches!(error, BuildError::InvalidCache(_)));
+        let message = error.to_string();
+        // A poisoned entry fails every later build, so the message must name what to delete.
+        assert!(
+            message.contains(&entry_dir.display().to_string()),
+            "`{field}` mutation did not name the entry directory: `{message}`"
+        );
+        assert!(
+            message.contains("delete"),
+            "`{field}` mutation did not state the remedy: `{message}`"
+        );
     }
 
     let mut unknown_field = original;
@@ -382,13 +422,13 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         serde_json::to_vec_pretty(&unknown_field).expect("serialize unknown cache field"),
     )
     .expect("write cache artifact with unknown field");
-    assert!(matches!(
-        build_preview(
-            build_request(&walking_skeleton_fixture(), workspace.path()),
-            &worker
-        ),
-        Err(BuildError::InvalidCache(_))
-    ));
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect_err("an unknown artifact field must be rejected");
+    assert!(matches!(error, BuildError::InvalidCache(_)));
+    assert!(error.to_string().contains("delete"));
 
     assert_eq!(worker.synthesis_count(), 2);
 }
@@ -427,7 +467,7 @@ fn t3_e0_registered_fixture_checksums_match_test_data_manifest() {
             .unwrap_or_else(|| panic!("missing test-data row for {fixture}"));
         assert!(
             row.contains(&format!("SHA-256 `{checksum}`")),
-            "test-data checksum is stale for {fixture}"
+            "test-data checksum is stale for {fixture}; update its row to SHA-256 `{checksum}`"
         );
     }
 }

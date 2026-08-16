@@ -143,7 +143,10 @@ fn load_validated(
         rejected(
             entry_dir,
             &segment.id,
-            format!("`{}` could not be parsed ({error})", artifact_path.display()),
+            format!(
+                "`{}` could not be parsed ({error})",
+                artifact_path.display()
+            ),
         )
     })?;
 
@@ -181,8 +184,8 @@ fn load_validated(
     }
 
     // Path 4: the audio itself is unreadable, non-canonical, or does not match the artifact.
-    let frames = validate_wav(audio_path)
-        .map_err(|error| rejected_from(entry_dir, &segment.id, error))?;
+    let frames =
+        validate_wav(audio_path).map_err(|error| rejected_from(entry_dir, &segment.id, error))?;
     let checksum = hash_file(audio_path)?;
     if frames != artifact.frames {
         return Err(rejected(
@@ -428,9 +431,6 @@ mod tests {
 
         // Nothing is published yet, so advising a deletion would point at a path that does not
         // exist. The remedy is attached by `load_validated`, not by the validator.
-        assert!(
-            !error.to_string().contains("delete"),
-            "error was `{error}`"
-        );
+        assert!(!error.to_string().contains("delete"), "error was `{error}`");
     }
 }

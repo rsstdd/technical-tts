@@ -86,7 +86,7 @@ pub enum BuildError {
     Json(#[from] serde_json::Error),
 
     #[error("audio operation failed for `{path}`: {source}")]
-    AudioAt { path: PathBuf, source: hound::Error }
+    AudioAt { path: PathBuf, source: hound::Error },
 }
 
 pub(crate) fn io_error(path: impl Into<PathBuf>, source: io::Error) -> BuildError {

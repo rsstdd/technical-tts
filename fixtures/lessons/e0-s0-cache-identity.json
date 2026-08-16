@@ -57,6 +57,17 @@
       "style": "calm",
       "pause_after_ms": 75,
       "review_status": "approved"
+    },
+    {
+      "id": "seg-f",
+      "speaker": "tom",
+      "role": "explanation",
+      "source_refs": ["block-006"],
+      "display_text": "Same speech.",
+      "spoken_text": "Same speech.",
+      "style": "calm",
+      "pause_after_ms": 25,
+      "review_status": "approved"
     }
   ]
 }
