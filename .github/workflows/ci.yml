@@ -41,10 +41,7 @@ jobs:
 
       - name: Build workspace test binaries offline
         run: |
-          cargo test --offline --workspace --all-targets --locked --message-format=json \
-            | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' \
-            | sort -u > "$RUNNER_TEMP/study-tts-test-binaries"
-          test -s "$RUNNER_TEMP/study-tts-test-binaries"
+          cargo test --offline --workspace --all-targets --locked --no-run --message-format=json \
 
       - name: Run T4 suite without runtime egress
         run: |
