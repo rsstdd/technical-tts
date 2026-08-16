@@ -21,6 +21,11 @@ pub struct PlannedSegment {
     pub cache_key: String,
 }
 
+/// Every speech-affecting input, named field by field.
+///
+/// A derived hash over `LessonSegment` would silently absorb each future field and let the
+/// exclusion property regress without a compile error, so the list is explicit. `identity_version`
+/// is the single lever for invalidating every cache entry when this definition changes.
 #[derive(Serialize)]
 struct SynthesisIdentity<'a> {
     identity_version: &'static str,
@@ -81,7 +86,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plan_is_stable_for_identical_inputs() {
+    fn t1_e0_plan_is_stable_for_identical_inputs() {
         let lesson = Lesson::from_json(include_bytes!(
             "../../../fixtures/lessons/e0-s0-two-segment.json"
         ))
@@ -92,5 +97,19 @@ mod tests {
 
         assert_eq!(first.plan_hash, second.plan_hash);
         assert_eq!(first.segments[0].cache_key, second.segments[0].cache_key);
+    }
+
+    #[test]
+    fn t1_e0_synthesizer_identity_participates_in_the_cache_key() {
+        let lesson = Lesson::from_json(include_bytes!(
+            "../../../fixtures/lessons/e0-s0-two-segment.json"
+        ))
+        .expect("fixture should be valid");
+
+        let first = RenderPlan::for_lesson(&lesson, "fake-tone-v1");
+        let second = RenderPlan::for_lesson(&lesson, "fake-tone-v2");
+
+        assert_ne!(first.segments[0].cache_key, second.segments[0].cache_key);
+        assert_ne!(first.plan_hash, second.plan_hash);
     }
 }

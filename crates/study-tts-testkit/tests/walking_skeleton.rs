@@ -4,12 +4,15 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use study_tts_core::LessonError;
 use study_tts_runtime::{
-    BuildError, BuildRequest, build_preview, publish, validate_production_manifest,
+    BuildError, BuildRequest, build_preview, cache_entry_dir, publish, validate_encoded_output,
+    validate_production_manifest,
 };
-use study_tts_testkit::{
-    DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture,
-};
+use study_tts_testkit::{DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture};
 use tempfile::TempDir;
+
+fn repository_root() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
 
 fn build_request(lesson_path: &Path, workspace: &Path) -> BuildRequest {
     BuildRequest {
@@ -201,7 +204,7 @@ fn t4_e0_cache_identity_proves_hits_and_speech_affecting_misses() {
     );
 
     // Order is meaningful while synthesis is sequential. E5-S2 introduces the configurable worker
-    // pool and will require a set comparison here.
+    // pool, after which this must become a set comparison rather than a sequence comparison.
     let submitted = worker.synthesized_texts();
     assert_eq!(
         submitted,
@@ -246,6 +249,20 @@ fn t4_e0_external_tool_preflight_names_missing_binary() {
         0,
         "preflight must run before synthesis"
     );
+}
+
+#[test]
+fn t4_e0_ffprobe_rejects_non_aac_input() {
+    let (_workspace, result, _worker) = run_skeleton();
+
+    validate_encoded_output(Path::new("ffprobe"), &result.m4a)
+        .expect("a mono AAC export must be accepted");
+
+    // The PCM master is a valid audio file that is not a valid encoded output, which is the shape
+    // an encoder failing open would produce.
+    let error = validate_encoded_output(Path::new("ffprobe"), &result.master_wav)
+        .expect_err("a PCM master must not pass encoded-output validation");
+    assert!(matches!(error, BuildError::InvalidEncodedOutput(_)));
 }
 
 #[test]
@@ -373,11 +390,9 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
     let cache_key = manifest["segments"][0]["cache_key"]
         .as_str()
         .expect("segment cache key");
-    let entry_dir = workspace
-        .path()
-        .join("cache/segments")
-        .join(&cache_key[..2])
-        .join(cache_key);
+    // The sharding scheme is owned by `cache::entry_dir`; changing it must not require editing
+    // this test.
+    let entry_dir = cache_entry_dir(&workspace.path().join("cache"), cache_key);
     let artifact_path = entry_dir.join("artifact.json");
     let original: Value =
         serde_json::from_slice(&std::fs::read(&artifact_path).expect("read cache artifact"))
@@ -453,23 +468,41 @@ fn t4_e0_private_preview_cannot_enter_production_publication() {
 
 #[test]
 fn t3_e0_registered_fixture_checksums_match_test_data_manifest() {
-    let repository_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let manifest_path = repository_root.join("docs/testing/TEST-DATA-MANIFEST.md");
-    let manifest = std::fs::read_to_string(&manifest_path).expect("read test-data manifest");
+    let repository_root = repository_root();
+    let manifest = std::fs::read_to_string(repository_root.join("docs/testing/TEST-DATA-MANIFEST.md"))
+        .expect("read test-data manifest");
+    let lessons = repository_root.join("fixtures/lessons");
 
-    for fixture in [
-        "fixtures/lessons/e0-s0-two-segment.json",
-        "fixtures/lessons/e0-s0-cache-identity.json",
-    ] {
-        let bytes = std::fs::read(repository_root.join(fixture)).expect("read registered fixture");
+    // Every committed fixture is discovered rather than listed, so a new fixture cannot be added
+    // without a manifest row.
+    let mut checked = 0_usize;
+    for entry in std::fs::read_dir(&lessons).expect("read lesson fixtures") {
+        let entry = entry.expect("read lesson fixture entry");
+        let file_name = entry.file_name().to_string_lossy().into_owned();
+        let relative = format!("fixtures/lessons/{file_name}");
+        let bytes = std::fs::read(entry.path()).expect("read registered fixture");
         let checksum = format!("{:x}", Sha256::digest(bytes));
-        let row = manifest
+
+        let rows: Vec<&str> = manifest
             .lines()
-            .find(|line| line.contains(fixture))
-            .unwrap_or_else(|| panic!("missing test-data row for {fixture}"));
-        assert!(
-            row.contains(&format!("SHA-256 `{checksum}`")),
-            "test-data checksum is stale for {fixture}; update its row to SHA-256 `{checksum}`"
+            .filter(|line| line.contains(&relative))
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "`{relative}` must have exactly one test-data row, found {}",
+            rows.len()
         );
+        assert!(
+            rows[0].contains(&format!("SHA-256 `{checksum}`")),
+            "test-data checksum is stale for {relative}; update its row to SHA-256 `{checksum}`"
+        );
+        checked += 1;
     }
+
+    // Guards against a misresolved path making the loop vacuous.
+    assert!(
+        checked >= 2,
+        "expected at least two committed lesson fixtures, checked {checked}"
+    );
 }

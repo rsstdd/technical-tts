@@ -7,11 +7,15 @@ mod synthesis;
 mod tools;
 
 pub use pipeline::{
-    BuildRequest, BuildResult, build_preview, publish, validate_production_manifest,
+    BuildRequest, BuildResult, build_preview, publish, validate_encoded_output,
+    validate_production_manifest,
 };
 pub use synthesis::{SegmentSynthesizer, SynthesisError, SynthesisReport};
 
-use std::{io, path::PathBuf};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 use thiserror::Error;
 
@@ -25,6 +29,12 @@ pub enum BuildError {
 
     #[error("filesystem operation failed for `{path}`: {source}")]
     FileSystem { path: PathBuf, source: io::Error },
+
+    #[error("audio operation failed for `{path}`: {source}")]
+    AudioAt {
+        path: PathBuf,
+        source: hound::Error,
+    },
 
     #[error(transparent)]
     Synthesis(#[from] SynthesisError),
@@ -81,12 +91,9 @@ pub enum BuildError {
 
     /// Catch-all for `?` on a `serde_json` call with no useful context to add. Prefer a variant
     /// that carries the path or the subsystem; this exists so a future call site cannot silently
-    /// inherit an unrelated error message the way `Manifest` did.
+    /// inherit an unrelated error message the way the former `Manifest` variant did.
     #[error("JSON operation failed: {0}")]
     Json(#[from] serde_json::Error),
-
-    #[error("audio operation failed for `{path}`: {source}")]
-    AudioAt { path: PathBuf, source: hound::Error },
 }
 
 pub(crate) fn io_error(path: impl Into<PathBuf>, source: io::Error) -> BuildError {
@@ -96,9 +103,20 @@ pub(crate) fn io_error(path: impl Into<PathBuf>, source: io::Error) -> BuildErro
     }
 }
 
+/// `hound::Error` wraps `io::Error`, which carries no filename, so every audio failure must be
+/// given its path here or the message names nothing.
 pub(crate) fn audio_error(path: impl Into<PathBuf>, source: hound::Error) -> BuildError {
     BuildError::AudioAt {
         path: path.into(),
         source,
     }
+}
+
+/// Directory holding one cache entry.
+///
+/// Exposed so integration tests can corrupt a specific entry without duplicating the sharding
+/// scheme. Changing the shard width in `cache::entry_dir` updates the tests automatically.
+#[doc(hidden)]
+pub fn cache_entry_dir(cache_root: &Path, cache_key: &str) -> PathBuf {
+    cache::entry_dir(cache_root, cache_key)
 }

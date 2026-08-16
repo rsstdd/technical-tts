@@ -40,6 +40,8 @@ Its stage order, provisional boundaries, and deferred capabilities are recorded 
 - Link the story, ADR requirement, tests, evidence, and rollback.
 - Identify schema, cache identity, migration, rights, security, and listening effects.
 - Do not commit model weights, voices, private lessons, production audio, caches, or generated environments.
+- Update the story's test list in DELIVERY-PLAN.md in the same commit that adds, renames, or removes a test. A list that
+lags the code is worse than no list, because it reads as authoritative.
 
 ## Review order
 

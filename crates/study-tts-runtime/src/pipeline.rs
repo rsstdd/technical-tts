@@ -38,9 +38,8 @@ pub fn build_preview(
     let ffprobe = tools::inspect("ffprobe", &request.ffprobe_executable)?;
 
     fs::create_dir_all(&request.workspace).map_err(|error| io_error(&request.workspace, error))?;
-
-    let workspace = fs::canonicalize(&request.workspace)
-        .map_err(|error| io_error(&request.workspace, error))?;
+    let workspace =
+        fs::canonicalize(&request.workspace).map_err(|error| io_error(&request.workspace, error))?;
     let cache_root = managed_subdirectory(&workspace, "cache")?;
     let previews_root = managed_subdirectory(&workspace, "previews")?;
     let output_root = managed_subdirectory(&previews_root, &lesson.lesson_id)?;
@@ -50,9 +49,9 @@ pub fn build_preview(
         .iter()
         .map(|segment| cache::resolve(&cache_root, segment, synthesizer))
         .collect::<Result<Vec<_>, _>>()?;
+
     let master_wav = output_root.join("lesson.wav");
     assembly::assemble(&cached_segments, &master_wav)?;
-
     let m4a = output_root.join("lesson.m4a");
     let ffmpeg_execution = export::export_m4a(&ffmpeg, &master_wav, &m4a)?;
     let ffprobe_execution = export::probe_m4a(&ffprobe, &m4a)?;
@@ -77,6 +76,19 @@ pub fn build_preview(
         m4a,
         manifest: manifest_path,
     })
+}
+
+/// Preflights ffprobe and requires the encoded artifact to be a single mono AAC stream.
+///
+/// `build_preview` performs this check internally; the entry point exists so the rejection path
+/// can be exercised from the integration suite, which is where a test needing a real ffprobe
+/// belongs.
+pub fn validate_encoded_output(
+    ffprobe_executable: &Path,
+    encoded: &Path,
+) -> Result<(), BuildError> {
+    let ffprobe = tools::inspect("ffprobe", ffprobe_executable)?;
+    export::probe_m4a(&ffprobe, encoded).map(|_| ())
 }
 
 /// Creates `root/component` and proves it stays beneath `root`.

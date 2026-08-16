@@ -65,6 +65,8 @@ pub(crate) fn probe_m4a(ffprobe: &ToolIdentity, m4a: &Path) -> Result<ToolExecut
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
+    // Mapped explicitly rather than through `?`, because a malformed probe response is an
+    // encoded-output problem and must not surface as a generic JSON failure.
     let probe: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
         BuildError::InvalidEncodedOutput(format!("ffprobe returned unparseable JSON: {error}"))
     })?;
@@ -124,6 +126,8 @@ fn ffprobe_arguments(m4a: &Path) -> Vec<OsString> {
     .into()
 }
 
+/// Non-UTF-8 arguments are rendered lossily. Authoritative non-UTF-8 path representation in
+/// provenance records is deferred and recorded in `docs/architecture/WALKING-SKELETON.md`.
 fn display_arguments(arguments: &[OsString]) -> Vec<String> {
     arguments
         .iter()
@@ -134,8 +138,10 @@ fn display_arguments(arguments: &[OsString]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use study_tts_core::CANONICAL_SAMPLE_RATE;
 
+    // Only tool-free tests belong here. Anything requiring a real ffmpeg or ffprobe lives in the
+    // testkit integration suite, so `cargo test -p study-tts-runtime` stays runnable on a machine
+    // with neither binary installed.
     #[test]
     fn t1_e0_ffmpeg_arguments_are_pinned_and_explicit() {
         let arguments = ffmpeg_arguments(Path::new("/input.wav"), Path::new("/output.m4a"));
@@ -169,24 +175,24 @@ mod tests {
     }
 
     #[test]
-    fn t4_e0_ffprobe_rejects_non_aac_input() {
-        let workspace = tempfile::tempdir().expect("create ffprobe test workspace");
-        let wav = workspace.path().join("master.wav");
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: CANONICAL_SAMPLE_RATE,
-            bits_per_sample: 32,
-            sample_format: hound::SampleFormat::Float,
-        };
-        let mut writer = hound::WavWriter::create(&wav, spec).expect("create test WAV");
-        writer.write_sample(0.0_f32).expect("write test sample");
-        writer.finalize().expect("finalize test WAV");
-        let ffprobe = crate::tools::inspect("ffprobe", Path::new("ffprobe"))
-            .expect("ffprobe must be available for the integration suite");
-
-        assert!(matches!(
-            probe_m4a(&ffprobe, &wav),
-            Err(BuildError::InvalidEncodedOutput(_))
-        ));
+    fn t1_e0_ffprobe_arguments_are_pinned_and_explicit() {
+        let arguments = ffprobe_arguments(Path::new("/output.m4a"));
+        assert_eq!(
+            arguments,
+            vec![
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=codec_name,channels",
+                "-of",
+                "json",
+                "/output.m4a",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect::<Vec<_>>()
+        );
     }
 }
