@@ -204,6 +204,7 @@ The arrows define prerequisites, not a requirement to serialize independent trac
 - `t1_e0_valid_entry_loads`
 - `t1_e0_every_rejection_names_the_entry_directory_and_the_remedy`
 - `t1_e0_fresh_synthesis_failures_carry_no_delete_remedy`
+- `t1_e0_plan_is_stable_for_identical_inputs`
 - `t4_e0_leaf_symlink_escape_is_rejected_before_creating_anything`
 - `t3_e0_registered_fixture_checksums_match_test_data_manifest`
 - `t4_e0_external_tool_preflight_names_missing_binary`
