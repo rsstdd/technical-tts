@@ -41,7 +41,7 @@ impl SegmentSynthesizer for DeterministicToneWorker {
         segment: &PlannedSegment,
         destination: &Path,
     ) -> Result<SynthesisReport, SynthesisError> {
-        let frequency = 300.0
+        let freq = 300.0
             + f32::from(
                 segment
                     .cache_key
@@ -56,19 +56,23 @@ impl SegmentSynthesizer for DeterministicToneWorker {
         };
         let mut writer = hound::WavWriter::create(destination, spec)
             .map_err(|error| SynthesisError::new(error.to_string()))?;
+
         for frame in 0..TONE_FRAMES {
-            let phase = TAU * frequency * frame as f32 / CANONICAL_SAMPLE_RATE as f32;
+            let phase = TAU * freq * frame as f32 / CANONICAL_SAMPLE_RATE as f32;
             writer
                 .write_sample(phase.sin() * 0.2)
                 .map_err(|error| SynthesisError::new(error.to_string()))?;
         }
+
         writer
             .finalize()
             .map_err(|error| SynthesisError::new(error.to_string()))?;
+
         self.synthesized_texts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(segment.spoken_text.clone());
+
         self.synthesis_count.fetch_add(1, Ordering::SeqCst);
 
         Ok(SynthesisReport {

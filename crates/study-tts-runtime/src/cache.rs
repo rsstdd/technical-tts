@@ -193,7 +193,12 @@ pub(crate) fn write_json_atomically<T: Serialize>(
         .suffix(".tmp")
         .tempfile_in(parent)
         .map_err(|error| io_error(parent, error))?;
-    serde_json::to_writer_pretty(staged.as_file_mut(), value)?;
+    serde_json::to_writer_pretty(staged.as_file_mut(), value).map_err(|error| {
+        BuildError::WriteJson {
+            path: path.to_path_buf(),
+            source: error,
+        }
+    })?;
     staged
         .as_file_mut()
         .sync_all()

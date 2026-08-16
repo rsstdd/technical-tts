@@ -65,7 +65,9 @@ pub(crate) fn probe_m4a(ffprobe: &ToolIdentity, m4a: &Path) -> Result<ToolExecut
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
-    let probe: Value = serde_json::from_slice(&output.stdout)?;
+    let probe: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        BuildError::InvalidEncodedOutput(format!("ffprobe returned unparseable JSON: {error}"))
+    })?;
     let stream = probe["streams"]
         .as_array()
         .and_then(|streams| streams.first());

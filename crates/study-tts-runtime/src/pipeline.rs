@@ -38,6 +38,7 @@ pub fn build_preview(
     let ffprobe = tools::inspect("ffprobe", &request.ffprobe_executable)?;
 
     fs::create_dir_all(&request.workspace).map_err(|error| io_error(&request.workspace, error))?;
+
     let workspace = fs::canonicalize(&request.workspace)
         .map_err(|error| io_error(&request.workspace, error))?;
     let cache_root = managed_subdirectory(&workspace, "cache")?;
@@ -49,9 +50,9 @@ pub fn build_preview(
         .iter()
         .map(|segment| cache::resolve(&cache_root, segment, synthesizer))
         .collect::<Result<Vec<_>, _>>()?;
-
     let master_wav = output_root.join("lesson.wav");
     assembly::assemble(&cached_segments, &master_wav)?;
+
     let m4a = output_root.join("lesson.m4a");
     let ffmpeg_execution = export::export_m4a(&ffmpeg, &master_wav, &m4a)?;
     let ffprobe_execution = export::probe_m4a(&ffprobe, &m4a)?;
