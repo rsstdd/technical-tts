@@ -41,14 +41,27 @@ pub(crate) fn entry_dir(cache_root: &Path, cache_key: &str) -> PathBuf {
         .join(cache_key)
 }
 
-/// Every rejection names the entry directory and the remedy, because E0-S0 has no quarantine and
-/// a poisoned entry would otherwise fail every subsequent build with no stated way out.
-fn rejected(entry_dir: &Path, segment_id: &str, detail: &str) -> BuildError {
+/// Builds a rejection that names the entry directory and the remedy.
+///
+/// E0-S0 has no quarantine, so a poisoned entry would otherwise fail every subsequent build with
+/// no stated way out. ADR-0001 §4.2 requires a failure to explain what remains valid and what the
+/// safe recovery action is; deleting the entry is that action, because the segment regenerates
+/// from the plan on the next build.
+fn rejected(entry_dir: &Path, segment_id: &str, detail: impl std::fmt::Display) -> BuildError {
     BuildError::InvalidCache(format!(
         "cache entry for segment `{segment_id}` is unusable: {detail}; delete `{}` to regenerate \
          this segment",
         entry_dir.display()
     ))
+}
+
+/// Re-frames an error raised while validating a *cached* artifact so it carries the remedy.
+///
+/// `validate_wav` is also called on freshly synthesized output, where no cache entry exists yet
+/// and "delete the entry" would be wrong advice. The remedy is therefore attached by the caller
+/// that knows the entry is on disk, not by the validator.
+fn rejected_from(entry_dir: &Path, segment_id: &str, error: BuildError) -> BuildError {
+    rejected(entry_dir, segment_id, error)
 }
 
 pub(crate) fn resolve(
@@ -77,6 +90,9 @@ pub(crate) fn resolve(
         .map_err(|error| io_error(&entry_dir, error))?;
     let staged_path = staged.path().to_path_buf();
     let report = synthesizer.synthesize(segment, &staged_path)?;
+
+    // Freshly synthesized output carries no remedy: the staged file is discarded on drop and
+    // there is no published entry for the user to delete.
     let frames = validate_wav(&staged_path)?;
     if report.sample_rate != CANONICAL_SAMPLE_RATE
         || report.channels != 1
@@ -121,14 +137,17 @@ fn load_validated(
     artifact_path: &Path,
 ) -> Result<CachedSegment, BuildError> {
     let bytes = fs::read(artifact_path).map_err(|error| io_error(artifact_path, error))?;
+
+    // Path 1: the artifact does not parse.
     let artifact: CacheArtifact = serde_json::from_slice(&bytes).map_err(|error| {
         rejected(
             entry_dir,
             &segment.id,
-            &format!("`{}` could not be parsed: {error}", artifact_path.display()),
+            format!("`{}` could not be parsed ({error})", artifact_path.display()),
         )
     })?;
 
+    // Path 2: the artifact parses but describes audio this build cannot consume.
     if artifact.schema_version != CACHE_SCHEMA_VERSION
         || artifact.sample_rate != CANONICAL_SAMPLE_RATE
         || artifact.channels != 1
@@ -137,7 +156,7 @@ fn load_validated(
         return Err(rejected(
             entry_dir,
             &segment.id,
-            &format!(
+            format!(
                 "artifact declares schema `{}`, {} Hz, {} channels, and format `{}` but this build \
                  requires schema `{CACHE_SCHEMA_VERSION}`, {CANONICAL_SAMPLE_RATE} Hz, 1 channel, \
                  and `f32le`",
@@ -148,24 +167,28 @@ fn load_validated(
             ),
         ));
     }
+
+    // Path 3: the entry belongs to a different synthesis identity.
     if artifact.cache_key != segment.cache_key {
         return Err(rejected(
             entry_dir,
             &segment.id,
-            &format!(
+            format!(
                 "artifact records cache key `{}` but the plan requires `{}`",
                 artifact.cache_key, segment.cache_key
             ),
         ));
     }
 
-    let frames = validate_wav(audio_path)?;
+    // Path 4: the audio itself is unreadable, non-canonical, or does not match the artifact.
+    let frames = validate_wav(audio_path)
+        .map_err(|error| rejected_from(entry_dir, &segment.id, error))?;
     let checksum = hash_file(audio_path)?;
     if frames != artifact.frames {
         return Err(rejected(
             entry_dir,
             &segment.id,
-            &format!(
+            format!(
                 "audio holds {frames} frames but the artifact declares {}",
                 artifact.frames
             ),
@@ -195,8 +218,7 @@ pub(crate) fn hash_file(path: &Path) -> Result<String, BuildError> {
 }
 
 fn validate_wav(path: &Path) -> Result<u32, BuildError> {
-    let mut reader =
-        hound::WavReader::open(path).map_err(|error| audio_error(path, error))?;
+    let mut reader = hound::WavReader::open(path).map_err(|error| audio_error(path, error))?;
     let spec = reader.spec();
     if spec.channels != 1
         || spec.sample_rate != CANONICAL_SAMPLE_RATE
@@ -264,27 +286,151 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    #[test]
-    fn t1_e0_missing_audio_names_the_file() {
-        let workspace = TempDir::new().expect("create cache workspace");
-        let missing = workspace.path().join("absent.wav");
+    fn planned(cache_key: &str) -> PlannedSegment {
+        PlannedSegment {
+            id: "seg-0001".to_owned(),
+            speaker: "nadia".to_owned(),
+            spoken_text: "Same speech.".to_owned(),
+            style: "calm".to_owned(),
+            pause_after_ms: 75,
+            cache_key: cache_key.to_owned(),
+        }
+    }
 
-        let error = validate_wav(&missing).expect_err("missing audio must fail");
+    fn write_tone(path: &Path, frames: u32, sample_rate: u32) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).expect("create test WAV");
+        for _ in 0..frames {
+            writer.write_sample(0.25_f32).expect("write test sample");
+        }
+        writer.finalize().expect("finalize test WAV");
+    }
 
-        assert!(matches!(error, BuildError::AudioAt { .. }));
-        assert!(
-            error.to_string().contains(&missing.display().to_string()),
-            "error was `{error}`"
-        );
+    /// Publishes a valid entry, then hands back the pieces needed to corrupt it.
+    fn published_entry(root: &Path, cache_key: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let dir = entry_dir(root, cache_key);
+        fs::create_dir_all(&dir).expect("create entry directory");
+        let audio = dir.join("audio.wav");
+        let artifact = dir.join("artifact.json");
+        write_tone(&audio, 2_400, CANONICAL_SAMPLE_RATE);
+        let record = CacheArtifact {
+            schema_version: CACHE_SCHEMA_VERSION.to_owned(),
+            cache_key: cache_key.to_owned(),
+            audio_blake3: hash_file(&audio).expect("hash test audio"),
+            sample_rate: CANONICAL_SAMPLE_RATE,
+            channels: 1,
+            sample_format: "f32le".to_owned(),
+            frames: 2_400,
+        };
+        write_json_atomically(&artifact, &record).expect("write test artifact");
+        (dir, audio, artifact)
     }
 
     #[test]
     fn t1_e0_entry_dir_is_sharded_by_key_prefix() {
-        let root = Path::new("/cache");
-
         assert_eq!(
-            entry_dir(root, "abcdef"),
+            entry_dir(Path::new("/cache"), "abcdef"),
             Path::new("/cache/segments/ab/abcdef")
+        );
+    }
+
+    #[test]
+    fn t1_e0_valid_entry_loads() {
+        let workspace = TempDir::new().expect("create cache workspace");
+        let (dir, audio, artifact) = published_entry(workspace.path(), "abcdef");
+
+        let cached =
+            load_validated(&planned("abcdef"), &dir, &audio, &artifact).expect("entry should load");
+
+        assert_eq!(cached.frames, 2_400);
+        assert_eq!(cached.segment_id, "seg-0001");
+    }
+
+    #[test]
+    fn t1_e0_every_rejection_names_the_entry_directory_and_the_remedy() {
+        let workspace = TempDir::new().expect("create cache workspace");
+
+        // Path 1: unparseable artifact.
+        let (dir, audio, artifact) = published_entry(workspace.path(), "aa1111");
+        fs::write(&artifact, b"{ not json").expect("corrupt artifact");
+        let unparseable = load_validated(&planned("aa1111"), &dir, &audio, &artifact)
+            .expect_err("unparseable artifact must be rejected");
+
+        // Path 2: incompatible declared metadata.
+        let (dir2, audio2, artifact2) = published_entry(workspace.path(), "bb2222");
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&fs::read(&artifact2).expect("read artifact")).expect("parse");
+        record["schema_version"] = serde_json::Value::String("future".to_owned());
+        fs::write(
+            &artifact2,
+            serde_json::to_vec_pretty(&record).expect("serialize"),
+        )
+        .expect("write artifact");
+        let incompatible = load_validated(&planned("bb2222"), &dir2, &audio2, &artifact2)
+            .expect_err("incompatible metadata must be rejected");
+
+        // Path 3: cache-key mismatch.
+        let (dir3, audio3, artifact3) = published_entry(workspace.path(), "cc3333");
+        let mismatched = load_validated(&planned("dd4444"), &dir3, &audio3, &artifact3)
+            .expect_err("cache-key mismatch must be rejected");
+
+        // Path 4: audio that no longer matches its record.
+        let (dir4, audio4, artifact4) = published_entry(workspace.path(), "ee5555");
+        write_tone(&audio4, 1_200, CANONICAL_SAMPLE_RATE);
+        let audio_mismatch = load_validated(&planned("ee5555"), &dir4, &audio4, &artifact4)
+            .expect_err("frame mismatch must be rejected");
+
+        // Path 4b: audio that is no longer readable at all.
+        let (dir5, audio5, artifact5) = published_entry(workspace.path(), "ff6666");
+        fs::write(&audio5, b"not a wav").expect("corrupt audio");
+        let unreadable = load_validated(&planned("ff6666"), &dir5, &audio5, &artifact5)
+            .expect_err("unreadable audio must be rejected");
+
+        for (label, error, dir) in [
+            ("unparseable artifact", unparseable, dir),
+            ("incompatible metadata", incompatible, dir2),
+            ("cache-key mismatch", mismatched, dir3),
+            ("frame mismatch", audio_mismatch, dir4),
+            ("unreadable audio", unreadable, dir5),
+        ] {
+            assert!(
+                matches!(error, BuildError::InvalidCache(_)),
+                "{label} produced the wrong variant: {error}"
+            );
+            let message = error.to_string();
+            assert!(
+                message.contains(&dir.display().to_string()),
+                "{label} did not name the entry directory: `{message}`"
+            );
+            assert!(
+                message.contains("delete"),
+                "{label} did not state the remedy: `{message}`"
+            );
+            assert!(
+                message.contains("seg-0001"),
+                "{label} did not name the segment: `{message}`"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e0_fresh_synthesis_failures_carry_no_delete_remedy() {
+        let workspace = TempDir::new().expect("create cache workspace");
+        let staged = workspace.path().join("staged.wav");
+        write_tone(&staged, 2_400, 48_000);
+
+        let error = validate_wav(&staged).expect_err("non-canonical WAV must be rejected");
+
+        // Nothing is published yet, so advising a deletion would point at a path that does not
+        // exist. The remedy is attached by `load_validated`, not by the validator.
+        assert!(
+            !error.to_string().contains("delete"),
+            "error was `{error}`"
         );
     }
 }
