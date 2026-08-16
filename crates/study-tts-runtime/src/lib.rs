@@ -26,9 +26,6 @@ pub enum BuildError {
     #[error("filesystem operation failed for `{path}`: {source}")]
     FileSystem { path: PathBuf, source: io::Error },
 
-    #[error("audio operation failed: {0}")]
-    Audio(#[from] hound::Error),
-
     #[error(transparent)]
     Synthesis(#[from] SynthesisError),
 
@@ -87,10 +84,20 @@ pub enum BuildError {
     /// inherit an unrelated error message the way `Manifest` did.
     #[error("JSON operation failed: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("audio operation failed for `{path}`: {source}")]
+    AudioAt { path: PathBuf, source: hound::Error }
 }
 
 pub(crate) fn io_error(path: impl Into<PathBuf>, source: io::Error) -> BuildError {
     BuildError::FileSystem {
+        path: path.into(),
+        source,
+    }
+}
+
+pub(crate) fn audio_error(path: impl Into<PathBuf>, source: hound::Error) -> BuildError {
+    BuildError::AudioAt {
         path: path.into(),
         source,
     }

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use study_tts_core::{CANONICAL_SAMPLE_RATE, PlannedSegment};
 use tempfile::Builder;
 
-use crate::{BuildError, SegmentSynthesizer, io_error};
+use crate::{BuildError, SegmentSynthesizer, audio_error, io_error};
 
 const CACHE_SCHEMA_VERSION: &str = "0.1-skeleton";
 
@@ -33,23 +33,43 @@ struct CacheArtifact {
     frames: u32,
 }
 
+/// Directory holding one cache entry. Shared with tests so the sharding scheme is defined once.
+pub(crate) fn entry_dir(cache_root: &Path, cache_key: &str) -> PathBuf {
+    cache_root
+        .join("segments")
+        .join(&cache_key[..2])
+        .join(cache_key)
+}
+
+/// Every rejection names the entry directory and the remedy, because E0-S0 has no quarantine and
+/// a poisoned entry would otherwise fail every subsequent build with no stated way out.
+fn rejected(entry_dir: &Path, segment_id: &str, detail: &str) -> BuildError {
+    BuildError::InvalidCache(format!(
+        "cache entry for segment `{segment_id}` is unusable: {detail}; delete `{}` to regenerate \
+         this segment",
+        entry_dir.display()
+    ))
+}
+
 pub(crate) fn resolve(
     cache_root: &Path,
     segment: &PlannedSegment,
     synthesizer: &dyn SegmentSynthesizer,
 ) -> Result<CachedSegment, BuildError> {
-    let entry_dir = cache_root
-        .join("segments")
-        .join(&segment.cache_key[..2])
-        .join(&segment.cache_key);
+    let entry_dir = entry_dir(cache_root, &segment.cache_key);
     let audio_path = entry_dir.join("audio.wav");
     let artifact_path = entry_dir.join("artifact.json");
 
+    // A partial entry is treated as a miss and re-synthesized. E2-S1 replaces this with explicit
+    // reconciliation between job state, cache artifacts, and outputs.
     if audio_path.is_file() && artifact_path.is_file() {
-        return load_validated(segment, &audio_path, &artifact_path);
+        return load_validated(segment, &entry_dir, &audio_path, &artifact_path);
     }
 
     fs::create_dir_all(&entry_dir).map_err(|error| io_error(&entry_dir, error))?;
+    // The temporary file reserves a unique path inside the entry directory; the synthesizer
+    // replaces it with a new file at that path rather than writing through the handle. E1-S3
+    // hardens this with an explicit staging root and containment checks.
     let staged = Builder::new()
         .prefix("audio-")
         .suffix(".wav")
@@ -63,8 +83,9 @@ pub(crate) fn resolve(
         || report.frames != frames
     {
         return Err(BuildError::InvalidCache(format!(
-            "synthesizer report does not match WAV for segment `{}`",
-            segment.id
+            "synthesizer reported {} Hz, {} channels, and {} frames for segment `{}` but wrote a \
+             WAV with {CANONICAL_SAMPLE_RATE} Hz, 1 channel, and {frames} frames",
+            report.sample_rate, report.channels, report.frames, segment.id
         )));
     }
     let audio_blake3 = hash_file(&staged_path)?;
@@ -95,39 +116,67 @@ pub(crate) fn resolve(
 
 fn load_validated(
     segment: &PlannedSegment,
+    entry_dir: &Path,
     audio_path: &Path,
     artifact_path: &Path,
 ) -> Result<CachedSegment, BuildError> {
     let bytes = fs::read(artifact_path).map_err(|error| io_error(artifact_path, error))?;
     let artifact: CacheArtifact = serde_json::from_slice(&bytes).map_err(|error| {
-        BuildError::InvalidCache(format!(
-            "could not parse `{}`: {error}",
-            artifact_path.display()
-        ))
+        rejected(
+            entry_dir,
+            &segment.id,
+            &format!("`{}` could not be parsed: {error}", artifact_path.display()),
+        )
     })?;
+
     if artifact.schema_version != CACHE_SCHEMA_VERSION
         || artifact.sample_rate != CANONICAL_SAMPLE_RATE
         || artifact.channels != 1
         || artifact.sample_format != "f32le"
     {
-        return Err(BuildError::InvalidCache(format!(
-            "incompatible cache artifact metadata for segment `{}`",
-            segment.id
-        )));
+        return Err(rejected(
+            entry_dir,
+            &segment.id,
+            &format!(
+                "artifact declares schema `{}`, {} Hz, {} channels, and format `{}` but this build \
+                 requires schema `{CACHE_SCHEMA_VERSION}`, {CANONICAL_SAMPLE_RATE} Hz, 1 channel, \
+                 and `f32le`",
+                artifact.schema_version,
+                artifact.sample_rate,
+                artifact.channels,
+                artifact.sample_format
+            ),
+        ));
     }
     if artifact.cache_key != segment.cache_key {
-        return Err(BuildError::InvalidCache(format!(
-            "cache-key mismatch for segment `{}`",
-            segment.id
-        )));
+        return Err(rejected(
+            entry_dir,
+            &segment.id,
+            &format!(
+                "artifact records cache key `{}` but the plan requires `{}`",
+                artifact.cache_key, segment.cache_key
+            ),
+        ));
     }
+
     let frames = validate_wav(audio_path)?;
     let checksum = hash_file(audio_path)?;
-    if frames != artifact.frames || checksum != artifact.audio_blake3 {
-        return Err(BuildError::InvalidCache(format!(
-            "audio checksum or frame count mismatch for segment `{}`",
-            segment.id
-        )));
+    if frames != artifact.frames {
+        return Err(rejected(
+            entry_dir,
+            &segment.id,
+            &format!(
+                "audio holds {frames} frames but the artifact declares {}",
+                artifact.frames
+            ),
+        ));
+    }
+    if checksum != artifact.audio_blake3 {
+        return Err(rejected(
+            entry_dir,
+            &segment.id,
+            "audio checksum does not match the artifact record",
+        ));
     }
 
     Ok(CachedSegment {
@@ -146,7 +195,8 @@ pub(crate) fn hash_file(path: &Path) -> Result<String, BuildError> {
 }
 
 fn validate_wav(path: &Path) -> Result<u32, BuildError> {
-    let mut reader = hound::WavReader::open(path)?;
+    let mut reader =
+        hound::WavReader::open(path).map_err(|error| audio_error(path, error))?;
     let spec = reader.spec();
     if spec.channels != 1
         || spec.sample_rate != CANONICAL_SAMPLE_RATE
@@ -161,7 +211,7 @@ fn validate_wav(path: &Path) -> Result<u32, BuildError> {
 
     let mut frames = 0_u32;
     for sample in reader.samples::<f32>() {
-        let sample = sample?;
+        let sample = sample.map_err(|error| audio_error(path, error))?;
         if !sample.is_finite() || sample.abs() > 1.0 {
             return Err(BuildError::InvalidCache(format!(
                 "`{}` contains invalid float PCM",
@@ -207,4 +257,34 @@ pub(crate) fn write_json_atomically<T: Serialize>(
         .persist(path)
         .map_err(|error| io_error(path, error.error))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn t1_e0_missing_audio_names_the_file() {
+        let workspace = TempDir::new().expect("create cache workspace");
+        let missing = workspace.path().join("absent.wav");
+
+        let error = validate_wav(&missing).expect_err("missing audio must fail");
+
+        assert!(matches!(error, BuildError::AudioAt { .. }));
+        assert!(
+            error.to_string().contains(&missing.display().to_string()),
+            "error was `{error}`"
+        );
+    }
+
+    #[test]
+    fn t1_e0_entry_dir_is_sharded_by_key_prefix() {
+        let root = Path::new("/cache");
+
+        assert_eq!(
+            entry_dir(root, "abcdef"),
+            Path::new("/cache/segments/ab/abcdef")
+        );
+    }
 }

@@ -71,3 +71,6 @@ jobs:
                   done < "$TEST_BINARIES"
                 '\''
             '
+
+      - name: Run doc tests offline
+        run: cargo test --offline --workspace --doc --locked

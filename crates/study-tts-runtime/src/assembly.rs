@@ -3,7 +3,7 @@ use std::path::Path;
 use study_tts_core::CANONICAL_SAMPLE_RATE;
 use tempfile::Builder;
 
-use crate::{BuildError, cache::CachedSegment, io_error};
+use crate::{BuildError, audio_error, cache::CachedSegment, io_error};
 
 /// Frames of silence written after a segment. Shared by the expected-total calculation and the
 /// write loop so the two cannot drift apart.
@@ -19,9 +19,10 @@ fn pause_frames(segment: &CachedSegment) -> Result<u64, BuildError> {
 fn expected_frames(segments: &[CachedSegment]) -> Result<u64, BuildError> {
     let mut expected = 0_u64;
     for segment in segments {
+        let pause = pause_frames(segment)?;
         expected = expected
             .checked_add(u64::from(segment.frames))
-            .and_then(|running| running.checked_add(pause_frames(segment).ok()?))
+            .and_then(|running| running.checked_add(pause))
             .ok_or_else(|| BuildError::InvalidCache("expected frame count overflow".to_owned()))?;
     }
     Ok(expected)
@@ -47,14 +48,22 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
         bits_per_sample: 32,
         sample_format: hound::SampleFormat::Float,
     };
-    let mut writer = hound::WavWriter::new(staged.as_file_mut(), spec)?;
+    let mut writer = hound::WavWriter::new(staged.as_file_mut(), spec)
+        .map_err(|error| audio_error(destination, error))?;
     let mut total_frames = 0_u64;
 
     for segment in segments {
-        let mut reader = hound::WavReader::open(&segment.audio_path)?;
+        let mut reader = hound::WavReader::open(&segment.audio_path)
+            .map_err(|error| audio_error(&segment.audio_path, error))?;
         let mut segment_frames = 0_u64;
+
         for sample in reader.samples::<f32>() {
-            writer.write_sample(sample?)?;
+            // The read and the write fail for different reasons and name different files, so they
+            // are mapped separately rather than through one nested `?`.
+            let sample = sample.map_err(|error| audio_error(&segment.audio_path, error))?;
+            writer
+                .write_sample(sample)
+                .map_err(|error| audio_error(destination, error))?;
             segment_frames = segment_frames.checked_add(1).ok_or_else(|| {
                 BuildError::InvalidCache("assembled frame count overflow".to_owned())
             })?;
@@ -78,7 +87,9 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
 
         let pause = pause_frames(segment)?;
         for _ in 0..pause {
-            writer.write_sample(0.0_f32)?;
+            writer
+                .write_sample(0.0_f32)
+                .map_err(|error| audio_error(destination, error))?;
         }
 
         total_frames = total_frames
@@ -95,7 +106,9 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
         )));
     }
 
-    writer.finalize()?;
+    writer
+        .finalize()
+        .map_err(|error| audio_error(destination, error))?;
     staged
         .persist(destination)
         .map_err(|error| io_error(destination, error.error))?;
@@ -173,6 +186,22 @@ mod tests {
         assert!(
             !master.exists(),
             "a rejected assembly must not persist a master WAV"
+        );
+    }
+
+    #[test]
+    fn t1_e0_missing_segment_audio_names_the_file() {
+        let workspace = TempDir::new().expect("create assembly workspace");
+        let missing = workspace.path().join("does-not-exist.wav");
+        let segments = vec![segment(missing.clone(), 2_400, 75)];
+        let master = workspace.path().join("lesson.wav");
+
+        let error = assemble(&segments, &master).expect_err("missing segment audio must fail");
+
+        assert!(matches!(error, BuildError::AudioAt { .. }));
+        assert!(
+            error.to_string().contains(&missing.display().to_string()),
+            "error was `{error}`"
         );
     }
 
