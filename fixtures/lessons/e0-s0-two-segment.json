@@ -1,0 +1,29 @@
+{
+  "schema_version": "0.1-skeleton",
+  "lesson_id": "e0-s0-walking-skeleton",
+  "title": "Walking Skeleton",
+  "segments": [
+    {
+      "id": "seg-0001",
+      "speaker": "nadia",
+      "role": "explanation",
+      "source_refs": ["block-001"],
+      "display_text": "A cache stores reusable work.",
+      "spoken_text": "A cache stores reusable work.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 75,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0002",
+      "speaker": "tom",
+      "role": "recap",
+      "source_refs": ["block-002"],
+      "display_text": "A cache hit avoids repeated synthesis.",
+      "spoken_text": "A cache hit avoids repeated synthesis.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 125,
+      "review_status": "approved"
+    }
+  ]
+}

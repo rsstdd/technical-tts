@@ -177,12 +177,44 @@ The arrows define prerequisites, not a requirement to serialize independent trac
 3. Process a two-segment fixture through cached WAV, Rust PCM assembly, real FFmpeg M4A, and a minimal manifest.
 4. Run the skeleton in CI with no model or network requirement.
 5. Record the integration order and keep the skeleton green through every later story.
+6. Reject unsafe lesson and segment IDs and verify canonical managed-directory containment before output writes.
 
 **Tests**
 
 - `t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest`
-- `t4_e0_skeleton_runs_offline_without_model_artifacts`
-- `t4_e0_skeleton_completes_within_integration_tier_budget`
+- `t4_e0_skeleton_runs_without_model_artifacts`
+- `t4_e0_cache_hit_avoids_synthesis_and_is_byte_identical`
+- `t4_e0_cache_identity_proves_hits_and_speech_affecting_misses`
+- `t1_e0_valid_lesson_parses`
+- `t1_e0_duplicate_segment_id_is_rejected`
+- `t1_e0_unapproved_segment_is_rejected`
+- `t1_e0_review_context_invariants_have_distinct_errors`
+- `t1_e0_synthesis_selection_invariants_have_distinct_errors`
+- `t1_e0_non_portable_lesson_and_segment_ids_are_rejected`
+- `t1_e0_ffmpeg_arguments_are_pinned_and_explicit`
+- `t1_e0_empty_identifiers_are_reported_as_missing_not_malformed`
+- `t1_e0_portable_ids_at_the_length_bound_are_accepted`
+- `t1_e0_synthesizer_identity_participates_in_the_cache_key`
+- `t1_e0_assembled_frame_count_matches_the_plan`
+- `t1_e0_declared_frame_count_mismatch_is_rejected_before_persisting`
+- `t1_e0_missing_segment_audio_names_the_file`
+- `t1_e0_pause_frames_are_exact_for_the_canonical_rate`
+- `t1_e0_ffprobe_arguments_are_pinned_and_explicit`
+- `t1_e0_entry_dir_is_sharded_by_key_prefix`
+- `t1_e0_valid_entry_loads`
+- `t1_e0_every_rejection_names_the_entry_directory_and_the_remedy`
+- `t1_e0_fresh_synthesis_failures_carry_no_delete_remedy`
+- `t1_e0_plan_is_stable_for_identical_inputs`
+- `t4_e0_leaf_symlink_escape_is_rejected_before_creating_anything`
+- `t3_e0_registered_fixture_checksums_match_test_data_manifest`
+- `t4_e0_external_tool_preflight_names_missing_binary`
+- `t4_e0_ffprobe_rejects_non_aac_input`
+- `t4_e0_lesson_id_cannot_escape_the_workspace`
+- `t4_e0_managed_directory_symlink_escape_is_rejected`
+- `t4_e0_unapproved_content_fails_before_tools_and_synthesis`
+- `t4_e0_cache_metadata_mismatch_is_rejected`
+- `t4_e0_private_preview_cannot_enter_production_publication`
+- CI check `Run T4 suite without runtime egress`, which executes prebuilt test binaries as the normal runner user in an egress-denied network namespace under a 60-second deadline
 
 **Acceptance:** the real process boundaries execute end to end with fakes. MP3, chapters, captions, full provenance, and hardened conditioning remain G1 work rather than day-two scope.
 

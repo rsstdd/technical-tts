@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  walking-skeleton:
+    name: walking-skeleton
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Restore locked Rust dependencies
+        run: cargo fetch --locked
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint offline
+        run: cargo clippy --offline --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Build workspace test binaries offline
+        run: |
+          cargo test --offline --workspace --all-targets --locked --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' \
+            | sort -u > "$RUNNER_TEMP/study-tts-test-binaries"
+          test -s "$RUNNER_TEMP/study-tts-test-binaries"
+
+      - name: Run T4 suite without runtime egress
+        run: |
+          sudo unshare --net -- env \
+            "RUNNER_USER=$(id -un)" \
+            "HOME=$HOME" \
+            "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
+            "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
+            "PATH=$PATH" \
+            "TEST_BINARIES=$RUNNER_TEMP/study-tts-test-binaries" \
+            bash -euo pipefail -c '
+              test "$(ip -o link show | wc -l)" -eq 1
+              ip link set dev lo up
+              exec runuser -u "$RUNNER_USER" -- env \
+                "HOME=$HOME" \
+                "CARGO_HOME=$CARGO_HOME" \
+                "RUSTUP_HOME=$RUSTUP_HOME" \
+                "PATH=$PATH" \
+                "TEST_BINARIES=$TEST_BINARIES" \
+                timeout --signal=TERM 60s \
+                bash -euo pipefail -c '\''
+                  while IFS= read -r test_binary; do
+                    "$test_binary"
+                  done < "$TEST_BINARIES"
+                '\''
+            '
+
+      - name: Run doc tests offline
+        run: cargo test --offline --workspace --doc --locked
