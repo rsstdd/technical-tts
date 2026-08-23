@@ -48,9 +48,27 @@ fn read_record(dir: &Path, record: &'static str) -> Result<Vec<u8>, BuildError> 
     }
 }
 
-fn verify_checksum(dir: &Path, name: &str, recorded: &str) -> Result<(), BuildError> {
-    let path = dir.join(name);
-    let computed = cache::hash_file(&path)?;
+/// Verifies one recorded artifact against its checksum.
+///
+/// An absent artifact is reported as a missing record rather than as an IO
+/// failure. `reference.wav` and `conditionals.pt` are required by the ADR-0001
+/// §12.1 layout exactly as `profile.json` and `consent.json` are, so their
+/// absence is the same class of refusal and deserves the same remedy owner —
+/// not "filesystem operation failed", which names no policy and no person.
+fn verify_checksum(dir: &Path, record: &'static str, recorded: &str) -> Result<(), BuildError> {
+    let path = dir.join(record);
+    // Mapped from the real read rather than probed with an existence check
+    // first, so there is no window in which the artifact can vanish between the
+    // two and be reported as the wrong failure.
+    let computed = cache::hash_file(&path).map_err(|error| match &error {
+        BuildError::FileSystem { source, .. } if source.kind() == io::ErrorKind::NotFound => {
+            BuildError::MissingVoiceRecord {
+                profile_dir: dir.to_path_buf(),
+                record,
+            }
+        }
+        _ => error,
+    })?;
     if computed != recorded {
         return Err(BuildError::VoiceChecksumMismatch {
             profile_dir: dir.to_path_buf(),

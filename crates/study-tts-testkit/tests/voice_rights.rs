@@ -343,3 +343,43 @@ fn t3_e0_production_manifest_is_a_strict_typed_boundary() {
         );
     }
 }
+
+/// Every record the ADR-0001 §12.1 layout requires refuses the same way when it
+/// is absent, so no one of them degrades into a bare filesystem error.
+#[test]
+fn t4_e0_every_absent_voice_record_names_its_remedy_owner() {
+    for record in [
+        "profile.json",
+        "consent.json",
+        "reference.wav",
+        "conditionals.pt",
+    ] {
+        let workspace = TempDir::new().expect("create isolated workspace");
+        let voice_dir = write_voice_profile_fixture(
+            &workspace.path().join("voice"),
+            &VoiceProfileFixtureSpec::default(),
+        );
+        std::fs::remove_file(voice_dir.join(record)).expect("remove a required record");
+        let worker = DeterministicToneWorker::default();
+
+        let error = build_preview(
+            request_without_ffmpeg(workspace.path(), &voice_dir),
+            &worker,
+        )
+        .expect_err("an absent record must refuse the profile");
+
+        assert!(
+            matches!(
+                error,
+                BuildError::MissingVoiceRecord { record: reported, .. } if reported == record
+            ),
+            "removing `{record}` produced `{error}`"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains(record) && message.contains("project owner"),
+            "removing `{record}` did not name the record and the remedy owner: `{message}`"
+        );
+        assert_eq!(worker.synthesis_count(), 0);
+    }
+}

@@ -8,6 +8,12 @@ use thiserror::Error;
 /// suffixes later stories append.
 const MAX_IDENTIFIER_LENGTH: usize = 64;
 
+/// Layout version this module accepts for a lesson document.
+///
+/// Independent of the cache and manifest schema versions despite sharing a
+/// value today: the three version different documents and move separately.
+const LESSON_SCHEMA_VERSION: &str = "0.1-skeleton";
+
 /// One authored lesson, as it is written on disk and before any planning has
 /// happened.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -155,7 +161,7 @@ impl Lesson {
     /// Checks every lesson invariant, returning the first violation as its own
     /// error.
     pub fn validate(&self) -> Result<(), LessonError> {
-        if self.schema_version != "0.1-skeleton" {
+        if self.schema_version != LESSON_SCHEMA_VERSION {
             return Err(LessonError::UnsupportedSchema(self.schema_version.clone()));
         }
         // An absent value and a malformed value are different authoring

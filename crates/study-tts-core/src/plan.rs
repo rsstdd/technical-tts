@@ -15,6 +15,13 @@ use crate::{
 /// an export can never disagree about what a frame is.
 pub const CANONICAL_SAMPLE_RATE: u32 = 24_000;
 
+/// The one sample format this project renders, caches, assembles, and exports.
+///
+/// Named alongside the sample rate because both are speech-affecting inputs to
+/// every cache key: changing either invalidates every cache entry in the
+/// project, which is a decision rather than an edit.
+pub const CANONICAL_SAMPLE_FORMAT: &str = "f32le";
+
 /// The synthesis identity of one segment: BLAKE3 over the canonical
 /// serialization of every speech-affecting input, rendered as lowercase
 /// hexadecimal (ADR-0001 §12.5).
@@ -220,7 +227,7 @@ impl RenderPlan {
                     style: &segment.style,
                     sample_rate: CANONICAL_SAMPLE_RATE,
                     channels: 1,
-                    sample_format: "f32le",
+                    sample_format: CANONICAL_SAMPLE_FORMAT,
                 };
                 let identity_bytes = serde_json::to_vec(&identity)
                     .expect("serializing a fixed synthesis identity cannot fail");

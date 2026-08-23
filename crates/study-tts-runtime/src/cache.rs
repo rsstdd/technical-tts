@@ -5,15 +5,14 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use study_tts_core::{CANONICAL_SAMPLE_RATE, CacheKey, PlannedSegment, is_blake3_hex};
+use study_tts_core::{
+    CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, CacheKey, PlannedSegment, is_blake3_hex,
+};
 use tempfile::Builder;
 
 use crate::{AudioFault, BuildError, CacheEntryFault, SegmentSynthesizer, io_error};
 
 const CACHE_SCHEMA_VERSION: &str = "0.1-skeleton";
-
-/// Sample format every cache entry and every assembled master carries.
-const CANONICAL_SAMPLE_FORMAT: &str = "f32le";
 
 /// Bytes held in memory at once while hashing a file.
 ///
@@ -450,7 +449,7 @@ mod tests {
             audio_blake3: hash_file(&audio).expect("hash test audio"),
             sample_rate: CANONICAL_SAMPLE_RATE,
             channels: 1,
-            sample_format: "f32le".to_owned(),
+            sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
             frames: 2_400,
         };
         write_json_atomically(&artifact, &record).expect("write test artifact");

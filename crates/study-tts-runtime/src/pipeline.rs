@@ -84,12 +84,12 @@ pub fn build_preview(
         .map(|segment| cache::resolve(&cache_root, segment, synthesizer))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let master_wav = output_root.join("lesson.wav");
+    let master_wav = output_root.join(manifest::MASTER_WAV_NAME);
     assembly::assemble(&cached_segments, &master_wav)?;
-    let m4a = output_root.join("lesson.m4a");
+    let m4a = output_root.join(manifest::M4A_NAME);
     let ffmpeg_execution = export::export_m4a(&ffmpeg, &master_wav, &m4a)?;
     let ffprobe_execution = export::probe_m4a(&ffprobe, &m4a)?;
-    let manifest_path = output_root.join("manifest.json");
+    let manifest_path = output_root.join(manifest::MANIFEST_NAME);
     manifest::write(
         &manifest_path,
         &lesson.lesson_id,

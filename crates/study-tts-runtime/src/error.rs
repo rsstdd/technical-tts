@@ -45,10 +45,11 @@ pub enum BuildError {
     /// Blocked"): the owner resolves the record; the profile is never deleted
     /// or repaired automatically.
     ///
-    /// `profile.json` and `consent.json` share this variant because they are
-    /// the same class of refusal — a record the policy requires is absent — and
-    /// an absent profile record deserves the same remedy-bearing message as an
-    /// absent consent record, not a bare IO error.
+    /// All four records of the ADR-0001 §12.1 layout share this variant —
+    /// `profile.json`, `consent.json`, `reference.wav`, `conditionals.pt` —
+    /// because they are one class of refusal: a record the policy requires is
+    /// absent. Each deserves the same remedy-bearing message, not a bare IO
+    /// error naming neither the policy nor a person.
     #[error(
         "voice profile at `{profile_dir}` is refused: required record `{record}` is missing; \
          profile load fails closed and the project owner must supply the record before use"
