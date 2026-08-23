@@ -30,7 +30,12 @@ Confirmed the ratification block of the register: the ladder's seven steps, the 
 | Ladder steps with preserved invariant | 7 | 7 | Pass |
 | Ratification signature present | Required | Project owner and engineering owner: Ross Todd, Ratified | Pass |
 | Ratification date present | Required | 2026-08-23 | Pass |
-| Ratified before schedule pressure | Required | Ratified during E0, before any descope has been requested | Pass |
+| Ratified before schedule pressure | Required | Ratified 2026-08-23, during E0; no descope request or applied ladder step is recorded as of that date | Pass |
+
+Dated ordering basis for the final row: E0-S0 merged 2026-08-16 (`fb2db18`) and E0-S1 was still
+in progress at ratification, placing ratification inside E0; as of 2026-08-23 the register lists
+every ladder step as unapplied, and repository history contains no descope request
+(`git log --all -i --grep=descope` matches only the ratification commit itself).
 
 **Overall: PASS.**
 
