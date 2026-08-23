@@ -372,6 +372,61 @@ pub enum BuildError {
         version: String,
     },
 
+    /// The manifest is not JSON, or not the shape its declared version requires.
+    ///
+    /// Distinct from the `Json` catch-all: the subsystem is known here, and an
+    /// operator reading "JSON operation failed" would not learn that publication
+    /// refused their manifest. An unknown top-level field lands here too, because a
+    /// field this build cannot evaluate is one it must not publish past.
+    #[error(
+        "production release is refused: the manifest is not a valid production manifest \
+         ({source}); the project owner must correct the manifest before publication"
+    )]
+    MalformedProductionManifest {
+        /// What the parser reported.
+        source: serde_json::Error,
+    },
+
+    /// The manifest names no classified source at all.
+    ///
+    /// Separate from `UnresolvedContentRights`, which is a source whose
+    /// classification was recorded and does not permit release. Declaring nothing
+    /// is not the same as declaring something unresolved, and the remedies differ.
+    #[error(
+        "production release is refused: the manifest declares no `content_rights` \
+         classification for its sources; the project owner must classify every source in its \
+         rights record before publication"
+    )]
+    MissingContentRightsDeclaration,
+
+    /// A declaration names an identifier but leaves it blank.
+    ///
+    /// Distinct from an absent field, which serde refuses outright: a blank
+    /// identifier parses and then traces to no record, so it would satisfy a rights
+    /// gate while naming nothing.
+    #[error(
+        "production release is refused: the `{section}` manifest section declares an empty \
+         `{field}`; the project owner must name it before publication"
+    )]
+    EmptyManifestIdentifier {
+        /// The manifest section holding the declaration.
+        section: &'static str,
+        /// The identifier field left blank.
+        field: &'static str,
+    },
+
+    /// The manifest satisfied every rights precondition this build can check, and
+    /// the release gates that would decide the rest do not exist yet.
+    ///
+    /// Separate from `PublicationRefused` so a manifest that passed its rights
+    /// checks is not reported the same way as one refused by policy. Reaching this
+    /// is the closest a manifest can currently come to acceptance.
+    #[error(
+        "production release is refused: manifest acceptance is unavailable before the \
+         production gates of `docs/governance/RELEASE-PROFILES.md` §3 are implemented"
+    )]
+    ProductionGatesUnavailable,
+
     /// A record could not be serialized to its destination.
     #[error("could not write JSON to `{path}`: {source}")]
     WriteJson {

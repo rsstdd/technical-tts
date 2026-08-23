@@ -196,6 +196,47 @@ pub fn publish(_preview: &BuildResult) -> Result<(), BuildError> {
     })
 }
 
+/// The one manifest version this build knows how to evaluate.
+const PRODUCTION_MANIFEST_VERSION: &str = "1.0";
+
+/// Just enough of any manifest to learn which shape to expect.
+///
+/// Deliberately not strict: the version is what says which fields are legal, so
+/// a document cannot be held to a shape before it has been read.
+#[derive(Debug, Deserialize)]
+struct ManifestVersion {
+    schema_version: Option<String>,
+}
+
+/// The provisional production-manifest shape, pending the E1-S1 versioned JSON
+/// Schemas.
+///
+/// `deny_unknown_fields` because a top-level field this build does not know
+/// is a field it cannot gate on, and publication must refuse what it cannot
+/// evaluate rather than ignore it.
+///
+/// The rights sections stay as `Value` and are deserialized one at a time by
+/// `declare_section`, so a malformed entry names the section it is in.
+/// `serde_json` errors carry no field path, so typing them here would tell an
+/// operator that something failed to parse without saying where.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProductionManifest {
+    schema_version: String,
+    #[expect(
+        dead_code,
+        reason = "read for shape validation; gated once the release gates exist"
+    )]
+    release_status: String,
+    #[expect(
+        dead_code,
+        reason = "read for shape validation; consumed by release evidence"
+    )]
+    lesson_id: String,
+    content_rights: Option<Value>,
+    voice_profiles: Option<Value>,
+}
+
 /// A voice profile a production manifest declares it used.
 ///
 /// Provisional shape pending the E1-S1 versioned JSON Schemas, like
@@ -205,11 +246,19 @@ pub fn publish(_preview: &BuildResult) -> Result<(), BuildError> {
 struct DeclaredVoiceProfile {
     profile_id: String,
     approval: RightsDecision,
-    #[expect(
-        dead_code,
-        reason = "read for shape validation; consumed by release evidence"
-    )]
     rights_record_id: String,
+}
+
+/// Rejects an identifier that parses but names nothing.
+fn require_identifier(
+    section: &'static str,
+    field: &'static str,
+    value: &str,
+) -> Result<(), BuildError> {
+    if value.trim().is_empty() {
+        return Err(BuildError::EmptyManifestIdentifier { section, field });
+    }
+    Ok(())
 }
 
 /// Parses one rights section of a production manifest, naming the section when
@@ -235,24 +284,40 @@ fn declare_section<'de, T: Deserialize<'de>>(
 /// distribution blocks publish") over provisional `content_rights` and
 /// `voice_profiles` manifest sections that the E1-S1 schema story will version.
 pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
-    let manifest: Value = serde_json::from_slice(bytes)?;
-    let version = manifest["schema_version"]
-        .as_str()
-        .unwrap_or("missing")
-        .to_owned();
-    if version != "1.0" {
+    // Two stages, because the version is what says which shape is legal: a
+    // document of an unknown version must be reported as an unknown version, not
+    // as a violation of a shape it never claimed.
+    let declared_version: ManifestVersion = serde_json::from_slice(bytes)
+        .map_err(|source| BuildError::MalformedProductionManifest { source })?;
+    let version = declared_version
+        .schema_version
+        .unwrap_or_else(|| "missing".to_owned());
+    if version != PRODUCTION_MANIFEST_VERSION {
         return Err(BuildError::UnsupportedProductionManifest { version });
     }
 
-    let Some(declared) = manifest.get("content_rights") else {
-        return Err(BuildError::PublicationRefused {
-            reason: "production manifest declares no content_rights classification for its \
-                     sources"
-                .to_owned(),
-        });
-    };
-    let declared = declare_section::<SourceRightsDeclaration>("content_rights", declared)?;
+    let manifest: ProductionManifest = serde_json::from_slice(bytes)
+        .map_err(|source| BuildError::MalformedProductionManifest { source })?;
+    debug_assert_eq!(manifest.schema_version, PRODUCTION_MANIFEST_VERSION);
+
+    // An absent section and an empty one are the same claim: nothing was
+    // classified. A production lesson always has at least one source.
+    let declared = manifest
+        .content_rights
+        .as_ref()
+        .map(|section| declare_section::<SourceRightsDeclaration>("content_rights", section))
+        .transpose()?
+        .unwrap_or_default();
+    if declared.is_empty() {
+        return Err(BuildError::MissingContentRightsDeclaration);
+    }
     for source in &declared {
+        require_identifier("content_rights", "source_id", &source.source_id)?;
+        require_identifier(
+            "content_rights",
+            "rights_record_id",
+            &source.rights_record_id,
+        )?;
         if !source.classification.permits_production_release() {
             return Err(BuildError::UnresolvedContentRights {
                 source_id: source.source_id.clone(),
@@ -261,8 +326,14 @@ pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
         }
     }
 
-    if let Some(profiles) = manifest.get("voice_profiles") {
-        for profile in declare_section::<DeclaredVoiceProfile>("voice_profiles", profiles)? {
+    if let Some(section) = &manifest.voice_profiles {
+        for profile in declare_section::<DeclaredVoiceProfile>("voice_profiles", section)? {
+            require_identifier("voice_profiles", "profile_id", &profile.profile_id)?;
+            require_identifier(
+                "voice_profiles",
+                "rights_record_id",
+                &profile.rights_record_id,
+            )?;
             if profile.approval != RightsDecision::Approved {
                 return Err(BuildError::Voice(VoiceError::ProfileNotApproved {
                     profile_id: profile.profile_id,
@@ -272,8 +343,5 @@ pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
         }
     }
 
-    Err(BuildError::PublicationRefused {
-        reason: "production manifest acceptance is unavailable before the production gates"
-            .to_owned(),
-    })
+    Err(BuildError::ProductionGatesUnavailable)
 }

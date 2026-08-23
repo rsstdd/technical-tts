@@ -226,22 +226,27 @@ fn t4_e0_production_release_rejects_unresolved_content_rights_classification() {
     }]));
     assert!(matches!(
         validate(&resolved),
-        Err(BuildError::PublicationRefused { .. })
+        Err(BuildError::ProductionGatesUnavailable)
     ));
 
-    // A manifest with no classification section at all is refused, naming the
-    // absent section.
+    // Declaring nothing and declaring something unresolved are different claims
+    // with different remedies, so an absent section and an empty one are both
+    // refused as their own error rather than as the gate refusal.
     let mut undeclared = production_manifest(serde_json::json!([]));
+    assert!(
+        matches!(
+            validate(&undeclared),
+            Err(BuildError::MissingContentRightsDeclaration)
+        ),
+        "an empty classification list must be refused as undeclared"
+    );
     undeclared
         .as_object_mut()
         .expect("manifest is an object")
         .remove("content_rights");
     let error = validate(&undeclared).expect_err("an undeclared manifest must refuse production");
     assert!(
-        matches!(
-            error,
-            BuildError::PublicationRefused { ref reason } if reason.contains("content_rights")
-        ),
+        matches!(error, BuildError::MissingContentRightsDeclaration),
         "undeclared rights produced `{error}`"
     );
 
@@ -261,4 +266,80 @@ fn t4_e0_production_release_rejects_unresolved_content_rights_classification() {
         ),
         "unknown classification produced `{error}`"
     );
+}
+
+/// The manifest is an external contract, so its whole shape is refused when it
+/// is wrong — not only the parts a rights check happens to read.
+#[test]
+fn t3_e0_production_manifest_is_a_strict_typed_boundary() {
+    let resolved = serde_json::json!([{
+        "source_id": "lesson-source-1",
+        "classification": "owner_authored",
+        "rights_record_id": "rights-qualification-sources-v1",
+    }]);
+
+    // Bytes that are not JSON at all are reported as a manifest failure, not as
+    // the generic JSON catch-all, which names no subsystem.
+    let error = validate_production_manifest(b"{ not json")
+        .expect_err("malformed bytes must refuse production");
+    assert!(
+        matches!(error, BuildError::MalformedProductionManifest { .. }),
+        "malformed JSON produced `{error}`"
+    );
+
+    // A field this build cannot evaluate must not be published past. The version
+    // is read first, so this is refused as a shape violation of version 1.0
+    // rather than as an unknown version.
+    let mut extra = production_manifest(resolved.clone());
+    extra["unexpected_field"] = serde_json::json!(true);
+    let error = validate(&extra).expect_err("an unknown top-level field must refuse production");
+    assert!(
+        matches!(error, BuildError::MalformedProductionManifest { .. }),
+        "unknown top-level field produced `{error}`"
+    );
+
+    // A blank identifier parses and then traces to no record, so it would satisfy
+    // the classification check while naming nothing.
+    for (section, field, manifest) in [
+        ("content_rights", "source_id", {
+            let mut blank = resolved.clone();
+            blank[0]["source_id"] = serde_json::json!("   ");
+            production_manifest(blank)
+        }),
+        ("content_rights", "rights_record_id", {
+            let mut blank = resolved.clone();
+            blank[0]["rights_record_id"] = serde_json::json!("");
+            production_manifest(blank)
+        }),
+        ("voice_profiles", "profile_id", {
+            let mut with_voice = production_manifest(resolved.clone());
+            with_voice["voice_profiles"] = serde_json::json!([{
+                "profile_id": "",
+                "approval": "approved",
+                "rights_record_id": "rights-voice-owner-fallback-v1",
+            }]);
+            with_voice
+        }),
+        ("voice_profiles", "rights_record_id", {
+            let mut with_voice = production_manifest(resolved.clone());
+            with_voice["voice_profiles"] = serde_json::json!([{
+                "profile_id": "synthetic-test-voice-v1",
+                "approval": "approved",
+                "rights_record_id": "  ",
+            }]);
+            with_voice
+        }),
+    ] {
+        let error = validate(&manifest).expect_err("a blank identifier must refuse production");
+        assert!(
+            matches!(
+                error,
+                BuildError::EmptyManifestIdentifier {
+                    section: reported_section,
+                    field: reported_field,
+                } if reported_section == section && reported_field == field
+            ),
+            "blank `{section}.{field}` produced `{error}`"
+        );
+    }
 }
