@@ -14,10 +14,15 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
+/// Everything one preview build needs, named explicitly rather than read from ambient state.
 pub struct BuildRequest {
+    /// The lesson document to build.
     pub lesson_path: PathBuf,
+    /// Root the build owns; outputs, cache, and staging all resolve beneath it.
     pub workspace: PathBuf,
+    /// FFmpeg to encode with, resolved and version-probed before any work begins.
     pub ffmpeg_executable: PathBuf,
+    /// ffprobe to validate the encoded output with, on the same terms.
     pub ffprobe_executable: PathBuf,
     /// Voice profile directory in the ADR-0001 §12.1 layout, gated fail-closed before any tool
     /// or synthesis work. `None` is valid only while the deterministic skeleton worker is the
@@ -26,12 +31,20 @@ pub struct BuildRequest {
 }
 
 #[derive(Clone, Debug)]
+/// What a successful preview build wrote.
 pub struct BuildResult {
+    /// The assembled canonical-format master.
     pub master_wav: PathBuf,
+    /// The encoded distribution copy.
     pub m4a: PathBuf,
+    /// The manifest recording segments, checksums, and the tools used.
     pub manifest: PathBuf,
 }
 
+/// Builds one lesson into a private preview.
+///
+/// Every gate runs before any tool or synthesis work, so a refusal names the gate rather than a
+/// missing binary. The result is always a private preview; only `publish` can claim more.
 pub fn build_preview(
     request: BuildRequest,
     synthesizer: &dyn SegmentSynthesizer,
@@ -163,6 +176,10 @@ fn managed_subdirectory(root: &Path, component: &str) -> Result<PathBuf, BuildEr
     Ok(resolved)
 }
 
+/// Refuses publication for the E0-S0 skeleton.
+///
+/// The production gates of `docs/governance/RELEASE-PROFILES.md` §3 are not implemented, and a
+/// build that cannot evaluate them must refuse rather than publish unevaluated.
 pub fn publish(_preview: &BuildResult) -> Result<(), BuildError> {
     Err(BuildError::PublicationRefused {
         reason: "E0-S0 outputs are private previews and production gates are not implemented"

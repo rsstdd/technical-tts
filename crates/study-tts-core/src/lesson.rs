@@ -9,86 +9,132 @@ const MAX_IDENTIFIER_LENGTH: usize = 64;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+/// One authored lesson, as it is written on disk and before any planning has happened.
 pub struct Lesson {
+    /// Schema this document claims; an unrecognized version is refused rather than guessed at.
     pub schema_version: String,
+    /// Stable identity of the lesson, which also names its output directory.
     pub lesson_id: String,
+    /// Human-readable title; display only, and deliberately outside every cache key.
     pub title: String,
+    /// The lesson's segments in speaking order.
     pub segments: Vec<LessonSegment>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+/// One continuously spoken passage, the unit that is synthesized, cached, and retaken.
 pub struct LessonSegment {
+    /// Identity of the segment within its lesson, unique and portable as a path component.
     pub id: String,
+    /// Which voice speaks this segment.
     pub speaker: String,
+    /// The speaker's role in the lesson, for review context rather than for synthesis.
     pub role: String,
+    /// Source material this segment was written from, so a claim can be traced back.
     pub source_refs: Vec<String>,
+    /// Text as a reviewer reads it; display only, and outside the cache key.
     pub display_text: String,
+    /// Text as it is spoken, which is what synthesis and the cache key are derived from.
     pub spoken_text: String,
+    /// Delivery style requested of the voice.
     pub style: String,
+    /// Silence written after this segment, in milliseconds.
     pub pause_after_ms: u32,
+    /// Whether a human has approved this segment for synthesis.
     pub review_status: ReviewStatus,
 }
 
+/// Whether a segment has cleared human review.
+///
+/// Closed vocabulary rather than a flag: an unrecognized status is a parse error, so a document
+/// cannot invent a state that would be treated as approved by default.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewStatus {
+    /// A human approved this segment; the only status synthesis accepts.
     Approved,
+    /// Not yet submitted for review.
     Draft,
+    /// Submitted and awaiting a decision.
     NeedsReview,
 }
 
+/// Why a lesson document was refused.
+///
+/// One variant per violated invariant, so a test asserts the exact failure rather than a
+/// substring, and an author is told which mistake they made. Absent and malformed are kept
+/// separate throughout: they are different authoring mistakes with different fixes.
 #[derive(Debug, Error)]
 pub enum LessonError {
+    /// The bytes are not JSON, or not the shape this schema declares.
     #[error("lesson JSON is invalid: {0}")]
     InvalidJson(#[from] serde_json::Error),
+    /// The shape parsed, but this build does not know that version and will not guess.
     #[error("unsupported lesson schema version `{0}`")]
     UnsupportedSchema(String),
+    /// No lesson identity was supplied at all.
     #[error("lesson_id must not be empty")]
     MissingLessonId,
+    /// An identity was supplied but could not safely name a directory.
     #[error(
         "lesson_id `{0}` must be 1-64 ASCII letters, digits, hyphen, underscore, or dot, and must \
          not start with a dot, because it names an output directory"
     )]
     InvalidLessonId(String),
+    /// A lesson with nothing to speak is an authoring mistake, not an empty build.
     #[error("lesson must contain at least one segment")]
     MissingSegments,
+    /// A segment supplied no identity at all.
     #[error("segment ID must not be empty")]
     MissingSegmentId,
+    /// An identity was supplied but could not safely name a path component.
     #[error(
         "segment ID `{0}` must be 1-64 ASCII letters, digits, hyphen, underscore, or dot, and must \
          not start with a dot"
     )]
     InvalidSegmentId(String),
+    /// Two segments share an identity, which would collide in the cache and the manifest.
     #[error("segment ID `{0}` is duplicated")]
     DuplicateSegmentId(String),
+    /// The segment has nothing to synthesize.
     #[error("segment `{0}` has empty spoken_text")]
     MissingSpokenText(String),
+    /// The segment has nothing for a reviewer to read against the audio.
     #[error("segment `{0}` has empty display_text")]
     MissingDisplayText(String),
+    /// The segment declares no role, so review context cannot be established.
     #[error("segment `{0}` has an empty role")]
     MissingRole(String),
+    /// The segment cites no source, so its claims cannot be traced back.
     #[error("segment `{0}` must contain at least one source reference")]
     MissingSourceRefs(String),
+    /// A citation is present but blank, which traces to nothing.
     #[error("segment `{0}` contains an empty source reference")]
     EmptySourceRef(String),
+    /// No human approved this segment; synthesis accepts only `ReviewStatus::Approved`.
     #[error("segment `{0}` is not approved for synthesis")]
     UnapprovedSegment(String),
+    /// No voice was named, so no voice profile can be resolved.
     #[error("segment `{0}` must declare a speaker")]
     MissingSpeaker(String),
+    /// No delivery style was named, which would leave the synthesis identity underdetermined.
     #[error("segment `{0}` must declare a style")]
     MissingStyle(String),
+    /// The pause is long enough to read as a fault in the audio rather than as phrasing.
     #[error("segment `{0}` pause exceeds the provisional 10-second limit")]
     PauseOutOfRange(String),
 }
 
 impl Lesson {
+    /// Parses and validates a lesson document, refusing anything synthesis could not use.
     pub fn from_json(bytes: &[u8]) -> Result<Self, LessonError> {
         let lesson: Self = serde_json::from_slice(bytes)?;
         lesson.validate()?;
         Ok(lesson)
     }
 
+    /// Checks every lesson invariant, returning the first violation as its own error.
     pub fn validate(&self) -> Result<(), LessonError> {
         if self.schema_version != "0.1-skeleton" {
             return Err(LessonError::UnsupportedSchema(self.schema_version.clone()));

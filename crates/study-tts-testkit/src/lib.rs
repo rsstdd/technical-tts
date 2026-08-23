@@ -1,3 +1,8 @@
+//! Test doubles and fixture paths shared by the workspace's integration tests.
+//!
+//! Nothing here reaches a lesson: the worker synthesizes tones, and the fixtures are the
+//! committed synthetic lessons registered in `docs/testing/TEST-DATA-MANIFEST.md`.
+
 use std::{
     f32::consts::TAU,
     path::{Path, PathBuf},
@@ -12,6 +17,10 @@ use study_tts_runtime::{SegmentSynthesizer, SynthesisError, SynthesisReport};
 
 const TONE_FRAMES: u32 = CANONICAL_SAMPLE_RATE / 10;
 
+/// A synthesizer that writes a tone derived from the segment's cache key.
+///
+/// Deterministic so a cache hit is byte-identical, and counting so a test can prove that a gate
+/// refused before any synthesis happened rather than merely that the build failed.
 #[derive(Debug, Default)]
 pub struct DeterministicToneWorker {
     synthesis_count: AtomicUsize,
@@ -19,10 +28,12 @@ pub struct DeterministicToneWorker {
 }
 
 impl DeterministicToneWorker {
+    /// How many segments this worker has synthesized, for asserting that a gate ran first.
     pub fn synthesis_count(&self) -> usize {
         self.synthesis_count.load(Ordering::SeqCst)
     }
 
+    /// The spoken text of every segment synthesized so far, in call order.
     pub fn synthesized_texts(&self) -> Vec<String> {
         self.synthesized_texts
             .lock()
@@ -187,10 +198,12 @@ fn hash_fixture_file(path: &Path) -> String {
     blake3::hash(&bytes).to_hex().to_string()
 }
 
+/// The two-segment lesson the walking-skeleton tests build.
 pub fn walking_skeleton_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/lessons/e0-s0-two-segment.json")
 }
 
+/// A lesson whose segments differ by one speech-affecting field each, for cache-identity tests.
 pub fn cache_identity_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/lessons/e0-s0-cache-identity.json")
 }

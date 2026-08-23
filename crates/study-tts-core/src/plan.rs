@@ -8,6 +8,10 @@ use crate::{
     digest::{BLAKE3_HEX_LENGTH, is_blake3_hex},
 };
 
+/// The one sample rate this project renders, caches, assembles, and exports at, in hertz.
+///
+/// Fixed rather than configurable so a cached segment, an assembled master, and an export can
+/// never disagree about what a frame is.
 pub const CANONICAL_SAMPLE_RATE: u32 = 24_000;
 
 /// The synthesis identity of one segment: BLAKE3 over the canonical serialization of every
@@ -88,19 +92,33 @@ impl fmt::Display for CacheKey {
 pub struct MalformedCacheKey(String);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+/// A lesson resolved into exactly what will be synthesized, derived deterministically from it.
 pub struct RenderPlan {
+    /// The lesson this plan was derived from.
     pub lesson_id: String,
+    /// Identity of the plan as a whole, so a rebuild can be recognized as the same plan.
     pub plan_hash: String,
+    /// The segments to synthesize, in speaking order.
     pub segments: Vec<PlannedSegment>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+/// One segment with its synthesis identity resolved.
+///
+/// Carries only speech-affecting fields plus the identity derived from them; display-only lesson
+/// metadata is deliberately absent, because anything here would change the cache key.
 pub struct PlannedSegment {
+    /// Identity of the segment within its lesson.
     pub id: String,
+    /// Which voice speaks this segment.
     pub speaker: String,
+    /// The exact text to speak.
     pub spoken_text: String,
+    /// Delivery style requested of the voice.
     pub style: String,
+    /// Silence written after this segment, in milliseconds.
     pub pause_after_ms: u32,
+    /// This segment's synthesis identity, which names its cache entry.
     pub cache_key: CacheKey,
 }
 
@@ -122,6 +140,10 @@ struct SynthesisIdentity<'a> {
 }
 
 impl RenderPlan {
+    /// Derives the plan for a lesson under a given synthesizer identity.
+    ///
+    /// Deterministic: the same lesson and the same synthesizer always produce the same plan hash
+    /// and the same cache keys, which is what makes a rebuild reuse its cache.
     pub fn for_lesson(lesson: &Lesson, synthesizer_identity: &str) -> Self {
         let segments = lesson
             .segments

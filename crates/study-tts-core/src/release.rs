@@ -28,15 +28,19 @@ pub const REQUIRED_PRODUCTION_GATES: [&str; 12] = [
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseStatus {
+    /// Rendered and structurally valid, but not verified, approved, or releasable.
     PrivatePreview,
+    /// Every gate in `docs/governance/RELEASE-PROFILES.md` §3 has a passing evidence record.
     ProductionRelease,
 }
 
 /// Why a claim was refused as a production release.
 #[derive(Debug, Error)]
 pub enum ReleaseError {
+    /// The artifact claims a profile it did not earn; only `publish` produces a release.
     #[error("a private preview cannot report production release")]
     PrivateProfileCannotClaimProduction,
+    /// A required gate has no evidence record, named so the owner knows which one to run.
     #[error("production release is missing gate evidence: {0}")]
     MissingGateEvidence(String),
 }

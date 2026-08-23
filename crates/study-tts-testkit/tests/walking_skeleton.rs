@@ -1,3 +1,5 @@
+//! Tier 3 and 4 tests for the E0-S0 walking skeleton: real filesystem, fake worker, real FFmpeg.
+
 use std::path::Path;
 
 use serde_json::Value;

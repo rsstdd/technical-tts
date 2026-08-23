@@ -1,3 +1,9 @@
+//! Lesson domain types, deterministic render planning, and the rights and release records that
+//! gate what may be synthesized or published.
+//!
+//! This crate owns every value that is parsed from a record on disk, so an unknown or malformed
+//! value is refused here rather than somewhere downstream that can only compare it.
+
 mod digest;
 mod lesson;
 mod plan;

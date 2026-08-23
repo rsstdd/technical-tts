@@ -1,3 +1,9 @@
+//! Builds one lesson into a private preview: gating, planning, synthesis caching, assembly,
+//! encoding, and the manifest that records what was produced.
+//!
+//! Every gate runs before any tool or synthesis work, so a refusal names the policy that refused
+//! rather than the first thing that happened to break.
+
 mod assembly;
 mod cache;
 mod export;
@@ -21,47 +27,74 @@ use std::{
 use study_tts_core::CacheKey;
 use thiserror::Error;
 
+/// Why a build or publication was refused.
+///
+/// One variant per violated invariant, so a test can assert the exact failure and an operator is
+/// told which control stopped them. Every refusal names the artifact, the invariant, and the
+/// remedy owner from `docs/governance/ROUTING-TABLES.md`.
 #[derive(Debug, Error)]
 pub enum BuildError {
+    /// An input the build was told to read is not readable.
     #[error("could not read `{path}`: {source}")]
-    ReadFile { path: PathBuf, source: io::Error },
+    ReadFile {
+        /// The file that could not be read.
+        path: PathBuf,
+        /// What the filesystem reported.
+        source: io::Error,
+    },
 
+    /// The lesson document was refused; the inner error names which invariant.
     #[error(transparent)]
     Lesson(#[from] study_tts_core::LessonError),
 
+    /// A voice record was refused; the inner error names which invariant.
     #[error(transparent)]
     Voice(#[from] study_tts_core::VoiceError),
 
-    // Remedy routing per `docs/governance/ROUTING-TABLES.md` ("Voice consent/checksum mismatch
-    // → Refuse profile load → Project owner → Blocked"): the owner resolves the record; the
-    // profile is never deleted or repaired automatically.
-    //
-    // `profile.json` and `consent.json` share this variant because they are the same class of
-    // refusal — a record the policy requires is absent — and an absent profile record deserves
-    // the same remedy-bearing message as an absent consent record, not a bare IO error.
+    /// A record the voice policy requires is absent, so profile load fails closed.
+    ///
+    /// Remedy routing per `docs/governance/ROUTING-TABLES.md` ("Voice consent/checksum mismatch
+    /// → Refuse profile load → Project owner → Blocked"): the owner resolves the record; the
+    /// profile is never deleted or repaired automatically.
+    ///
+    /// `profile.json` and `consent.json` share this variant because they are the same class of
+    /// refusal — a record the policy requires is absent — and an absent profile record deserves
+    /// the same remedy-bearing message as an absent consent record, not a bare IO error.
     #[error(
         "voice profile at `{profile_dir}` is refused: required record `{record}` is missing; \
          profile load fails closed and the project owner must supply the record before use"
     )]
     MissingVoiceRecord {
+        /// The profile directory the record was expected in.
         profile_dir: PathBuf,
+        /// Which required record is absent.
         record: &'static str,
     },
 
+    /// A profile file no longer hashes to what its record says, so the record no longer
+    /// describes it. Routing: "Voice consent/checksum mismatch → Project owner → Blocked".
     #[error(
         "voice profile at `{profile_dir}` is refused: `{path}` does not match its recorded \
          checksum; do not use this profile until the project owner re-verifies it against its \
          rights record"
     )]
-    VoiceChecksumMismatch { profile_dir: PathBuf, path: PathBuf },
+    VoiceChecksumMismatch {
+        /// The profile directory whose record no longer holds.
+        profile_dir: PathBuf,
+        /// The file whose contents disagree with the record.
+        path: PathBuf,
+    },
 
+    /// A source reached publication without a resolved rights classification.
     #[error(
         "production release is refused: source `{source_id}` has unresolved rights \
          classification `{classification}`; the project owner must resolve the classification in \
          its rights record before publication"
     )]
     UnresolvedContentRights {
+        /// The source whose classification is unresolved.
         source_id: String,
+        /// The classification it currently carries.
         classification: String,
     },
 
@@ -76,16 +109,32 @@ pub enum BuildError {
          declaration ({source}); the project owner must correct the manifest before publication"
     )]
     InvalidRightsDeclaration {
+        /// Which manifest section failed to parse.
         section: &'static str,
+        /// What the parser reported.
         source: serde_json::Error,
     },
 
+    /// A filesystem operation the build performs itself failed.
     #[error("filesystem operation failed for `{path}`: {source}")]
-    FileSystem { path: PathBuf, source: io::Error },
+    FileSystem {
+        /// The path being operated on.
+        path: PathBuf,
+        /// What the filesystem reported.
+        source: io::Error,
+    },
 
+    /// An audio read or write failed. `hound::Error` wraps `io::Error`, which carries no
+    /// filename, so the path is attached here or the message names nothing.
     #[error("audio operation failed for `{path}`: {source}")]
-    AudioAt { path: PathBuf, source: hound::Error },
+    AudioAt {
+        /// The audio file being read or written.
+        path: PathBuf,
+        /// What the WAV layer reported.
+        source: hound::Error,
+    },
 
+    /// The synthesizer refused or failed; the inner error carries what it reported.
     #[error(transparent)]
     Synthesis(#[from] SynthesisError),
 
@@ -108,8 +157,11 @@ pub enum BuildError {
         entry_dir.display()
     )]
     UnusableCacheEntry {
+        /// The entry directory to delete in order to regenerate the segment.
         entry_dir: PathBuf,
+        /// The segment the entry belongs to.
         segment_id: String,
+        /// Which invariant the entry violated.
         fault: Box<CacheEntryFault>,
     },
 
@@ -120,7 +172,12 @@ pub enum BuildError {
     /// staged file is discarded on drop, so there is nothing published to remove, and advising a
     /// deletion would name a path that no longer exists.
     #[error("`{path}` is not usable lesson audio: {fault}")]
-    UnusableAudio { path: PathBuf, fault: AudioFault },
+    UnusableAudio {
+        /// The audio file that failed validation.
+        path: PathBuf,
+        /// Which audio property failed.
+        fault: AudioFault,
+    },
 
     /// The worker's report disagrees with the file it wrote.
     ///
@@ -135,35 +192,50 @@ pub enum BuildError {
          worker is misreporting its own output and must be corrected before this build is rerun"
     )]
     SynthesizerReportMismatch {
+        /// The segment whose synthesis was misreported.
         segment_id: String,
+        /// Sample rate the worker claimed.
         reported_sample_rate: u32,
+        /// Channel count the worker claimed.
         reported_channels: u16,
+        /// Frame count the worker claimed.
         reported_frames: u32,
+        /// Sample rate the file actually carries.
         written_sample_rate: u32,
+        /// Channel count the file actually carries.
         written_channels: u16,
+        /// Frame count the file actually carries.
         written_frames: u32,
     },
 
+    /// A segment's trailing pause is too long to express as a frame count.
     #[error(
         "the pause of {pause_after_ms} ms after segment `{segment_id}` overflows the frame count \
          this build can assemble; shorten the pause in the lesson"
     )]
     PauseFrameOverflow {
+        /// The segment carrying the pause.
         segment_id: String,
+        /// The pause as the lesson declares it, in milliseconds.
         pause_after_ms: u32,
     },
 
+    /// The planned lesson is longer than the build can represent, before any audio was written.
     #[error(
         "the planned lesson exceeds the frame count this build can assemble; split the lesson \
          into shorter lessons"
     )]
     PlannedLengthOverflow,
 
+    /// The master grew past what the build can count while it was being written.
     #[error(
         "assembling `{destination}` exceeded the frame count this build can track; split the \
          lesson into shorter lessons"
     )]
-    AssembledLengthOverflow { destination: PathBuf },
+    AssembledLengthOverflow {
+        /// The master being assembled.
+        destination: PathBuf,
+    },
 
     /// The master's length disagrees with the length its validated cache metadata implies.
     ///
@@ -175,8 +247,11 @@ pub enum BuildError {
          {expected}; the runtime owner must reconcile the cache before this lesson is rebuilt"
     )]
     AssembledLengthMismatch {
+        /// The master whose length disagrees with the plan.
         destination: PathBuf,
+        /// Frames actually written.
         assembled: u64,
+        /// Frames the validated cache metadata implies.
         expected: u64,
     },
 
@@ -186,52 +261,102 @@ pub enum BuildError {
         "cannot write `{path}` atomically because it has no parent directory; supply an output \
          path with a directory component"
     )]
-    UnrootedDestination { path: PathBuf },
+    UnrootedDestination {
+        /// The destination that has no parent directory to stage into.
+        path: PathBuf,
+    },
 
+    /// FFmpeg ran and exited non-zero.
     #[error("FFmpeg failed with status {status}: {stderr}")]
-    Ffmpeg { status: String, stderr: String },
-
-    #[error("could not start FFmpeg `{executable}`: {source}")]
-    StartFfmpeg {
-        executable: PathBuf,
-        source: io::Error,
-    },
-
-    #[error("required tool {tool} was not found or is not executable at `{requested}`")]
-    MissingTool { tool: String, requested: PathBuf },
-
-    #[error("could not inspect {tool} at `{executable}`: {source}")]
-    InspectTool {
-        tool: String,
-        executable: PathBuf,
-        source: io::Error,
-    },
-
-    #[error("{tool} version probe failed with status {status}: {stderr}")]
-    ToolProbeFailed {
-        tool: String,
+    Ffmpeg {
+        /// Exit status FFmpeg reported.
         status: String,
+        /// What FFmpeg wrote to standard error, trimmed.
         stderr: String,
     },
 
-    #[error("ffprobe failed with status {status}: {stderr}")]
-    Ffprobe { status: String, stderr: String },
+    /// FFmpeg could not be launched at all, which is distinct from its running and failing.
+    #[error("could not start FFmpeg `{executable}`: {source}")]
+    StartFfmpeg {
+        /// The executable that could not be started.
+        executable: PathBuf,
+        /// What the operating system reported.
+        source: io::Error,
+    },
 
+    /// Preflight could not resolve a required external tool, before any work began.
+    #[error("required tool {tool} was not found or is not executable at `{requested}`")]
+    MissingTool {
+        /// Which tool is required.
+        tool: String,
+        /// The path the build was told to use.
+        requested: PathBuf,
+    },
+
+    /// A required tool exists but could not be inspected, so its identity cannot be recorded.
+    #[error("could not inspect {tool} at `{executable}`: {source}")]
+    InspectTool {
+        /// Which tool was being inspected.
+        tool: String,
+        /// The resolved executable.
+        executable: PathBuf,
+        /// What the operating system reported.
+        source: io::Error,
+    },
+
+    /// A tool ran but would not report its version, so the manifest cannot record what was used.
+    #[error("{tool} version probe failed with status {status}: {stderr}")]
+    ToolProbeFailed {
+        /// Which tool was probed.
+        tool: String,
+        /// Exit status the probe returned.
+        status: String,
+        /// What the probe wrote to standard error.
+        stderr: String,
+    },
+
+    /// ffprobe ran and exited non-zero while validating an encoded output.
+    #[error("ffprobe failed with status {status}: {stderr}")]
+    Ffprobe {
+        /// Exit status ffprobe reported.
+        status: String,
+        /// What ffprobe wrote to standard error, trimmed.
+        stderr: String,
+    },
+
+    /// The encoded output exists but is not the stream this build claims to have produced.
     #[error("encoded output failed structural validation: {0}")]
     InvalidEncodedOutput(String),
 
+    /// A path the build derived would leave the root it is confined to, so nothing is written.
     #[error("managed path `{path}` resolves outside `{root}`")]
-    ManagedPathEscape { path: PathBuf, root: PathBuf },
+    ManagedPathEscape {
+        /// The path that resolved outside its root.
+        path: PathBuf,
+        /// The root the build is confined to.
+        root: PathBuf,
+    },
 
+    /// Publication was refused by policy rather than by a failure.
     #[error("production publication is refused: {reason}")]
-    PublicationRefused { reason: String },
+    PublicationRefused {
+        /// Which policy refused, in terms an operator can act on.
+        reason: String,
+    },
 
+    /// A manifest was offered for publication under a version this build cannot evaluate.
     #[error("manifest version `{version}` is not a production manifest")]
-    UnsupportedProductionManifest { version: String },
+    UnsupportedProductionManifest {
+        /// The version the manifest declares.
+        version: String,
+    },
 
+    /// A record could not be serialized to its destination.
     #[error("could not write JSON to `{path}`: {source}")]
     WriteJson {
+        /// The record being written.
         path: PathBuf,
+        /// What the serializer reported.
         source: serde_json::Error,
     },
 
@@ -250,12 +375,16 @@ pub enum BuildError {
 /// and that is exactly what this enum names.
 #[derive(Debug, Error)]
 pub enum CacheEntryFault {
+    /// The artifact is not readable as the record this build writes.
     #[error("`{path}` could not be parsed ({source})")]
     UnparseableArtifact {
+        /// The artifact that could not be parsed.
         path: PathBuf,
+        /// What the parser reported.
         source: serde_json::Error,
     },
 
+    /// The artifact parses but describes audio this build cannot consume.
     #[error(
         "the artifact declares schema `{schema_version}`, {sample_rate} Hz, {channels} channels, \
          and format `{sample_format}` but this build requires schema \
@@ -263,27 +392,42 @@ pub enum CacheEntryFault {
          `{required_sample_format}`"
     )]
     IncompatibleArtifact {
+        /// Schema the artifact declares.
         schema_version: String,
+        /// Sample rate the artifact declares, in hertz.
         sample_rate: u32,
+        /// Channel count the artifact declares.
         channels: u16,
+        /// Sample format the artifact declares.
         sample_format: String,
+        /// Schema this build requires.
         required_schema_version: &'static str,
+        /// Sample rate this build requires, in hertz.
         required_sample_rate: u32,
+        /// Channel count this build requires.
         required_channels: u16,
+        /// Sample format this build requires.
         required_sample_format: &'static str,
     },
 
     /// The entry belongs to a different synthesis identity, so its audio is not this segment's.
     #[error("the artifact records cache key `{recorded}` but the plan requires `{required}`")]
     CacheKeyMismatch {
+        /// The identity the artifact records.
         recorded: CacheKey,
+        /// The identity the current plan requires.
         required: CacheKey,
     },
 
     /// Raised both when the entry is loaded and when the master is assembled from it, because a
     /// truncated entry and a truncated read are the same violated invariant.
     #[error("the audio holds {found} frames but the artifact declares {declared}")]
-    FrameCountMismatch { found: u64, declared: u32 },
+    FrameCountMismatch {
+        /// Frames the audio actually holds.
+        found: u64,
+        /// Frames the artifact declares.
+        declared: u32,
+    },
 
     /// Distinct from `ChecksumMismatch` on purpose: a malformed record reported as a mismatch
     /// tells the operator their audio was tampered with when the artifact is what broke.
@@ -291,11 +435,21 @@ pub enum CacheEntryFault {
         "the artifact records `{recorded}` as the audio digest, which is not a lowercase BLAKE3 \
          hex digest and so could never match the audio"
     )]
-    MalformedRecordedDigest { recorded: String },
+    MalformedRecordedDigest {
+        /// The value the artifact records where a digest belongs.
+        recorded: String,
+    },
 
+    /// The audio hashes to something other than what the artifact records.
     #[error("the audio checksum `{found}` does not match the artifact record `{declared}`")]
-    ChecksumMismatch { found: String, declared: String },
+    ChecksumMismatch {
+        /// Digest computed from the audio now.
+        found: String,
+        /// Digest the artifact records.
+        declared: String,
+    },
 
+    /// The entry's audio failed validation; the inner fault names which property.
     #[error("{0}")]
     Audio(#[from] AudioFault),
 }
@@ -308,27 +462,42 @@ pub enum CacheEntryFault {
 /// discarded anyway.
 #[derive(Debug, Error)]
 pub enum AudioFault {
+    /// The file is not readable as WAV at all.
     #[error("it could not be read as WAV ({0})")]
     Unreadable(#[from] hound::Error),
 
+    /// The stream is readable but is not the one canonical format.
     #[error(
         "the stream is {channels}-channel {sample_rate} Hz {bits_per_sample}-bit \
          {sample_format}, not canonical mono {required_sample_rate} Hz 32-bit float"
     )]
     NonCanonical {
+        /// Channel count the stream carries.
         channels: u16,
+        /// Sample rate the stream carries, in hertz.
         sample_rate: u32,
+        /// Bit depth the stream carries.
         bits_per_sample: u16,
+        /// Whether the stream is integer or float.
         sample_format: &'static str,
+        /// The one sample rate this project accepts, in hertz.
         required_sample_rate: u32,
     },
 
+    /// A sample is infinite, NaN, or beyond full scale, which would clip on export.
     #[error("sample {index} is `{value}`, outside the finite range -1.0 to 1.0")]
-    OutOfRangeSample { index: u32, value: f32 },
+    OutOfRangeSample {
+        /// Zero-based frame the bad sample sits at.
+        index: u32,
+        /// The offending value.
+        value: f32,
+    },
 
+    /// The file is a valid WAV holding no audio, which no segment may be.
     #[error("it contains no audio frames")]
     Empty,
 
+    /// The file holds more frames than the frame counter can represent.
     #[error("it holds more frames than this build can count")]
     FrameCountOverflow,
 }
