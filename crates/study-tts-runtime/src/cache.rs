@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::Read,
+    io::{self, Read},
     path::{Path, PathBuf},
 };
 
@@ -281,19 +281,33 @@ fn load_validated(
 /// Entries and manifests recorded by earlier builds stay valid.
 pub(crate) fn hash_file(path: &Path) -> Result<String, BuildError> {
     let mut file = fs::File::open(path).map_err(|error| io_error(path, error))?;
+    hash_stream(&mut file).map_err(|error| io_error(path, error))
+}
+
+/// Hashes everything `source` yields, through a bounded buffer.
+///
+/// Retries a read the operating system interrupts. `Interrupted` means a signal
+/// arrived mid-call, not that the file is unreadable: the read consumed nothing
+/// and is meant to be reissued. Treating it as failure would abandon a build
+/// over a signal already handled elsewhere — and would do it most often on the
+/// longest file, because the more reads a hash performs the likelier one of
+/// them is interrupted.
+///
+/// Separate from `hash_file` so the retry is reachable from a test: a real file
+/// cannot be made to interrupt on demand.
+fn hash_stream(source: &mut impl Read) -> io::Result<String> {
     let mut hasher = blake3::Hasher::new();
     // Read straight into the hashing buffer rather than through a `BufReader`,
     // which would hold a second buffer of its own to no purpose.
     let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
 
     loop {
-        let filled = file
-            .read(&mut buffer)
-            .map_err(|error| io_error(path, error))?;
-        if filled == 0 {
-            break;
-        }
-        hasher.update(&buffer[..filled]);
+        match source.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(filled) => hasher.update(&buffer[..filled]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
     }
 
     Ok(hasher.finalize().to_hex().to_string())
@@ -454,6 +468,76 @@ mod tests {
             serde_json::to_vec_pretty(&record).expect("serialize"),
         )
         .expect("write artifact");
+    }
+
+    /// Yields `payload` in small chunks, reporting `Interrupted` before every
+    /// one, which is how a signal arriving mid-read looks to the caller.
+    ///
+    /// Chunks are deliberately smaller than `HASH_BUFFER_BYTES` so a short read
+    /// is exercised too: a stream may hand back less than the buffer holds
+    /// without being at its end.
+    struct InterruptingReader<'a> {
+        payload: &'a [u8],
+        chunk: usize,
+        interrupt_next: bool,
+        interruptions: usize,
+    }
+
+    impl Read for InterruptingReader<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.interrupt_next {
+                self.interrupt_next = false;
+                self.interruptions += 1;
+                return Err(io::Error::from(io::ErrorKind::Interrupted));
+            }
+            self.interrupt_next = true;
+            let taken = self.payload.len().min(buffer.len()).min(self.chunk);
+            buffer[..taken].copy_from_slice(&self.payload[..taken]);
+            self.payload = &self.payload[taken..];
+            Ok(taken)
+        }
+    }
+
+    #[test]
+    fn t1_e0_hashing_retries_reads_the_operating_system_interrupts() {
+        let payload: Vec<u8> = (0..HASH_BUFFER_BYTES * 2 + 7)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let mut source = InterruptingReader {
+            payload: &payload,
+            chunk: 1_000,
+            interrupt_next: true,
+            interruptions: 0,
+        };
+
+        // An interrupted read consumed nothing, so retrying it must produce the
+        // same digest as a stream that was never interrupted. Before the retry,
+        // this failed outright.
+        let digest = hash_stream(&mut source).expect("an interrupted read must be retried");
+
+        assert_eq!(digest, blake3::hash(&payload).to_hex().to_string());
+        assert!(
+            source.interruptions > 2,
+            "the reader interrupted only {} times, so the retry was barely exercised",
+            source.interruptions
+        );
+    }
+
+    #[test]
+    fn t1_e0_hashing_still_reports_reads_that_genuinely_fail() {
+        struct FailingReader;
+
+        impl Read for FailingReader {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            }
+        }
+
+        // The retry must be narrow: a real IO failure still has to surface, or
+        // a checksum would be computed over a file never fully read.
+        let error = hash_stream(&mut FailingReader).expect_err("a real failure must surface");
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 
     #[test]
