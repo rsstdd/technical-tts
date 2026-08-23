@@ -5,7 +5,7 @@ use tempfile::Builder;
 
 use crate::{
     BuildError, CacheEntryFault, audio_error,
-    cache::{CachedSegment, rejected},
+    cache::{CachedSegment, hash_file, rejected},
     io_error,
 };
 
@@ -35,6 +35,33 @@ fn expected_frames(segments: &[CachedSegment]) -> Result<u64, BuildError> {
     Ok(expected)
 }
 
+/// Confirms a segment's audio still hashes to what its cache entry recorded.
+///
+/// ADR-0001 §13.2 requires it: "It verifies each checksum before reading."
+/// `cache` hashes an entry when it validates or publishes it, but assembly
+/// consumes the file afterwards, and every other check here would pass on a
+/// file whose bytes changed while its frame count did not — leaving altered
+/// audio in the master and the digest of the audio that was validated in the
+/// manifest.
+///
+/// Narrows the window rather than closing it: the file is hashed and then
+/// reopened to decode. Closing it needs a single handle read twice, which
+/// belongs with the directory-relative containment work deferred to E5-S4.
+fn verify_recorded_audio(segment: &CachedSegment) -> Result<(), BuildError> {
+    let computed = hash_file(&segment.audio_path)?;
+    if computed != segment.audio_blake3 {
+        return Err(rejected(
+            &segment.entry_dir,
+            &segment.segment_id,
+            CacheEntryFault::ChecksumMismatch {
+                found: computed,
+                declared: segment.audio_blake3.clone(),
+            },
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result<u64, BuildError> {
     let parent = destination
         .parent()
@@ -59,6 +86,7 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
     let mut total_frames = 0_u64;
 
     for segment in segments {
+        verify_recorded_audio(segment)?;
         let mut reader = hound::WavReader::open(&segment.audio_path)
             .map_err(|error| audio_error(&segment.audio_path, error))?;
         let mut segment_frames = 0_u64;
@@ -157,8 +185,11 @@ mod tests {
             cache_key: format!("{:0<width$}", "cafebabe", width = CacheKey::LENGTH)
                 .parse()
                 .expect("test label pads to a well-formed key"),
+            audio_blake3: hash_file(&audio_path)
+                // The missing-audio test names a file that was never written,
+                // so there is nothing to hash; that case fails on the read.
+                .unwrap_or_else(|_| String::new()),
             audio_path,
-            audio_blake3: "unused-in-assembly".to_owned(),
             frames: declared_frames,
             pause_after_ms,
         }
@@ -223,6 +254,45 @@ mod tests {
     }
 
     #[test]
+    fn t1_e0_altered_segment_audio_is_refused_before_it_reaches_the_master() {
+        let workspace = TempDir::new().expect("create assembly workspace");
+        let audio = workspace.path().join("tampered.wav");
+        write_tone(&audio, 2_400);
+        let segment = segment(audio.clone(), 2_400, 75);
+
+        // Same frame count, different samples: the shape that survives every
+        // other check the assembler makes. Without a checksum comparison the
+        // altered bytes reach the master while the manifest keeps recording the
+        // digest of the audio that was validated.
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: CANONICAL_SAMPLE_RATE,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut writer = hound::WavWriter::create(&audio, spec).expect("rewrite test WAV");
+        for _ in 0..2_400 {
+            writer.write_sample(-0.5_f32).expect("write altered sample");
+        }
+        writer.finalize().expect("finalize altered WAV");
+
+        let master = workspace.path().join("lesson.wav");
+        let error = assemble(&[segment], &master).expect_err("altered audio must be refused");
+
+        let BuildError::UnusableCacheEntry { fault, .. } = &error else {
+            panic!("altered audio produced `{error}`");
+        };
+        assert!(
+            matches!(**fault, CacheEntryFault::ChecksumMismatch { .. }),
+            "altered audio produced fault `{fault}`"
+        );
+        assert!(
+            !master.exists(),
+            "a refused assembly must not persist a master WAV"
+        );
+    }
+
+    #[test]
     fn t1_e0_missing_segment_audio_names_the_file() {
         let workspace = TempDir::new().expect("create assembly workspace");
         let missing = workspace.path().join("does-not-exist.wav");
@@ -231,7 +301,16 @@ mod tests {
 
         let error = assemble(&segments, &master).expect_err("missing segment audio must fail");
 
-        assert!(matches!(error, BuildError::AudioAt { .. }));
+        // Reported as a filesystem failure rather than an audio one since the
+        // checksum verification reaches the file first. That is the accurate
+        // description: there is no audio operation to fail on a file that is
+        // not there. What this test guards is the name — the refusal must say
+        // which file — and that is asserted below rather than implied by the
+        // variant.
+        assert!(
+            matches!(error, BuildError::FileSystem { .. }),
+            "missing segment audio produced `{error}`"
+        );
         assert!(
             error.to_string().contains(&missing.display().to_string()),
             "error was `{error}`"
