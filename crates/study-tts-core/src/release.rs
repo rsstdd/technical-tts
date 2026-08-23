@@ -25,9 +25,6 @@ pub const REQUIRED_PRODUCTION_GATES: [&str; 12] = [
 ];
 
 /// What an artifact claims to be.
-///
-/// Unknown values are rejected at parse time rather than mapped to a default, because an
-/// unrecognized status is a schema error and not a state the pipeline can reason about.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseStatus {
@@ -70,10 +67,6 @@ impl ReleaseClaim {
     }
 
     /// Accepts the claim only if the profile is production and every required gate has evidence.
-    ///
-    /// The profile check comes first and is not a formality: a private preview carrying evidence
-    /// for every gate is still a private preview, because the profile records whether the
-    /// production workflow ran rather than how many checks incidentally succeeded.
     pub fn validate_as_production(&self) -> Result<(), ReleaseError> {
         if self.status != ReleaseStatus::ProductionRelease {
             return Err(ReleaseError::PrivateProfileCannotClaimProduction);
@@ -104,8 +97,6 @@ mod tests {
 
     #[test]
     fn t3_e0_private_profile_cannot_report_production_release() {
-        // Every gate is present. The claim must still fail, because the profile is the
-        // distinction and not the gate count.
         let claim = ReleaseClaim {
             status: ReleaseStatus::PrivatePreview,
             satisfied_gates: all_gates(),
@@ -171,8 +162,6 @@ mod tests {
 
     #[test]
     fn t3_e0_gate_list_has_no_duplicates() {
-        // A duplicated identifier would make `t3_e0_production_profile_rejects_missing_gate_evidence`
-        // pass vacuously for the duplicated entry.
         let mut sorted = REQUIRED_PRODUCTION_GATES;
         sorted.sort_unstable();
         let mut unique = sorted.to_vec();

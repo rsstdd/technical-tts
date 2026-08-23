@@ -2,7 +2,7 @@
 
 - **Status:** Ratified
 - **Owner and approver:** Ross Todd
-- **Ratified:** _______________
+- **Ratified:** 2026-08-23
 - **Authority:** ADR-0001 §1, §17.18, §18; `DELIVERY-PLAN.md` §1
 
 Every artifact this project produces declares exactly one release profile. A profile is a claim
@@ -82,8 +82,8 @@ That scope removes four obligations from `production_release`:
 
 **Reopening condition.** If any output is ever distributed, published, or shared with another
 person, this scope no longer holds. Before that happens, the following must be reopened and
-answered afresh: source-content rights (OQ-2), caption compliance (OQ-4), watermark preservation
-verification, binary signing, and the FFmpeg licensing review. A release produced under the
+answered afresh: source-content rights (OQ-05), caption compliance, watermark preservation
+verification (OQ-09), binary signing (OQ-08), and the FFmpeg licensing review. A release produced under the
 internal scope must not be redistributed on the strength of gates that were evaluated under it.
 
 ## 5. Enforcement
