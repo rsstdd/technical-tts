@@ -8,12 +8,10 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+# Candidates in ADR-0001 §7.2 are declared when the story that needs
+# them lands, not in advance: an unused dependency is still audited,
+# licensed, and carried in Cargo.lock.
+#
+# This crate is a placeholder binary until the product CLI at G1 (ADR-0001
+# §7.3), so it has no dependencies at all — not even the workspace crates.
 [dependencies]
-clap = { version = "4.6.6", features = ["derive"] }
-miette = { version = "7.6.0", features = ["fancy"] }
-serde_json = "1.0.151"
-study-tts-core = { version = "0.1.0", path = "../study-tts-core" }
-study-tts-runtime = { version = "0.1.0", path = "../study-tts-runtime" }
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal"] }
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
