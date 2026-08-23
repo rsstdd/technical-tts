@@ -300,6 +300,15 @@ pub fn validate_profile_for_use(
     consent: &VoiceConsent,
     requested: VoiceUse,
 ) -> Result<(), VoiceError> {
+    // Both records are revalidated here even though `from_json` already did it,
+    // because these types have public fields: a caller can build one directly,
+    // and a gate that assumes its inputs were parsed does not uphold its own
+    // contract. Structure is checked before authorization so a malformed record
+    // is reported as malformed rather than as a refused permission, the same
+    // distinction `MalformedChecksum` draws.
+    profile.validate()?;
+    consent.validate()?;
+
     if consent.consent_status != ConsentStatus::Granted {
         return Err(VoiceError::ConsentNotGranted {
             profile_id: profile.profile_id.clone(),
@@ -414,6 +423,91 @@ mod tests {
         let consent = parse_consent(&consent_value()).expect("valid consent must parse");
         validate_profile_for_use(&profile, &consent, VoiceUse::PrivateSynthesis)
             .expect("granted, approved, in-scope profile is usable");
+    }
+
+    /// One way to make a record structurally invalid: a label, and the edit
+    /// that breaks the pair.
+    type Mutation = (&'static str, fn(&mut VoiceProfile, &mut VoiceConsent));
+
+    /// Records built field by field rather than parsed, which is what a caller
+    /// with access to these public fields can do.
+    fn constructed_records() -> (VoiceProfile, VoiceConsent) {
+        (
+            VoiceProfile {
+                schema_version: VOICE_SCHEMA_VERSION.to_owned(),
+                profile_id: "synthetic-test-voice-v1".to_owned(),
+                reference_wav_blake3: REFERENCE_DIGEST.to_owned(),
+                conditionals_blake3: CONDITIONALS_DIGEST.to_owned(),
+                extractor_identity: "test-extractor-v1".to_owned(),
+                approval: RightsDecision::Approved,
+            },
+            VoiceConsent {
+                schema_version: VOICE_SCHEMA_VERSION.to_owned(),
+                declaration: "Owner-recorded reference.".to_owned(),
+                permitted_use: vec![VoiceUse::PrivateSynthesis],
+                reference_wav_blake3: REFERENCE_DIGEST.to_owned(),
+                created: "2026-08-23".to_owned(),
+                consent_status: ConsentStatus::Granted,
+                rights_record_id: "rights-voice-owner-fallback-v1".to_owned(),
+            },
+        )
+    }
+
+    #[test]
+    fn t1_e0_structurally_invalid_records_are_refused_by_the_use_gate() {
+        // `from_json` validates, so every earlier test reaches the gate with a
+        // well-formed record. These fields are public, so a caller can skip that
+        // path entirely — and a gate that trusts its inputs were parsed would
+        // authorize an unsupported schema, an empty identifier, or two malformed
+        // digests that happen to agree with each other.
+        let mutations: [Mutation; 6] = [
+            ("unsupported profile schema", |profile, _| {
+                profile.schema_version = "9.9-future".to_owned();
+            }),
+            ("unsupported consent schema", |_, consent| {
+                consent.schema_version = "9.9-future".to_owned();
+            }),
+            ("empty profile identifier", |profile, _| {
+                profile.profile_id = String::new();
+            }),
+            ("empty rights record identifier", |_, consent| {
+                consent.rights_record_id = "   ".to_owned();
+            }),
+            ("empty permitted-use scope", |_, consent| {
+                consent.permitted_use.clear();
+            }),
+            // The trap the agreement check alone cannot catch: two digests that
+            // are equal, so they agree, and malformed, so neither could ever
+            // match the file it claims to describe.
+            ("agreeing malformed digests", |profile, consent| {
+                profile.reference_wav_blake3 = "not-a-digest".to_owned();
+                consent.reference_wav_blake3 = "not-a-digest".to_owned();
+            }),
+        ];
+
+        for (label, mutate) in mutations {
+            let (mut profile, mut consent) = constructed_records();
+            mutate(&mut profile, &mut consent);
+
+            let error = validate_profile_for_use(&profile, &consent, VoiceUse::PrivateSynthesis)
+                .expect_err("a structurally invalid record must not be authorized");
+
+            assert!(
+                matches!(
+                    error,
+                    VoiceError::UnsupportedSchema(_)
+                        | VoiceError::MissingField(_)
+                        | VoiceError::MalformedChecksum { .. }
+                ),
+                "{label} was refused as `{error}` rather than as a structural fault"
+            );
+        }
+
+        // The unmutated pair still passes, so the cases above fail for the
+        // reason under test rather than because the fixture is unusable.
+        let (profile, consent) = constructed_records();
+        validate_profile_for_use(&profile, &consent, VoiceUse::PrivateSynthesis)
+            .expect("a well-formed constructed record is still authorized");
     }
 
     #[test]
