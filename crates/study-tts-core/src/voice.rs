@@ -30,11 +30,11 @@ pub enum ConsentStatus {
 impl ConsentStatus {
     /// The `snake_case` spelling this status carries in `consent.json`.
     ///
-    /// Mirrors the serde representation above so a refusal message quotes what the
-    /// author actually wrote in the record. The exhaustive match makes a new
-    /// variant a compile error rather than a silent fallback string, and
-    /// `t3_e0_record_state_spellings_match_their_serde_representation` proves the
-    /// two agree.
+    /// Mirrors the serde representation above so a refusal message quotes what
+    /// the author actually wrote in the record. The exhaustive match makes a
+    /// new variant a compile error rather than a silent fallback string, and
+    /// `t3_e0_record_state_spellings_match_their_serde_representation` proves
+    /// the two agree.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Granted => "granted",
@@ -124,8 +124,8 @@ pub struct VoiceConsent {
     /// Ownership declaration or documented subject consent for the reference
     /// recording.
     pub declaration: String,
-    /// The uses the consent permits; an unrecognized use is a parse error, not an
-    /// empty scope.
+    /// The uses the consent permits; an unrecognized use is a parse error, not
+    /// an empty scope.
     pub permitted_use: Vec<VoiceUse>,
     /// BLAKE3 checksum of `reference.wav` as recorded at consent time.
     pub reference_wav_blake3: String,
@@ -133,7 +133,8 @@ pub struct VoiceConsent {
     pub created: String,
     /// Whether the consent is granted, pending, or revoked.
     pub consent_status: ConsentStatus,
-    /// The rights record under `evidence/rights/<record-id>/` backing this consent.
+    /// The rights record under `evidence/rights/<record-id>/` backing this
+    /// consent.
     pub rights_record_id: String,
 }
 
@@ -173,10 +174,10 @@ pub enum VoiceError {
     /// A recorded checksum is not a BLAKE3 digest, so it could never match a
     /// computed one.
     ///
-    /// Caught at parse time so a malformed record is reported as malformed. Without
-    /// this, an uppercase or truncated digest reaches the runtime comparison and is
-    /// reported as a checksum *mismatch* — telling the owner their file was
-    /// tampered with when the record was simply mistyped.
+    /// Caught at parse time so a malformed record is reported as malformed.
+    /// Without this, an uppercase or truncated digest reaches the runtime
+    /// comparison and is reported as a checksum *mismatch* — telling the owner
+    /// their file was tampered with when the record was simply mistyped.
     #[error(
         "voice record field `{field}` is not a lowercase BLAKE3 hex digest: `{value}`; correct \
          the record rather than the artifact"
@@ -225,7 +226,8 @@ pub enum VoiceError {
         /// The uses the consent record permits, as recorded.
         permitted: String,
     },
-    /// The profile and consent records disagree about the reference-audio checksum.
+    /// The profile and consent records disagree about the reference-audio
+    /// checksum.
     #[error(
         "voice profile `{profile_id}` is refused: profile.json and consent.json record \
          different reference-audio checksums; the project owner must re-verify the profile \
@@ -379,8 +381,9 @@ mod tests {
     use std::fmt::Debug;
 
     /// Stand-in digests. Any well-formed value works: this module never hashes
-    /// anything, and the runtime is what compares a recorded digest to a computed
-    /// one. Both carry hex letters, so `to_uppercase` below actually changes them.
+    /// anything, and the runtime is what compares a recorded digest to a
+    /// computed one. Both carry hex letters, so `to_uppercase` below actually
+    /// changes them.
     const REFERENCE_DIGEST: &str =
         "afafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafaf";
     const CONDITIONALS_DIGEST: &str =
@@ -456,10 +459,10 @@ mod tests {
     #[test]
     fn t1_e0_structurally_invalid_records_are_refused_by_the_use_gate() {
         // `from_json` validates, so every earlier test reaches the gate with a
-        // well-formed record. These fields are public, so a caller can skip that
-        // path entirely — and a gate that trusts its inputs were parsed would
-        // authorize an unsupported schema, an empty identifier, or two malformed
-        // digests that happen to agree with each other.
+        // well-formed record. These fields are public, so a caller can skip
+        // that path entirely — and a gate that trusts its inputs were parsed
+        // would authorize an unsupported schema, an empty identifier, or two
+        // malformed digests that happen to agree with each other.
         let mutations: [Mutation; 6] = [
             ("unsupported profile schema", |profile, _| {
                 profile.schema_version = "9.9-future".to_owned();
@@ -556,7 +559,8 @@ mod tests {
     fn t1_e0_disagreeing_reference_checksums_are_refused() {
         let profile = parse_profile(&profile_value()).expect("valid profile must parse");
         let mut value = consent_value();
-        // Well-formed, so it reaches the agreement check rather than the format check.
+        // Well-formed, so it reaches the agreement check rather than the format
+        // check.
         value["reference_wav_blake3"] = Value::String(CONDITIONALS_DIGEST.to_owned());
         let consent = parse_consent(&value).expect("valid consent must parse");
 
@@ -591,9 +595,9 @@ mod tests {
 
     #[test]
     fn t1_e0_malformed_recorded_checksums_are_reported_as_malformed() {
-        // Uppercase is the trap this guards: `blake3::Hash::to_hex` is lowercase, so an
-        // uppercase digest would otherwise reach the runtime and be reported as
-        // tampering.
+        // Uppercase is the trap this guards: `blake3::Hash::to_hex` is
+        // lowercase, so an uppercase digest would otherwise reach the runtime
+        // and be reported as tampering.
         for malformed in [
             &REFERENCE_DIGEST.to_uppercase(),
             "1111",
@@ -615,10 +619,10 @@ mod tests {
     /// The spelling `consent.json` must carry for each consent status.
     ///
     /// Literal and independent of [`ConsentStatus::as_str`] on purpose: a table
-    /// that asked the implementation what it spells would agree with any spelling,
-    /// including a wrong one. The match is exhaustive, so a new variant is a
-    /// compile error here rather than a variant no test covers — and the compiler
-    /// lands the author beside the list the test iterates.
+    /// that asked the implementation what it spells would agree with any
+    /// spelling, including a wrong one. The match is exhaustive, so a new
+    /// variant is a compile error here rather than a variant no test covers —
+    /// and the compiler lands the author beside the list the test iterates.
     fn expected_consent_status_spelling(status: ConsentStatus) -> &'static str {
         match status {
             ConsentStatus::Granted => "granted",
@@ -627,8 +631,8 @@ mod tests {
         }
     }
 
-    /// The spelling `profile.json` must carry for each rights decision, on the same
-    /// terms.
+    /// The spelling `profile.json` must carry for each rights decision, on the
+    /// same terms.
     fn expected_rights_decision_spelling(decision: RightsDecision) -> &'static str {
         match decision {
             RightsDecision::Approved => "approved",
@@ -638,8 +642,8 @@ mod tests {
         }
     }
 
-    /// The spelling a `permitted_use` entry must carry for each use, on the same
-    /// terms.
+    /// The spelling a `permitted_use` entry must carry for each use, on the
+    /// same terms.
     fn expected_voice_use_spelling(requested: VoiceUse) -> &'static str {
         match requested {
             VoiceUse::PrivateSynthesis => "private_synthesis",
@@ -649,8 +653,9 @@ mod tests {
 
     /// Asserts a record value is written as `expected` and read back from it.
     ///
-    /// Both directions matter: writing the right string while accepting a different
-    /// one would let a record spell a state one way and be gated as another.
+    /// Both directions matter: writing the right string while accepting a
+    /// different one would let a record spell a state one way and be gated as
+    /// another.
     fn assert_serde_spelling<T>(value: T, expected: &'static str)
     where
         T: Copy + Debug + PartialEq + Serialize + DeserializeOwned,
@@ -710,10 +715,10 @@ mod tests {
 
     #[test]
     fn t3_e0_unknown_permitted_use_values_are_rejected() {
-        // A recorded scope outside the vocabulary can never match a request, so as a
-        // bare string it would sit in the record unenforced. The last case is the one
-        // that matters: a record must not be able to widen its own scope with a use
-        // this build cannot gate.
+        // A recorded scope outside the vocabulary can never match a request, so
+        // as a bare string it would sit in the record unenforced. The last case
+        // is the one that matters: a record must not be able to widen its own
+        // scope with a use this build cannot gate.
         for unknown in [
             json!(["commercial_distribution"]),
             json!(["PrivateSynthesis"]),

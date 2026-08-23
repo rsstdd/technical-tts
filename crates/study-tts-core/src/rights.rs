@@ -31,11 +31,11 @@ pub enum SourceClassification {
 impl SourceClassification {
     /// The `snake_case` spelling this classification carries in a manifest.
     ///
-    /// Mirrors the serde representation above so a refusal quotes what the author
-    /// actually wrote. The exhaustive match makes a new variant a compile error
-    /// rather than a silent fallback string, and
-    /// `t3_e0_classification_spellings_match_their_serde_representation` proves the
-    /// two agree.
+    /// Mirrors the serde representation above so a refusal quotes what the
+    /// author actually wrote. The exhaustive match makes a new variant a
+    /// compile error rather than a silent fallback string, and
+    /// `t3_e0_classification_spellings_match_their_serde_representation` proves
+    /// the two agree.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OwnerAuthored => "owner_authored",
@@ -64,15 +64,15 @@ impl SourceClassification {
 
     /// Whether this classification permits private preview rendering.
     ///
-    /// Only `Prohibited` is excluded. An unresolved classification restricts use to
-    /// the permitted private scope per `docs/governance/ROUTING-TABLES.md`; it does
-    /// not block private preview.
+    /// Only `Prohibited` is excluded. An unresolved classification restricts
+    /// use to the permitted private scope per
+    /// `docs/governance/ROUTING-TABLES.md`; it does not block private preview.
     ///
     /// Deliberately unenforced at E0-S2: `BuildRequest` carries no source
     /// classification, so nothing in the preview path can consult this yet. It
-    /// states the policy row now so the release gate and the preview gate cannot
-    /// drift apart later; the preview-scope story wires it in. Do not read the
-    /// preview path as classification-gated today.
+    /// states the policy row now so the release gate and the preview gate
+    /// cannot drift apart later; the preview-scope story wires it in. Do not
+    /// read the preview path as classification-gated today.
     pub fn permits_private_preview(self) -> bool {
         !matches!(self, Self::Prohibited)
     }
@@ -168,11 +168,12 @@ mod tests {
     #[test]
     fn t3_e0_only_resolved_classifications_permit_production_release() {
         for classification in ALL_CLASSIFICATIONS {
-            // Expected values are a table read off `RIGHTS-DATA-ARTIFACT-POLICY.md`
-            // §Classification, not a re-derivation of the implementation: repeating the
-            // implementation's own `matches!` here would pass for any policy, including a
-            // wrong one. The exhaustive match also makes a ninth variant a compile error in
-            // this test rather than an untested one.
+            // Expected values are a table read off
+            // `RIGHTS-DATA-ARTIFACT-POLICY.md` §Classification, not a
+            // re-derivation of the implementation: repeating the
+            // implementation's own `matches!` here would pass for any policy,
+            // including a wrong one. The exhaustive match also makes a ninth
+            // variant a compile error in this test rather than an untested one.
             let (releasable, previewable) = match classification {
                 SourceClassification::OwnerAuthored => (true, true),
                 SourceClassification::PublicDomain => (true, true),

@@ -29,7 +29,8 @@ pub const REQUIRED_PRODUCTION_GATES: [&str; 12] = [
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseStatus {
-    /// Rendered and structurally valid, but not verified, approved, or releasable.
+    /// Rendered and structurally valid, but not verified, approved, or
+    /// releasable.
     PrivatePreview,
     /// Every gate in `docs/governance/RELEASE-PROFILES.md` §3 has a passing
     /// evidence record.
@@ -43,8 +44,8 @@ pub enum ReleaseError {
     /// release.
     #[error("a private preview cannot report production release")]
     PrivateProfileCannotClaimProduction,
-    /// A required gate has no evidence record, named so the owner knows which one
-    /// to run.
+    /// A required gate has no evidence record, named so the owner knows which
+    /// one to run.
     #[error("production release is missing gate evidence: {0}")]
     MissingGateEvidence(String),
 }
@@ -78,8 +79,8 @@ impl ReleaseClaim {
         self.status
     }
 
-    /// Accepts the claim only if the profile is production and every required gate
-    /// has evidence.
+    /// Accepts the claim only if the profile is production and every required
+    /// gate has evidence.
     pub fn validate_as_production(&self) -> Result<(), ReleaseError> {
         if self.status != ReleaseStatus::ProductionRelease {
             return Err(ReleaseError::PrivateProfileCannotClaimProduction);
@@ -102,11 +103,11 @@ mod tests {
     use super::*;
 
     /// The gate identifiers this crate is expected to require, transcribed
-    /// independently from `docs/governance/RELEASE-PROFILES.md` §3 rather than read
-    /// from `REQUIRED_PRODUCTION_GATES`. A test that derives its cases from the
-    /// implementation drops a case whenever a gate is dropped, and stays green
-    /// while the policy shrinks. Update this table only alongside an ADR amendment
-    /// that changes §3.
+    /// independently from `docs/governance/RELEASE-PROFILES.md` §3 rather than
+    /// read from `REQUIRED_PRODUCTION_GATES`. A test that derives its cases
+    /// from the implementation drops a case whenever a gate is dropped, and
+    /// stays green while the policy shrinks. Update this table only alongside
+    /// an ADR amendment that changes §3.
     const EXPECTED_PRODUCTION_GATES: [&str; 12] = [
         "long_form_soak",
         "content_integrity_review",

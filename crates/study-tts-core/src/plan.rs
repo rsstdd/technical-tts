@@ -35,7 +35,8 @@ impl CacheKey {
     ///
     /// Every one is ASCII, so any prefix up to this width is in bounds and on a
     /// character boundary. That is the guarantee a prefix-sharded cache layout
-    /// rests on, so it is published rather than left for a caller to rediscover.
+    /// rests on, so it is published rather than left for a caller to
+    /// rediscover.
     pub const LENGTH: usize = BLAKE3_HEX_LENGTH;
 
     /// The key as it is written to a plan, a manifest, and a cache artifact.
@@ -150,8 +151,8 @@ impl fmt::Display for PlanHash {
 pub struct RenderPlan {
     /// The lesson this plan was derived from.
     pub lesson_id: String,
-    /// Identity of the plan as a whole, so a rebuild can be recognized as the same
-    /// plan.
+    /// Identity of the plan as a whole, so a rebuild can be recognized as the
+    /// same plan.
     pub plan_hash: PlanHash,
     /// The segments to synthesize, in speaking order.
     pub segments: Vec<PlannedSegment>,
@@ -203,9 +204,9 @@ struct SynthesisIdentity<'a> {
 impl RenderPlan {
     /// Derives the plan for a lesson under a given synthesizer identity.
     ///
-    /// Deterministic: the same lesson and the same synthesizer always produce the
-    /// same plan hash and the same cache keys, which is what makes a rebuild reuse
-    /// its cache.
+    /// Deterministic: the same lesson and the same synthesizer always produce
+    /// the same plan hash and the same cache keys, which is what makes a
+    /// rebuild reuse its cache.
     pub fn for_lesson(lesson: &Lesson, synthesizer_identity: &str) -> Self {
         let segments = lesson
             .segments
@@ -254,11 +255,11 @@ mod tests {
 
     #[test]
     fn t1_e0_cache_keys_that_cannot_name_a_shard_directory_are_rejected() {
-        // The cache shards its entries on the key's leading characters. While this
-        // field was a `String`, the first two of these panicked in that slice — `""`
-        // and `"a"` are out of bounds, and `日` puts byte index 2 inside a character —
-        // and the rest reached the filesystem as directory names this program never
-        // produced.
+        // The cache shards its entries on the key's leading characters. While
+        // this field was a `String`, the first two of these panicked in that
+        // slice — `""` and `"a"` are out of bounds, and `日` puts byte index 2
+        // inside a character — and the rest reached the filesystem as directory
+        // names this program never produced.
         let too_short = "a".repeat(CacheKey::LENGTH - 1);
         let too_long = "a".repeat(CacheKey::LENGTH + 1);
         let uppercase = "A".repeat(CacheKey::LENGTH);
@@ -278,8 +279,8 @@ mod tests {
                 "`{malformed}` must not parse as a cache key"
             );
             // Deserialization is the boundary that matters: a cache artifact on
-            // disk records its key, and that record is how a malformed key would
-            // otherwise reach the shard slice.
+            // disk records its key, and that record is how a malformed key
+            // would otherwise reach the shard slice.
             assert!(
                 serde_json::from_value::<CacheKey>(Value::String(malformed.to_owned())).is_err(),
                 "a recorded cache key `{malformed}` must not deserialize"
@@ -296,9 +297,9 @@ mod tests {
         let plan = RenderPlan::for_lesson(&lesson, "fake-tone-v1");
         let cache_key = &plan.segments[0].cache_key;
 
-        // Manifests and cache artifacts already on disk hold the key as a bare JSON
-        // string. Wrapping it in a value object must not change that, or every
-        // existing artifact becomes unreadable.
+        // Manifests and cache artifacts already on disk hold the key as a bare
+        // JSON string. Wrapping it in a value object must not change that, or
+        // every existing artifact becomes unreadable.
         let recorded = serde_json::to_value(cache_key).expect("a cache key serializes");
         assert_eq!(recorded, Value::String(cache_key.as_str().to_owned()));
         assert_eq!(
@@ -315,15 +316,16 @@ mod tests {
         .expect("fixture should be valid");
         let plan = RenderPlan::for_lesson(&lesson, "fake-tone-v1");
 
-        // `From<blake3::Hash>` is the only constructor, so the recorded value is a
-        // digest by construction rather than by a check someone has to remember.
+        // `From<blake3::Hash>` is the only constructor, so the recorded value
+        // is a digest by construction rather than by a check someone has to
+        // remember.
         assert!(
             is_blake3_hex(plan.plan_hash.as_str()),
             "`{}` is not a BLAKE3 digest",
             plan.plan_hash
         );
-        // The manifest holds it as a bare JSON string; wrapping it in a value object
-        // must not change what `manifest.json` looks like.
+        // The manifest holds it as a bare JSON string; wrapping it in a value
+        // object must not change what `manifest.json` looks like.
         assert_eq!(
             serde_json::to_value(&plan.plan_hash).expect("a plan hash serializes"),
             Value::String(plan.plan_hash.as_str().to_owned())

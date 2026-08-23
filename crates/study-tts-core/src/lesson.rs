@@ -13,8 +13,8 @@ const MAX_IDENTIFIER_LENGTH: usize = 64;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Lesson {
-    /// Schema this document claims; an unrecognized version is refused rather than
-    /// guessed at.
+    /// Schema this document claims; an unrecognized version is refused rather
+    /// than guessed at.
     pub schema_version: String,
     /// Stable identity of the lesson, which also names its output directory.
     pub lesson_id: String,
@@ -43,8 +43,8 @@ pub struct LessonSegment {
     pub source_refs: Vec<String>,
     /// Text as a reviewer reads it; display only, and outside the cache key.
     pub display_text: String,
-    /// Text as it is spoken, which is what synthesis and the cache key are derived
-    /// from.
+    /// Text as it is spoken, which is what synthesis and the cache key are
+    /// derived from.
     pub spoken_text: String,
     /// Delivery style requested of the voice.
     pub style: String,
@@ -94,7 +94,8 @@ pub enum LessonError {
          not start with a dot, because it names an output directory"
     )]
     InvalidLessonId(String),
-    /// A lesson with nothing to speak is an authoring mistake, not an empty build.
+    /// A lesson with nothing to speak is an authoring mistake, not an empty
+    /// build.
     #[error("lesson must contain at least one segment")]
     MissingSegments,
     /// A segment supplied no identity at all.
@@ -143,8 +144,8 @@ pub enum LessonError {
 }
 
 impl Lesson {
-    /// Parses and validates a lesson document, refusing anything synthesis could
-    /// not use.
+    /// Parses and validates a lesson document, refusing anything synthesis
+    /// could not use.
     pub fn from_json(bytes: &[u8]) -> Result<Self, LessonError> {
         let lesson: Self = serde_json::from_slice(bytes)?;
         lesson.validate()?;
@@ -157,9 +158,9 @@ impl Lesson {
         if self.schema_version != "0.1-skeleton" {
             return Err(LessonError::UnsupportedSchema(self.schema_version.clone()));
         }
-        // An absent value and a malformed value are different authoring mistakes, so
-        // each keeps a distinct error. Both identifier kinds apply the same two checks
-        // in the same order.
+        // An absent value and a malformed value are different authoring
+        // mistakes, so each keeps a distinct error. Both identifier kinds apply
+        // the same two checks in the same order.
         if self.lesson_id.trim().is_empty() {
             return Err(LessonError::MissingLessonId);
         }
@@ -333,9 +334,9 @@ mod tests {
 
     #[test]
     fn t1_e0_empty_identifiers_are_reported_as_missing_not_malformed() {
-        // Whitespace-only is treated as absent for both identifier kinds, so the two
-        // branches cannot drift apart the way `is_empty` versus `trim().is_empty()`
-        // previously allowed.
+        // Whitespace-only is treated as absent for both identifier kinds, so
+        // the two branches cannot drift apart the way `is_empty` versus
+        // `trim().is_empty()` previously allowed.
         for absent in ["", "   "] {
             let mut value = fixture();
             value["lesson_id"] = Value::String(absent.to_owned());
@@ -387,9 +388,9 @@ mod tests {
 
     #[test]
     fn t1_e0_portable_ids_at_the_length_bound_are_accepted() {
-        // `lesson.v1` is pinned deliberately: interior dots stay legal, so a later
-        // attempt to reject every dot would fail here rather than silently breaking
-        // versioned identifiers.
+        // `lesson.v1` is pinned deliberately: interior dots stay legal, so a
+        // later attempt to reject every dot would fail here rather than
+        // silently breaking versioned identifiers.
         let accepted = [
             "a".to_owned(),
             "seg-0001".to_owned(),

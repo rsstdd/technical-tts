@@ -99,11 +99,11 @@ fn t4_e0_missing_voice_consent_blocks_profile_load() {
 
 #[test]
 fn t4_e0_unapproved_voice_profile_cannot_enter_preview_or_production() {
-    // Positive control: an approved profile with granted consent passes the gate,
-    // and the build then fails on the deliberately absent tool rather than on the
-    // voice. This makes the refusals below attributable to approval state alone
-    // without needing a real encoder — the full render is already covered by the
-    // walking-skeleton suite.
+    // Positive control: an approved profile with granted consent passes the
+    // gate, and the build then fails on the deliberately absent tool rather
+    // than on the voice. This makes the refusals below attributable to approval
+    // state alone without needing a real encoder — the full render is already
+    // covered by the walking-skeleton suite.
     let (error, worker) = refused_build(&VoiceProfileFixtureSpec::default());
     assert!(
         matches!(error, BuildError::MissingTool { .. }),
@@ -111,8 +111,8 @@ fn t4_e0_unapproved_voice_profile_cannot_enter_preview_or_production() {
     );
     assert_eq!(worker.synthesis_count(), 0);
 
-    // Preview: every non-approved rights decision refuses the profile before any
-    // work.
+    // Preview: every non-approved rights decision refuses the profile before
+    // any work.
     for decision in ["restricted", "review_required", "prohibited"] {
         let (error, worker) = refused_build(&VoiceProfileFixtureSpec {
             approval: decision.to_owned(),
@@ -129,8 +129,8 @@ fn t4_e0_unapproved_voice_profile_cannot_enter_preview_or_production() {
         assert_eq!(worker.synthesis_count(), 0);
     }
 
-    // Production: a manifest declaring a non-approved profile is refused as itself,
-    // not as the generic gate refusal.
+    // Production: a manifest declaring a non-approved profile is refused as
+    // itself, not as the generic gate refusal.
     let mut manifest = production_manifest(serde_json::json!([{
         "source_id": "lesson-source-1",
         "classification": "owner_authored",
@@ -216,9 +216,9 @@ fn t4_e0_production_release_rejects_unresolved_content_rights_classification() {
         );
     }
 
-    // A fully resolved declaration still meets the gate refusal: the rights check
-    // is a precondition ahead of the unimplemented production gates, not a bypass
-    // of them.
+    // A fully resolved declaration still meets the gate refusal: the rights
+    // check is a precondition ahead of the unimplemented production gates, not
+    // a bypass of them.
     let resolved = production_manifest(serde_json::json!([{
         "source_id": "lesson-source-1",
         "classification": "owner_authored",
@@ -250,9 +250,9 @@ fn t4_e0_production_release_rejects_unresolved_content_rights_classification() {
         "undeclared rights produced `{error}`"
     );
 
-    // An unknown classification value is a parse error, never silently accepted,
-    // and it is reported as an invalid rights declaration rather than as the
-    // generic JSON catch-all.
+    // An unknown classification value is a parse error, never silently
+    // accepted, and it is reported as an invalid rights declaration rather than
+    // as the generic JSON catch-all.
     let unknown = production_manifest(serde_json::json!([{
         "source_id": "lesson-source-1",
         "classification": "unclassified",
@@ -287,9 +287,9 @@ fn t3_e0_production_manifest_is_a_strict_typed_boundary() {
         "malformed JSON produced `{error}`"
     );
 
-    // A field this build cannot evaluate must not be published past. The version
-    // is read first, so this is refused as a shape violation of version 1.0
-    // rather than as an unknown version.
+    // A field this build cannot evaluate must not be published past. The
+    // version is read first, so this is refused as a shape violation of version
+    // 1.0 rather than as an unknown version.
     let mut extra = production_manifest(resolved.clone());
     extra["unexpected_field"] = serde_json::json!(true);
     let error = validate(&extra).expect_err("an unknown top-level field must refuse production");
@@ -298,8 +298,8 @@ fn t3_e0_production_manifest_is_a_strict_typed_boundary() {
         "unknown top-level field produced `{error}`"
     );
 
-    // A blank identifier parses and then traces to no record, so it would satisfy
-    // the classification check while naming nothing.
+    // A blank identifier parses and then traces to no record, so it would
+    // satisfy the classification check while naming nothing.
     for (section, field, manifest) in [
         ("content_rights", "source_id", {
             let mut blank = resolved.clone();

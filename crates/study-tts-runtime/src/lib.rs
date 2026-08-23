@@ -53,17 +53,18 @@ pub enum BuildError {
     #[error(transparent)]
     Voice(#[from] study_tts_core::VoiceError),
 
-    /// A record the voice policy requires is absent, so profile load fails closed.
+    /// A record the voice policy requires is absent, so profile load fails
+    /// closed.
     ///
     /// Remedy routing per `docs/governance/ROUTING-TABLES.md` ("Voice
-    /// consent/checksum mismatch → Refuse profile load → Project owner → Blocked"):
-    /// the owner resolves the record; the profile is never deleted or repaired
-    /// automatically.
+    /// consent/checksum mismatch → Refuse profile load → Project owner →
+    /// Blocked"): the owner resolves the record; the profile is never deleted
+    /// or repaired automatically.
     ///
-    /// `profile.json` and `consent.json` share this variant because they are the
-    /// same class of refusal — a record the policy requires is absent — and an
-    /// absent profile record deserves the same remedy-bearing message as an absent
-    /// consent record, not a bare IO error.
+    /// `profile.json` and `consent.json` share this variant because they are
+    /// the same class of refusal — a record the policy requires is absent — and
+    /// an absent profile record deserves the same remedy-bearing message as an
+    /// absent consent record, not a bare IO error.
     #[error(
         "voice profile at `{profile_dir}` is refused: required record `{record}` is missing; \
          profile load fails closed and the project owner must supply the record before use"
@@ -75,9 +76,9 @@ pub enum BuildError {
         record: &'static str,
     },
 
-    /// A profile file no longer hashes to what its record says, so the record no
-    /// longer describes it. Routing: "Voice consent/checksum mismatch → Project
-    /// owner → Blocked".
+    /// A profile file no longer hashes to what its record says, so the record
+    /// no longer describes it. Routing: "Voice consent/checksum mismatch →
+    /// Project owner → Blocked".
     #[error(
         "voice profile at `{profile_dir}` is refused: `{path}` does not match its recorded \
          checksum; do not use this profile until the project owner re-verifies it against its \
@@ -103,13 +104,13 @@ pub enum BuildError {
         classification: String,
     },
 
-    /// A manifest's rights section does not parse — an unknown classification, a
-    /// missing field, or the wrong shape.
+    /// A manifest's rights section does not parse — an unknown classification,
+    /// a missing field, or the wrong shape.
     ///
     /// Distinct from the `Json` catch-all below: on the publication path the
-    /// section is known and worth naming, and an operator reading "JSON operation
-    /// failed" would not learn that their manifest declared a classification
-    /// outside the recorded vocabulary.
+    /// section is known and worth naming, and an operator reading "JSON
+    /// operation failed" would not learn that their manifest declared a
+    /// classification outside the recorded vocabulary.
     #[error(
         "production release is refused: the `{section}` manifest section is not a valid rights \
          declaration ({source}); the project owner must correct the manifest before publication"
@@ -141,21 +142,23 @@ pub enum BuildError {
         source: hound::Error,
     },
 
-    /// The synthesizer refused or failed; the inner error carries what it reported.
+    /// The synthesizer refused or failed; the inner error carries what it
+    /// reported.
     #[error(transparent)]
     Synthesis(#[from] SynthesisError),
 
     /// A published cache entry cannot be used.
     ///
-    /// Remedy routing per `docs/governance/ROUTING-TABLES.md` ("State or checksum
-    /// corruption → Refuse overwrite; run reconciliation → Runtime → Blocked").
-    /// E0-S0 has no reconciliation — E2-S1 adds it — so deletion is the safe
-    /// recovery action ADR-0001 §4.2 requires, because the segment regenerates from
-    /// the plan on the next build.
+    /// Remedy routing per `docs/governance/ROUTING-TABLES.md` ("State or
+    /// checksum corruption → Refuse overwrite; run reconciliation → Runtime →
+    /// Blocked"). E0-S0 has no reconciliation — E2-S1 adds it — so deletion is
+    /// the safe recovery action ADR-0001 §4.2 requires, because the segment
+    /// regenerates from the plan on the next build.
     ///
-    /// The entry directory and the remedy are stated once here rather than at each
-    /// rejection site; `CacheEntryFault` carries which invariant was violated, so a
-    /// test asserts the exact fault instead of matching a substring.
+    /// The entry directory and the remedy are stated once here rather than at
+    /// each rejection site; `CacheEntryFault` carries which invariant was
+    /// violated, so a test asserts the exact fault instead of matching a
+    /// substring.
     ///
     /// The fault is boxed because it is by far the largest thing `BuildError`
     /// carries, and every fallible function in this crate pays for the widest
@@ -174,14 +177,14 @@ pub enum BuildError {
         fault: Box<CacheEntryFault>,
     },
 
-    /// Audio that is not a published cache entry: freshly synthesized output, or a
-    /// staged master.
+    /// Audio that is not a published cache entry: freshly synthesized output,
+    /// or a staged master.
     ///
-    /// Routing: "Invalid or over-range audio → Quarantine unique attempt; bounded
-    /// retry → Audio/runtime → Blocked for segment". Deliberately carries no
-    /// deletion remedy — the staged file is discarded on drop, so there is nothing
-    /// published to remove, and advising a deletion would name a path that no
-    /// longer exists.
+    /// Routing: "Invalid or over-range audio → Quarantine unique attempt;
+    /// bounded retry → Audio/runtime → Blocked for segment". Deliberately
+    /// carries no deletion remedy — the staged file is discarded on drop, so
+    /// there is nothing published to remove, and advising a deletion would name
+    /// a path that no longer exists.
     #[error("`{path}` is not usable lesson audio: {fault}")]
     UnusableAudio {
         /// The audio file that failed validation.
@@ -192,10 +195,11 @@ pub enum BuildError {
 
     /// The worker's report disagrees with the file it wrote.
     ///
-    /// Routing: "Worker protocol or containment failure → Terminate worker tree;
-    /// preserve diagnostics → Worker/runtime → Blocked". Separate from
-    /// `UnusableAudio` because the audio is canonical: what failed is the worker's
-    /// account of it, and no retry of the same worker build fixes that.
+    /// Routing: "Worker protocol or containment failure → Terminate worker
+    /// tree; preserve diagnostics → Worker/runtime → Blocked". Separate from
+    /// `UnusableAudio` because the audio is canonical: what failed is the
+    /// worker's account of it, and no retry of the same worker build fixes
+    /// that.
     #[error(
         "synthesizer reported {reported_sample_rate} Hz, {reported_channels} channels, and \
          {reported_frames} frames for segment `{segment_id}` but wrote a WAV with \
@@ -231,15 +235,16 @@ pub enum BuildError {
         pause_after_ms: u32,
     },
 
-    /// The planned lesson is longer than the build can represent, before any audio
-    /// was written.
+    /// The planned lesson is longer than the build can represent, before any
+    /// audio was written.
     #[error(
         "the planned lesson exceeds the frame count this build can assemble; split the lesson \
          into shorter lessons"
     )]
     PlannedLengthOverflow,
 
-    /// The master grew past what the build can count while it was being written.
+    /// The master grew past what the build can count while it was being
+    /// written.
     #[error(
         "assembling `{destination}` exceeded the frame count this build can track; split the \
          lesson into shorter lessons"
@@ -249,11 +254,11 @@ pub enum BuildError {
         destination: PathBuf,
     },
 
-    /// The master's length disagrees with the length its validated cache metadata
-    /// implies.
+    /// The master's length disagrees with the length its validated cache
+    /// metadata implies.
     ///
-    /// Redundant while every per-segment check passes, and retained because it is
-    /// the invariant the manifest and every downstream duration derive from.
+    /// Redundant while every per-segment check passes, and retained because it
+    /// is the invariant the manifest and every downstream duration derive from.
     /// Routing: "State or checksum corruption → Refuse overwrite; run
     /// reconciliation → Runtime → Blocked".
     #[error(
@@ -290,8 +295,8 @@ pub enum BuildError {
         stderr: String,
     },
 
-    /// FFmpeg could not be launched at all, which is distinct from its running and
-    /// failing.
+    /// FFmpeg could not be launched at all, which is distinct from its running
+    /// and failing.
     #[error("could not start FFmpeg `{executable}`: {source}")]
     StartFfmpeg {
         /// The executable that could not be started.
@@ -300,7 +305,8 @@ pub enum BuildError {
         source: io::Error,
     },
 
-    /// Preflight could not resolve a required external tool, before any work began.
+    /// Preflight could not resolve a required external tool, before any work
+    /// began.
     #[error("required tool {tool} was not found or is not executable at `{requested}`")]
     MissingTool {
         /// Which tool is required.
@@ -309,8 +315,8 @@ pub enum BuildError {
         requested: PathBuf,
     },
 
-    /// A required tool exists but could not be inspected, so its identity cannot be
-    /// recorded.
+    /// A required tool exists but could not be inspected, so its identity
+    /// cannot be recorded.
     #[error("could not inspect {tool} at `{executable}`: {source}")]
     InspectTool {
         /// Which tool was being inspected.
@@ -321,8 +327,8 @@ pub enum BuildError {
         source: io::Error,
     },
 
-    /// A tool ran but would not report its version, so the manifest cannot record
-    /// what was used.
+    /// A tool ran but would not report its version, so the manifest cannot
+    /// record what was used.
     #[error("{tool} version probe failed with status {status}: {stderr}")]
     ToolProbeFailed {
         /// Which tool was probed.
@@ -344,9 +350,9 @@ pub enum BuildError {
 
     /// ffprobe exited successfully but its response could not be read.
     ///
-    /// Distinct from `UnexpectedEncodedStream`: nothing is known about the output
-    /// yet, so the encode is unverified rather than wrong, and the fault is in the
-    /// probe or its version rather than in the file.
+    /// Distinct from `UnexpectedEncodedStream`: nothing is known about the
+    /// output yet, so the encode is unverified rather than wrong, and the fault
+    /// is in the probe or its version rather than in the file.
     #[error(
         "encoded output `{path}` is unverified: ffprobe returned a response this build could \
          not read ({source}); the audio owner must reconcile the ffprobe version with the \
@@ -359,12 +365,12 @@ pub enum BuildError {
         source: serde_json::Error,
     },
 
-    /// The probe was read and describes something other than the stream this build
-    /// produces.
+    /// The probe was read and describes something other than the stream this
+    /// build produces.
     ///
     /// Routing: "Invalid or over-range audio → Audio/runtime → Blocked for
-    /// segment". The encode settings and this check are two ends of one agreement,
-    /// so a mismatch means one of them moved.
+    /// segment". The encode settings and this check are two ends of one
+    /// agreement, so a mismatch means one of them moved.
     #[error(
         "encoded output `{path}` is not the stream this build produces: ffprobe reports codec \
          `{}` with `{}` channels, not {required_channels}-channel `{required_codec}`; the \
@@ -375,7 +381,8 @@ pub enum BuildError {
     UnexpectedEncodedStream {
         /// The output that failed verification.
         path: PathBuf,
-        /// Codec ffprobe reported, absent if the output declares no audio stream.
+        /// Codec ffprobe reported, absent if the output declares no audio
+        /// stream.
         codec: Option<String>,
         /// Channel count ffprobe reported, absent on the same terms.
         channels: Option<u16>,
@@ -385,8 +392,8 @@ pub enum BuildError {
         required_channels: u16,
     },
 
-    /// A path the build derived would leave the root it is confined to, so nothing
-    /// is written.
+    /// A path the build derived would leave the root it is confined to, so
+    /// nothing is written.
     #[error("managed path `{path}` resolves outside `{root}`")]
     ManagedPathEscape {
         /// The path that resolved outside its root.
@@ -410,12 +417,14 @@ pub enum BuildError {
         version: String,
     },
 
-    /// The manifest is not JSON, or not the shape its declared version requires.
+    /// The manifest is not JSON, or not the shape its declared version
+    /// requires.
     ///
     /// Distinct from the `Json` catch-all: the subsystem is known here, and an
-    /// operator reading "JSON operation failed" would not learn that publication
-    /// refused their manifest. An unknown top-level field lands here too, because a
-    /// field this build cannot evaluate is one it must not publish past.
+    /// operator reading "JSON operation failed" would not learn that
+    /// publication refused their manifest. An unknown top-level field lands
+    /// here too, because a field this build cannot evaluate is one it must not
+    /// publish past.
     #[error(
         "production release is refused: the manifest is not a valid production manifest \
          ({source}); the project owner must correct the manifest before publication"
@@ -428,8 +437,9 @@ pub enum BuildError {
     /// The manifest names no classified source at all.
     ///
     /// Separate from `UnresolvedContentRights`, which is a source whose
-    /// classification was recorded and does not permit release. Declaring nothing
-    /// is not the same as declaring something unresolved, and the remedies differ.
+    /// classification was recorded and does not permit release. Declaring
+    /// nothing is not the same as declaring something unresolved, and the
+    /// remedies differ.
     #[error(
         "production release is refused: the manifest declares no `content_rights` \
          classification for its sources; the project owner must classify every source in its \
@@ -440,8 +450,8 @@ pub enum BuildError {
     /// A declaration names an identifier but leaves it blank.
     ///
     /// Distinct from an absent field, which serde refuses outright: a blank
-    /// identifier parses and then traces to no record, so it would satisfy a rights
-    /// gate while naming nothing.
+    /// identifier parses and then traces to no record, so it would satisfy a
+    /// rights gate while naming nothing.
     #[error(
         "production release is refused: the `{section}` manifest section declares an empty \
          `{field}`; the project owner must name it before publication"
@@ -453,12 +463,12 @@ pub enum BuildError {
         field: &'static str,
     },
 
-    /// The manifest satisfied every rights precondition this build can check, and
-    /// the release gates that would decide the rest do not exist yet.
+    /// The manifest satisfied every rights precondition this build can check,
+    /// and the release gates that would decide the rest do not exist yet.
     ///
     /// Separate from `PublicationRefused` so a manifest that passed its rights
-    /// checks is not reported the same way as one refused by policy. Reaching this
-    /// is the closest a manifest can currently come to acceptance.
+    /// checks is not reported the same way as one refused by policy. Reaching
+    /// this is the closest a manifest can currently come to acceptance.
     #[error(
         "production release is refused: manifest acceptance is unavailable before the \
          production gates of `docs/governance/RELEASE-PROFILES.md` §3 are implemented"
@@ -475,9 +485,9 @@ pub enum BuildError {
     },
 
     /// Catch-all for `?` on a `serde_json` call with no useful context to add.
-    /// Prefer a variant that carries the path or the subsystem; this exists so a
-    /// future call site cannot silently inherit an unrelated error message the way
-    /// the former `Manifest` variant did.
+    /// Prefer a variant that carries the path or the subsystem; this exists so
+    /// a future call site cannot silently inherit an unrelated error message
+    /// the way the former `Manifest` variant did.
     #[error("JSON operation failed: {0}")]
     Json(#[from] serde_json::Error),
 }
@@ -536,9 +546,9 @@ pub enum CacheEntryFault {
         required: CacheKey,
     },
 
-    /// Raised both when the entry is loaded and when the master is assembled from
-    /// it, because a truncated entry and a truncated read are the same violated
-    /// invariant.
+    /// Raised both when the entry is loaded and when the master is assembled
+    /// from it, because a truncated entry and a truncated read are the same
+    /// violated invariant.
     #[error("the audio holds {found} frames but the artifact declares {declared}")]
     FrameCountMismatch {
         /// Frames the audio actually holds.
@@ -547,8 +557,8 @@ pub enum CacheEntryFault {
         declared: u32,
     },
 
-    /// Distinct from `ChecksumMismatch` on purpose: a malformed record reported as
-    /// a mismatch tells the operator their audio was tampered with when the
+    /// Distinct from `ChecksumMismatch` on purpose: a malformed record reported
+    /// as a mismatch tells the operator their audio was tampered with when the
     /// artifact is what broke.
     #[error(
         "the artifact records `{recorded}` as the audio digest, which is not a lowercase BLAKE3 \
@@ -568,7 +578,8 @@ pub enum CacheEntryFault {
         declared: String,
     },
 
-    /// The entry's audio failed validation; the inner fault names which property.
+    /// The entry's audio failed validation; the inner fault names which
+    /// property.
     #[error("{0}")]
     Audio(#[from] AudioFault),
 }
@@ -604,7 +615,8 @@ pub enum AudioFault {
         required_sample_rate: u32,
     },
 
-    /// A sample is infinite, NaN, or beyond full scale, which would clip on export.
+    /// A sample is infinite, NaN, or beyond full scale, which would clip on
+    /// export.
     #[error("sample {index} is `{value}`, outside the finite range -1.0 to 1.0")]
     OutOfRangeSample {
         /// Zero-based frame the bad sample sits at.

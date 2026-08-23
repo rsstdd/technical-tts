@@ -30,8 +30,8 @@ pub struct DeterministicToneWorker {
 }
 
 impl DeterministicToneWorker {
-    /// How many segments this worker has synthesized, for asserting that a gate ran
-    /// first.
+    /// How many segments this worker has synthesized, for asserting that a gate
+    /// ran first.
     pub fn synthesis_count(&self) -> usize {
         self.synthesis_count.load(Ordering::SeqCst)
     }

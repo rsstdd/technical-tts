@@ -110,9 +110,9 @@ pub(crate) fn probe_m4a(ffprobe: &ToolIdentity, m4a: &Path) -> Result<ToolExecut
 /// that reports the wrong stream, and only the first needs bytes a real tool
 /// would never emit.
 fn interpret_probe(m4a: &Path, response: &[u8]) -> Result<(), BuildError> {
-    // Mapped explicitly rather than through `?`, because a probe this build cannot
-    // read leaves the output unverified and must not surface as a generic JSON
-    // failure naming no subsystem.
+    // Mapped explicitly rather than through `?`, because a probe this build
+    // cannot read leaves the output unverified and must not surface as a
+    // generic JSON failure naming no subsystem.
     let probe: ProbeResponse =
         serde_json::from_slice(response).map_err(|source| BuildError::UnreadableProbeResponse {
             path: m4a.to_path_buf(),
@@ -188,9 +188,10 @@ fn display_arguments(arguments: &[OsString]) -> Vec<String> {
 mod tests {
     use super::*;
 
-    // Only tool-free tests belong here. Anything requiring a real ffmpeg or ffprobe
-    // lives in the testkit integration suite, so `cargo test -p study-tts-runtime`
-    // stays runnable on a machine with neither binary installed.
+    // Only tool-free tests belong here. Anything requiring a real ffmpeg or
+    // ffprobe lives in the testkit integration suite, so `cargo test -p
+    // study-tts-runtime` stays runnable on a machine with neither binary
+    // installed.
     #[test]
     fn t1_e0_unreadable_and_unexpected_probes_are_reported_separately() {
         let m4a = Path::new("/lesson.m4a");
@@ -213,8 +214,8 @@ mod tests {
             );
         }
 
-        // A readable response describing the wrong stream is the encoder failing
-        // open, and the refusal quotes what was actually found.
+        // A readable response describing the wrong stream is the encoder
+        // failing open, and the refusal quotes what was actually found.
         for (label, response, codec, channels) in [
             (
                 "wrong codec",

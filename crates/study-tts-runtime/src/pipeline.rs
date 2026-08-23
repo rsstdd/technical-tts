@@ -21,7 +21,8 @@ pub struct BuildRequest {
     pub lesson_path: PathBuf,
     /// Root the build owns; outputs, cache, and staging all resolve beneath it.
     pub workspace: PathBuf,
-    /// FFmpeg to encode with, resolved and version-probed before any work begins.
+    /// FFmpeg to encode with, resolved and version-probed before any work
+    /// begins.
     pub ffmpeg_executable: PathBuf,
     /// ffprobe to validate the encoded output with, on the same terms.
     pub ffprobe_executable: PathBuf,
@@ -61,8 +62,8 @@ pub fn build_preview(
 
     // Rights precede work: the profile gate runs before tool preflight and
     // synthesis, so a refused voice performs no observable work. The loaded
-    // identity is unused by the skeleton worker; the real-worker story consumes it
-    // and records the ADR-0001 §15.3 per-build audit event.
+    // identity is unused by the skeleton worker; the real-worker story consumes
+    // it and records the ADR-0001 §15.3 per-build audit event.
     if let Some(dir) = &request.voice_profile_dir {
         let _profile = voice_gate::load_profile(dir, VoiceUse::PrivateSynthesis)?;
     }
@@ -140,9 +141,10 @@ pub fn validate_encoded_output(
 /// attacker would already need write access to the workspace, so the
 /// check-then-verify pair is proportionate here.
 fn managed_subdirectory(root: &Path, component: &str) -> Result<PathBuf, BuildError> {
-    // Reject anything that is not a single ordinary path element. `is_portable_id`
-    // already rejects separators in `lesson_id`, but this helper is generic over
-    // its component and the two checks fail independently.
+    // Reject anything that is not a single ordinary path element.
+    // `is_portable_id` already rejects separators in `lesson_id`, but this
+    // helper is generic over its component and the two checks fail
+    // independently.
     let mut parts = Path::new(component).components();
     if !matches!(parts.next(), Some(Component::Normal(_))) || parts.next().is_some() {
         return Err(BuildError::ManagedPathEscape {
@@ -154,11 +156,11 @@ fn managed_subdirectory(root: &Path, component: &str) -> Result<PathBuf, BuildEr
     let candidate = root.join(component);
 
     match fs::symlink_metadata(&candidate) {
-        // `symlink_metadata` reports the link's own type, so `is_symlink` catches a
-        // leaf that would otherwise be followed. The `is_dir` clause rejects a regular
-        // file occupying the managed name; that is an obstruction rather than an
-        // escape, and it shares this variant only until E5-S4 introduces a dedicated
-        // one.
+        // `symlink_metadata` reports the link's own type, so `is_symlink`
+        // catches a leaf that would otherwise be followed. The `is_dir` clause
+        // rejects a regular file occupying the managed name; that is an
+        // obstruction rather than an escape, and it shares this variant only
+        // until E5-S4 introduces a dedicated one.
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
             return Err(BuildError::ManagedPathEscape {
                 path: candidate,
@@ -285,8 +287,8 @@ fn declare_section<'de, T: Deserialize<'de>>(
 /// `voice_profiles` manifest sections that the E1-S1 schema story will version.
 pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
     // Two stages, because the version is what says which shape is legal: a
-    // document of an unknown version must be reported as an unknown version, not
-    // as a violation of a shape it never claimed.
+    // document of an unknown version must be reported as an unknown version,
+    // not as a violation of a shape it never claimed.
     let declared_version: ManifestVersion = serde_json::from_slice(bytes)
         .map_err(|source| BuildError::MalformedProductionManifest { source })?;
     let version = declared_version

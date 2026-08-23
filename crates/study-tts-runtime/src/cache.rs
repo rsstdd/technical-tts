@@ -94,8 +94,9 @@ pub(crate) fn resolve(
     let audio_path = entry_dir.join("audio.wav");
     let artifact_path = entry_dir.join("artifact.json");
 
-    // A partial entry is treated as a miss and re-synthesized. E2-S1 replaces this
-    // with explicit reconciliation between job state, cache artifacts, and outputs.
+    // A partial entry is treated as a miss and re-synthesized. E2-S1 replaces
+    // this with explicit reconciliation between job state, cache artifacts, and
+    // outputs.
     if audio_path.is_file() && artifact_path.is_file() {
         return load_validated(segment, &entry_dir, &audio_path, &artifact_path);
     }
@@ -113,8 +114,8 @@ pub(crate) fn resolve(
     let staged_path = staged.path().to_path_buf();
     let report = synthesizer.synthesize(segment, &staged_path)?;
 
-    // Freshly synthesized output carries no remedy: the staged file is discarded on
-    // drop and there is no published entry for the user to delete.
+    // Freshly synthesized output carries no remedy: the staged file is
+    // discarded on drop and there is no published entry for the user to delete.
     let frames = validate_wav(&staged_path).map_err(|fault| BuildError::UnusableAudio {
         path: staged_path.clone(),
         fault,
@@ -123,8 +124,9 @@ pub(crate) fn resolve(
         || report.channels != 1
         || report.frames != frames
     {
-        // The WAV itself passed validation, so its shape is canonical by construction;
-        // what disagrees is the worker's account of what it wrote.
+        // The WAV itself passed validation, so its shape is canonical by
+        // construction; what disagrees is the worker's account of what it
+        // wrote.
         return Err(BuildError::SynthesizerReportMismatch {
             segment_id: segment.id.clone(),
             reported_sample_rate: report.sample_rate,
@@ -184,10 +186,11 @@ fn load_validated(
 
     // Path 2: the recorded digest is not a digest at all.
     //
-    // Checked here rather than at the comparison below, because a malformed record
-    // that reaches the comparison is reported as a checksum *mismatch* — telling
-    // the operator their audio was tampered with when the artifact was what broke.
-    // `VoiceError::MalformedChecksum` draws the same distinction for voice records.
+    // Checked here rather than at the comparison below, because a malformed
+    // record that reaches the comparison is reported as a checksum *mismatch* —
+    // telling the operator their audio was tampered with when the artifact was
+    // what broke. `VoiceError::MalformedChecksum` draws the same distinction
+    // for voice records.
     if !is_blake3_hex(&artifact.audio_blake3) {
         return Err(rejected(
             entry_dir,
@@ -198,7 +201,8 @@ fn load_validated(
         ));
     }
 
-    // Path 3: the artifact parses but describes audio this build cannot consume.
+    // Path 3: the artifact parses but describes audio this build cannot
+    // consume.
     if artifact.schema_version != CACHE_SCHEMA_VERSION
         || artifact.sample_rate != CANONICAL_SAMPLE_RATE
         || artifact.channels != 1
@@ -232,8 +236,8 @@ fn load_validated(
         ));
     }
 
-    // Path 5: the audio itself is unreadable, non-canonical, or does not match the
-    // artifact.
+    // Path 5: the audio itself is unreadable, non-canonical, or does not match
+    // the artifact.
     let frames =
         validate_wav(audio_path).map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?;
     let checksum = hash_file(audio_path)?;
@@ -373,8 +377,8 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    /// One rejection path: its label, the error it produced, the entry directory it
-    /// must name, and a predicate for the fault it must report.
+    /// One rejection path: its label, the error it produced, the entry
+    /// directory it must name, and a predicate for the fault it must report.
     type RejectionPath = (
         &'static str,
         BuildError,
@@ -384,9 +388,9 @@ mod tests {
 
     /// A well-formed key that still reads as the label the test chose.
     ///
-    /// Right-padded rather than written out, so the shard the entry lands in stays
-    /// visible in the label. `CacheKey` accepts nothing shorter, which is the whole
-    /// point of the type.
+    /// Right-padded rather than written out, so the shard the entry lands in
+    /// stays visible in the label. `CacheKey` accepts nothing shorter, which is
+    /// the whole point of the type.
     fn key(label: &str) -> CacheKey {
         format!("{label:0<width$}", width = CacheKey::LENGTH)
             .parse()
@@ -418,7 +422,8 @@ mod tests {
         writer.finalize().expect("finalize test WAV");
     }
 
-    /// Publishes a valid entry, then hands back the pieces needed to corrupt it.
+    /// Publishes a valid entry, then hands back the pieces needed to corrupt
+    /// it.
     fn published_entry(root: &Path, cache_key: &str) -> (PathBuf, PathBuf, PathBuf) {
         let dir = entry_dir(root, &key(cache_key));
         fs::create_dir_all(&dir).expect("create entry directory");
@@ -438,8 +443,8 @@ mod tests {
         (dir, audio, artifact)
     }
 
-    /// Rewrites one field of a published artifact, leaving the audio it describes
-    /// untouched.
+    /// Rewrites one field of a published artifact, leaving the audio it
+    /// describes untouched.
     fn overwrite_field(artifact: &Path, field: &str, value: serde_json::Value) {
         let mut record: serde_json::Value =
             serde_json::from_slice(&fs::read(artifact).expect("read artifact")).expect("parse");
@@ -455,11 +460,12 @@ mod tests {
     fn t1_e0_hashing_a_file_does_not_depend_on_the_read_buffer() {
         let workspace = TempDir::new().expect("create cache workspace");
 
-        // The sizes that a chunked read gets wrong: nothing to read, a single partial
-        // buffer, an exact multiple of the buffer, and a multiple with a short final
-        // read. A loop that dropped the last partial read or rehashed a boundary would
-        // still produce *a* digest, and every recorded checksum in every cache entry
-        // and manifest would silently stop matching its file.
+        // The sizes that a chunked read gets wrong: nothing to read, a single
+        // partial buffer, an exact multiple of the buffer, and a multiple with
+        // a short final read. A loop that dropped the last partial read or
+        // rehashed a boundary would still produce *a* digest, and every
+        // recorded checksum in every cache entry and manifest would silently
+        // stop matching its file.
         for length in [
             0,
             1,
@@ -469,9 +475,9 @@ mod tests {
             HASH_BUFFER_BYTES * 2,
             HASH_BUFFER_BYTES * 2 + 7,
         ] {
-            // Position-dependent bytes, so a buffer reused without truncating to the filled
-            // length changes the digest rather than repeating a value that happens to
-            // match.
+            // Position-dependent bytes, so a buffer reused without truncating
+            // to the filled length changes the digest rather than repeating a
+            // value that happens to match.
             let contents: Vec<u8> = (0..length).map(|index| (index % 251) as u8).collect();
             let path = workspace.path().join(format!("{length}.bin"));
             fs::write(&path, &contents).expect("write hash fixture");
@@ -545,8 +551,8 @@ mod tests {
         let unreadable = load_validated(&planned("ff6666"), &dir5, &audio5, &artifact5)
             .expect_err("unreadable audio must be rejected");
 
-        // Each path carries the fault it is supposed to report, so a rejection that
-        // reaches the right variant for the wrong reason still fails here.
+        // Each path carries the fault it is supposed to report, so a rejection
+        // that reaches the right variant for the wrong reason still fails here.
         let paths: [RejectionPath; 6] = [
             ("unparseable artifact", unparseable, dir, |fault| {
                 matches!(fault, CacheEntryFault::UnparseableArtifact { .. })
@@ -599,16 +605,16 @@ mod tests {
         }
     }
 
-    /// The audio is left intact in every case here, so a rejection that speaks of a
-    /// mismatch would be accusing the wrong file. Uppercase is the trap worth
-    /// naming: it is a digest of the right audio, in the wrong spelling.
+    /// The audio is left intact in every case here, so a rejection that speaks
+    /// of a mismatch would be accusing the wrong file. Uppercase is the trap
+    /// worth naming: it is a digest of the right audio, in the wrong spelling.
     #[test]
     fn t1_e0_malformed_recorded_digest_is_reported_as_malformed() {
         let workspace = TempDir::new().expect("create cache workspace");
 
-        // Every published entry holds the same tone, so one digest describes all of
-        // them and the malformations below are spellings of a digest that would
-        // otherwise match.
+        // Every published entry holds the same tone, so one digest describes
+        // all of them and the malformations below are spellings of a digest
+        // that would otherwise match.
         let reference = workspace.path().join("reference.wav");
         write_tone(&reference, 2_400, CANONICAL_SAMPLE_RATE);
         let digest = hash_file(&reference).expect("hash reference audio");
@@ -653,10 +659,10 @@ mod tests {
             matches!(fault, AudioFault::NonCanonical { .. }),
             "fault was `{fault}`"
         );
-        // Nothing is published yet, so advising a deletion would point at a path that
-        // does not exist. `AudioFault` carries no remedy at all, and the caller that
-        // knows whether the file is published is the one that attaches one —
-        // `load_validated` does, `resolve` does not.
+        // Nothing is published yet, so advising a deletion would point at a
+        // path that does not exist. `AudioFault` carries no remedy at all, and
+        // the caller that knows whether the file is published is the one that
+        // attaches one — `load_validated` does, `resolve` does not.
         let error = BuildError::UnusableAudio {
             path: staged.clone(),
             fault,

@@ -2,8 +2,7 @@
 """Enforce the `crates/AGENTS.md` rules rustfmt cannot express.
 
 `AGENTS.md` caps every Rust line at 100 columns, and `crates/AGENTS.md` §3 caps
-whole-line comments at "80 chars including sigils, excluding indentation — or
-the 100-char limit including indentation, whichever is smaller."
+whole-line comments at 80 columns, counting indentation and sigils.
 
 `crates/AGENTS.md` §3 also requires that doc comments precede attributes.
 
@@ -65,11 +64,10 @@ def violations(path: pathlib.Path):
             yield f"{path}:{number}: line is {len(line)} columns (limit {LINE_LIMIT})"
         match = WHOLE_LINE_COMMENT.match(line)
         if match:
-            body = line[len(match.group(1)) :]
-            if len(body) > COMMENT_LIMIT:
+            if len(line) > COMMENT_LIMIT:
                 yield (
-                    f"{path}:{number}: whole-line comment is {len(body)} chars "
-                    f"excluding indentation (limit {COMMENT_LIMIT})"
+                    f"{path}:{number}: whole-line comment is {len(line)} columns "
+                    f"(limit {COMMENT_LIMIT})"
                 )
 
 

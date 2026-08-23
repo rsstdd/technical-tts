@@ -64,8 +64,9 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
         let mut segment_frames = 0_u64;
 
         for sample in reader.samples::<f32>() {
-            // The read and the write fail for different reasons and name different files,
-            // so they are mapped separately rather than through one nested `?`.
+            // The read and the write fail for different reasons and name
+            // different files, so they are mapped separately rather than
+            // through one nested `?`.
             let sample = sample.map_err(|error| audio_error(&segment.audio_path, error))?;
             writer
                 .write_sample(sample)
@@ -105,9 +106,9 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
             })?;
     }
 
-    // The aggregate check is redundant while every per-segment check passes, and it
-    // is retained because it is the invariant the manifest and every downstream
-    // duration derive from.
+    // The aggregate check is redundant while every per-segment check passes,
+    // and it is retained because it is the invariant the manifest and every
+    // downstream duration derive from.
     if total_frames != expected {
         return Err(BuildError::AssembledLengthMismatch {
             destination: destination.to_path_buf(),
@@ -188,16 +189,17 @@ mod tests {
         let workspace = TempDir::new().expect("create assembly workspace");
         let audio = workspace.path().join("short.wav");
         write_tone(&audio, 1_200);
-        // The artifact claims 2,400 frames while the WAV holds 1,200, which is the
-        // shape a truncated synthesis or a partially written cache entry would take.
+        // The artifact claims 2,400 frames while the WAV holds 1,200, which is
+        // the shape a truncated synthesis or a partially written cache entry
+        // would take.
         let segments = vec![segment(audio, 2_400, 75)];
         let master = workspace.path().join("lesson.wav");
 
         let error = assemble(&segments, &master).expect_err("truncated segment must be rejected");
 
-        // A truncated entry found while assembling is the same violated invariant
-        // `cache` reports when loading one, so it must arrive as the same fault with
-        // the same remedy.
+        // A truncated entry found while assembling is the same violated
+        // invariant `cache` reports when loading one, so it must arrive as the
+        // same fault with the same remedy.
         let BuildError::UnusableCacheEntry { fault, .. } = &error else {
             panic!("error was `{error}`");
         };

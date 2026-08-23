@@ -89,7 +89,7 @@ Version-sort wherever sorting is required: compare alternating digit and non-dig
 - One space after `//`. Single-line block comment: one space inside each sigil. Multi-line: newline after the opening sigil and before the closing sigil.
 - Own line where possible; one space before a trailing comment.
 - Complete sentences, capital letter, terminal period. Inline block comments may be unpunctuated notes.
-- Whole-line comments: 80 chars including sigils, excluding indentation — or the 100-char limit including indentation, whichever is smaller.
+- Whole-line comments: 80 columns, counting indentation and sigils. Code lines keep the 100-column limit; a comment is held to the stricter one so it stays readable beside a diff.
 - Doc comments precede attributes.
 - No comment on a brace line; none inside a function signature.
 
@@ -325,7 +325,7 @@ Uncovered cases resolve in the style team's priority order:
 
 ## 12. Pre-output checklist
 
-- 4-space indentation, no tabs, no line over 100 chars, whole-line comments within 80.
+- 4-space indentation, no tabs, no line over 100 chars, whole-line comments within 80 columns including indentation.
 - Trailing commas on every broken list and nowhere on single-line lists.
 - Imports and `extern crate` version-sorted within groups; groups unchanged.
 - One attribute per line, single derive.

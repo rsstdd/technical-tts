@@ -35,10 +35,12 @@ impl SynthesisError {
 
 /// Provisional E0-S0 seam. E0-S4 replaces this with the async worker contract.
 pub trait SegmentSynthesizer: Send + Sync {
-    /// Stable identity of this synthesizer, which participates in every cache key.
+    /// Stable identity of this synthesizer, which participates in every cache
+    /// key.
     fn identity(&self) -> &str;
 
-    /// Renders one planned segment to `destination` as canonical mono float WAV.
+    /// Renders one planned segment to `destination` as canonical mono float
+    /// WAV.
     fn synthesize(
         &self,
         segment: &PlannedSegment,
