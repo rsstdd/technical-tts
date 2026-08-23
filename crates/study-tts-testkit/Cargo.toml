@@ -2,6 +2,11 @@
 name = "study-tts-testkit"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 hound = "3.5.1"

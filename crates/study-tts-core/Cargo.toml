@@ -2,6 +2,11 @@
 name = "study-tts-core"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 blake3 = "1.8.6"

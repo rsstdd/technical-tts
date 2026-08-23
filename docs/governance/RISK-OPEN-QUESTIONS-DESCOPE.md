@@ -48,10 +48,10 @@ Apply the first sufficient step. Never descope safety, correctness, rights, inte
 | 6 | Defer calibrated ASR release control through an ADR amendment | M3 | Every production segment receives immutable human review |
 | 7 | Delay external publication and ship private-only 1.0 | M3 | Rights and release-status honesty remain |
 
-**Ratification:** Pending project-owner signature. Until signed, the ladder is proposed and no scope removal is authorized.
+**Ratification:** Ratified 2026-08-23 by the project owner. Scope removal is authorized only by applying the first sufficient step in ladder order.
 
 | Role | Name | Decision | Date | Notes |
 |---|---|---|---|---|
-| Project owner | Ross Todd | Pending | — | — |
-| Engineering owner | Ross Todd | Pending | — | — |
+| Project owner | Ross Todd | Ratified | 2026-08-23 | — |
+| Engineering owner | Ross Todd | Ratified | 2026-08-23 | Same person during solo development |
 

@@ -1,0 +1,15 @@
+# Formats Cargo.toml per crates/AGENTS.md §10: Rust width and indentation, one
+# space around `=`, trailing comma in broken arrays, at most one blank line.
+# Key order is semantic (name/version first, description last, version-sorted
+# elsewhere) and stays manual: reorder_keys would sort lexicographically.
+include = ["Cargo.toml", "crates/*/Cargo.toml"]
+
+[formatting]
+align_entries = false
+allowed_blank_lines = 1
+array_auto_collapse = true
+array_auto_expand = true
+array_trailing_comma = true
+column_width = 100
+indent_string = "    "
+reorder_keys = false

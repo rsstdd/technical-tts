@@ -11,6 +11,27 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+rust-version = "1.97"
+
+# Shared lint policy; every crate opts in with `[lints] workspace = true`.
+# CI runs clippy with `-D warnings`, so a lint listed here blocks merge.
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"
+unused_qualifications = "warn"
+
+# Backs the crates/AGENTS.md rule requiring a doc comment on every public
+# item. Tracked exception: 129 public items lack docs as of 2026-08-23.
+# Owner: Ross Todd (engineering owner). Deadline: enable by the G1
+# interface freeze, before the public API is frozen undocumented.
+# missing_docs = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+semicolon_if_nothing_returned = "warn"
+todo = "warn"
+unimplemented = "warn"
+unwrap_used = "warn"
 
 [profile.release]
 lto = "thin"
