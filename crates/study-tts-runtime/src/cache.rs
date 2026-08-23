@@ -7,9 +7,12 @@ use serde::{Deserialize, Serialize};
 use study_tts_core::{CANONICAL_SAMPLE_RATE, CacheKey, PlannedSegment, is_blake3_hex};
 use tempfile::Builder;
 
-use crate::{BuildError, SegmentSynthesizer, audio_error, io_error};
+use crate::{AudioFault, BuildError, CacheEntryFault, SegmentSynthesizer, io_error};
 
 const CACHE_SCHEMA_VERSION: &str = "0.1-skeleton";
+
+/// Sample format every cache entry and every assembled master carries.
+const CANONICAL_SAMPLE_FORMAT: &str = "f32le";
 
 /// Characters of the cache key that name the shard directory grouping entries under `segments/`.
 ///
@@ -23,6 +26,7 @@ const _: () = assert!(CACHE_SHARD_WIDTH <= CacheKey::LENGTH);
 pub(crate) struct CachedSegment {
     pub segment_id: String,
     pub cache_key: CacheKey,
+    pub entry_dir: PathBuf,
     pub audio_path: PathBuf,
     pub audio_blake3: String,
     pub frames: u32,
@@ -54,27 +58,16 @@ pub(crate) fn entry_dir(cache_root: &Path, cache_key: &CacheKey) -> PathBuf {
         .join(key)
 }
 
-/// Builds a rejection that names the entry directory and the remedy.
+/// Names the entry a fault was found in.
 ///
-/// E0-S0 has no quarantine, so a poisoned entry would otherwise fail every subsequent build with
-/// no stated way out. ADR-0001 §4.2 requires a failure to explain what remains valid and what the
-/// safe recovery action is; deleting the entry is that action, because the segment regenerates
-/// from the plan on the next build.
-fn rejected(entry_dir: &Path, segment_id: &str, detail: impl std::fmt::Display) -> BuildError {
-    BuildError::InvalidCache(format!(
-        "cache entry for segment `{segment_id}` is unusable: {detail}; delete `{}` to regenerate \
-         this segment",
-        entry_dir.display()
-    ))
-}
-
-/// Re-frames an error raised while validating a *cached* artifact so it carries the remedy.
-///
-/// `validate_wav` is also called on freshly synthesized output, where no cache entry exists yet
-/// and "delete the entry" would be wrong advice. The remedy is therefore attached by the caller
-/// that knows the entry is on disk, not by the validator.
-fn rejected_from(entry_dir: &Path, segment_id: &str, error: BuildError) -> BuildError {
-    rejected(entry_dir, segment_id, error)
+/// Shared with `assembly`, which detects a truncated entry while reading it, so both report the
+/// same violated invariant with the same remedy rather than two messages that happen to agree.
+pub(crate) fn rejected(entry_dir: &Path, segment_id: &str, fault: CacheEntryFault) -> BuildError {
+    BuildError::UnusableCacheEntry {
+        entry_dir: entry_dir.to_path_buf(),
+        segment_id: segment_id.to_owned(),
+        fault: Box::new(fault),
+    }
 }
 
 pub(crate) fn resolve(
@@ -106,16 +99,25 @@ pub(crate) fn resolve(
 
     // Freshly synthesized output carries no remedy: the staged file is discarded on drop and
     // there is no published entry for the user to delete.
-    let frames = validate_wav(&staged_path)?;
+    let frames = validate_wav(&staged_path).map_err(|fault| BuildError::UnusableAudio {
+        path: staged_path.clone(),
+        fault,
+    })?;
     if report.sample_rate != CANONICAL_SAMPLE_RATE
         || report.channels != 1
         || report.frames != frames
     {
-        return Err(BuildError::InvalidCache(format!(
-            "synthesizer reported {} Hz, {} channels, and {} frames for segment `{}` but wrote a \
-             WAV with {CANONICAL_SAMPLE_RATE} Hz, 1 channel, and {frames} frames",
-            report.sample_rate, report.channels, report.frames, segment.id
-        )));
+        // The WAV itself passed validation, so its shape is canonical by construction; what
+        // disagrees is the worker's account of what it wrote.
+        return Err(BuildError::SynthesizerReportMismatch {
+            segment_id: segment.id.clone(),
+            reported_sample_rate: report.sample_rate,
+            reported_channels: report.channels,
+            reported_frames: report.frames,
+            written_sample_rate: CANONICAL_SAMPLE_RATE,
+            written_channels: 1,
+            written_frames: frames,
+        });
     }
     let audio_blake3 = hash_file(&staged_path)?;
     staged
@@ -128,7 +130,7 @@ pub(crate) fn resolve(
         audio_blake3: audio_blake3.clone(),
         sample_rate: CANONICAL_SAMPLE_RATE,
         channels: 1,
-        sample_format: "f32le".to_owned(),
+        sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
         frames,
     };
     write_json_atomically(&artifact_path, &artifact)?;
@@ -136,6 +138,7 @@ pub(crate) fn resolve(
     Ok(CachedSegment {
         segment_id: segment.id.clone(),
         cache_key: segment.cache_key.clone(),
+        entry_dir,
         audio_path,
         audio_blake3,
         frames,
@@ -156,10 +159,10 @@ fn load_validated(
         rejected(
             entry_dir,
             &segment.id,
-            format!(
-                "`{}` could not be parsed ({error})",
-                artifact_path.display()
-            ),
+            CacheEntryFault::UnparseableArtifact {
+                path: artifact_path.to_path_buf(),
+                source: error,
+            },
         )
     })?;
 
@@ -173,11 +176,9 @@ fn load_validated(
         return Err(rejected(
             entry_dir,
             &segment.id,
-            format!(
-                "artifact records `{}` as the audio digest, which is not a lowercase BLAKE3 hex \
-                 digest and so could never match the audio",
-                artifact.audio_blake3
-            ),
+            CacheEntryFault::MalformedRecordedDigest {
+                recorded: artifact.audio_blake3,
+            },
         ));
     }
 
@@ -185,20 +186,21 @@ fn load_validated(
     if artifact.schema_version != CACHE_SCHEMA_VERSION
         || artifact.sample_rate != CANONICAL_SAMPLE_RATE
         || artifact.channels != 1
-        || artifact.sample_format != "f32le"
+        || artifact.sample_format != CANONICAL_SAMPLE_FORMAT
     {
         return Err(rejected(
             entry_dir,
             &segment.id,
-            format!(
-                "artifact declares schema `{}`, {} Hz, {} channels, and format `{}` but this build \
-                 requires schema `{CACHE_SCHEMA_VERSION}`, {CANONICAL_SAMPLE_RATE} Hz, 1 channel, \
-                 and `f32le`",
-                artifact.schema_version,
-                artifact.sample_rate,
-                artifact.channels,
-                artifact.sample_format
-            ),
+            CacheEntryFault::IncompatibleArtifact {
+                schema_version: artifact.schema_version,
+                sample_rate: artifact.sample_rate,
+                channels: artifact.channels,
+                sample_format: artifact.sample_format,
+                required_schema_version: CACHE_SCHEMA_VERSION,
+                required_sample_rate: CANONICAL_SAMPLE_RATE,
+                required_channels: 1,
+                required_sample_format: CANONICAL_SAMPLE_FORMAT,
+            },
         ));
     }
 
@@ -207,38 +209,42 @@ fn load_validated(
         return Err(rejected(
             entry_dir,
             &segment.id,
-            format!(
-                "artifact records cache key `{}` but the plan requires `{}`",
-                artifact.cache_key, segment.cache_key
-            ),
+            CacheEntryFault::CacheKeyMismatch {
+                recorded: artifact.cache_key,
+                required: segment.cache_key.clone(),
+            },
         ));
     }
 
     // Path 5: the audio itself is unreadable, non-canonical, or does not match the artifact.
     let frames =
-        validate_wav(audio_path).map_err(|error| rejected_from(entry_dir, &segment.id, error))?;
+        validate_wav(audio_path).map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?;
     let checksum = hash_file(audio_path)?;
     if frames != artifact.frames {
         return Err(rejected(
             entry_dir,
             &segment.id,
-            format!(
-                "audio holds {frames} frames but the artifact declares {}",
-                artifact.frames
-            ),
+            CacheEntryFault::FrameCountMismatch {
+                found: u64::from(frames),
+                declared: artifact.frames,
+            },
         ));
     }
     if checksum != artifact.audio_blake3 {
         return Err(rejected(
             entry_dir,
             &segment.id,
-            "audio checksum does not match the artifact record",
+            CacheEntryFault::ChecksumMismatch {
+                found: checksum,
+                declared: artifact.audio_blake3,
+            },
         ));
     }
 
     Ok(CachedSegment {
         segment_id: segment.id.clone(),
         cache_key: segment.cache_key.clone(),
+        entry_dir: entry_dir.to_path_buf(),
         audio_path: audio_path.to_path_buf(),
         audio_blake3: checksum,
         frames,
@@ -251,38 +257,43 @@ pub(crate) fn hash_file(path: &Path) -> Result<String, BuildError> {
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
-fn validate_wav(path: &Path) -> Result<u32, BuildError> {
-    let mut reader = hound::WavReader::open(path).map_err(|error| audio_error(path, error))?;
+/// Validates one WAV, reporting *which* property failed and leaving the path and the remedy to
+/// the caller, which is the only one that knows whether the file is published or staged.
+fn validate_wav(path: &Path) -> Result<u32, AudioFault> {
+    let mut reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
     if spec.channels != 1
         || spec.sample_rate != CANONICAL_SAMPLE_RATE
         || spec.bits_per_sample != 32
         || spec.sample_format != hound::SampleFormat::Float
     {
-        return Err(BuildError::InvalidCache(format!(
-            "`{}` is not canonical 24 kHz mono float WAV",
-            path.display()
-        )));
+        return Err(AudioFault::NonCanonical {
+            channels: spec.channels,
+            sample_rate: spec.sample_rate,
+            bits_per_sample: spec.bits_per_sample,
+            sample_format: match spec.sample_format {
+                hound::SampleFormat::Float => "float",
+                hound::SampleFormat::Int => "integer",
+            },
+            required_sample_rate: CANONICAL_SAMPLE_RATE,
+        });
     }
 
     let mut frames = 0_u32;
     for sample in reader.samples::<f32>() {
-        let sample = sample.map_err(|error| audio_error(path, error))?;
+        let sample = sample?;
         if !sample.is_finite() || sample.abs() > 1.0 {
-            return Err(BuildError::InvalidCache(format!(
-                "`{}` contains invalid float PCM",
-                path.display()
-            )));
+            return Err(AudioFault::OutOfRangeSample {
+                index: frames,
+                value: sample,
+            });
         }
         frames = frames
             .checked_add(1)
-            .ok_or_else(|| BuildError::InvalidCache("WAV frame count overflow".to_owned()))?;
+            .ok_or(AudioFault::FrameCountOverflow)?;
     }
     if frames == 0 {
-        return Err(BuildError::InvalidCache(format!(
-            "`{}` contains no audio frames",
-            path.display()
-        )));
+        return Err(AudioFault::Empty);
     }
     Ok(frames)
 }
@@ -291,9 +302,11 @@ pub(crate) fn write_json_atomically<T: Serialize>(
     path: &Path,
     value: &T,
 ) -> Result<(), BuildError> {
-    let parent = path.parent().ok_or_else(|| {
-        BuildError::InvalidCache(format!("`{}` has no parent directory", path.display()))
-    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| BuildError::UnrootedDestination {
+            path: path.to_path_buf(),
+        })?;
     let mut staged = Builder::new()
         .prefix("json-")
         .suffix(".tmp")
@@ -320,6 +333,15 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tempfile::TempDir;
+
+    /// One rejection path: its label, the error it produced, the entry directory it must name,
+    /// and a predicate for the fault it must report.
+    type RejectionPath = (
+        &'static str,
+        BuildError,
+        PathBuf,
+        fn(&CacheEntryFault) -> bool,
+    );
 
     /// A well-formed key that still reads as the label the test chose.
     ///
@@ -449,18 +471,48 @@ mod tests {
         let unreadable = load_validated(&planned("ff6666"), &dir5, &audio5, &artifact5)
             .expect_err("unreadable audio must be rejected");
 
-        for (label, error, dir) in [
-            ("unparseable artifact", unparseable, dir),
-            ("malformed recorded digest", malformed_digest, dir6),
-            ("incompatible metadata", incompatible, dir2),
-            ("cache-key mismatch", mismatched, dir3),
-            ("frame mismatch", audio_mismatch, dir4),
-            ("unreadable audio", unreadable, dir5),
-        ] {
+        // Each path carries the fault it is supposed to report, so a rejection that reaches the
+        // right variant for the wrong reason still fails here.
+        let paths: [RejectionPath; 6] = [
+            ("unparseable artifact", unparseable, dir, |fault| {
+                matches!(fault, CacheEntryFault::UnparseableArtifact { .. })
+            }),
+            (
+                "malformed recorded digest",
+                malformed_digest,
+                dir6,
+                |fault| matches!(fault, CacheEntryFault::MalformedRecordedDigest { .. }),
+            ),
+            ("incompatible metadata", incompatible, dir2, |fault| {
+                matches!(fault, CacheEntryFault::IncompatibleArtifact { .. })
+            }),
+            ("cache-key mismatch", mismatched, dir3, |fault| {
+                matches!(fault, CacheEntryFault::CacheKeyMismatch { .. })
+            }),
+            ("frame mismatch", audio_mismatch, dir4, |fault| {
+                matches!(fault, CacheEntryFault::FrameCountMismatch { .. })
+            }),
+            ("unreadable audio", unreadable, dir5, |fault| {
+                matches!(fault, CacheEntryFault::Audio(AudioFault::Unreadable(_)))
+            }),
+        ];
+
+        for (label, error, dir, reports_expected_fault) in paths {
+            let BuildError::UnusableCacheEntry {
+                entry_dir,
+                segment_id,
+                fault,
+            } = &error
+            else {
+                panic!("{label} produced the wrong variant: {error}");
+            };
             assert!(
-                matches!(error, BuildError::InvalidCache(_)),
-                "{label} produced the wrong variant: {error}"
+                reports_expected_fault(fault),
+                "{label} reported the wrong fault: {fault}"
             );
+            assert_eq!(entry_dir, &dir, "{label} named the wrong entry directory");
+            assert_eq!(segment_id, "seg-0001", "{label} named the wrong segment");
+
             let message = error.to_string();
             assert!(
                 message.contains(&dir.display().to_string()),
@@ -469,10 +521,6 @@ mod tests {
             assert!(
                 message.contains("delete"),
                 "{label} did not state the remedy: `{message}`"
-            );
-            assert!(
-                message.contains("seg-0001"),
-                "{label} did not name the segment: `{message}`"
             );
         }
     }
@@ -504,14 +552,16 @@ mod tests {
             let error = load_validated(&planned(label), &dir, &audio, &artifact)
                 .expect_err("a malformed recorded digest must be rejected");
 
-            let message = error.to_string();
+            let BuildError::UnusableCacheEntry { fault, .. } = &error else {
+                panic!("`{malformed}` produced the wrong variant: {error}");
+            };
             assert!(
-                message.contains("not a lowercase BLAKE3 hex digest"),
-                "`{malformed}` was not reported as malformed: `{message}`"
+                matches!(**fault, CacheEntryFault::MalformedRecordedDigest { .. }),
+                "`{malformed}` was not reported as malformed: {fault}"
             );
             assert!(
-                !message.contains("does not match"),
-                "`{malformed}` was reported as a mismatch: `{message}`"
+                !matches!(**fault, CacheEntryFault::ChecksumMismatch { .. }),
+                "`{malformed}` was reported as a mismatch: {fault}"
             );
         }
     }
@@ -522,10 +572,24 @@ mod tests {
         let staged = workspace.path().join("staged.wav");
         write_tone(&staged, 2_400, 48_000);
 
-        let error = validate_wav(&staged).expect_err("non-canonical WAV must be rejected");
+        let fault = validate_wav(&staged).expect_err("non-canonical WAV must be rejected");
 
+        assert!(
+            matches!(fault, AudioFault::NonCanonical { .. }),
+            "fault was `{fault}`"
+        );
         // Nothing is published yet, so advising a deletion would point at a path that does not
-        // exist. The remedy is attached by `load_validated`, not by the validator.
+        // exist. `AudioFault` carries no remedy at all, and the caller that knows whether the
+        // file is published is the one that attaches one — `load_validated` does, `resolve` does
+        // not.
+        let error = BuildError::UnusableAudio {
+            path: staged.clone(),
+            fault,
+        };
         assert!(!error.to_string().contains("delete"), "error was `{error}`");
+        assert!(
+            error.to_string().contains(&staged.display().to_string()),
+            "error did not name the staged file: `{error}`"
+        );
     }
 }

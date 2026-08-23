@@ -4,8 +4,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use study_tts_core::{CacheKey, LessonError};
 use study_tts_runtime::{
-    BuildError, BuildRequest, build_preview, cache_entry_dir, publish, validate_encoded_output,
-    validate_production_manifest,
+    BuildError, BuildRequest, CacheEntryFault, build_preview, cache_entry_dir, publish,
+    validate_encoded_output, validate_production_manifest,
 };
 use study_tts_testkit::{
     DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture,
@@ -424,7 +424,15 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         )
         .expect_err("corrupt cache metadata must be rejected");
 
-        assert!(matches!(error, BuildError::InvalidCache(_)));
+        // Every one of these mutations makes the artifact describe audio this build cannot
+        // consume, so they must all arrive as that fault rather than merely as some cache error.
+        let BuildError::UnusableCacheEntry { fault, .. } = &error else {
+            panic!("`{field}` mutation produced the wrong variant: `{error}`");
+        };
+        assert!(
+            matches!(**fault, CacheEntryFault::IncompatibleArtifact { .. }),
+            "`{field}` mutation produced the wrong fault: `{fault}`"
+        );
         let message = error.to_string();
         // A poisoned entry fails every later build, so the message must name what to delete.
         assert!(
@@ -449,7 +457,15 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         &worker,
     )
     .expect_err("an unknown artifact field must be rejected");
-    assert!(matches!(error, BuildError::InvalidCache(_)));
+    // `deny_unknown_fields` rejects this before any field is read, so it is a parse failure and
+    // not an incompatible-metadata one.
+    let BuildError::UnusableCacheEntry { fault, .. } = &error else {
+        panic!("an unknown artifact field produced the wrong variant: `{error}`");
+    };
+    assert!(
+        matches!(**fault, CacheEntryFault::UnparseableArtifact { .. }),
+        "an unknown artifact field produced the wrong fault: `{fault}`"
+    );
     assert!(error.to_string().contains("delete"));
 
     assert_eq!(worker.synthesis_count(), 2);

@@ -15,12 +15,11 @@ pub(crate) fn export_m4a(
     master_wav: &Path,
     destination: &Path,
 ) -> Result<ToolExecution, BuildError> {
-    let parent = destination.parent().ok_or_else(|| {
-        BuildError::InvalidCache(format!(
-            "`{}` has no parent directory",
-            destination.display()
-        ))
-    })?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| BuildError::UnrootedDestination {
+            path: destination.to_path_buf(),
+        })?;
     let staged = Builder::new()
         .prefix("lesson-")
         .suffix(".m4a")

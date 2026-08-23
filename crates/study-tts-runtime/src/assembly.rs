@@ -3,14 +3,21 @@ use std::path::Path;
 use study_tts_core::CANONICAL_SAMPLE_RATE;
 use tempfile::Builder;
 
-use crate::{BuildError, audio_error, cache::CachedSegment, io_error};
+use crate::{
+    BuildError, CacheEntryFault, audio_error,
+    cache::{CachedSegment, rejected},
+    io_error,
+};
 
 /// Frames of silence written after a segment. Shared by the expected-total calculation and the
 /// write loop so the two cannot drift apart.
 fn pause_frames(segment: &CachedSegment) -> Result<u64, BuildError> {
     Ok(u64::from(segment.pause_after_ms)
         .checked_mul(u64::from(CANONICAL_SAMPLE_RATE))
-        .ok_or_else(|| BuildError::InvalidCache("pause frame count overflow".to_owned()))?
+        .ok_or_else(|| BuildError::PauseFrameOverflow {
+            segment_id: segment.segment_id.clone(),
+            pause_after_ms: segment.pause_after_ms,
+        })?
         / 1_000)
 }
 
@@ -23,18 +30,17 @@ fn expected_frames(segments: &[CachedSegment]) -> Result<u64, BuildError> {
         expected = expected
             .checked_add(u64::from(segment.frames))
             .and_then(|running| running.checked_add(pause))
-            .ok_or_else(|| BuildError::InvalidCache("expected frame count overflow".to_owned()))?;
+            .ok_or(BuildError::PlannedLengthOverflow)?;
     }
     Ok(expected)
 }
 
 pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result<u64, BuildError> {
-    let parent = destination.parent().ok_or_else(|| {
-        BuildError::InvalidCache(format!(
-            "`{}` has no parent directory",
-            destination.display()
-        ))
-    })?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| BuildError::UnrootedDestination {
+            path: destination.to_path_buf(),
+        })?;
     let expected = expected_frames(segments)?;
 
     let mut staged = Builder::new()
@@ -65,24 +71,23 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
                 .write_sample(sample)
                 .map_err(|error| audio_error(destination, error))?;
             segment_frames = segment_frames.checked_add(1).ok_or_else(|| {
-                BuildError::InvalidCache("assembled frame count overflow".to_owned())
+                BuildError::AssembledLengthOverflow {
+                    destination: destination.to_path_buf(),
+                }
             })?;
         }
 
         // Fail on the offending segment rather than on the aggregate, because a per-segment
         // mismatch names the cache entry that needs regenerating.
         if segment_frames != u64::from(segment.frames) {
-            return Err(BuildError::InvalidCache(format!(
-                "segment `{}` contributed {segment_frames} frames but its cache artifact declares \
-                 {}; delete `{}` to regenerate this segment",
-                segment.segment_id,
-                segment.frames,
-                segment
-                    .audio_path
-                    .parent()
-                    .unwrap_or(&segment.audio_path)
-                    .display()
-            )));
+            return Err(rejected(
+                &segment.entry_dir,
+                &segment.segment_id,
+                CacheEntryFault::FrameCountMismatch {
+                    found: segment_frames,
+                    declared: segment.frames,
+                },
+            ));
         }
 
         let pause = pause_frames(segment)?;
@@ -95,15 +100,19 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
         total_frames = total_frames
             .checked_add(segment_frames)
             .and_then(|running| running.checked_add(pause))
-            .ok_or_else(|| BuildError::InvalidCache("assembled frame count overflow".to_owned()))?;
+            .ok_or_else(|| BuildError::AssembledLengthOverflow {
+                destination: destination.to_path_buf(),
+            })?;
     }
 
     // The aggregate check is redundant while every per-segment check passes, and it is retained
     // because it is the invariant the manifest and every downstream duration derive from.
     if total_frames != expected {
-        return Err(BuildError::InvalidCache(format!(
-            "assembled master contains {total_frames} frames but the plan requires {expected}"
-        )));
+        return Err(BuildError::AssembledLengthMismatch {
+            destination: destination.to_path_buf(),
+            assembled: total_frames,
+            expected,
+        });
     }
 
     writer
@@ -139,6 +148,10 @@ mod tests {
     fn segment(audio_path: PathBuf, declared_frames: u32, pause_after_ms: u32) -> CachedSegment {
         CachedSegment {
             segment_id: "seg-0001".to_owned(),
+            entry_dir: audio_path
+                .parent()
+                .expect("test audio lives in a directory")
+                .to_path_buf(),
             cache_key: format!("{:0<width$}", "cafebabe", width = CacheKey::LENGTH)
                 .parse()
                 .expect("test label pads to a well-formed key"),
@@ -181,11 +194,24 @@ mod tests {
 
         let error = assemble(&segments, &master).expect_err("truncated segment must be rejected");
 
-        assert!(matches!(error, BuildError::InvalidCache(_)));
+        // A truncated entry found while assembling is the same violated invariant `cache`
+        // reports when loading one, so it must arrive as the same fault with the same remedy.
+        let BuildError::UnusableCacheEntry { fault, .. } = &error else {
+            panic!("error was `{error}`");
+        };
+        assert!(
+            matches!(
+                **fault,
+                CacheEntryFault::FrameCountMismatch {
+                    found: 1_200,
+                    declared: 2_400,
+                }
+            ),
+            "fault was `{fault}`"
+        );
         let message = error.to_string();
         assert!(message.contains("seg-0001"), "message was `{message}`");
-        assert!(message.contains("1200"), "message was `{message}`");
-        assert!(message.contains("2400"), "message was `{message}`");
+        assert!(message.contains("delete"), "message was `{message}`");
         assert!(
             !master.exists(),
             "a rejected assembly must not persist a master WAV"
