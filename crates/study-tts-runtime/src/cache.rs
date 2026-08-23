@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -13,6 +14,14 @@ const CACHE_SCHEMA_VERSION: &str = "0.1-skeleton";
 
 /// Sample format every cache entry and every assembled master carries.
 const CANONICAL_SAMPLE_FORMAT: &str = "f32le";
+
+/// Bytes held in memory at once while hashing a file.
+///
+/// A 60-minute lesson master is roughly 345 MB of canonical 24 kHz mono float PCM, and
+/// `manifest::write` hashes both it and the encoded export. Reading a file whole made peak memory
+/// scale with lesson length, which ADR-0001 §17.14 rules out for the long-form soak test: "No
+/// unbounded resource growth is acceptable."
+const HASH_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Characters of the cache key that name the shard directory grouping entries under `segments/`.
 ///
@@ -252,9 +261,29 @@ fn load_validated(
     })
 }
 
+/// Hashes a file through a bounded buffer, so peak memory does not scale with the file.
+///
+/// The digest is identical to hashing the whole file in one call, because BLAKE3 over a byte
+/// sequence does not depend on how that sequence is chunked. Entries and manifests recorded by
+/// earlier builds stay valid.
 pub(crate) fn hash_file(path: &Path) -> Result<String, BuildError> {
-    let bytes = fs::read(path).map_err(|error| io_error(path, error))?;
-    Ok(blake3::hash(&bytes).to_hex().to_string())
+    let mut file = fs::File::open(path).map_err(|error| io_error(path, error))?;
+    let mut hasher = blake3::Hasher::new();
+    // Read straight into the hashing buffer rather than through a `BufReader`, which would hold a
+    // second buffer of its own to no purpose.
+    let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
+
+    loop {
+        let filled = file
+            .read(&mut buffer)
+            .map_err(|error| io_error(path, error))?;
+        if filled == 0 {
+            break;
+        }
+        hasher.update(&buffer[..filled]);
+    }
+
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 /// Validates one WAV, reporting *which* property failed and leaving the path and the remedy to
@@ -408,6 +437,38 @@ mod tests {
             serde_json::to_vec_pretty(&record).expect("serialize"),
         )
         .expect("write artifact");
+    }
+
+    #[test]
+    fn t1_e0_hashing_a_file_does_not_depend_on_the_read_buffer() {
+        let workspace = TempDir::new().expect("create cache workspace");
+
+        // The sizes that a chunked read gets wrong: nothing to read, a single partial buffer, an
+        // exact multiple of the buffer, and a multiple with a short final read. A loop that
+        // dropped the last partial read or rehashed a boundary would still produce *a* digest,
+        // and every recorded checksum in every cache entry and manifest would silently stop
+        // matching its file.
+        for length in [
+            0,
+            1,
+            HASH_BUFFER_BYTES - 1,
+            HASH_BUFFER_BYTES,
+            HASH_BUFFER_BYTES + 1,
+            HASH_BUFFER_BYTES * 2,
+            HASH_BUFFER_BYTES * 2 + 7,
+        ] {
+            // Position-dependent bytes, so a buffer reused without truncating to the filled
+            // length changes the digest rather than repeating a value that happens to match.
+            let contents: Vec<u8> = (0..length).map(|index| (index % 251) as u8).collect();
+            let path = workspace.path().join(format!("{length}.bin"));
+            fs::write(&path, &contents).expect("write hash fixture");
+
+            assert_eq!(
+                hash_file(&path).expect("hash fixture"),
+                blake3::hash(&contents).to_hex().to_string(),
+                "streaming digest differs from the whole-file digest at {length} bytes"
+            );
+        }
     }
 
     #[test]
