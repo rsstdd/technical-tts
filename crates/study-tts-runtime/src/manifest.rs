@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use serde::Serialize;
-use study_tts_core::CacheKey;
+use study_tts_core::{CacheKey, PlanHash};
 
 use crate::{
     BuildError,
@@ -15,7 +15,7 @@ struct Manifest<'a> {
     schema_version: &'static str,
     release_status: &'static str,
     lesson_id: &'a str,
-    plan_hash: &'a str,
+    plan_hash: &'a PlanHash,
     segments: Vec<ManifestSegment<'a>>,
     artifacts: Artifacts,
     tools: Tools<'a>,
@@ -65,7 +65,7 @@ pub(crate) struct ToolRecords<'a> {
 pub(crate) fn write(
     destination: &Path,
     lesson_id: &str,
-    plan_hash: &str,
+    plan_hash: &PlanHash,
     segments: &[CachedSegment],
     master_wav: &Path,
     m4a: &Path,

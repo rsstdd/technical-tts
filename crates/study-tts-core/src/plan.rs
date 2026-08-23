@@ -23,9 +23,9 @@ pub const CANONICAL_SAMPLE_RATE: u32 = 24_000;
 /// it is *used as a path component*: the cache shards its entries on the key's
 /// leading characters. Slicing a bare string there panics on a key shorter than
 /// the shard width and on one whose byte boundary falls inside a multi-byte
-/// character, and `PlannedSegment` deserializes, so any JSON string could reach
-/// that slice. Parsing here makes the shard slice total instead of merely
-/// usually correct.
+/// character, and a cache artifact on disk records its key, so any JSON string
+/// could reach that slice. Parsing here makes the shard slice total instead of
+/// merely usually correct.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct CacheKey(String);
@@ -98,25 +98,75 @@ impl fmt::Display for CacheKey {
 )]
 pub struct MalformedCacheKey(String);
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// Identity of a whole render plan: BLAKE3 over its serialized segments.
+///
+/// A value object rather than a `String` because it is a digest that reaches a
+/// manifest, and a digest typed as a string is one a caller can set to
+/// anything. `From<blake3::Hash>` is the only constructor, so a plan hash
+/// cannot exist without a plan having been hashed.
+///
+/// Deliberately not parseable. Nothing reads a plan back yet, and a `TryFrom`
+/// or `Deserialize` here would be a boundary with no traffic and no test. The
+/// story that persists `plan.json` (ADR-0001 §12.2) adds them with the
+/// versioned, fail-closed loader that gives them meaning.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(into = "String")]
+pub struct PlanHash(String);
+
+impl PlanHash {
+    /// The hash as it is written to a manifest.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<blake3::Hash> for PlanHash {
+    fn from(hash: blake3::Hash) -> Self {
+        Self(hash.to_hex().to_string())
+    }
+}
+
+impl From<PlanHash> for String {
+    fn from(hash: PlanHash) -> Self {
+        hash.0
+    }
+}
+
+impl fmt::Display for PlanHash {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 /// A lesson resolved into exactly what will be synthesized, derived
 /// deterministically from it.
+///
+/// Produced only by [`RenderPlan::for_lesson`] and never read back, so it does
+/// not derive `Deserialize`. Adding one now would publish an unversioned parse
+/// boundary that accepts unknown fields and that no caller exercises; ADR-0001
+/// §12.2 puts persisted plans at E2, and the loader that story needs is where a
+/// fail-closed boundary belongs.
+#[derive(Clone, Debug, Serialize)]
 pub struct RenderPlan {
     /// The lesson this plan was derived from.
     pub lesson_id: String,
     /// Identity of the plan as a whole, so a rebuild can be recognized as the same
     /// plan.
-    pub plan_hash: String,
+    pub plan_hash: PlanHash,
     /// The segments to synthesize, in speaking order.
     pub segments: Vec<PlannedSegment>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
 /// One segment with its synthesis identity resolved.
 ///
 /// Carries only speech-affecting fields plus the identity derived from them;
 /// display-only lesson metadata is deliberately absent, because anything here
 /// would change the cache key.
+///
+/// Serialized, never deserialized, for the reason given on [`RenderPlan`]. Its
+/// serialization is load-bearing: `plan_hash` is BLAKE3 over exactly these
+/// bytes.
+#[derive(Clone, Debug, Serialize)]
 pub struct PlannedSegment {
     /// Identity of the segment within its lesson.
     pub id: String,
@@ -187,8 +237,7 @@ impl RenderPlan {
         let plan_hash = blake3::hash(
             &serde_json::to_vec(&segments).expect("serializing a render plan cannot fail"),
         )
-        .to_hex()
-        .to_string();
+        .into();
 
         Self {
             lesson_id: lesson.lesson_id.clone(),
@@ -201,17 +250,7 @@ impl RenderPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn planned_segment(cache_key: &str) -> serde_json::Value {
-        serde_json::json!({
-            "id": "seg-0001",
-            "speaker": "nadia",
-            "spoken_text": "Same speech.",
-            "style": "calm",
-            "pause_after_ms": 75,
-            "cache_key": cache_key,
-        })
-    }
+    use serde_json::Value;
 
     #[test]
     fn t1_e0_cache_keys_that_cannot_name_a_shard_directory_are_rejected() {
@@ -238,11 +277,12 @@ mod tests {
                 malformed.parse::<CacheKey>().is_err(),
                 "`{malformed}` must not parse as a cache key"
             );
-            // The parse boundary is the one that matters: `PlannedSegment` deserializes, so
-            // a plan on disk is how a malformed key would otherwise reach the shard slice.
+            // Deserialization is the boundary that matters: a cache artifact on
+            // disk records its key, and that record is how a malformed key would
+            // otherwise reach the shard slice.
             assert!(
-                serde_json::from_value::<PlannedSegment>(planned_segment(malformed)).is_err(),
-                "a planned segment carrying `{malformed}` must not deserialize"
+                serde_json::from_value::<CacheKey>(Value::String(malformed.to_owned())).is_err(),
+                "a recorded cache key `{malformed}` must not deserialize"
             );
         }
     }
@@ -256,17 +296,37 @@ mod tests {
         let plan = RenderPlan::for_lesson(&lesson, "fake-tone-v1");
         let cache_key = &plan.segments[0].cache_key;
 
-        // Plans, manifests, and cache artifacts already on disk hold the key as a bare
-        // JSON string. Wrapping it in a value object must not change that, or every
+        // Manifests and cache artifacts already on disk hold the key as a bare JSON
+        // string. Wrapping it in a value object must not change that, or every
         // existing artifact becomes unreadable.
         let recorded = serde_json::to_value(cache_key).expect("a cache key serializes");
-        assert_eq!(
-            recorded,
-            serde_json::Value::String(cache_key.as_str().to_owned())
-        );
+        assert_eq!(recorded, Value::String(cache_key.as_str().to_owned()));
         assert_eq!(
             &serde_json::from_value::<CacheKey>(recorded).expect("the recorded form parses back"),
             cache_key
+        );
+    }
+
+    #[test]
+    fn t1_e0_a_plan_hash_is_a_digest_recorded_as_a_plain_string() {
+        let lesson = Lesson::from_json(include_bytes!(
+            "../../../fixtures/lessons/e0-s0-two-segment.json"
+        ))
+        .expect("fixture should be valid");
+        let plan = RenderPlan::for_lesson(&lesson, "fake-tone-v1");
+
+        // `From<blake3::Hash>` is the only constructor, so the recorded value is a
+        // digest by construction rather than by a check someone has to remember.
+        assert!(
+            is_blake3_hex(plan.plan_hash.as_str()),
+            "`{}` is not a BLAKE3 digest",
+            plan.plan_hash
+        );
+        // The manifest holds it as a bare JSON string; wrapping it in a value object
+        // must not change what `manifest.json` looks like.
+        assert_eq!(
+            serde_json::to_value(&plan.plan_hash).expect("a plan hash serializes"),
+            Value::String(plan.plan_hash.as_str().to_owned())
         );
     }
 

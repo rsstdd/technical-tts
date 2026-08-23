@@ -14,7 +14,9 @@ mod voice;
 
 pub use digest::is_blake3_hex;
 pub use lesson::{Lesson, LessonError, LessonSegment, ReviewStatus};
-pub use plan::{CANONICAL_SAMPLE_RATE, CacheKey, MalformedCacheKey, PlannedSegment, RenderPlan};
+pub use plan::{
+    CANONICAL_SAMPLE_RATE, CacheKey, MalformedCacheKey, PlanHash, PlannedSegment, RenderPlan,
+};
 pub use release::{REQUIRED_PRODUCTION_GATES, ReleaseClaim, ReleaseError, ReleaseStatus};
 pub use rights::{SourceClassification, SourceRightsDeclaration};
 pub use voice::{
