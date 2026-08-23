@@ -5,9 +5,6 @@ use crate::digest::is_blake3_hex;
 
 /// Schema version this module accepts for `profile.json` and `consent.json`.
 ///
-/// Provisional pending the versioned JSON Schemas of E1-S1; the on-disk layout
-/// is ADR-0001 §12.1 (`data/voices/<id>/{profile.json, reference.wav,
-/// conditionals.pt, consent.json}`).
 const VOICE_SCHEMA_VERSION: &str = "0.1-voice";
 
 /// Consent status recorded for a voice reference.
