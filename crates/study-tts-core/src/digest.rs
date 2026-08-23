@@ -9,7 +9,7 @@ pub(crate) const BLAKE3_HEX_LENGTH: usize = 64;
 /// output byte for byte and a cache key is used as a directory name. Uppercase hex is rejected
 /// rather than normalized: a value that needs normalizing before it can be compared did not come
 /// from this program, and silently accepting it hides that.
-pub(crate) fn is_blake3_hex(value: &str) -> bool {
+pub fn is_blake3_hex(value: &str) -> bool {
     value.len() == BLAKE3_HEX_LENGTH
         && value
             .bytes()

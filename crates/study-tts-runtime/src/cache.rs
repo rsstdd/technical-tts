@@ -4,7 +4,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use study_tts_core::{CANONICAL_SAMPLE_RATE, CacheKey, PlannedSegment};
+use study_tts_core::{CANONICAL_SAMPLE_RATE, CacheKey, PlannedSegment, is_blake3_hex};
 use tempfile::Builder;
 
 use crate::{BuildError, SegmentSynthesizer, audio_error, io_error};
@@ -163,7 +163,25 @@ fn load_validated(
         )
     })?;
 
-    // Path 2: the artifact parses but describes audio this build cannot consume.
+    // Path 2: the recorded digest is not a digest at all.
+    //
+    // Checked here rather than at the comparison below, because a malformed record that reaches
+    // the comparison is reported as a checksum *mismatch* — telling the operator their audio was
+    // tampered with when the artifact was what broke. `VoiceError::MalformedChecksum` draws the
+    // same distinction for voice records.
+    if !is_blake3_hex(&artifact.audio_blake3) {
+        return Err(rejected(
+            entry_dir,
+            &segment.id,
+            format!(
+                "artifact records `{}` as the audio digest, which is not a lowercase BLAKE3 hex \
+                 digest and so could never match the audio",
+                artifact.audio_blake3
+            ),
+        ));
+    }
+
+    // Path 3: the artifact parses but describes audio this build cannot consume.
     if artifact.schema_version != CACHE_SCHEMA_VERSION
         || artifact.sample_rate != CANONICAL_SAMPLE_RATE
         || artifact.channels != 1
@@ -184,7 +202,7 @@ fn load_validated(
         ));
     }
 
-    // Path 3: the entry belongs to a different synthesis identity.
+    // Path 4: the entry belongs to a different synthesis identity.
     if artifact.cache_key != segment.cache_key {
         return Err(rejected(
             entry_dir,
@@ -196,7 +214,7 @@ fn load_validated(
         ));
     }
 
-    // Path 4: the audio itself is unreadable, non-canonical, or does not match the artifact.
+    // Path 5: the audio itself is unreadable, non-canonical, or does not match the artifact.
     let frames =
         validate_wav(audio_path).map_err(|error| rejected_from(entry_dir, &segment.id, error))?;
     let checksum = hash_file(audio_path)?;
@@ -300,6 +318,7 @@ pub(crate) fn write_json_atomically<T: Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tempfile::TempDir;
 
     /// A well-formed key that still reads as the label the test chose.
@@ -357,6 +376,18 @@ mod tests {
         (dir, audio, artifact)
     }
 
+    /// Rewrites one field of a published artifact, leaving the audio it describes untouched.
+    fn overwrite_field(artifact: &Path, field: &str, value: serde_json::Value) {
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&fs::read(artifact).expect("read artifact")).expect("parse");
+        record[field] = value;
+        fs::write(
+            artifact,
+            serde_json::to_vec_pretty(&record).expect("serialize"),
+        )
+        .expect("write artifact");
+    }
+
     #[test]
     fn t1_e0_entry_dir_is_sharded_by_key_prefix() {
         let cache_key = key("abcdef");
@@ -389,31 +420,30 @@ mod tests {
         let unparseable = load_validated(&planned("aa1111"), &dir, &audio, &artifact)
             .expect_err("unparseable artifact must be rejected");
 
-        // Path 2: incompatible declared metadata.
+        // Path 2: a recorded digest that is not a digest.
+        let (dir6, audio6, artifact6) = published_entry(workspace.path(), "aa2222");
+        overwrite_field(&artifact6, "audio_blake3", json!("not-a-digest"));
+        let malformed_digest = load_validated(&planned("aa2222"), &dir6, &audio6, &artifact6)
+            .expect_err("a malformed recorded digest must be rejected");
+
+        // Path 3: incompatible declared metadata.
         let (dir2, audio2, artifact2) = published_entry(workspace.path(), "bb2222");
-        let mut record: serde_json::Value =
-            serde_json::from_slice(&fs::read(&artifact2).expect("read artifact")).expect("parse");
-        record["schema_version"] = serde_json::Value::String("future".to_owned());
-        fs::write(
-            &artifact2,
-            serde_json::to_vec_pretty(&record).expect("serialize"),
-        )
-        .expect("write artifact");
+        overwrite_field(&artifact2, "schema_version", json!("future"));
         let incompatible = load_validated(&planned("bb2222"), &dir2, &audio2, &artifact2)
             .expect_err("incompatible metadata must be rejected");
 
-        // Path 3: cache-key mismatch.
+        // Path 4: cache-key mismatch.
         let (dir3, audio3, artifact3) = published_entry(workspace.path(), "cc3333");
         let mismatched = load_validated(&planned("dd4444"), &dir3, &audio3, &artifact3)
             .expect_err("cache-key mismatch must be rejected");
 
-        // Path 4: audio that no longer matches its record.
+        // Path 5: audio that no longer matches its record.
         let (dir4, audio4, artifact4) = published_entry(workspace.path(), "ee5555");
         write_tone(&audio4, 1_200, CANONICAL_SAMPLE_RATE);
         let audio_mismatch = load_validated(&planned("ee5555"), &dir4, &audio4, &artifact4)
             .expect_err("frame mismatch must be rejected");
 
-        // Path 4b: audio that is no longer readable at all.
+        // Path 5b: audio that is no longer readable at all.
         let (dir5, audio5, artifact5) = published_entry(workspace.path(), "ff6666");
         fs::write(&audio5, b"not a wav").expect("corrupt audio");
         let unreadable = load_validated(&planned("ff6666"), &dir5, &audio5, &artifact5)
@@ -421,6 +451,7 @@ mod tests {
 
         for (label, error, dir) in [
             ("unparseable artifact", unparseable, dir),
+            ("malformed recorded digest", malformed_digest, dir6),
             ("incompatible metadata", incompatible, dir2),
             ("cache-key mismatch", mismatched, dir3),
             ("frame mismatch", audio_mismatch, dir4),
@@ -442,6 +473,45 @@ mod tests {
             assert!(
                 message.contains("seg-0001"),
                 "{label} did not name the segment: `{message}`"
+            );
+        }
+    }
+
+    /// The audio is left intact in every case here, so a rejection that speaks of a mismatch
+    /// would be accusing the wrong file. Uppercase is the trap worth naming: it is a digest of
+    /// the right audio, in the wrong spelling.
+    #[test]
+    fn t1_e0_malformed_recorded_digest_is_reported_as_malformed() {
+        let workspace = TempDir::new().expect("create cache workspace");
+
+        // Every published entry holds the same tone, so one digest describes all of them and the
+        // malformations below are spellings of a digest that would otherwise match.
+        let reference = workspace.path().join("reference.wav");
+        write_tone(&reference, 2_400, CANONICAL_SAMPLE_RATE);
+        let digest = hash_file(&reference).expect("hash reference audio");
+        let truncated = digest[..digest.len() - 1].to_owned();
+        let malformations = [
+            ("aa11", digest.to_uppercase()),
+            ("bb22", truncated.clone()),
+            ("cc33", format!("{truncated}z")),
+            ("dd44", String::new()),
+        ];
+
+        for (label, malformed) in malformations {
+            let (dir, audio, artifact) = published_entry(workspace.path(), label);
+            overwrite_field(&artifact, "audio_blake3", json!(malformed));
+
+            let error = load_validated(&planned(label), &dir, &audio, &artifact)
+                .expect_err("a malformed recorded digest must be rejected");
+
+            let message = error.to_string();
+            assert!(
+                message.contains("not a lowercase BLAKE3 hex digest"),
+                "`{malformed}` was not reported as malformed: `{message}`"
+            );
+            assert!(
+                !message.contains("does not match"),
+                "`{malformed}` was reported as a mismatch: `{message}`"
             );
         }
     }
