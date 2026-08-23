@@ -25,6 +25,6 @@ that a test or a checklist looks up must be written once and matched literally, 
 Each record states its acceptance criterion **before** its result. A criterion written after the
 result is not a criterion, because a bar set afterwards cannot fail.
 
-Evidence is committed to Git. `docs/governance/RISK-OPEN-QUESTIONS-DESCOPE.md` OQ-02 and OQ-06
-record that this project runs on one machine with no backup for runtime state, so committing
-evidence is what protects it from machine loss.
+Evidence is committed to Git. `docs/governance/RISK-OPEN-QUESTIONS-DESCOPE.md` OQ-02 proposes a
+single-machine, local-filesystem scope, and OQ-06 leaves the backup and recovery plan open until
+before M3, so until that plan exists, committing evidence is what protects it from machine loss.
