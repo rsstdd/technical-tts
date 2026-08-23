@@ -342,10 +342,48 @@ pub enum BuildError {
         stderr: String,
     },
 
-    /// The encoded output exists but is not the stream this build claims to have
-    /// produced.
-    #[error("encoded output failed structural validation: {0}")]
-    InvalidEncodedOutput(String),
+    /// ffprobe exited successfully but its response could not be read.
+    ///
+    /// Distinct from `UnexpectedEncodedStream`: nothing is known about the output
+    /// yet, so the encode is unverified rather than wrong, and the fault is in the
+    /// probe or its version rather than in the file.
+    #[error(
+        "encoded output `{path}` is unverified: ffprobe returned a response this build could \
+         not read ({source}); the audio owner must reconcile the ffprobe version with the \
+         pinned probe arguments"
+    )]
+    UnreadableProbeResponse {
+        /// The output that could not be verified.
+        path: PathBuf,
+        /// What the parser reported.
+        source: serde_json::Error,
+    },
+
+    /// The probe was read and describes something other than the stream this build
+    /// produces.
+    ///
+    /// Routing: "Invalid or over-range audio → Audio/runtime → Blocked for
+    /// segment". The encode settings and this check are two ends of one agreement,
+    /// so a mismatch means one of them moved.
+    #[error(
+        "encoded output `{path}` is not the stream this build produces: ffprobe reports codec \
+         `{}` with `{}` channels, not {required_channels}-channel `{required_codec}`; the \
+         encode settings and this verification must agree before the output is used",
+        codec.as_deref().unwrap_or("none"),
+        channels.map_or_else(|| "none".to_owned(), |count| count.to_string())
+    )]
+    UnexpectedEncodedStream {
+        /// The output that failed verification.
+        path: PathBuf,
+        /// Codec ffprobe reported, absent if the output declares no audio stream.
+        codec: Option<String>,
+        /// Channel count ffprobe reported, absent on the same terms.
+        channels: Option<u16>,
+        /// Codec this build encodes to.
+        required_codec: &'static str,
+        /// Channel count this build encodes to.
+        required_channels: u16,
+    },
 
     /// A path the build derived would leave the root it is confined to, so nothing
     /// is written.

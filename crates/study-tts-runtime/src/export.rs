@@ -1,9 +1,40 @@
 use std::{ffi::OsString, path::Path, process::Command};
 
-use serde_json::Value;
+use serde::Deserialize;
 use tempfile::Builder;
 
 use crate::{BuildError, io_error, tools::ToolIdentity};
+
+/// The audio codec every encoded output carries.
+///
+/// One definition for both ends of the agreement: `ffmpeg_arguments` encodes to
+/// it and `probe_m4a` verifies it. Two literals could drift apart silently,
+/// leaving the verification passing something the encoder no longer produces.
+const REQUIRED_CODEC: &str = "aac";
+
+/// The channel count every encoded output carries, on the same terms.
+const REQUIRED_CHANNELS: u16 = 1;
+
+/// The subset of an ffprobe response the pinned `-show_entries` selection asks
+/// for.
+///
+/// Deliberately not `deny_unknown_fields`: this is another program's output,
+/// not a contract this project defines, and a future ffprobe adding a field
+/// must not fail a build. What bounds the shape is the pinned selection in
+/// `ffprobe_arguments`.
+#[derive(Debug, Deserialize)]
+struct ProbeResponse {
+    #[serde(default)]
+    streams: Vec<ProbeStream>,
+}
+
+/// One audio stream as ffprobe reports it. Both fields are optional because an
+/// absent field and a wrong value are different findings.
+#[derive(Debug, Deserialize)]
+struct ProbeStream {
+    codec_name: Option<String>,
+    channels: Option<u16>,
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct ToolExecution {
@@ -64,25 +95,43 @@ pub(crate) fn probe_m4a(ffprobe: &ToolIdentity, m4a: &Path) -> Result<ToolExecut
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
-    // Mapped explicitly rather than through `?`, because a malformed probe response
-    // is an encoded-output problem and must not surface as a generic JSON failure.
-    let probe: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
-        BuildError::InvalidEncodedOutput(format!("ffprobe returned unparseable JSON: {error}"))
-    })?;
-    let stream = probe["streams"]
-        .as_array()
-        .and_then(|streams| streams.first());
-    if stream.and_then(|value| value["codec_name"].as_str()) != Some("aac")
-        || stream.and_then(|value| value["channels"].as_u64()) != Some(1)
-    {
-        return Err(BuildError::InvalidEncodedOutput(
-            "expected one mono AAC audio stream".to_owned(),
-        ));
-    }
+    interpret_probe(m4a, &output.stdout)?;
 
     Ok(ToolExecution {
         arguments: display_arguments(&arguments),
     })
+}
+
+/// Reads one ffprobe response and decides whether it describes the stream this
+/// build produces.
+///
+/// Split from `probe_m4a` so both outcomes are reachable without running a real
+/// ffprobe: the failure modes are a response that cannot be read and a response
+/// that reports the wrong stream, and only the first needs bytes a real tool
+/// would never emit.
+fn interpret_probe(m4a: &Path, response: &[u8]) -> Result<(), BuildError> {
+    // Mapped explicitly rather than through `?`, because a probe this build cannot
+    // read leaves the output unverified and must not surface as a generic JSON
+    // failure naming no subsystem.
+    let probe: ProbeResponse =
+        serde_json::from_slice(response).map_err(|source| BuildError::UnreadableProbeResponse {
+            path: m4a.to_path_buf(),
+            source,
+        })?;
+
+    let stream = probe.streams.first();
+    let codec = stream.and_then(|stream| stream.codec_name.clone());
+    let channels = stream.and_then(|stream| stream.channels);
+    if codec.as_deref() != Some(REQUIRED_CODEC) || channels != Some(REQUIRED_CHANNELS) {
+        return Err(BuildError::UnexpectedEncodedStream {
+            path: m4a.to_path_buf(),
+            codec,
+            channels,
+            required_codec: REQUIRED_CODEC,
+            required_channels: REQUIRED_CHANNELS,
+        });
+    }
+    Ok(())
 }
 
 fn ffmpeg_arguments(master_wav: &Path, destination: &Path) -> Vec<OsString> {
@@ -98,11 +147,11 @@ fn ffmpeg_arguments(master_wav: &Path, destination: &Path) -> Vec<OsString> {
         OsString::from("-1"),
         OsString::from("-vn"),
         OsString::from("-ac"),
-        OsString::from("1"),
+        OsString::from(REQUIRED_CHANNELS.to_string()),
         OsString::from("-channel_layout"),
         OsString::from("mono"),
         OsString::from("-c:a"),
-        OsString::from("aac"),
+        OsString::from(REQUIRED_CODEC),
         OsString::from("-b:a"),
         OsString::from("96k"),
         destination.as_os_str().to_owned(),
@@ -142,6 +191,64 @@ mod tests {
     // Only tool-free tests belong here. Anything requiring a real ffmpeg or ffprobe
     // lives in the testkit integration suite, so `cargo test -p study-tts-runtime`
     // stays runnable on a machine with neither binary installed.
+    #[test]
+    fn t1_e0_unreadable_and_unexpected_probes_are_reported_separately() {
+        let m4a = Path::new("/lesson.m4a");
+
+        // A response this build cannot read says nothing about the file, so the
+        // output is unverified rather than known-wrong, and the fault lies with
+        // the probe rather than the encode.
+        for unreadable in [
+            &b"{ not json"[..],
+            b"",
+            br#"{"streams":"none"}"#,
+            br#"{"streams":[{"codec_name":"aac","channels":"two"}]}"#,
+        ] {
+            let error = interpret_probe(m4a, unreadable)
+                .expect_err("an unreadable probe response must not verify an output");
+            assert!(
+                matches!(error, BuildError::UnreadableProbeResponse { .. }),
+                "`{}` produced `{error}`",
+                String::from_utf8_lossy(unreadable)
+            );
+        }
+
+        // A readable response describing the wrong stream is the encoder failing
+        // open, and the refusal quotes what was actually found.
+        for (label, response, codec, channels) in [
+            (
+                "wrong codec",
+                br#"{"streams":[{"codec_name":"pcm_f32le","channels":1}]}"#.to_vec(),
+                Some("pcm_f32le"),
+                Some(1),
+            ),
+            (
+                "wrong channel count",
+                br#"{"streams":[{"codec_name":"aac","channels":2}]}"#.to_vec(),
+                Some("aac"),
+                Some(2),
+            ),
+            ("no audio stream", br#"{"streams":[]}"#.to_vec(), None, None),
+        ] {
+            let error = interpret_probe(m4a, &response)
+                .expect_err("an unexpected stream must not verify an output");
+            assert!(
+                matches!(
+                    error,
+                    BuildError::UnexpectedEncodedStream {
+                        codec: ref found_codec,
+                        channels: found_channels,
+                        ..
+                    } if found_codec.as_deref() == codec && found_channels == channels
+                ),
+                "{label} produced `{error}`"
+            );
+        }
+
+        interpret_probe(m4a, br#"{"streams":[{"codec_name":"aac","channels":1}]}"#)
+            .expect("one mono AAC stream is the stream this build produces");
+    }
+
     #[test]
     fn t1_e0_ffmpeg_arguments_are_pinned_and_explicit() {
         let arguments = ffmpeg_arguments(Path::new("/input.wav"), Path::new("/output.m4a"));

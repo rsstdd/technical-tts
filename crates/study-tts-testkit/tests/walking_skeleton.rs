@@ -270,7 +270,17 @@ fn t4_e0_ffprobe_rejects_non_aac_input() {
     // which is the shape an encoder failing open would produce.
     let error = validate_encoded_output(Path::new("ffprobe"), &result.master_wav)
         .expect_err("a PCM master must not pass encoded-output validation");
-    assert!(matches!(error, BuildError::InvalidEncodedOutput(_)));
+    // The probe is readable; what it describes is wrong. Naming the codec it
+    // actually found is what tells an operator the encoder failed open rather
+    // than that ffprobe misbehaved.
+    assert!(
+        matches!(
+            error,
+            BuildError::UnexpectedEncodedStream { ref codec, .. }
+                if codec.as_deref() != Some("aac")
+        ),
+        "a PCM master produced `{error}`"
+    );
 }
 
 #[test]
