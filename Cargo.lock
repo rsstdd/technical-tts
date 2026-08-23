@@ -953,6 +953,7 @@ dependencies = [
 name = "study-tts-testkit"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "hound",
  "proptest",
  "serde_json",
