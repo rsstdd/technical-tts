@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use serde::Serialize;
+use study_tts_core::CacheKey;
 
 use crate::{
     BuildError,
@@ -23,7 +24,7 @@ struct Manifest<'a> {
 #[derive(Serialize)]
 struct ManifestSegment<'a> {
     segment_id: &'a str,
-    cache_key: &'a str,
+    cache_key: &'a CacheKey,
     audio_blake3: &'a str,
     frames: u32,
     pause_after_ms: u32,

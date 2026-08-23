@@ -45,6 +45,7 @@ impl SegmentSynthesizer for DeterministicToneWorker {
             + f32::from(
                 segment
                     .cache_key
+                    .as_str()
                     .bytes()
                     .fold(0_u8, |accumulator, byte| accumulator.wrapping_add(byte)),
             );

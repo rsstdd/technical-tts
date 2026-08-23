@@ -18,6 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use study_tts_core::CacheKey;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -165,7 +166,11 @@ pub(crate) fn audio_error(path: impl Into<PathBuf>, source: hound::Error) -> Bui
 ///
 /// Exposed so integration tests can corrupt a specific entry without duplicating the sharding
 /// scheme. Changing the shard width in `cache::entry_dir` updates the tests automatically.
+///
+/// Takes a parsed `CacheKey` rather than a string: this is the one cache path that crosses the
+/// crate boundary, and a caller reading a key out of a manifest should be told the key is
+/// malformed there rather than have it panic inside the shard slice.
 #[doc(hidden)]
-pub fn cache_entry_dir(cache_root: &Path, cache_key: &str) -> PathBuf {
+pub fn cache_entry_dir(cache_root: &Path, cache_key: &CacheKey) -> PathBuf {
     cache::entry_dir(cache_root, cache_key)
 }

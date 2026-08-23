@@ -1,8 +1,91 @@
-use serde::{Deserialize, Serialize};
+use std::{fmt, str::FromStr};
 
-use crate::Lesson;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+use crate::{
+    Lesson,
+    digest::{BLAKE3_HEX_LENGTH, is_blake3_hex},
+};
 
 pub const CANONICAL_SAMPLE_RATE: u32 = 24_000;
+
+/// The synthesis identity of one segment: BLAKE3 over the canonical serialization of every
+/// speech-affecting input, rendered as lowercase hexadecimal (ADR-0001 §12.5).
+///
+/// A value object rather than a `String` because the key is not only compared, it is *used as a
+/// path component*: the cache shards its entries on the key's leading characters. Slicing a bare
+/// string there panics on a key shorter than the shard width and on one whose byte boundary falls
+/// inside a multi-byte character, and `PlannedSegment` deserializes, so any JSON string could
+/// reach that slice. Parsing here makes the shard slice total instead of merely usually correct.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct CacheKey(String);
+
+impl CacheKey {
+    /// Characters in a rendered key.
+    ///
+    /// Every one is ASCII, so any prefix up to this width is in bounds and on a character
+    /// boundary. That is the guarantee a prefix-sharded cache layout rests on, so it is published
+    /// rather than left for a caller to rediscover.
+    pub const LENGTH: usize = BLAKE3_HEX_LENGTH;
+
+    /// The key as it is written to a plan, a manifest, and a cache artifact.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Produces a key without validation, because a fresh digest cannot fail the check.
+///
+/// This is the only infallible constructor, and it takes the hash itself rather than a string, so
+/// the definition in ADR-0001 §12.5 is the one route into the type that no caller can shortcut.
+impl From<blake3::Hash> for CacheKey {
+    fn from(hash: blake3::Hash) -> Self {
+        Self(hash.to_hex().to_string())
+    }
+}
+
+impl From<CacheKey> for String {
+    fn from(key: CacheKey) -> Self {
+        key.0
+    }
+}
+
+impl TryFrom<String> for CacheKey {
+    type Error = MalformedCacheKey;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if is_blake3_hex(&value) {
+            return Ok(Self(value));
+        }
+        Err(MalformedCacheKey(value))
+    }
+}
+
+impl FromStr for CacheKey {
+    type Err = MalformedCacheKey;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::try_from(value.to_owned())
+    }
+}
+
+impl fmt::Display for CacheKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// Remedy routing: a plan or manifest is regenerated from its lesson, never hand-corrected, so
+/// the message names rebuilding rather than editing the recorded value.
+#[derive(Debug, Error)]
+#[error(
+    "cache key `{0}` is not a BLAKE3 digest in lowercase hexadecimal; ADR-0001 §12.5 \
+     defines a cache key as exactly that, and the cache uses it as a directory name; rebuild \
+     the plan from its lesson rather than editing the recorded key"
+)]
+pub struct MalformedCacheKey(String);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RenderPlan {
@@ -18,7 +101,7 @@ pub struct PlannedSegment {
     pub spoken_text: String,
     pub style: String,
     pub pause_after_ms: u32,
-    pub cache_key: String,
+    pub cache_key: CacheKey,
 }
 
 /// Every speech-affecting input, named field by field.
@@ -63,7 +146,7 @@ impl RenderPlan {
                     spoken_text: segment.spoken_text.clone(),
                     style: segment.style.clone(),
                     pause_after_ms: segment.pause_after_ms,
-                    cache_key: blake3::hash(&identity_bytes).to_hex().to_string(),
+                    cache_key: blake3::hash(&identity_bytes).into(),
                 }
             })
             .collect::<Vec<_>>();
@@ -84,6 +167,73 @@ impl RenderPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn planned_segment(cache_key: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "seg-0001",
+            "speaker": "nadia",
+            "spoken_text": "Same speech.",
+            "style": "calm",
+            "pause_after_ms": 75,
+            "cache_key": cache_key,
+        })
+    }
+
+    #[test]
+    fn t1_e0_cache_keys_that_cannot_name_a_shard_directory_are_rejected() {
+        // The cache shards its entries on the key's leading characters. While this field was a
+        // `String`, the first two of these panicked in that slice — `""` and `"a"` are out of
+        // bounds, and `日` puts byte index 2 inside a character — and the rest reached the
+        // filesystem as directory names this program never produced.
+        let too_short = "a".repeat(CacheKey::LENGTH - 1);
+        let too_long = "a".repeat(CacheKey::LENGTH + 1);
+        let uppercase = "A".repeat(CacheKey::LENGTH);
+        let outside_hex = "g".repeat(CacheKey::LENGTH);
+
+        for malformed in [
+            "",
+            "a",
+            "日",
+            too_short.as_str(),
+            too_long.as_str(),
+            uppercase.as_str(),
+            outside_hex.as_str(),
+        ] {
+            assert!(
+                malformed.parse::<CacheKey>().is_err(),
+                "`{malformed}` must not parse as a cache key"
+            );
+            // The parse boundary is the one that matters: `PlannedSegment` deserializes, so a
+            // plan on disk is how a malformed key would otherwise reach the shard slice.
+            assert!(
+                serde_json::from_value::<PlannedSegment>(planned_segment(malformed)).is_err(),
+                "a planned segment carrying `{malformed}` must not deserialize"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e0_a_planned_cache_key_is_recorded_as_a_plain_string() {
+        let lesson = Lesson::from_json(include_bytes!(
+            "../../../fixtures/lessons/e0-s0-two-segment.json"
+        ))
+        .expect("fixture should be valid");
+        let plan = RenderPlan::for_lesson(&lesson, "fake-tone-v1");
+        let cache_key = &plan.segments[0].cache_key;
+
+        // Plans, manifests, and cache artifacts already on disk hold the key as a bare JSON
+        // string. Wrapping it in a value object must not change that, or every existing artifact
+        // becomes unreadable.
+        let recorded = serde_json::to_value(cache_key).expect("a cache key serializes");
+        assert_eq!(
+            recorded,
+            serde_json::Value::String(cache_key.as_str().to_owned())
+        );
+        assert_eq!(
+            &serde_json::from_value::<CacheKey>(recorded).expect("the recorded form parses back"),
+            cache_key
+        );
+    }
 
     #[test]
     fn t1_e0_plan_is_stable_for_identical_inputs() {

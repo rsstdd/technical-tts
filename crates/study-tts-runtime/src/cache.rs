@@ -4,17 +4,25 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use study_tts_core::{CANONICAL_SAMPLE_RATE, PlannedSegment};
+use study_tts_core::{CANONICAL_SAMPLE_RATE, CacheKey, PlannedSegment};
 use tempfile::Builder;
 
 use crate::{BuildError, SegmentSynthesizer, audio_error, io_error};
 
 const CACHE_SCHEMA_VERSION: &str = "0.1-skeleton";
 
+/// Characters of the cache key that name the shard directory grouping entries under `segments/`.
+///
+/// Kept below the key length so the prefix slice in `entry_dir` is in bounds, and asserted here
+/// rather than trusted: `CacheKey` guarantees the length, and this is where that guarantee stops
+/// being a comment and becomes a compile error.
+const CACHE_SHARD_WIDTH: usize = 2;
+const _: () = assert!(CACHE_SHARD_WIDTH <= CacheKey::LENGTH);
+
 #[derive(Clone, Debug)]
 pub(crate) struct CachedSegment {
     pub segment_id: String,
-    pub cache_key: String,
+    pub cache_key: CacheKey,
     pub audio_path: PathBuf,
     pub audio_blake3: String,
     pub frames: u32,
@@ -25,7 +33,7 @@ pub(crate) struct CachedSegment {
 #[serde(deny_unknown_fields)]
 struct CacheArtifact {
     schema_version: String,
-    cache_key: String,
+    cache_key: CacheKey,
     audio_blake3: String,
     sample_rate: u32,
     channels: u16,
@@ -34,11 +42,16 @@ struct CacheArtifact {
 }
 
 /// Directory holding one cache entry. Shared with tests so the sharding scheme is defined once.
-pub(crate) fn entry_dir(cache_root: &Path, cache_key: &str) -> PathBuf {
+///
+/// Total for every `CacheKey`: the type guarantees `CacheKey::LENGTH` ASCII characters, so the
+/// shard prefix is in bounds and on a character boundary. Taking a `&str` here is what made this
+/// a panic reachable from a deserialized plan.
+pub(crate) fn entry_dir(cache_root: &Path, cache_key: &CacheKey) -> PathBuf {
+    let key = cache_key.as_str();
     cache_root
         .join("segments")
-        .join(&cache_key[..2])
-        .join(cache_key)
+        .join(&key[..CACHE_SHARD_WIDTH])
+        .join(key)
 }
 
 /// Builds a rejection that names the entry directory and the remedy.
@@ -289,6 +302,16 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// A well-formed key that still reads as the label the test chose.
+    ///
+    /// Right-padded rather than written out, so the shard the entry lands in stays visible in the
+    /// label. `CacheKey` accepts nothing shorter, which is the whole point of the type.
+    fn key(label: &str) -> CacheKey {
+        format!("{label:0<width$}", width = CacheKey::LENGTH)
+            .parse()
+            .expect("test label pads to a well-formed key")
+    }
+
     fn planned(cache_key: &str) -> PlannedSegment {
         PlannedSegment {
             id: "seg-0001".to_owned(),
@@ -296,7 +319,7 @@ mod tests {
             spoken_text: "Same speech.".to_owned(),
             style: "calm".to_owned(),
             pause_after_ms: 75,
-            cache_key: cache_key.to_owned(),
+            cache_key: key(cache_key),
         }
     }
 
@@ -316,14 +339,14 @@ mod tests {
 
     /// Publishes a valid entry, then hands back the pieces needed to corrupt it.
     fn published_entry(root: &Path, cache_key: &str) -> (PathBuf, PathBuf, PathBuf) {
-        let dir = entry_dir(root, cache_key);
+        let dir = entry_dir(root, &key(cache_key));
         fs::create_dir_all(&dir).expect("create entry directory");
         let audio = dir.join("audio.wav");
         let artifact = dir.join("artifact.json");
         write_tone(&audio, 2_400, CANONICAL_SAMPLE_RATE);
         let record = CacheArtifact {
             schema_version: CACHE_SCHEMA_VERSION.to_owned(),
-            cache_key: cache_key.to_owned(),
+            cache_key: key(cache_key),
             audio_blake3: hash_file(&audio).expect("hash test audio"),
             sample_rate: CANONICAL_SAMPLE_RATE,
             channels: 1,
@@ -336,9 +359,11 @@ mod tests {
 
     #[test]
     fn t1_e0_entry_dir_is_sharded_by_key_prefix() {
+        let cache_key = key("abcdef");
+
         assert_eq!(
-            entry_dir(Path::new("/cache"), "abcdef"),
-            Path::new("/cache/segments/ab/abcdef")
+            entry_dir(Path::new("/cache"), &cache_key),
+            Path::new("/cache/segments/ab").join(cache_key.as_str())
         );
     }
 

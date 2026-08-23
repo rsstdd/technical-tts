@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use study_tts_core::LessonError;
+use study_tts_core::{CacheKey, LessonError};
 use study_tts_runtime::{
     BuildError, BuildRequest, build_preview, cache_entry_dir, publish, validate_encoded_output,
     validate_production_manifest,
@@ -390,12 +390,14 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(result.manifest).expect("read preview manifest"))
             .expect("parse preview manifest");
-    let cache_key = manifest["segments"][0]["cache_key"]
+    let cache_key: CacheKey = manifest["segments"][0]["cache_key"]
         .as_str()
-        .expect("segment cache key");
+        .expect("segment cache key")
+        .parse()
+        .expect("the manifest records a well-formed cache key");
     // The sharding scheme is owned by `cache::entry_dir`; changing it must not require editing
     // this test.
-    let entry_dir = cache_entry_dir(&workspace.path().join("cache"), cache_key);
+    let entry_dir = cache_entry_dir(&workspace.path().join("cache"), &cache_key);
     let artifact_path = entry_dir.join("artifact.json");
     let original: Value =
         serde_json::from_slice(&std::fs::read(&artifact_path).expect("read cache artifact"))

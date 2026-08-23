@@ -119,6 +119,7 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use study_tts_core::CacheKey;
     use tempfile::TempDir;
 
     fn write_tone(path: &Path, frames: u32) {
@@ -138,7 +139,9 @@ mod tests {
     fn segment(audio_path: PathBuf, declared_frames: u32, pause_after_ms: u32) -> CachedSegment {
         CachedSegment {
             segment_id: "seg-0001".to_owned(),
-            cache_key: "cafebabe".to_owned(),
+            cache_key: format!("{:0<width$}", "cafebabe", width = CacheKey::LENGTH)
+                .parse()
+                .expect("test label pads to a well-formed key"),
             audio_path,
             audio_blake3: "unused-in-assembly".to_owned(),
             frames: declared_frames,

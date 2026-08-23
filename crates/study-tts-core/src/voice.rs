@@ -1,14 +1,13 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::digest::is_blake3_hex;
+
 /// Schema version this module accepts for `profile.json` and `consent.json`.
 ///
 /// Provisional pending the versioned JSON Schemas of E1-S1; the on-disk layout is ADR-0001
 /// §12.1 (`data/voices/<id>/{profile.json, reference.wav, conditionals.pt, consent.json}`).
 const VOICE_SCHEMA_VERSION: &str = "0.1-voice";
-
-/// Length of a BLAKE3 digest rendered as lowercase hexadecimal.
-const BLAKE3_HEX_LENGTH: usize = 64;
 
 /// Consent status recorded for a voice reference.
 ///
@@ -338,11 +337,7 @@ fn require(field: &'static str, value: &str) -> Result<(), VoiceError> {
 /// what the runtime compares it against byte for byte.
 fn require_blake3_hex(field: &'static str, value: &str) -> Result<(), VoiceError> {
     require(field, value)?;
-    let well_formed = value.len() == BLAKE3_HEX_LENGTH
-        && value
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
-    if !well_formed {
+    if !is_blake3_hex(value) {
         return Err(VoiceError::MalformedChecksum {
             field,
             value: value.to_owned(),
