@@ -21,7 +21,9 @@ unsafe_code = "forbid"
 unused_qualifications = "warn"
 
 # Backs the crates/AGENTS.md rule requiring a doc comment on every public
-# item. Not yet enabled: 134 public items lack docs as of 2026-08-23.
+# item. Tracked exception: 129 public items lack docs as of 2026-08-23.
+# Owner: Ross Todd (engineering owner). Deadline: enable by the G1
+# interface freeze, before the public API is frozen undocumented.
 # missing_docs = "warn"
 
 [workspace.lints.clippy]

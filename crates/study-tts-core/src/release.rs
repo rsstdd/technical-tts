@@ -32,6 +32,7 @@ pub enum ReleaseStatus {
     ProductionRelease,
 }
 
+/// Why a claim was refused as a production release.
 #[derive(Debug, Error)]
 pub enum ReleaseError {
     #[error("a private preview cannot report production release")]
@@ -48,6 +49,7 @@ pub struct ReleaseClaim {
 }
 
 impl ReleaseClaim {
+    /// The claim every build starts as: rendered, with no gate evidence.
     pub fn private_preview() -> Self {
         Self {
             status: ReleaseStatus::PrivatePreview,
@@ -55,6 +57,7 @@ impl ReleaseClaim {
         }
     }
 
+    /// A production-release claim backed by the given gate evidence.
     pub fn production_release(satisfied_gates: Vec<String>) -> Self {
         Self {
             status: ReleaseStatus::ProductionRelease,
@@ -62,6 +65,7 @@ impl ReleaseClaim {
         }
     }
 
+    /// The profile this claim asserts.
     pub fn status(&self) -> ReleaseStatus {
         self.status
     }
