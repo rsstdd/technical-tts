@@ -9,8 +9,10 @@
 ## Acceptance criterion
 
 Stated before the result, per `evidence/README.md`: every capability row in
-`docs/governance/MILESTONE-CAPABILITY-MATRIX.md` names exactly one delivery owner, exactly one
-approver, and a first required gate, and every role name resolves to a real person.
+`docs/governance/MILESTONE-CAPABILITY-MATRIX.md` names exactly one delivery owner, a named
+approver or enumerated joint approver set, and a first required gate, and every role name
+resolves to a real person. A joint approver set means every enumerated role must approve; it
+never dilutes to any-one-of.
 
 ## Provenance
 
@@ -29,13 +31,19 @@ Reviewed every capability row of the matrix against the criterion. Row count con
 |---|---|---|---|
 | Capability rows reviewed | All | 30 of 30 | Pass |
 | Rows with exactly one delivery owner | 30 | 30 | Pass |
-| Rows with exactly one approver | 30 | 30 | Pass |
+| Rows with a named approver or enumerated joint approver set | 30 | 30 (25 single-role; 5 joint sets requiring approval from every enumerated role) | Pass |
 | Rows with a first required gate | 30 | 30 | Pass |
 | Role names resolving to a real person | All | All except the listener representative resolve to Ross Todd under the matrix's solo-development mapping; the listener representative is deliberately outside that mapping and tracked to assignment by OQ-10 | Pass |
 
 Rows naming compound owners (for example "CLI/core owners") name one accountable role set that
 resolves to the same single person under the solo-development mapping; accountability is not
-split. Independent-listener and rightsholder decisions remain separate roles even while
+split. The five joint approver sets are "Rightsholder/project owner", "Human-review and project
+owners", "Engineering/security owner", "Listener representative/project owner", and "Required
+role signatories"; each denotes joint sign-off by every role it enumerates. "Required role
+signatories" (production authorization, E6-S4, M3) is enumerated by the review table of
+`docs/templates/RELEASE-CHECKLIST-TEMPLATE.md` — engineering owner, project owner, rights
+approver, and listener representative — consistent with the sign-off matrix in
+`docs/governance/PROJECT-EXECUTION-CHARTER.md`. Independent-listener and rightsholder decisions remain separate roles even while
 coordinated by the project owner, as the matrix records: Ross Todd does not hold the listener
 representative role, which is unassigned as of this record. Its assignment is an open question
 (OQ-10, deadline before G1 listening approval), and the solo-review blind spot it mitigates is
