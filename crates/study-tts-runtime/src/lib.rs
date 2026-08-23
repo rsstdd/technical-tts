@@ -5,6 +5,7 @@ mod manifest;
 mod pipeline;
 mod synthesis;
 mod tools;
+mod voice_gate;
 
 pub use pipeline::{
     BuildRequest, BuildResult, build_preview, publish, validate_encoded_output,
@@ -26,6 +27,57 @@ pub enum BuildError {
 
     #[error(transparent)]
     Lesson(#[from] study_tts_core::LessonError),
+
+    #[error(transparent)]
+    Voice(#[from] study_tts_core::VoiceError),
+
+    // Remedy routing per `docs/governance/ROUTING-TABLES.md` ("Voice consent/checksum mismatch
+    // → Refuse profile load → Project owner → Blocked"): the owner resolves the record; the
+    // profile is never deleted or repaired automatically.
+    //
+    // `profile.json` and `consent.json` share this variant because they are the same class of
+    // refusal — a record the policy requires is absent — and an absent profile record deserves
+    // the same remedy-bearing message as an absent consent record, not a bare IO error.
+    #[error(
+        "voice profile at `{profile_dir}` is refused: required record `{record}` is missing; \
+         profile load fails closed and the project owner must supply the record before use"
+    )]
+    MissingVoiceRecord {
+        profile_dir: PathBuf,
+        record: &'static str,
+    },
+
+    #[error(
+        "voice profile at `{profile_dir}` is refused: `{path}` does not match its recorded \
+         checksum; do not use this profile until the project owner re-verifies it against its \
+         rights record"
+    )]
+    VoiceChecksumMismatch { profile_dir: PathBuf, path: PathBuf },
+
+    #[error(
+        "production release is refused: source `{source_id}` has unresolved rights \
+         classification `{classification}`; the project owner must resolve the classification in \
+         its rights record before publication"
+    )]
+    UnresolvedContentRights {
+        source_id: String,
+        classification: String,
+    },
+
+    /// A manifest's rights section does not parse — an unknown classification, a missing field,
+    /// or the wrong shape.
+    ///
+    /// Distinct from the `Json` catch-all below: on the publication path the section is known
+    /// and worth naming, and an operator reading "JSON operation failed" would not learn that
+    /// their manifest declared a classification outside the recorded vocabulary.
+    #[error(
+        "production release is refused: the `{section}` manifest section is not a valid rights \
+         declaration ({source}); the project owner must correct the manifest before publication"
+    )]
+    InvalidRightsDeclaration {
+        section: &'static str,
+        source: serde_json::Error,
+    },
 
     #[error("filesystem operation failed for `{path}`: {source}")]
     FileSystem { path: PathBuf, source: io::Error },

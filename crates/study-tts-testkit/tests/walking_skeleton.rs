@@ -22,6 +22,7 @@ fn build_request(lesson_path: &Path, workspace: &Path) -> BuildRequest {
         workspace: workspace.to_path_buf(),
         ffmpeg_executable: "ffmpeg".into(),
         ffprobe_executable: "ffprobe".into(),
+        voice_profile_dir: None,
     }
 }
 

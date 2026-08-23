@@ -3,10 +3,15 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+use serde::Deserialize;
 use serde_json::Value;
-use study_tts_core::{Lesson, RenderPlan};
+use study_tts_core::{
+    Lesson, RenderPlan, RightsDecision, SourceRightsDeclaration, VoiceError, VoiceUse,
+};
 
-use crate::{BuildError, SegmentSynthesizer, assembly, cache, export, io_error, manifest, tools};
+use crate::{
+    BuildError, SegmentSynthesizer, assembly, cache, export, io_error, manifest, tools, voice_gate,
+};
 
 #[derive(Clone, Debug)]
 pub struct BuildRequest {
@@ -14,6 +19,10 @@ pub struct BuildRequest {
     pub workspace: PathBuf,
     pub ffmpeg_executable: PathBuf,
     pub ffprobe_executable: PathBuf,
+    /// Voice profile directory in the ADR-0001 §12.1 layout, gated fail-closed before any tool
+    /// or synthesis work. `None` is valid only while the deterministic skeleton worker is the
+    /// backend; the real-worker story (E0-S3/E1) makes a profile mandatory.
+    pub voice_profile_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -33,6 +42,14 @@ pub fn build_preview(
     })?;
     let lesson = Lesson::from_json(&lesson_bytes)?;
     let plan = RenderPlan::for_lesson(&lesson, synthesizer.identity());
+
+    // Rights precede work: the profile gate runs before tool preflight and synthesis, so a
+    // refused voice performs no observable work. The loaded identity is unused by the skeleton
+    // worker; the real-worker story consumes it and records the ADR-0001 §15.3 per-build audit
+    // event.
+    if let Some(dir) = &request.voice_profile_dir {
+        let _profile = voice_gate::load_profile(dir, VoiceUse::PrivateSynthesis)?;
+    }
 
     let ffmpeg = tools::inspect("FFmpeg", &request.ffmpeg_executable)?;
     let ffprobe = tools::inspect("ffprobe", &request.ffprobe_executable)?;
@@ -153,7 +170,39 @@ pub fn publish(_preview: &BuildResult) -> Result<(), BuildError> {
     })
 }
 
+/// A voice profile a production manifest declares it used.
+///
+/// Provisional shape pending the E1-S1 versioned JSON Schemas, like `content_rights` below.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeclaredVoiceProfile {
+    profile_id: String,
+    approval: RightsDecision,
+    #[expect(
+        dead_code,
+        reason = "read for shape validation; consumed by release evidence"
+    )]
+    rights_record_id: String,
+}
+
+/// Parses one rights section of a production manifest, naming the section when it does not parse.
+///
+/// Borrows the subtree rather than cloning it: `&Value` is itself a deserializer.
+fn declare_section<'de, T: Deserialize<'de>>(
+    section: &'static str,
+    value: &'de Value,
+) -> Result<Vec<T>, BuildError> {
+    Vec::<T>::deserialize(value)
+        .map_err(|source| BuildError::InvalidRightsDeclaration { section, source })
+}
+
 /// Always refuses publication until the production manifest and release gates exist.
+///
+/// The rights preconditions run first, so an unresolved content classification or an unapproved
+/// voice profile is reported as itself rather than as the generic gate refusal. They enforce
+/// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` ("Unresolved external distribution blocks
+/// publish") over provisional `content_rights` and `voice_profiles` manifest sections that the
+/// E1-S1 schema story will version.
 pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
     let manifest: Value = serde_json::from_slice(bytes)?;
     let version = manifest["schema_version"]
@@ -162,6 +211,34 @@ pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
         .to_owned();
     if version != "1.0" {
         return Err(BuildError::UnsupportedProductionManifest { version });
+    }
+
+    let Some(declared) = manifest.get("content_rights") else {
+        return Err(BuildError::PublicationRefused {
+            reason: "production manifest declares no content_rights classification for its \
+                     sources"
+                .to_owned(),
+        });
+    };
+    let declared = declare_section::<SourceRightsDeclaration>("content_rights", declared)?;
+    for source in &declared {
+        if !source.classification.permits_production_release() {
+            return Err(BuildError::UnresolvedContentRights {
+                source_id: source.source_id.clone(),
+                classification: source.classification.as_str().to_owned(),
+            });
+        }
+    }
+
+    if let Some(profiles) = manifest.get("voice_profiles") {
+        for profile in declare_section::<DeclaredVoiceProfile>("voice_profiles", profiles)? {
+            if profile.approval != RightsDecision::Approved {
+                return Err(BuildError::Voice(VoiceError::ProfileNotApproved {
+                    profile_id: profile.profile_id,
+                    decision: profile.approval.as_str().to_owned(),
+                }));
+            }
+        }
     }
 
     Err(BuildError::PublicationRefused {
