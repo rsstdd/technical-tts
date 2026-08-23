@@ -13,9 +13,9 @@ use crate::{
     BuildError, SegmentSynthesizer, assembly, cache, export, io_error, manifest, tools, voice_gate,
 };
 
-#[derive(Clone, Debug)]
 /// Everything one preview build needs, named explicitly rather than read from
 /// ambient state.
+#[derive(Clone, Debug)]
 pub struct BuildRequest {
     /// The lesson document to build.
     pub lesson_path: PathBuf,
@@ -32,8 +32,8 @@ pub struct BuildRequest {
     pub voice_profile_dir: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug)]
 /// What a successful preview build wrote.
+#[derive(Clone, Debug)]
 pub struct BuildResult {
     /// The assembled canonical-format master.
     pub master_wav: PathBuf,

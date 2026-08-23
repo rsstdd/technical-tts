@@ -38,10 +38,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Check Rust line widths
-        # rustfmt does not apply max_width to comment text, and wrap_comments is
-        # nightly-only, so the AGENTS.md line and comment limits need their own check.
-        run: python3 scripts/check-rust-line-limits.py
+      - name: Check Rust conventions
+        # rustfmt does not apply max_width to comment text, wrap_comments is
+        # nightly-only, and it preserves doc/attribute order, so the AGENTS.md
+        # line, comment, and doc-order rules need their own check.
+        run: python3 scripts/check-rust-conventions.py
 
       - name: Check Cargo.toml formatting
         run: |

@@ -8,10 +8,10 @@ use thiserror::Error;
 /// suffixes later stories append.
 const MAX_IDENTIFIER_LENGTH: usize = 64;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 /// One authored lesson, as it is written on disk and before any planning has
 /// happened.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Lesson {
     /// Schema this document claims; an unrecognized version is refused rather than
     /// guessed at.
@@ -25,10 +25,10 @@ pub struct Lesson {
     pub segments: Vec<LessonSegment>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 /// One continuously spoken passage, the unit that is synthesized, cached, and
 /// retaken.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LessonSegment {
     /// Identity of the segment within its lesson, unique and portable as a path
     /// component.
