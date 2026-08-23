@@ -8,20 +8,24 @@ use crate::{
     digest::{BLAKE3_HEX_LENGTH, is_blake3_hex},
 };
 
-/// The one sample rate this project renders, caches, assembles, and exports at, in hertz.
+/// The one sample rate this project renders, caches, assembles, and exports at,
+/// in hertz.
 ///
-/// Fixed rather than configurable so a cached segment, an assembled master, and an export can
-/// never disagree about what a frame is.
+/// Fixed rather than configurable so a cached segment, an assembled master, and
+/// an export can never disagree about what a frame is.
 pub const CANONICAL_SAMPLE_RATE: u32 = 24_000;
 
-/// The synthesis identity of one segment: BLAKE3 over the canonical serialization of every
-/// speech-affecting input, rendered as lowercase hexadecimal (ADR-0001 §12.5).
+/// The synthesis identity of one segment: BLAKE3 over the canonical
+/// serialization of every speech-affecting input, rendered as lowercase
+/// hexadecimal (ADR-0001 §12.5).
 ///
-/// A value object rather than a `String` because the key is not only compared, it is *used as a
-/// path component*: the cache shards its entries on the key's leading characters. Slicing a bare
-/// string there panics on a key shorter than the shard width and on one whose byte boundary falls
-/// inside a multi-byte character, and `PlannedSegment` deserializes, so any JSON string could
-/// reach that slice. Parsing here makes the shard slice total instead of merely usually correct.
+/// A value object rather than a `String` because the key is not only compared,
+/// it is *used as a path component*: the cache shards its entries on the key's
+/// leading characters. Slicing a bare string there panics on a key shorter than
+/// the shard width and on one whose byte boundary falls inside a multi-byte
+/// character, and `PlannedSegment` deserializes, so any JSON string could reach
+/// that slice. Parsing here makes the shard slice total instead of merely
+/// usually correct.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct CacheKey(String);
@@ -29,9 +33,9 @@ pub struct CacheKey(String);
 impl CacheKey {
     /// Characters in a rendered key.
     ///
-    /// Every one is ASCII, so any prefix up to this width is in bounds and on a character
-    /// boundary. That is the guarantee a prefix-sharded cache layout rests on, so it is published
-    /// rather than left for a caller to rediscover.
+    /// Every one is ASCII, so any prefix up to this width is in bounds and on a
+    /// character boundary. That is the guarantee a prefix-sharded cache layout
+    /// rests on, so it is published rather than left for a caller to rediscover.
     pub const LENGTH: usize = BLAKE3_HEX_LENGTH;
 
     /// The key as it is written to a plan, a manifest, and a cache artifact.
@@ -40,10 +44,12 @@ impl CacheKey {
     }
 }
 
-/// Produces a key without validation, because a fresh digest cannot fail the check.
+/// Produces a key without validation, because a fresh digest cannot fail the
+/// check.
 ///
-/// This is the only infallible constructor, and it takes the hash itself rather than a string, so
-/// the definition in ADR-0001 §12.5 is the one route into the type that no caller can shortcut.
+/// This is the only infallible constructor, and it takes the hash itself rather
+/// than a string, so the definition in ADR-0001 §12.5 is the one route into the
+/// type that no caller can shortcut.
 impl From<blake3::Hash> for CacheKey {
     fn from(hash: blake3::Hash) -> Self {
         Self(hash.to_hex().to_string())
@@ -81,8 +87,9 @@ impl fmt::Display for CacheKey {
     }
 }
 
-/// Remedy routing: a plan or manifest is regenerated from its lesson, never hand-corrected, so
-/// the message names rebuilding rather than editing the recorded value.
+/// Remedy routing: a plan or manifest is regenerated from its lesson, never
+/// hand-corrected, so the message names rebuilding rather than editing the
+/// recorded value.
 #[derive(Debug, Error)]
 #[error(
     "cache key `{0}` is not a BLAKE3 digest in lowercase hexadecimal; ADR-0001 §12.5 \
@@ -92,11 +99,13 @@ impl fmt::Display for CacheKey {
 pub struct MalformedCacheKey(String);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-/// A lesson resolved into exactly what will be synthesized, derived deterministically from it.
+/// A lesson resolved into exactly what will be synthesized, derived
+/// deterministically from it.
 pub struct RenderPlan {
     /// The lesson this plan was derived from.
     pub lesson_id: String,
-    /// Identity of the plan as a whole, so a rebuild can be recognized as the same plan.
+    /// Identity of the plan as a whole, so a rebuild can be recognized as the same
+    /// plan.
     pub plan_hash: String,
     /// The segments to synthesize, in speaking order.
     pub segments: Vec<PlannedSegment>,
@@ -105,8 +114,9 @@ pub struct RenderPlan {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 /// One segment with its synthesis identity resolved.
 ///
-/// Carries only speech-affecting fields plus the identity derived from them; display-only lesson
-/// metadata is deliberately absent, because anything here would change the cache key.
+/// Carries only speech-affecting fields plus the identity derived from them;
+/// display-only lesson metadata is deliberately absent, because anything here
+/// would change the cache key.
 pub struct PlannedSegment {
     /// Identity of the segment within its lesson.
     pub id: String,
@@ -124,9 +134,10 @@ pub struct PlannedSegment {
 
 /// Every speech-affecting input, named field by field.
 ///
-/// A derived hash over `LessonSegment` would silently absorb each future field and let the
-/// exclusion property regress without a compile error, so the list is explicit. `identity_version`
-/// is the single lever for invalidating every cache entry when this definition changes.
+/// A derived hash over `LessonSegment` would silently absorb each future field
+/// and let the exclusion property regress without a compile error, so the list
+/// is explicit. `identity_version` is the single lever for invalidating every
+/// cache entry when this definition changes.
 #[derive(Serialize)]
 struct SynthesisIdentity<'a> {
     identity_version: &'static str,
@@ -142,8 +153,9 @@ struct SynthesisIdentity<'a> {
 impl RenderPlan {
     /// Derives the plan for a lesson under a given synthesizer identity.
     ///
-    /// Deterministic: the same lesson and the same synthesizer always produce the same plan hash
-    /// and the same cache keys, which is what makes a rebuild reuse its cache.
+    /// Deterministic: the same lesson and the same synthesizer always produce the
+    /// same plan hash and the same cache keys, which is what makes a rebuild reuse
+    /// its cache.
     pub fn for_lesson(lesson: &Lesson, synthesizer_identity: &str) -> Self {
         let segments = lesson
             .segments
@@ -203,10 +215,11 @@ mod tests {
 
     #[test]
     fn t1_e0_cache_keys_that_cannot_name_a_shard_directory_are_rejected() {
-        // The cache shards its entries on the key's leading characters. While this field was a
-        // `String`, the first two of these panicked in that slice — `""` and `"a"` are out of
-        // bounds, and `日` puts byte index 2 inside a character — and the rest reached the
-        // filesystem as directory names this program never produced.
+        // The cache shards its entries on the key's leading characters. While this
+        // field was a `String`, the first two of these panicked in that slice — `""`
+        // and `"a"` are out of bounds, and `日` puts byte index 2 inside a character —
+        // and the rest reached the filesystem as directory names this program never
+        // produced.
         let too_short = "a".repeat(CacheKey::LENGTH - 1);
         let too_long = "a".repeat(CacheKey::LENGTH + 1);
         let uppercase = "A".repeat(CacheKey::LENGTH);
@@ -225,8 +238,8 @@ mod tests {
                 malformed.parse::<CacheKey>().is_err(),
                 "`{malformed}` must not parse as a cache key"
             );
-            // The parse boundary is the one that matters: `PlannedSegment` deserializes, so a
-            // plan on disk is how a malformed key would otherwise reach the shard slice.
+            // The parse boundary is the one that matters: `PlannedSegment` deserializes, so
+            // a plan on disk is how a malformed key would otherwise reach the shard slice.
             assert!(
                 serde_json::from_value::<PlannedSegment>(planned_segment(malformed)).is_err(),
                 "a planned segment carrying `{malformed}` must not deserialize"
@@ -243,9 +256,9 @@ mod tests {
         let plan = RenderPlan::for_lesson(&lesson, "fake-tone-v1");
         let cache_key = &plan.segments[0].cache_key;
 
-        // Plans, manifests, and cache artifacts already on disk hold the key as a bare JSON
-        // string. Wrapping it in a value object must not change that, or every existing artifact
-        // becomes unreadable.
+        // Plans, manifests, and cache artifacts already on disk hold the key as a bare
+        // JSON string. Wrapping it in a value object must not change that, or every
+        // existing artifact becomes unreadable.
         let recorded = serde_json::to_value(cache_key).expect("a cache key serializes");
         assert_eq!(
             recorded,

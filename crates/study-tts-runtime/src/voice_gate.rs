@@ -6,14 +6,16 @@ use crate::{BuildError, cache};
 
 /// Loads a voice profile directory fail-closed for `requested` use.
 ///
-/// Enforces `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` ("Profile load fails closed") over
-/// the ADR-0001 §12.1 layout: `profile.json`, `consent.json`, `reference.wav`,
-/// `conditionals.pt`. A missing record, non-granted consent, non-approved rights decision, a use
-/// outside the recorded consent scope, or a checksum mismatch refuses the profile before any
-/// tool or synthesis work runs.
+/// Enforces `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` ("Profile load
+/// fails closed") over the ADR-0001 §12.1 layout: `profile.json`,
+/// `consent.json`, `reference.wav`, `conditionals.pt`. A missing record,
+/// non-granted consent, non-approved rights decision, a use outside the
+/// recorded consent scope, or a checksum mismatch refuses the profile before
+/// any tool or synthesis work runs.
 ///
-/// Returns the loaded identity. The skeleton worker discards it; the real-worker story consumes
-/// it and adds the per-build audit event required by ADR-0001 §15.3.
+/// Returns the loaded identity. The skeleton worker discards it; the
+/// real-worker story consumes it and adds the per-build audit event required by
+/// ADR-0001 §15.3.
 pub(crate) fn load_profile(dir: &Path, requested: VoiceUse) -> Result<VoiceProfile, BuildError> {
     let profile_bytes = read_record(dir, "profile.json")?;
     let profile = VoiceProfile::from_json(&profile_bytes).map_err(BuildError::Voice)?;
@@ -29,8 +31,9 @@ pub(crate) fn load_profile(dir: &Path, requested: VoiceUse) -> Result<VoiceProfi
     Ok(profile)
 }
 
-/// Reads a required record, distinguishing "the policy requires this and it is absent" from an
-/// ordinary IO failure, because the two have different remedies.
+/// Reads a required record, distinguishing "the policy requires this and it is
+/// absent" from an ordinary IO failure, because the two have different
+/// remedies.
 fn read_record(dir: &Path, record: &'static str) -> Result<Vec<u8>, BuildError> {
     let path = dir.join(record);
     match fs::read(&path) {

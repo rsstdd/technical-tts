@@ -3,7 +3,8 @@ use std::path::Path;
 use study_tts_core::PlannedSegment;
 use thiserror::Error;
 
-/// What a synthesizer says it wrote, checked against the file it actually wrote.
+/// What a synthesizer says it wrote, checked against the file it actually
+/// wrote.
 #[derive(Clone, Debug)]
 pub struct SynthesisReport {
     /// Sample rate the worker claims for the file, in hertz.
@@ -18,7 +19,8 @@ pub struct SynthesisReport {
 #[derive(Debug, Error)]
 #[error("synthesis failed: {message}")]
 pub struct SynthesisError {
-    /// What the synthesizer reported; opaque here because the worker owns the vocabulary.
+    /// What the synthesizer reported; opaque here because the worker owns the
+    /// vocabulary.
     pub message: String,
 }
 

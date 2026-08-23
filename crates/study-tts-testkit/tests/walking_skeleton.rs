@@ -1,4 +1,5 @@
-//! Tier 3 and 4 tests for the E0-S0 walking skeleton: real filesystem, fake worker, real FFmpeg.
+//! Tier 3 and 4 tests for the E0-S0 walking skeleton: real filesystem, fake
+//! worker, real FFmpeg.
 
 use std::path::Path;
 
@@ -152,8 +153,9 @@ fn t4_e0_cache_hit_avoids_synthesis_and_is_byte_identical() {
         2,
         "cache hits must avoid synthesis"
     );
-    // This byte comparison applies only to the deterministic fake synthesizer and exact Rust
-    // assembly. It does not claim byte-identical Chatterbox output from repeated synthesis.
+    // This byte comparison applies only to the deterministic fake synthesizer and
+    // exact Rust assembly. It does not claim byte-identical Chatterbox output from
+    // repeated synthesis.
     assert_eq!(
         std::fs::read(first.master_wav).expect("read first master"),
         std::fs::read(second.master_wav).expect("read second master")
@@ -171,8 +173,8 @@ fn t4_e0_cache_identity_proves_hits_and_speech_affecting_misses() {
     )
     .expect("cache identity fixture should build");
 
-    // seg-a synthesizes; seg-b and seg-e hit it; seg-c, seg-d, and seg-f each miss for a
-    // different speech-affecting reason.
+    // seg-a synthesizes; seg-b and seg-e hit it; seg-c, seg-d, and seg-f each miss
+    // for a different speech-affecting reason.
     assert_eq!(
         worker.synthesis_count(),
         4,
@@ -208,8 +210,9 @@ fn t4_e0_cache_identity_proves_hits_and_speech_affecting_misses() {
         "speaker must be included in synthesis identity"
     );
 
-    // Order is meaningful while synthesis is sequential. E5-S2 introduces the configurable worker
-    // pool, after which this must become a set comparison rather than a sequence comparison.
+    // Order is meaningful while synthesis is sequential. E5-S2 introduces the
+    // configurable worker pool, after which this must become a set comparison
+    // rather than a sequence comparison.
     let submitted = worker.synthesized_texts();
     assert_eq!(
         submitted,
@@ -263,8 +266,8 @@ fn t4_e0_ffprobe_rejects_non_aac_input() {
     validate_encoded_output(Path::new("ffprobe"), &result.m4a)
         .expect("a mono AAC export must be accepted");
 
-    // The PCM master is a valid audio file that is not a valid encoded output, which is the shape
-    // an encoder failing open would produce.
+    // The PCM master is a valid audio file that is not a valid encoded output,
+    // which is the shape an encoder failing open would produce.
     let error = validate_encoded_output(Path::new("ffprobe"), &result.master_wav)
         .expect_err("a PCM master must not pass encoded-output validation");
     assert!(matches!(error, BuildError::InvalidEncodedOutput(_)));
@@ -397,8 +400,8 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         .expect("segment cache key")
         .parse()
         .expect("the manifest records a well-formed cache key");
-    // The sharding scheme is owned by `cache::entry_dir`; changing it must not require editing
-    // this test.
+    // The sharding scheme is owned by `cache::entry_dir`; changing it must not
+    // require editing this test.
     let entry_dir = cache_entry_dir(&workspace.path().join("cache"), &cache_key);
     let artifact_path = entry_dir.join("artifact.json");
     let original: Value =
@@ -426,8 +429,9 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         )
         .expect_err("corrupt cache metadata must be rejected");
 
-        // Every one of these mutations makes the artifact describe audio this build cannot
-        // consume, so they must all arrive as that fault rather than merely as some cache error.
+        // Every one of these mutations makes the artifact describe audio this build
+        // cannot consume, so they must all arrive as that fault rather than merely as
+        // some cache error.
         let BuildError::UnusableCacheEntry { fault, .. } = &error else {
             panic!("`{field}` mutation produced the wrong variant: `{error}`");
         };
@@ -436,7 +440,8 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
             "`{field}` mutation produced the wrong fault: `{fault}`"
         );
         let message = error.to_string();
-        // A poisoned entry fails every later build, so the message must name what to delete.
+        // A poisoned entry fails every later build, so the message must name what to
+        // delete.
         assert!(
             message.contains(&entry_dir.display().to_string()),
             "`{field}` mutation did not name the entry directory: `{message}`"
@@ -459,8 +464,8 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         &worker,
     )
     .expect_err("an unknown artifact field must be rejected");
-    // `deny_unknown_fields` rejects this before any field is read, so it is a parse failure and
-    // not an incompatible-metadata one.
+    // `deny_unknown_fields` rejects this before any field is read, so it is a parse
+    // failure and not an incompatible-metadata one.
     let BuildError::UnusableCacheEntry { fault, .. } = &error else {
         panic!("an unknown artifact field produced the wrong variant: `{error}`");
     };
@@ -497,8 +502,8 @@ fn t3_e0_registered_fixture_checksums_match_test_data_manifest() {
             .expect("read test-data manifest");
     let lessons = repository_root.join("fixtures/lessons");
 
-    // Every committed fixture is discovered rather than listed, so a new fixture cannot be added
-    // without a manifest row.
+    // Every committed fixture is discovered rather than listed, so a new fixture
+    // cannot be added without a manifest row.
     let mut checked = 0_usize;
     for entry in std::fs::read_dir(&lessons).expect("read lesson fixtures") {
         let entry = entry.expect("read lesson fixture entry");

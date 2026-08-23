@@ -17,17 +17,20 @@ const CANONICAL_SAMPLE_FORMAT: &str = "f32le";
 
 /// Bytes held in memory at once while hashing a file.
 ///
-/// A 60-minute lesson master is roughly 345 MB of canonical 24 kHz mono float PCM, and
-/// `manifest::write` hashes both it and the encoded export. Reading a file whole made peak memory
-/// scale with lesson length, which ADR-0001 §17.14 rules out for the long-form soak test: "No
-/// unbounded resource growth is acceptable."
+/// A 60-minute lesson master is roughly 345 MB of canonical 24 kHz mono float
+/// PCM, and `manifest::write` hashes both it and the encoded export. Reading a
+/// file whole made peak memory scale with lesson length, which ADR-0001 §17.14
+/// rules out for the long-form soak test: "No unbounded resource growth is
+/// acceptable."
 const HASH_BUFFER_BYTES: usize = 64 * 1024;
 
-/// Characters of the cache key that name the shard directory grouping entries under `segments/`.
+/// Characters of the cache key that name the shard directory grouping entries
+/// under `segments/`.
 ///
-/// Kept below the key length so the prefix slice in `entry_dir` is in bounds, and asserted here
-/// rather than trusted: `CacheKey` guarantees the length, and this is where that guarantee stops
-/// being a comment and becomes a compile error.
+/// Kept below the key length so the prefix slice in `entry_dir` is in bounds,
+/// and asserted here rather than trusted: `CacheKey` guarantees the length, and
+/// this is where that guarantee stops being a comment and becomes a compile
+/// error.
 const CACHE_SHARD_WIDTH: usize = 2;
 const _: () = assert!(CACHE_SHARD_WIDTH <= CacheKey::LENGTH);
 
@@ -54,11 +57,13 @@ struct CacheArtifact {
     frames: u32,
 }
 
-/// Directory holding one cache entry. Shared with tests so the sharding scheme is defined once.
+/// Directory holding one cache entry. Shared with tests so the sharding scheme
+/// is defined once.
 ///
-/// Total for every `CacheKey`: the type guarantees `CacheKey::LENGTH` ASCII characters, so the
-/// shard prefix is in bounds and on a character boundary. Taking a `&str` here is what made this
-/// a panic reachable from a deserialized plan.
+/// Total for every `CacheKey`: the type guarantees `CacheKey::LENGTH` ASCII
+/// characters, so the shard prefix is in bounds and on a character boundary.
+/// Taking a `&str` here is what made this a panic reachable from a deserialized
+/// plan.
 pub(crate) fn entry_dir(cache_root: &Path, cache_key: &CacheKey) -> PathBuf {
     let key = cache_key.as_str();
     cache_root
@@ -69,8 +74,9 @@ pub(crate) fn entry_dir(cache_root: &Path, cache_key: &CacheKey) -> PathBuf {
 
 /// Names the entry a fault was found in.
 ///
-/// Shared with `assembly`, which detects a truncated entry while reading it, so both report the
-/// same violated invariant with the same remedy rather than two messages that happen to agree.
+/// Shared with `assembly`, which detects a truncated entry while reading it, so
+/// both report the same violated invariant with the same remedy rather than two
+/// messages that happen to agree.
 pub(crate) fn rejected(entry_dir: &Path, segment_id: &str, fault: CacheEntryFault) -> BuildError {
     BuildError::UnusableCacheEntry {
         entry_dir: entry_dir.to_path_buf(),
@@ -88,16 +94,17 @@ pub(crate) fn resolve(
     let audio_path = entry_dir.join("audio.wav");
     let artifact_path = entry_dir.join("artifact.json");
 
-    // A partial entry is treated as a miss and re-synthesized. E2-S1 replaces this with explicit
-    // reconciliation between job state, cache artifacts, and outputs.
+    // A partial entry is treated as a miss and re-synthesized. E2-S1 replaces this
+    // with explicit reconciliation between job state, cache artifacts, and outputs.
     if audio_path.is_file() && artifact_path.is_file() {
         return load_validated(segment, &entry_dir, &audio_path, &artifact_path);
     }
 
     fs::create_dir_all(&entry_dir).map_err(|error| io_error(&entry_dir, error))?;
-    // The temporary file reserves a unique path inside the entry directory; the synthesizer
-    // replaces it with a new file at that path rather than writing through the handle. E1-S3
-    // hardens this with an explicit staging root and containment checks.
+    // The temporary file reserves a unique path inside the entry directory; the
+    // synthesizer replaces it with a new file at that path rather than writing
+    // through the handle. E1-S3 hardens this with an explicit staging root and
+    // containment checks.
     let staged = Builder::new()
         .prefix("audio-")
         .suffix(".wav")
@@ -106,8 +113,8 @@ pub(crate) fn resolve(
     let staged_path = staged.path().to_path_buf();
     let report = synthesizer.synthesize(segment, &staged_path)?;
 
-    // Freshly synthesized output carries no remedy: the staged file is discarded on drop and
-    // there is no published entry for the user to delete.
+    // Freshly synthesized output carries no remedy: the staged file is discarded on
+    // drop and there is no published entry for the user to delete.
     let frames = validate_wav(&staged_path).map_err(|fault| BuildError::UnusableAudio {
         path: staged_path.clone(),
         fault,
@@ -116,8 +123,8 @@ pub(crate) fn resolve(
         || report.channels != 1
         || report.frames != frames
     {
-        // The WAV itself passed validation, so its shape is canonical by construction; what
-        // disagrees is the worker's account of what it wrote.
+        // The WAV itself passed validation, so its shape is canonical by construction;
+        // what disagrees is the worker's account of what it wrote.
         return Err(BuildError::SynthesizerReportMismatch {
             segment_id: segment.id.clone(),
             reported_sample_rate: report.sample_rate,
@@ -177,10 +184,10 @@ fn load_validated(
 
     // Path 2: the recorded digest is not a digest at all.
     //
-    // Checked here rather than at the comparison below, because a malformed record that reaches
-    // the comparison is reported as a checksum *mismatch* — telling the operator their audio was
-    // tampered with when the artifact was what broke. `VoiceError::MalformedChecksum` draws the
-    // same distinction for voice records.
+    // Checked here rather than at the comparison below, because a malformed record
+    // that reaches the comparison is reported as a checksum *mismatch* — telling
+    // the operator their audio was tampered with when the artifact was what broke.
+    // `VoiceError::MalformedChecksum` draws the same distinction for voice records.
     if !is_blake3_hex(&artifact.audio_blake3) {
         return Err(rejected(
             entry_dir,
@@ -225,7 +232,8 @@ fn load_validated(
         ));
     }
 
-    // Path 5: the audio itself is unreadable, non-canonical, or does not match the artifact.
+    // Path 5: the audio itself is unreadable, non-canonical, or does not match the
+    // artifact.
     let frames =
         validate_wav(audio_path).map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?;
     let checksum = hash_file(audio_path)?;
@@ -261,16 +269,17 @@ fn load_validated(
     })
 }
 
-/// Hashes a file through a bounded buffer, so peak memory does not scale with the file.
+/// Hashes a file through a bounded buffer, so peak memory does not scale with
+/// the file.
 ///
-/// The digest is identical to hashing the whole file in one call, because BLAKE3 over a byte
-/// sequence does not depend on how that sequence is chunked. Entries and manifests recorded by
-/// earlier builds stay valid.
+/// The digest is identical to hashing the whole file in one call, because
+/// BLAKE3 over a byte sequence does not depend on how that sequence is chunked.
+/// Entries and manifests recorded by earlier builds stay valid.
 pub(crate) fn hash_file(path: &Path) -> Result<String, BuildError> {
     let mut file = fs::File::open(path).map_err(|error| io_error(path, error))?;
     let mut hasher = blake3::Hasher::new();
-    // Read straight into the hashing buffer rather than through a `BufReader`, which would hold a
-    // second buffer of its own to no purpose.
+    // Read straight into the hashing buffer rather than through a `BufReader`,
+    // which would hold a second buffer of its own to no purpose.
     let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
 
     loop {
@@ -286,8 +295,9 @@ pub(crate) fn hash_file(path: &Path) -> Result<String, BuildError> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-/// Validates one WAV, reporting *which* property failed and leaving the path and the remedy to
-/// the caller, which is the only one that knows whether the file is published or staged.
+/// Validates one WAV, reporting *which* property failed and leaving the path
+/// and the remedy to the caller, which is the only one that knows whether the
+/// file is published or staged.
 fn validate_wav(path: &Path) -> Result<u32, AudioFault> {
     let mut reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
@@ -363,8 +373,8 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    /// One rejection path: its label, the error it produced, the entry directory it must name,
-    /// and a predicate for the fault it must report.
+    /// One rejection path: its label, the error it produced, the entry directory it
+    /// must name, and a predicate for the fault it must report.
     type RejectionPath = (
         &'static str,
         BuildError,
@@ -374,8 +384,9 @@ mod tests {
 
     /// A well-formed key that still reads as the label the test chose.
     ///
-    /// Right-padded rather than written out, so the shard the entry lands in stays visible in the
-    /// label. `CacheKey` accepts nothing shorter, which is the whole point of the type.
+    /// Right-padded rather than written out, so the shard the entry lands in stays
+    /// visible in the label. `CacheKey` accepts nothing shorter, which is the whole
+    /// point of the type.
     fn key(label: &str) -> CacheKey {
         format!("{label:0<width$}", width = CacheKey::LENGTH)
             .parse()
@@ -427,7 +438,8 @@ mod tests {
         (dir, audio, artifact)
     }
 
-    /// Rewrites one field of a published artifact, leaving the audio it describes untouched.
+    /// Rewrites one field of a published artifact, leaving the audio it describes
+    /// untouched.
     fn overwrite_field(artifact: &Path, field: &str, value: serde_json::Value) {
         let mut record: serde_json::Value =
             serde_json::from_slice(&fs::read(artifact).expect("read artifact")).expect("parse");
@@ -443,11 +455,11 @@ mod tests {
     fn t1_e0_hashing_a_file_does_not_depend_on_the_read_buffer() {
         let workspace = TempDir::new().expect("create cache workspace");
 
-        // The sizes that a chunked read gets wrong: nothing to read, a single partial buffer, an
-        // exact multiple of the buffer, and a multiple with a short final read. A loop that
-        // dropped the last partial read or rehashed a boundary would still produce *a* digest,
-        // and every recorded checksum in every cache entry and manifest would silently stop
-        // matching its file.
+        // The sizes that a chunked read gets wrong: nothing to read, a single partial
+        // buffer, an exact multiple of the buffer, and a multiple with a short final
+        // read. A loop that dropped the last partial read or rehashed a boundary would
+        // still produce *a* digest, and every recorded checksum in every cache entry
+        // and manifest would silently stop matching its file.
         for length in [
             0,
             1,
@@ -458,7 +470,8 @@ mod tests {
             HASH_BUFFER_BYTES * 2 + 7,
         ] {
             // Position-dependent bytes, so a buffer reused without truncating to the filled
-            // length changes the digest rather than repeating a value that happens to match.
+            // length changes the digest rather than repeating a value that happens to
+            // match.
             let contents: Vec<u8> = (0..length).map(|index| (index % 251) as u8).collect();
             let path = workspace.path().join(format!("{length}.bin"));
             fs::write(&path, &contents).expect("write hash fixture");
@@ -532,8 +545,8 @@ mod tests {
         let unreadable = load_validated(&planned("ff6666"), &dir5, &audio5, &artifact5)
             .expect_err("unreadable audio must be rejected");
 
-        // Each path carries the fault it is supposed to report, so a rejection that reaches the
-        // right variant for the wrong reason still fails here.
+        // Each path carries the fault it is supposed to report, so a rejection that
+        // reaches the right variant for the wrong reason still fails here.
         let paths: [RejectionPath; 6] = [
             ("unparseable artifact", unparseable, dir, |fault| {
                 matches!(fault, CacheEntryFault::UnparseableArtifact { .. })
@@ -586,15 +599,16 @@ mod tests {
         }
     }
 
-    /// The audio is left intact in every case here, so a rejection that speaks of a mismatch
-    /// would be accusing the wrong file. Uppercase is the trap worth naming: it is a digest of
-    /// the right audio, in the wrong spelling.
+    /// The audio is left intact in every case here, so a rejection that speaks of a
+    /// mismatch would be accusing the wrong file. Uppercase is the trap worth
+    /// naming: it is a digest of the right audio, in the wrong spelling.
     #[test]
     fn t1_e0_malformed_recorded_digest_is_reported_as_malformed() {
         let workspace = TempDir::new().expect("create cache workspace");
 
-        // Every published entry holds the same tone, so one digest describes all of them and the
-        // malformations below are spellings of a digest that would otherwise match.
+        // Every published entry holds the same tone, so one digest describes all of
+        // them and the malformations below are spellings of a digest that would
+        // otherwise match.
         let reference = workspace.path().join("reference.wav");
         write_tone(&reference, 2_400, CANONICAL_SAMPLE_RATE);
         let digest = hash_file(&reference).expect("hash reference audio");
@@ -639,10 +653,10 @@ mod tests {
             matches!(fault, AudioFault::NonCanonical { .. }),
             "fault was `{fault}`"
         );
-        // Nothing is published yet, so advising a deletion would point at a path that does not
-        // exist. `AudioFault` carries no remedy at all, and the caller that knows whether the
-        // file is published is the one that attaches one — `load_validated` does, `resolve` does
-        // not.
+        // Nothing is published yet, so advising a deletion would point at a path that
+        // does not exist. `AudioFault` carries no remedy at all, and the caller that
+        // knows whether the file is published is the one that attaches one —
+        // `load_validated` does, `resolve` does not.
         let error = BuildError::UnusableAudio {
             path: staged.clone(),
             fault,

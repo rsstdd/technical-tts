@@ -1,8 +1,9 @@
-//! Builds one lesson into a private preview: gating, planning, synthesis caching, assembly,
-//! encoding, and the manifest that records what was produced.
+//! Builds one lesson into a private preview: gating, planning, synthesis
+//! caching, assembly, encoding, and the manifest that records what was
+//! produced.
 //!
-//! Every gate runs before any tool or synthesis work, so a refusal names the policy that refused
-//! rather than the first thing that happened to break.
+//! Every gate runs before any tool or synthesis work, so a refusal names the
+//! policy that refused rather than the first thing that happened to break.
 
 mod assembly;
 mod cache;
@@ -29,9 +30,10 @@ use thiserror::Error;
 
 /// Why a build or publication was refused.
 ///
-/// One variant per violated invariant, so a test can assert the exact failure and an operator is
-/// told which control stopped them. Every refusal names the artifact, the invariant, and the
-/// remedy owner from `docs/governance/ROUTING-TABLES.md`.
+/// One variant per violated invariant, so a test can assert the exact failure
+/// and an operator is told which control stopped them. Every refusal names the
+/// artifact, the invariant, and the remedy owner from
+/// `docs/governance/ROUTING-TABLES.md`.
 #[derive(Debug, Error)]
 pub enum BuildError {
     /// An input the build was told to read is not readable.
@@ -53,13 +55,15 @@ pub enum BuildError {
 
     /// A record the voice policy requires is absent, so profile load fails closed.
     ///
-    /// Remedy routing per `docs/governance/ROUTING-TABLES.md` ("Voice consent/checksum mismatch
-    /// → Refuse profile load → Project owner → Blocked"): the owner resolves the record; the
-    /// profile is never deleted or repaired automatically.
+    /// Remedy routing per `docs/governance/ROUTING-TABLES.md` ("Voice
+    /// consent/checksum mismatch → Refuse profile load → Project owner → Blocked"):
+    /// the owner resolves the record; the profile is never deleted or repaired
+    /// automatically.
     ///
-    /// `profile.json` and `consent.json` share this variant because they are the same class of
-    /// refusal — a record the policy requires is absent — and an absent profile record deserves
-    /// the same remedy-bearing message as an absent consent record, not a bare IO error.
+    /// `profile.json` and `consent.json` share this variant because they are the
+    /// same class of refusal — a record the policy requires is absent — and an
+    /// absent profile record deserves the same remedy-bearing message as an absent
+    /// consent record, not a bare IO error.
     #[error(
         "voice profile at `{profile_dir}` is refused: required record `{record}` is missing; \
          profile load fails closed and the project owner must supply the record before use"
@@ -71,8 +75,9 @@ pub enum BuildError {
         record: &'static str,
     },
 
-    /// A profile file no longer hashes to what its record says, so the record no longer
-    /// describes it. Routing: "Voice consent/checksum mismatch → Project owner → Blocked".
+    /// A profile file no longer hashes to what its record says, so the record no
+    /// longer describes it. Routing: "Voice consent/checksum mismatch → Project
+    /// owner → Blocked".
     #[error(
         "voice profile at `{profile_dir}` is refused: `{path}` does not match its recorded \
          checksum; do not use this profile until the project owner re-verifies it against its \
@@ -98,12 +103,13 @@ pub enum BuildError {
         classification: String,
     },
 
-    /// A manifest's rights section does not parse — an unknown classification, a missing field,
-    /// or the wrong shape.
+    /// A manifest's rights section does not parse — an unknown classification, a
+    /// missing field, or the wrong shape.
     ///
-    /// Distinct from the `Json` catch-all below: on the publication path the section is known
-    /// and worth naming, and an operator reading "JSON operation failed" would not learn that
-    /// their manifest declared a classification outside the recorded vocabulary.
+    /// Distinct from the `Json` catch-all below: on the publication path the
+    /// section is known and worth naming, and an operator reading "JSON operation
+    /// failed" would not learn that their manifest declared a classification
+    /// outside the recorded vocabulary.
     #[error(
         "production release is refused: the `{section}` manifest section is not a valid rights \
          declaration ({source}); the project owner must correct the manifest before publication"
@@ -124,8 +130,9 @@ pub enum BuildError {
         source: io::Error,
     },
 
-    /// An audio read or write failed. `hound::Error` wraps `io::Error`, which carries no
-    /// filename, so the path is attached here or the message names nothing.
+    /// An audio read or write failed. `hound::Error` wraps `io::Error`, which
+    /// carries no filename, so the path is attached here or the message names
+    /// nothing.
     #[error("audio operation failed for `{path}`: {source}")]
     AudioAt {
         /// The audio file being read or written.
@@ -140,17 +147,19 @@ pub enum BuildError {
 
     /// A published cache entry cannot be used.
     ///
-    /// Remedy routing per `docs/governance/ROUTING-TABLES.md` ("State or checksum corruption →
-    /// Refuse overwrite; run reconciliation → Runtime → Blocked"). E0-S0 has no reconciliation —
-    /// E2-S1 adds it — so deletion is the safe recovery action ADR-0001 §4.2 requires, because
-    /// the segment regenerates from the plan on the next build.
+    /// Remedy routing per `docs/governance/ROUTING-TABLES.md` ("State or checksum
+    /// corruption → Refuse overwrite; run reconciliation → Runtime → Blocked").
+    /// E0-S0 has no reconciliation — E2-S1 adds it — so deletion is the safe
+    /// recovery action ADR-0001 §4.2 requires, because the segment regenerates from
+    /// the plan on the next build.
     ///
-    /// The entry directory and the remedy are stated once here rather than at each rejection
-    /// site; `CacheEntryFault` carries which invariant was violated, so a test asserts the exact
-    /// fault instead of matching a substring.
+    /// The entry directory and the remedy are stated once here rather than at each
+    /// rejection site; `CacheEntryFault` carries which invariant was violated, so a
+    /// test asserts the exact fault instead of matching a substring.
     ///
-    /// The fault is boxed because it is by far the largest thing `BuildError` carries, and every
-    /// fallible function in this crate pays for the widest variant on its success path too.
+    /// The fault is boxed because it is by far the largest thing `BuildError`
+    /// carries, and every fallible function in this crate pays for the widest
+    /// variant on its success path too.
     #[error(
         "cache entry for segment `{segment_id}` is unusable: {fault}; delete `{}` to regenerate \
          this segment",
@@ -165,12 +174,14 @@ pub enum BuildError {
         fault: Box<CacheEntryFault>,
     },
 
-    /// Audio that is not a published cache entry: freshly synthesized output, or a staged master.
+    /// Audio that is not a published cache entry: freshly synthesized output, or a
+    /// staged master.
     ///
-    /// Routing: "Invalid or over-range audio → Quarantine unique attempt; bounded retry →
-    /// Audio/runtime → Blocked for segment". Deliberately carries no deletion remedy — the
-    /// staged file is discarded on drop, so there is nothing published to remove, and advising a
-    /// deletion would name a path that no longer exists.
+    /// Routing: "Invalid or over-range audio → Quarantine unique attempt; bounded
+    /// retry → Audio/runtime → Blocked for segment". Deliberately carries no
+    /// deletion remedy — the staged file is discarded on drop, so there is nothing
+    /// published to remove, and advising a deletion would name a path that no
+    /// longer exists.
     #[error("`{path}` is not usable lesson audio: {fault}")]
     UnusableAudio {
         /// The audio file that failed validation.
@@ -181,10 +192,10 @@ pub enum BuildError {
 
     /// The worker's report disagrees with the file it wrote.
     ///
-    /// Routing: "Worker protocol or containment failure → Terminate worker tree; preserve
-    /// diagnostics → Worker/runtime → Blocked". Separate from `UnusableAudio` because the audio
-    /// is canonical: what failed is the worker's account of it, and no retry of the same worker
-    /// build fixes that.
+    /// Routing: "Worker protocol or containment failure → Terminate worker tree;
+    /// preserve diagnostics → Worker/runtime → Blocked". Separate from
+    /// `UnusableAudio` because the audio is canonical: what failed is the worker's
+    /// account of it, and no retry of the same worker build fixes that.
     #[error(
         "synthesizer reported {reported_sample_rate} Hz, {reported_channels} channels, and \
          {reported_frames} frames for segment `{segment_id}` but wrote a WAV with \
@@ -220,7 +231,8 @@ pub enum BuildError {
         pause_after_ms: u32,
     },
 
-    /// The planned lesson is longer than the build can represent, before any audio was written.
+    /// The planned lesson is longer than the build can represent, before any audio
+    /// was written.
     #[error(
         "the planned lesson exceeds the frame count this build can assemble; split the lesson \
          into shorter lessons"
@@ -237,11 +249,13 @@ pub enum BuildError {
         destination: PathBuf,
     },
 
-    /// The master's length disagrees with the length its validated cache metadata implies.
+    /// The master's length disagrees with the length its validated cache metadata
+    /// implies.
     ///
-    /// Redundant while every per-segment check passes, and retained because it is the invariant
-    /// the manifest and every downstream duration derive from. Routing: "State or checksum
-    /// corruption → Refuse overwrite; run reconciliation → Runtime → Blocked".
+    /// Redundant while every per-segment check passes, and retained because it is
+    /// the invariant the manifest and every downstream duration derive from.
+    /// Routing: "State or checksum corruption → Refuse overwrite; run
+    /// reconciliation → Runtime → Blocked".
     #[error(
         "assembled master `{destination}` contains {assembled} frames but the plan requires \
          {expected}; the runtime owner must reconcile the cache before this lesson is rebuilt"
@@ -255,8 +269,9 @@ pub enum BuildError {
         expected: u64,
     },
 
-    /// Every output this crate writes is staged in its destination's parent and renamed into
-    /// place, so a destination with no parent cannot be written atomically at all.
+    /// Every output this crate writes is staged in its destination's parent and
+    /// renamed into place, so a destination with no parent cannot be written
+    /// atomically at all.
     #[error(
         "cannot write `{path}` atomically because it has no parent directory; supply an output \
          path with a directory component"
@@ -275,7 +290,8 @@ pub enum BuildError {
         stderr: String,
     },
 
-    /// FFmpeg could not be launched at all, which is distinct from its running and failing.
+    /// FFmpeg could not be launched at all, which is distinct from its running and
+    /// failing.
     #[error("could not start FFmpeg `{executable}`: {source}")]
     StartFfmpeg {
         /// The executable that could not be started.
@@ -293,7 +309,8 @@ pub enum BuildError {
         requested: PathBuf,
     },
 
-    /// A required tool exists but could not be inspected, so its identity cannot be recorded.
+    /// A required tool exists but could not be inspected, so its identity cannot be
+    /// recorded.
     #[error("could not inspect {tool} at `{executable}`: {source}")]
     InspectTool {
         /// Which tool was being inspected.
@@ -304,7 +321,8 @@ pub enum BuildError {
         source: io::Error,
     },
 
-    /// A tool ran but would not report its version, so the manifest cannot record what was used.
+    /// A tool ran but would not report its version, so the manifest cannot record
+    /// what was used.
     #[error("{tool} version probe failed with status {status}: {stderr}")]
     ToolProbeFailed {
         /// Which tool was probed.
@@ -324,11 +342,13 @@ pub enum BuildError {
         stderr: String,
     },
 
-    /// The encoded output exists but is not the stream this build claims to have produced.
+    /// The encoded output exists but is not the stream this build claims to have
+    /// produced.
     #[error("encoded output failed structural validation: {0}")]
     InvalidEncodedOutput(String),
 
-    /// A path the build derived would leave the root it is confined to, so nothing is written.
+    /// A path the build derived would leave the root it is confined to, so nothing
+    /// is written.
     #[error("managed path `{path}` resolves outside `{root}`")]
     ManagedPathEscape {
         /// The path that resolved outside its root.
@@ -344,7 +364,8 @@ pub enum BuildError {
         reason: String,
     },
 
-    /// A manifest was offered for publication under a version this build cannot evaluate.
+    /// A manifest was offered for publication under a version this build cannot
+    /// evaluate.
     #[error("manifest version `{version}` is not a production manifest")]
     UnsupportedProductionManifest {
         /// The version the manifest declares.
@@ -360,19 +381,21 @@ pub enum BuildError {
         source: serde_json::Error,
     },
 
-    /// Catch-all for `?` on a `serde_json` call with no useful context to add. Prefer a variant
-    /// that carries the path or the subsystem; this exists so a future call site cannot silently
-    /// inherit an unrelated error message the way the former `Manifest` variant did.
+    /// Catch-all for `?` on a `serde_json` call with no useful context to add.
+    /// Prefer a variant that carries the path or the subsystem; this exists so a
+    /// future call site cannot silently inherit an unrelated error message the way
+    /// the former `Manifest` variant did.
     #[error("JSON operation failed: {0}")]
     Json(#[from] serde_json::Error),
 }
 
 /// Which invariant a published cache entry violated.
 ///
-/// Nested inside [`BuildError::UnusableCacheEntry`] rather than flattened into `BuildError`: the
-/// entry directory and the deletion remedy are the same for every one of these, and stating them
-/// once keeps the remedy from drifting between rejection sites. What differs is the invariant,
-/// and that is exactly what this enum names.
+/// Nested inside [`BuildError::UnusableCacheEntry`] rather than flattened into
+/// `BuildError`: the entry directory and the deletion remedy are the same for
+/// every one of these, and stating them once keeps the remedy from drifting
+/// between rejection sites. What differs is the invariant, and that is exactly
+/// what this enum names.
 #[derive(Debug, Error)]
 pub enum CacheEntryFault {
     /// The artifact is not readable as the record this build writes.
@@ -410,7 +433,8 @@ pub enum CacheEntryFault {
         required_sample_format: &'static str,
     },
 
-    /// The entry belongs to a different synthesis identity, so its audio is not this segment's.
+    /// The entry belongs to a different synthesis identity, so its audio is not
+    /// this segment's.
     #[error("the artifact records cache key `{recorded}` but the plan requires `{required}`")]
     CacheKeyMismatch {
         /// The identity the artifact records.
@@ -419,8 +443,9 @@ pub enum CacheEntryFault {
         required: CacheKey,
     },
 
-    /// Raised both when the entry is loaded and when the master is assembled from it, because a
-    /// truncated entry and a truncated read are the same violated invariant.
+    /// Raised both when the entry is loaded and when the master is assembled from
+    /// it, because a truncated entry and a truncated read are the same violated
+    /// invariant.
     #[error("the audio holds {found} frames but the artifact declares {declared}")]
     FrameCountMismatch {
         /// Frames the audio actually holds.
@@ -429,8 +454,9 @@ pub enum CacheEntryFault {
         declared: u32,
     },
 
-    /// Distinct from `ChecksumMismatch` on purpose: a malformed record reported as a mismatch
-    /// tells the operator their audio was tampered with when the artifact is what broke.
+    /// Distinct from `ChecksumMismatch` on purpose: a malformed record reported as
+    /// a mismatch tells the operator their audio was tampered with when the
+    /// artifact is what broke.
     #[error(
         "the artifact records `{recorded}` as the audio digest, which is not a lowercase BLAKE3 \
          hex digest and so could never match the audio"
@@ -456,10 +482,11 @@ pub enum CacheEntryFault {
 
 /// Why a WAV cannot serve as canonical lesson audio.
 ///
-/// Carries no path and no remedy: the same validation runs on a staged file that no operator can
-/// act on and on a published entry that they can, and only the caller knows which. Attaching the
-/// remedy here is what previously produced "delete this entry" for a file that was about to be
-/// discarded anyway.
+/// Carries no path and no remedy: the same validation runs on a staged file
+/// that no operator can act on and on a published entry that they can, and only
+/// the caller knows which. Attaching the remedy here is what previously
+/// produced "delete this entry" for a file that was about to be discarded
+/// anyway.
 #[derive(Debug, Error)]
 pub enum AudioFault {
     /// The file is not readable as WAV at all.
@@ -509,8 +536,8 @@ pub(crate) fn io_error(path: impl Into<PathBuf>, source: io::Error) -> BuildErro
     }
 }
 
-/// `hound::Error` wraps `io::Error`, which carries no filename, so every audio failure must be
-/// given its path here or the message names nothing.
+/// `hound::Error` wraps `io::Error`, which carries no filename, so every audio
+/// failure must be given its path here or the message names nothing.
 pub(crate) fn audio_error(path: impl Into<PathBuf>, source: hound::Error) -> BuildError {
     BuildError::AudioAt {
         path: path.into(),
@@ -520,12 +547,14 @@ pub(crate) fn audio_error(path: impl Into<PathBuf>, source: hound::Error) -> Bui
 
 /// Directory holding one cache entry.
 ///
-/// Exposed so integration tests can corrupt a specific entry without duplicating the sharding
-/// scheme. Changing the shard width in `cache::entry_dir` updates the tests automatically.
+/// Exposed so integration tests can corrupt a specific entry without
+/// duplicating the sharding scheme. Changing the shard width in
+/// `cache::entry_dir` updates the tests automatically.
 ///
-/// Takes a parsed `CacheKey` rather than a string: this is the one cache path that crosses the
-/// crate boundary, and a caller reading a key out of a manifest should be told the key is
-/// malformed there rather than have it panic inside the shard slice.
+/// Takes a parsed `CacheKey` rather than a string: this is the one cache path
+/// that crosses the crate boundary, and a caller reading a key out of a
+/// manifest should be told the key is malformed there rather than have it panic
+/// inside the shard slice.
 #[doc(hidden)]
 pub fn cache_entry_dir(cache_root: &Path, cache_key: &CacheKey) -> PathBuf {
     cache::entry_dir(cache_root, cache_key)

@@ -2,10 +2,11 @@ use serde::{Deserialize, Serialize};
 
 /// Classification a nontrivial input receives before use.
 ///
-/// Transcribed from `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Classification. The two
-/// must agree, and changing either requires a policy amendment rather than an edit. The product
-/// records classification and scope; it does not encode a universal legal conclusion about any
-/// third-party material.
+/// Transcribed from `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`
+/// §Classification. The two must agree, and changing either requires a policy
+/// amendment rather than an edit. The product records classification and scope;
+/// it does not encode a universal legal conclusion about any third-party
+/// material.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceClassification {
@@ -30,10 +31,11 @@ pub enum SourceClassification {
 impl SourceClassification {
     /// The `snake_case` spelling this classification carries in a manifest.
     ///
-    /// Mirrors the serde representation above so a refusal quotes what the author actually
-    /// wrote. The exhaustive match makes a new variant a compile error rather than a silent
-    /// fallback string, and `t3_e0_classification_spellings_match_their_serde_representation`
-    /// proves the two agree.
+    /// Mirrors the serde representation above so a refusal quotes what the author
+    /// actually wrote. The exhaustive match makes a new variant a compile error
+    /// rather than a silent fallback string, and
+    /// `t3_e0_classification_spellings_match_their_serde_representation` proves the
+    /// two agree.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OwnerAuthored => "owner_authored",
@@ -49,9 +51,10 @@ impl SourceClassification {
 
     /// Whether this classification permits use inside a production release.
     ///
-    /// `EvaluationOnly`, `RightsReviewRequired`, and `Prohibited` do not: an unresolved or
-    /// restricted classification blocks publish per `docs/governance/ROUTING-TABLES.md`
-    /// ("Missing rights classification → External publication blocked").
+    /// `EvaluationOnly`, `RightsReviewRequired`, and `Prohibited` do not: an
+    /// unresolved or restricted classification blocks publish per
+    /// `docs/governance/ROUTING-TABLES.md` ("Missing rights classification →
+    /// External publication blocked").
     pub fn permits_production_release(self) -> bool {
         !matches!(
             self,
@@ -61,14 +64,15 @@ impl SourceClassification {
 
     /// Whether this classification permits private preview rendering.
     ///
-    /// Only `Prohibited` is excluded. An unresolved classification restricts use to the
-    /// permitted private scope per `docs/governance/ROUTING-TABLES.md`; it does not block
-    /// private preview.
+    /// Only `Prohibited` is excluded. An unresolved classification restricts use to
+    /// the permitted private scope per `docs/governance/ROUTING-TABLES.md`; it does
+    /// not block private preview.
     ///
-    /// Deliberately unenforced at E0-S2: `BuildRequest` carries no source classification, so
-    /// nothing in the preview path can consult this yet. It states the policy row now so the
-    /// release gate and the preview gate cannot drift apart later; the preview-scope story
-    /// wires it in. Do not read the preview path as classification-gated today.
+    /// Deliberately unenforced at E0-S2: `BuildRequest` carries no source
+    /// classification, so nothing in the preview path can consult this yet. It
+    /// states the policy row now so the release gate and the preview gate cannot
+    /// drift apart later; the preview-scope story wires it in. Do not read the
+    /// preview path as classification-gated today.
     pub fn permits_private_preview(self) -> bool {
         !matches!(self, Self::Prohibited)
     }
@@ -82,7 +86,8 @@ pub struct SourceRightsDeclaration {
     pub source_id: String,
     /// The classification recorded for the source.
     pub classification: SourceClassification,
-    /// The rights record under `evidence/rights/<record-id>/` backing the classification.
+    /// The rights record under `evidence/rights/<record-id>/` backing the
+    /// classification.
     pub rights_record_id: String,
 }
 
@@ -165,9 +170,9 @@ mod tests {
         for classification in ALL_CLASSIFICATIONS {
             // Expected values are a table read off `RIGHTS-DATA-ARTIFACT-POLICY.md`
             // §Classification, not a re-derivation of the implementation: repeating the
-            // implementation's own `matches!` here would pass for any policy, including a wrong
-            // one. The exhaustive match also makes a ninth variant a compile error in this test
-            // rather than an untested one.
+            // implementation's own `matches!` here would pass for any policy, including a
+            // wrong one. The exhaustive match also makes a ninth variant a compile error in
+            // this test rather than an untested one.
             let (releasable, previewable) = match classification {
                 SourceClassification::OwnerAuthored => (true, true),
                 SourceClassification::PublicDomain => (true, true),

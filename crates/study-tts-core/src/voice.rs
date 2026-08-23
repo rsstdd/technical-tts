@@ -5,15 +5,17 @@ use crate::digest::is_blake3_hex;
 
 /// Schema version this module accepts for `profile.json` and `consent.json`.
 ///
-/// Provisional pending the versioned JSON Schemas of E1-S1; the on-disk layout is ADR-0001
-/// §12.1 (`data/voices/<id>/{profile.json, reference.wav, conditionals.pt, consent.json}`).
+/// Provisional pending the versioned JSON Schemas of E1-S1; the on-disk layout
+/// is ADR-0001 §12.1 (`data/voices/<id>/{profile.json, reference.wav,
+/// conditionals.pt, consent.json}`).
 const VOICE_SCHEMA_VERSION: &str = "0.1-voice";
 
 /// Consent status recorded for a voice reference.
 ///
-/// Field set per ADR-0001 §15.3: a profile is usable only while consent is `granted`; anything
-/// else refuses profile load per `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`
-/// ("Profile load fails closed").
+/// Field set per ADR-0001 §15.3: a profile is usable only while consent is
+/// `granted`; anything else refuses profile load per
+/// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` ("Profile load fails
+/// closed").
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConsentStatus {
@@ -28,10 +30,11 @@ pub enum ConsentStatus {
 impl ConsentStatus {
     /// The `snake_case` spelling this status carries in `consent.json`.
     ///
-    /// Mirrors the serde representation above so a refusal message quotes what the author
-    /// actually wrote in the record. The exhaustive match makes a new variant a compile error
-    /// rather than a silent fallback string, and
-    /// `t3_e0_record_state_spellings_match_their_serde_representation` proves the two agree.
+    /// Mirrors the serde representation above so a refusal message quotes what the
+    /// author actually wrote in the record. The exhaustive match makes a new
+    /// variant a compile error rather than a silent fallback string, and
+    /// `t3_e0_record_state_spellings_match_their_serde_representation` proves the
+    /// two agree.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Granted => "granted",
@@ -43,8 +46,9 @@ impl ConsentStatus {
 
 /// Decision recorded for a rights record.
 ///
-/// Mirrors the Decision checkboxes of `docs/templates/RIGHTS-RECORD-TEMPLATE.md`. The two must
-/// agree, and changing either requires a template amendment rather than an edit.
+/// Mirrors the Decision checkboxes of
+/// `docs/templates/RIGHTS-RECORD-TEMPLATE.md`. The two must agree, and changing
+/// either requires a template amendment rather than an edit.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RightsDecision {
@@ -61,7 +65,8 @@ pub enum RightsDecision {
 impl RightsDecision {
     /// The `snake_case` spelling this decision carries in `profile.json`.
     ///
-    /// Mirrors the serde representation above, on the same terms as [`ConsentStatus::as_str`].
+    /// Mirrors the serde representation above, on the same terms as
+    /// [`ConsentStatus::as_str`].
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Approved => "approved",
@@ -72,18 +77,20 @@ impl RightsDecision {
     }
 }
 
-/// The use a caller asks a voice profile to serve, and the vocabulary a consent record's
-/// `permitted_use` scope is written in.
+/// The use a caller asks a voice profile to serve, and the vocabulary a consent
+/// record's `permitted_use` scope is written in.
 ///
-/// A dedicated value object rather than a bare string, on both sides: scope compared by ad-hoc
-/// string equality at each call site is how scope stops being enforced, and a scope *recorded*
-/// as a bare string lets an unrecognized use into the record, where it can never match a
-/// request and so is silently unenforceable. Deserializing this enum makes an unknown value a
-/// parse error at the record boundary instead.
+/// A dedicated value object rather than a bare string, on both sides: scope
+/// compared by ad-hoc string equality at each call site is how scope stops
+/// being enforced, and a scope *recorded* as a bare string lets an unrecognized
+/// use into the record, where it can never match a request and so is silently
+/// unenforceable. Deserializing this enum makes an unknown value a parse error
+/// at the record boundary instead.
 ///
-/// The vocabulary is closed here rather than in a governance document: ADR-0001 §15.3 requires
-/// a permitted-use scope without enumerating one, and the human-readable scope lives in the
-/// rights record under `evidence/rights/<record-id>/`. Widening the machine-checked scope means
+/// The vocabulary is closed here rather than in a governance document: ADR-0001
+/// §15.3 requires a permitted-use scope without enumerating one, and the
+/// human-readable scope lives in the rights record under
+/// `evidence/rights/<record-id>/`. Widening the machine-checked scope means
 /// adding a variant and the call site that requests it.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -106,16 +113,19 @@ impl VoiceUse {
 
 /// The consent record a voice profile directory carries as `consent.json`.
 ///
-/// Fields transcribed from ADR-0001 §15.3: ownership or subject-consent declaration,
-/// permitted-use scope, reference-audio checksum, creation date, and consent status.
+/// Fields transcribed from ADR-0001 §15.3: ownership or subject-consent
+/// declaration, permitted-use scope, reference-audio checksum, creation date,
+/// and consent status.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VoiceConsent {
     /// Version of the consent record layout; must be `0.1-voice`.
     pub schema_version: String,
-    /// Ownership declaration or documented subject consent for the reference recording.
+    /// Ownership declaration or documented subject consent for the reference
+    /// recording.
     pub declaration: String,
-    /// The uses the consent permits; an unrecognized use is a parse error, not an empty scope.
+    /// The uses the consent permits; an unrecognized use is a parse error, not an
+    /// empty scope.
     pub permitted_use: Vec<VoiceUse>,
     /// BLAKE3 checksum of `reference.wav` as recorded at consent time.
     pub reference_wav_blake3: String,
@@ -129,8 +139,8 @@ pub struct VoiceConsent {
 
 /// The identity record a voice profile directory carries as `profile.json`.
 ///
-/// Identity per ADR-0001 §5.2: the conditional hash and extractor identity are the synthesis
-/// identity; the reference hash is provenance.
+/// Identity per ADR-0001 §5.2: the conditional hash and extractor identity are
+/// the synthesis identity; the reference hash is provenance.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VoiceProfile {
@@ -160,12 +170,13 @@ pub enum VoiceError {
     /// A required record field is empty.
     #[error("voice record field `{0}` must not be empty")]
     MissingField(&'static str),
-    /// A recorded checksum is not a BLAKE3 digest, so it could never match a computed one.
+    /// A recorded checksum is not a BLAKE3 digest, so it could never match a
+    /// computed one.
     ///
-    /// Caught at parse time so a malformed record is reported as malformed. Without this, an
-    /// uppercase or truncated digest reaches the runtime comparison and is reported as a
-    /// checksum *mismatch* — telling the owner their file was tampered with when the record was
-    /// simply mistyped.
+    /// Caught at parse time so a malformed record is reported as malformed. Without
+    /// this, an uppercase or truncated digest reaches the runtime comparison and is
+    /// reported as a checksum *mismatch* — telling the owner their file was
+    /// tampered with when the record was simply mistyped.
     #[error(
         "voice record field `{field}` is not a lowercase BLAKE3 hex digest: `{value}`; correct \
          the record rather than the artifact"
@@ -234,7 +245,8 @@ impl VoiceProfile {
         Ok(profile)
     }
 
-    /// Rejects a structurally complete record whose fields are absent or unsupported.
+    /// Rejects a structurally complete record whose fields are absent or
+    /// unsupported.
     pub fn validate(&self) -> Result<(), VoiceError> {
         if self.schema_version != VOICE_SCHEMA_VERSION {
             return Err(VoiceError::UnsupportedSchema(self.schema_version.clone()));
@@ -255,7 +267,8 @@ impl VoiceConsent {
         Ok(consent)
     }
 
-    /// Rejects a structurally complete record whose fields are absent or unsupported.
+    /// Rejects a structurally complete record whose fields are absent or
+    /// unsupported.
     pub fn validate(&self) -> Result<(), VoiceError> {
         if self.schema_version != VOICE_SCHEMA_VERSION {
             return Err(VoiceError::UnsupportedSchema(self.schema_version.clone()));
@@ -271,15 +284,17 @@ impl VoiceConsent {
     }
 }
 
-/// Accepts a profile for `requested` use only with granted consent, a recorded approval, a
-/// consent scope covering that use, and agreeing reference checksums.
+/// Accepts a profile for `requested` use only with granted consent, a recorded
+/// approval, a consent scope covering that use, and agreeing reference
+/// checksums.
 ///
-/// `requested` is not optional by design: a consent record's `permitted_use` list is scope, and
-/// a gate that never receives the use it is gating cannot enforce scope. Every caller states
-/// what it is about to do.
+/// `requested` is not optional by design: a consent record's `permitted_use`
+/// list is scope, and a gate that never receives the use it is gating cannot
+/// enforce scope. Every caller states what it is about to do.
 ///
-/// This gate is IO-free; verifying the on-disk `reference.wav` and `conditionals.pt` bytes
-/// against the recorded checksums is the runtime's responsibility.
+/// This gate is IO-free; verifying the on-disk `reference.wav` and
+/// `conditionals.pt` bytes against the recorded checksums is the runtime's
+/// responsibility.
 pub fn validate_profile_for_use(
     profile: &VoiceProfile,
     consent: &VoiceConsent,
@@ -316,7 +331,8 @@ fn permits(consent: &VoiceConsent, requested: VoiceUse) -> bool {
     consent.permitted_use.contains(&requested)
 }
 
-/// The recorded scope as the record spells it, for a refusal the owner can compare to the file.
+/// The recorded scope as the record spells it, for a refusal the owner can
+/// compare to the file.
 fn recorded_scope(consent: &VoiceConsent) -> String {
     consent
         .permitted_use
@@ -333,8 +349,8 @@ fn require(field: &'static str, value: &str) -> Result<(), VoiceError> {
     Ok(())
 }
 
-/// A recorded digest must be exactly the form `blake3::Hash::to_hex` produces, because that is
-/// what the runtime compares it against byte for byte.
+/// A recorded digest must be exactly the form `blake3::Hash::to_hex` produces,
+/// because that is what the runtime compares it against byte for byte.
 fn require_blake3_hex(field: &'static str, value: &str) -> Result<(), VoiceError> {
     require(field, value)?;
     if !is_blake3_hex(value) {
@@ -353,9 +369,9 @@ mod tests {
     use serde_json::{Value, json};
     use std::fmt::Debug;
 
-    /// Stand-in digests. Any well-formed value works: this module never hashes anything, and the
-    /// runtime is what compares a recorded digest to a computed one.
-    /// Both carry hex letters, so `to_uppercase` below actually changes them.
+    /// Stand-in digests. Any well-formed value works: this module never hashes
+    /// anything, and the runtime is what compares a recorded digest to a computed
+    /// one. Both carry hex letters, so `to_uppercase` below actually changes them.
     const REFERENCE_DIGEST: &str =
         "afafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafaf";
     const CONDITIONALS_DIGEST: &str =
@@ -482,7 +498,8 @@ mod tests {
     #[test]
     fn t1_e0_malformed_recorded_checksums_are_reported_as_malformed() {
         // Uppercase is the trap this guards: `blake3::Hash::to_hex` is lowercase, so an
-        // uppercase digest would otherwise reach the runtime and be reported as tampering.
+        // uppercase digest would otherwise reach the runtime and be reported as
+        // tampering.
         for malformed in [
             &REFERENCE_DIGEST.to_uppercase(),
             "1111",
@@ -503,10 +520,11 @@ mod tests {
 
     /// The spelling `consent.json` must carry for each consent status.
     ///
-    /// Literal and independent of [`ConsentStatus::as_str`] on purpose: a table that asked the
-    /// implementation what it spells would agree with any spelling, including a wrong one. The
-    /// match is exhaustive, so a new variant is a compile error here rather than a variant no
-    /// test covers — and the compiler lands the author beside the list the test iterates.
+    /// Literal and independent of [`ConsentStatus::as_str`] on purpose: a table
+    /// that asked the implementation what it spells would agree with any spelling,
+    /// including a wrong one. The match is exhaustive, so a new variant is a
+    /// compile error here rather than a variant no test covers — and the compiler
+    /// lands the author beside the list the test iterates.
     fn expected_consent_status_spelling(status: ConsentStatus) -> &'static str {
         match status {
             ConsentStatus::Granted => "granted",
@@ -515,7 +533,8 @@ mod tests {
         }
     }
 
-    /// The spelling `profile.json` must carry for each rights decision, on the same terms.
+    /// The spelling `profile.json` must carry for each rights decision, on the same
+    /// terms.
     fn expected_rights_decision_spelling(decision: RightsDecision) -> &'static str {
         match decision {
             RightsDecision::Approved => "approved",
@@ -525,7 +544,8 @@ mod tests {
         }
     }
 
-    /// The spelling a `permitted_use` entry must carry for each use, on the same terms.
+    /// The spelling a `permitted_use` entry must carry for each use, on the same
+    /// terms.
     fn expected_voice_use_spelling(requested: VoiceUse) -> &'static str {
         match requested {
             VoiceUse::PrivateSynthesis => "private_synthesis",
@@ -535,8 +555,8 @@ mod tests {
 
     /// Asserts a record value is written as `expected` and read back from it.
     ///
-    /// Both directions matter: writing the right string while accepting a different one would
-    /// let a record spell a state one way and be gated as another.
+    /// Both directions matter: writing the right string while accepting a different
+    /// one would let a record spell a state one way and be gated as another.
     fn assert_serde_spelling<T>(value: T, expected: &'static str)
     where
         T: Copy + Debug + PartialEq + Serialize + DeserializeOwned,
@@ -596,9 +616,10 @@ mod tests {
 
     #[test]
     fn t3_e0_unknown_permitted_use_values_are_rejected() {
-        // A recorded scope outside the vocabulary can never match a request, so as a bare string
-        // it would sit in the record unenforced. The last case is the one that matters: a record
-        // must not be able to widen its own scope with a use this build cannot gate.
+        // A recorded scope outside the vocabulary can never match a request, so as a
+        // bare string it would sit in the record unenforced. The last case is the one
+        // that matters: a record must not be able to widen its own scope with a use
+        // this build cannot gate.
         for unknown in [
             json!(["commercial_distribution"]),
             json!(["PrivateSynthesis"]),
@@ -651,7 +672,10 @@ mod tests {
             let mut value = profile_value();
             value[field] = Value::String("  ".to_owned());
             assert!(
-                matches!(parse_profile(&value), Err(VoiceError::MissingField(name)) if name == field),
+                matches!(
+                    parse_profile(&value),
+                    Err(VoiceError::MissingField(name)) if name == field
+                ),
                 "profile field `{field}` must be reported as missing"
             );
         }
@@ -665,7 +689,10 @@ mod tests {
             let mut value = consent_value();
             value[field] = Value::String(String::new());
             assert!(
-                matches!(parse_consent(&value), Err(VoiceError::MissingField(name)) if name == field),
+                matches!(
+                    parse_consent(&value),
+                    Err(VoiceError::MissingField(name)) if name == field
+                ),
                 "consent field `{field}` must be reported as missing"
             );
         }

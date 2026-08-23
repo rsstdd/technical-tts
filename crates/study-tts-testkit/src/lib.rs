@@ -1,7 +1,8 @@
 //! Test doubles and fixture paths shared by the workspace's integration tests.
 //!
-//! Nothing here reaches a lesson: the worker synthesizes tones, and the fixtures are the
-//! committed synthetic lessons registered in `docs/testing/TEST-DATA-MANIFEST.md`.
+//! Nothing here reaches a lesson: the worker synthesizes tones, and the
+//! fixtures are the committed synthetic lessons registered in
+//! `docs/testing/TEST-DATA-MANIFEST.md`.
 
 use std::{
     f32::consts::TAU,
@@ -19,8 +20,9 @@ const TONE_FRAMES: u32 = CANONICAL_SAMPLE_RATE / 10;
 
 /// A synthesizer that writes a tone derived from the segment's cache key.
 ///
-/// Deterministic so a cache hit is byte-identical, and counting so a test can prove that a gate
-/// refused before any synthesis happened rather than merely that the build failed.
+/// Deterministic so a cache hit is byte-identical, and counting so a test can
+/// prove that a gate refused before any synthesis happened rather than merely
+/// that the build failed.
 #[derive(Debug, Default)]
 pub struct DeterministicToneWorker {
     synthesis_count: AtomicUsize,
@@ -28,7 +30,8 @@ pub struct DeterministicToneWorker {
 }
 
 impl DeterministicToneWorker {
-    /// How many segments this worker has synthesized, for asserting that a gate ran first.
+    /// How many segments this worker has synthesized, for asserting that a gate ran
+    /// first.
     pub fn synthesis_count(&self) -> usize {
         self.synthesis_count.load(Ordering::SeqCst)
     }
@@ -97,10 +100,12 @@ impl SegmentSynthesizer for DeterministicToneWorker {
 
 /// Options for a synthetic, rights-clean voice-profile fixture.
 ///
-/// No real voice audio is involved: `reference.wav` is a generated tone and `conditionals.pt`
-/// is fixed synthetic bytes, per the CI rule that real voice references never enter Git or CI
-/// (`docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Storage and access). Statuses are plain
-/// strings so tests can write invalid or unknown values directly.
+/// No real voice audio is involved: `reference.wav` is a generated tone and
+/// `conditionals.pt` is fixed synthetic bytes, per the CI rule that real voice
+/// references never enter Git or CI
+/// (`docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Storage and access).
+/// Statuses are plain strings so tests can write invalid or unknown values
+/// directly.
 #[derive(Clone, Debug)]
 pub struct VoiceProfileFixtureSpec {
     /// Value of `profile_id` in `profile.json`.
@@ -126,10 +131,10 @@ impl Default for VoiceProfileFixtureSpec {
 
 /// Writes a voice profile directory in the ADR-0001 §12.1 layout into `dir`.
 ///
-/// Produces `profile.json`, `reference.wav`, `conditionals.pt`, and (unless disabled)
-/// `consent.json`, with self-consistent BLAKE3 checksums, and returns the profile directory.
-/// Registered as `voice-profile-synthetic-v1` in `docs/testing/TEST-DATA-MANIFEST.md`; the two
-/// must stay in step.
+/// Produces `profile.json`, `reference.wav`, `conditionals.pt`, and (unless
+/// disabled) `consent.json`, with self-consistent BLAKE3 checksums, and returns
+/// the profile directory. Registered as `voice-profile-synthetic-v1` in
+/// `docs/testing/TEST-DATA-MANIFEST.md`; the two must stay in step.
 pub fn write_voice_profile_fixture(dir: &Path, spec: &VoiceProfileFixtureSpec) -> PathBuf {
     std::fs::create_dir_all(dir).expect("create voice profile fixture directory");
 
@@ -203,7 +208,8 @@ pub fn walking_skeleton_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/lessons/e0-s0-two-segment.json")
 }
 
-/// A lesson whose segments differ by one speech-affecting field each, for cache-identity tests.
+/// A lesson whose segments differ by one speech-affecting field each, for
+/// cache-identity tests.
 pub fn cache_identity_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/lessons/e0-s0-cache-identity.json")
 }

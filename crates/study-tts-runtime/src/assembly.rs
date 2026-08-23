@@ -9,8 +9,8 @@ use crate::{
     io_error,
 };
 
-/// Frames of silence written after a segment. Shared by the expected-total calculation and the
-/// write loop so the two cannot drift apart.
+/// Frames of silence written after a segment. Shared by the expected-total
+/// calculation and the write loop so the two cannot drift apart.
 fn pause_frames(segment: &CachedSegment) -> Result<u64, BuildError> {
     Ok(u64::from(segment.pause_after_ms)
         .checked_mul(u64::from(CANONICAL_SAMPLE_RATE))
@@ -21,8 +21,8 @@ fn pause_frames(segment: &CachedSegment) -> Result<u64, BuildError> {
         / 1_000)
 }
 
-/// Total frames the master must contain, derived from validated cache metadata rather than from
-/// what the write loop happens to produce.
+/// Total frames the master must contain, derived from validated cache metadata
+/// rather than from what the write loop happens to produce.
 fn expected_frames(segments: &[CachedSegment]) -> Result<u64, BuildError> {
     let mut expected = 0_u64;
     for segment in segments {
@@ -64,8 +64,8 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
         let mut segment_frames = 0_u64;
 
         for sample in reader.samples::<f32>() {
-            // The read and the write fail for different reasons and name different files, so they
-            // are mapped separately rather than through one nested `?`.
+            // The read and the write fail for different reasons and name different files,
+            // so they are mapped separately rather than through one nested `?`.
             let sample = sample.map_err(|error| audio_error(&segment.audio_path, error))?;
             writer
                 .write_sample(sample)
@@ -77,8 +77,8 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
             })?;
         }
 
-        // Fail on the offending segment rather than on the aggregate, because a per-segment
-        // mismatch names the cache entry that needs regenerating.
+        // Fail on the offending segment rather than on the aggregate, because a
+        // per-segment mismatch names the cache entry that needs regenerating.
         if segment_frames != u64::from(segment.frames) {
             return Err(rejected(
                 &segment.entry_dir,
@@ -105,8 +105,9 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
             })?;
     }
 
-    // The aggregate check is redundant while every per-segment check passes, and it is retained
-    // because it is the invariant the manifest and every downstream duration derive from.
+    // The aggregate check is redundant while every per-segment check passes, and it
+    // is retained because it is the invariant the manifest and every downstream
+    // duration derive from.
     if total_frames != expected {
         return Err(BuildError::AssembledLengthMismatch {
             destination: destination.to_path_buf(),
@@ -187,15 +188,16 @@ mod tests {
         let workspace = TempDir::new().expect("create assembly workspace");
         let audio = workspace.path().join("short.wav");
         write_tone(&audio, 1_200);
-        // The artifact claims 2,400 frames while the WAV holds 1,200, which is the shape a
-        // truncated synthesis or a partially written cache entry would take.
+        // The artifact claims 2,400 frames while the WAV holds 1,200, which is the
+        // shape a truncated synthesis or a partially written cache entry would take.
         let segments = vec![segment(audio, 2_400, 75)];
         let master = workspace.path().join("lesson.wav");
 
         let error = assemble(&segments, &master).expect_err("truncated segment must be rejected");
 
-        // A truncated entry found while assembling is the same violated invariant `cache`
-        // reports when loading one, so it must arrive as the same fault with the same remedy.
+        // A truncated entry found while assembling is the same violated invariant
+        // `cache` reports when loading one, so it must arrive as the same fault with
+        // the same remedy.
         let BuildError::UnusableCacheEntry { fault, .. } = &error else {
             panic!("error was `{error}`");
         };

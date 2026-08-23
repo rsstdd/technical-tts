@@ -3,12 +3,13 @@ use thiserror::Error;
 
 /// Gates a production release must satisfy.
 ///
-/// Transcribed from ADR-0001 §18 and mirrored in `docs/governance/RELEASE-PROFILES.md` §3. The
-/// two must agree, and changing either requires an ADR amendment rather than an edit.
+/// Transcribed from ADR-0001 §18 and mirrored in
+/// `docs/governance/RELEASE-PROFILES.md` §3. The two must agree, and changing
+/// either requires an ADR amendment rather than an edit.
 ///
-/// ASR calibration is deliberately absent. ADR-0001 §17.18 and §18 stated different ASR release
-/// conditions; version 1.0 adopts the §18 condition, recorded in
-/// `docs/adr/deviations/ADR-0001-D001-asr-release-condition.md`.
+/// ASR calibration is deliberately absent. ADR-0001 §17.18 and §18 stated
+/// different ASR release conditions; version 1.0 adopts the §18 condition,
+/// recorded in `docs/adr/deviations/ADR-0001-D001-asr-release-condition.md`.
 pub const REQUIRED_PRODUCTION_GATES: [&str; 12] = [
     "long_form_soak",
     "content_integrity_review",
@@ -30,17 +31,20 @@ pub const REQUIRED_PRODUCTION_GATES: [&str; 12] = [
 pub enum ReleaseStatus {
     /// Rendered and structurally valid, but not verified, approved, or releasable.
     PrivatePreview,
-    /// Every gate in `docs/governance/RELEASE-PROFILES.md` §3 has a passing evidence record.
+    /// Every gate in `docs/governance/RELEASE-PROFILES.md` §3 has a passing
+    /// evidence record.
     ProductionRelease,
 }
 
 /// Why a claim was refused as a production release.
 #[derive(Debug, Error)]
 pub enum ReleaseError {
-    /// The artifact claims a profile it did not earn; only `publish` produces a release.
+    /// The artifact claims a profile it did not earn; only `publish` produces a
+    /// release.
     #[error("a private preview cannot report production release")]
     PrivateProfileCannotClaimProduction,
-    /// A required gate has no evidence record, named so the owner knows which one to run.
+    /// A required gate has no evidence record, named so the owner knows which one
+    /// to run.
     #[error("production release is missing gate evidence: {0}")]
     MissingGateEvidence(String),
 }
@@ -74,7 +78,8 @@ impl ReleaseClaim {
         self.status
     }
 
-    /// Accepts the claim only if the profile is production and every required gate has evidence.
+    /// Accepts the claim only if the profile is production and every required gate
+    /// has evidence.
     pub fn validate_as_production(&self) -> Result<(), ReleaseError> {
         if self.status != ReleaseStatus::ProductionRelease {
             return Err(ReleaseError::PrivateProfileCannotClaimProduction);
@@ -96,11 +101,12 @@ impl ReleaseClaim {
 mod tests {
     use super::*;
 
-    /// The gate identifiers this crate is expected to require, transcribed independently from
-    /// `docs/governance/RELEASE-PROFILES.md` §3 rather than read from
-    /// `REQUIRED_PRODUCTION_GATES`. A test that derives its cases from the implementation drops
-    /// a case whenever a gate is dropped, and stays green while the policy shrinks. Update this
-    /// table only alongside an ADR amendment that changes §3.
+    /// The gate identifiers this crate is expected to require, transcribed
+    /// independently from `docs/governance/RELEASE-PROFILES.md` §3 rather than read
+    /// from `REQUIRED_PRODUCTION_GATES`. A test that derives its cases from the
+    /// implementation drops a case whenever a gate is dropped, and stays green
+    /// while the policy shrinks. Update this table only alongside an ADR amendment
+    /// that changes §3.
     const EXPECTED_PRODUCTION_GATES: [&str; 12] = [
         "long_form_soak",
         "content_integrity_review",
@@ -150,7 +156,10 @@ mod tests {
                 .expect_err("a missing gate must be rejected");
 
             assert!(
-                matches!(error, ReleaseError::MissingGateEvidence(ref missing) if missing == omitted),
+                matches!(
+                    error,
+                    ReleaseError::MissingGateEvidence(ref missing) if missing == omitted
+                ),
                 "omitting `{omitted}` produced `{error}`"
             );
         }
