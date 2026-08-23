@@ -92,8 +92,28 @@ impl ReleaseClaim {
 mod tests {
     use super::*;
 
+    /// The gate identifiers this crate is expected to require, transcribed independently from
+    /// `docs/governance/RELEASE-PROFILES.md` §3 rather than read from
+    /// `REQUIRED_PRODUCTION_GATES`. A test that derives its cases from the implementation drops
+    /// a case whenever a gate is dropped, and stays green while the policy shrinks. Update this
+    /// table only alongside an ADR amendment that changes §3.
+    const EXPECTED_PRODUCTION_GATES: [&str; 12] = [
+        "long_form_soak",
+        "content_integrity_review",
+        "asr_triage_recorded",
+        "worker_unloaded_before_verification",
+        "explicit_take_selection",
+        "frozen_loudness_references",
+        "voice_identity_and_format",
+        "automated_audio_checks",
+        "package_provenance",
+        "offline_render_verified",
+        "rights_and_licensing",
+        "clean_machine_operations",
+    ];
+
     fn all_gates() -> Vec<String> {
-        REQUIRED_PRODUCTION_GATES
+        EXPECTED_PRODUCTION_GATES
             .iter()
             .map(|gate| (*gate).to_owned())
             .collect()
@@ -115,7 +135,7 @@ mod tests {
 
     #[test]
     fn t3_e0_production_profile_rejects_missing_gate_evidence() {
-        for omitted in REQUIRED_PRODUCTION_GATES {
+        for omitted in EXPECTED_PRODUCTION_GATES {
             let gates = all_gates()
                 .into_iter()
                 .filter(|gate| gate != omitted)
@@ -165,15 +185,23 @@ mod tests {
     }
 
     #[test]
+    fn t3_e0_required_gates_match_the_release_profile_document() {
+        assert_eq!(
+            REQUIRED_PRODUCTION_GATES, EXPECTED_PRODUCTION_GATES,
+            "REQUIRED_PRODUCTION_GATES no longer matches RELEASE-PROFILES.md §3"
+        );
+    }
+
+    #[test]
     fn t3_e0_gate_list_has_no_duplicates() {
-        let mut sorted = REQUIRED_PRODUCTION_GATES;
+        let mut sorted = EXPECTED_PRODUCTION_GATES;
         sorted.sort_unstable();
         let mut unique = sorted.to_vec();
         unique.dedup();
 
         assert_eq!(
             unique.len(),
-            REQUIRED_PRODUCTION_GATES.len(),
+            EXPECTED_PRODUCTION_GATES.len(),
             "gate identifiers must be unique"
         );
     }

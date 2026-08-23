@@ -24,7 +24,7 @@ conclusion about third-party material.
 |---|---|---|---|
 | Qualification and release source classification record | branch `e0-s2/voice-content-model-legal` | `evidence/rights/rights-qualification-sources-v1/record.md` | `ef2281f119328e7ed7be9e6334f434b5dd1be5138da9c0b0d2d8f7a8986696b8` |
 | Rights, data, and artifact policy (classification vocabulary and enforcement table) | branch `e0-s2/voice-content-model-legal` | `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` | `76f77c53325544e98c2a07220d27040447f6efc704177760fd8129e61490a22a` |
-| Ratified distribution scope | branch `e0-s2/voice-content-model-legal` | `docs/governance/RELEASE-PROFILES.md` | `9675eebcfd8194703cebcc4f9262779724334b4bdf6eedeeb69330ed085f78bf` |
+| Ratified distribution scope | branch `e0-s2/voice-content-model-legal` | `docs/governance/RELEASE-PROFILES.md` | `bee9fb86528f9dac4769cae92878a0dfb24682ca58f183da3d8182e7dae9ee41` |
 | Test data manifest | branch `e0-s2/voice-content-model-legal` | `docs/testing/TEST-DATA-MANIFEST.md` | `39eebd67e3782717b6413bacc169bd9c1fef1d43ff2b1ffacf25b2405dcb244c` |
 
 ## Procedure
