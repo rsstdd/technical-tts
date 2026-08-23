@@ -28,7 +28,7 @@ Qualify the exact Chatterbox code, model, tokenizer, codec, worker bundle, voice
 |---|---|---|---|
 | Chatterbox revision | TBD | TBD | Pending |
 | Model/tokenizer/codec | TBD | TBD | Pending |
-| Voice profile | TBD | TBD | Pending |
+| Voice profile | Owner-recorded single-instructor fallback, pre-authorized as `rights-voice-owner-fallback-v1`; `nadia-v1`/`tom-v1` pending source acquisition (`rights-voice-nadia-v1`, `rights-voice-tom-v1`) | TBD | Pending |
 | Reference hardware | TBD | TBD | Pending |
 | Canonical worker format | 24 kHz mono float WAV per ADR-0001 | TBD | Pending validation |
 | Supported FFmpeg identity | TBD | TBD | Pending |
