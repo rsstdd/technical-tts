@@ -31,12 +31,16 @@ Reviewed every capability row of the matrix against the criterion. Row count con
 | Rows with exactly one delivery owner | 30 | 30 | Pass |
 | Rows with exactly one approver | 30 | 30 | Pass |
 | Rows with a first required gate | 30 | 30 | Pass |
-| Role names resolving to a real person | All | All: the matrix's mapping rule assigns every role to Ross Todd during solo development unless another named person accepts it | Pass |
+| Role names resolving to a real person | All | All except the listener representative resolve to Ross Todd under the matrix's solo-development mapping; the listener representative is deliberately outside that mapping and tracked to assignment by OQ-10 | Pass |
 
 Rows naming compound owners (for example "CLI/core owners") name one accountable role set that
 resolves to the same single person under the solo-development mapping; accountability is not
 split. Independent-listener and rightsholder decisions remain separate roles even while
-coordinated by the project owner, as the matrix records.
+coordinated by the project owner, as the matrix records: Ross Todd does not hold the listener
+representative role, which is unassigned as of this record. Its assignment is an open question
+(OQ-10, deadline before G1 listening approval), and the solo-review blind spot it mitigates is
+the accepted risk R-10, both in `docs/governance/RISK-OPEN-QUESTIONS-DESCOPE.md`. Listener
+independence first gates E5-S1/E6-S1 approvals (G3/M3), not this G0 record.
 
 **Overall: PASS.**
 
