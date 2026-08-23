@@ -1,0 +1,587 @@
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Schema version this module accepts for `profile.json` and `consent.json`.
+///
+/// Provisional pending the versioned JSON Schemas of E1-S1; the on-disk layout is ADR-0001
+/// §12.1 (`data/voices/<id>/{profile.json, reference.wav, conditionals.pt, consent.json}`).
+const VOICE_SCHEMA_VERSION: &str = "0.1-voice";
+
+/// Length of a BLAKE3 digest rendered as lowercase hexadecimal.
+const BLAKE3_HEX_LENGTH: usize = 64;
+
+/// Consent status recorded for a voice reference.
+///
+/// Field set per ADR-0001 §15.3: a profile is usable only while consent is `granted`; anything
+/// else refuses profile load per `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`
+/// ("Profile load fails closed").
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsentStatus {
+    /// Consent is recorded and in force.
+    Granted,
+    /// Consent has been requested but not yet recorded.
+    Pending,
+    /// Consent was withdrawn; new use is disabled immediately.
+    Revoked,
+}
+
+impl ConsentStatus {
+    /// The `snake_case` spelling this status carries in `consent.json`.
+    ///
+    /// Mirrors the serde representation above so a refusal message quotes what the author
+    /// actually wrote in the record. The exhaustive match makes a new variant a compile error
+    /// rather than a silent fallback string, and
+    /// `t3_e0_record_state_spellings_match_their_serde_representation` proves the two agree.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Granted => "granted",
+            Self::Pending => "pending",
+            Self::Revoked => "revoked",
+        }
+    }
+}
+
+/// Decision recorded for a rights record.
+///
+/// Mirrors the Decision checkboxes of `docs/templates/RIGHTS-RECORD-TEMPLATE.md`. The two must
+/// agree, and changing either requires a template amendment rather than an edit.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RightsDecision {
+    /// Approved for the recorded scope.
+    Approved,
+    /// Usable only under recorded restrictions.
+    Restricted,
+    /// A rights review is outstanding.
+    ReviewRequired,
+    /// The artifact must not be used.
+    Prohibited,
+}
+
+impl RightsDecision {
+    /// The `snake_case` spelling this decision carries in `profile.json`.
+    ///
+    /// Mirrors the serde representation above, on the same terms as [`ConsentStatus::as_str`].
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::Restricted => "restricted",
+            Self::ReviewRequired => "review_required",
+            Self::Prohibited => "prohibited",
+        }
+    }
+}
+
+/// The use a caller asks a voice profile to serve.
+///
+/// A dedicated value object rather than a bare string: `VoiceConsent::permitted_use` is the
+/// recorded scope of a consent, and scope compared by ad-hoc string equality at each call site
+/// is how scope stops being enforced. The spellings are the ones written into `consent.json`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VoiceUse {
+    /// Private lesson or preview rendering.
+    PrivateSynthesis,
+    /// Model, hardware, or voice qualification runs that never reach a lesson.
+    VoiceQualification,
+}
+
+impl VoiceUse {
+    /// The `snake_case` spelling this use carries in a `permitted_use` entry.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PrivateSynthesis => "private_synthesis",
+            Self::VoiceQualification => "voice_qualification",
+        }
+    }
+}
+
+/// The consent record a voice profile directory carries as `consent.json`.
+///
+/// Fields transcribed from ADR-0001 §15.3: ownership or subject-consent declaration,
+/// permitted-use scope, reference-audio checksum, creation date, and consent status.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct VoiceConsent {
+    /// Version of the consent record layout; must be `0.1-voice`.
+    pub schema_version: String,
+    /// Ownership declaration or documented subject consent for the reference recording.
+    pub declaration: String,
+    /// The uses the consent permits, e.g. `private_synthesis`.
+    pub permitted_use: Vec<String>,
+    /// BLAKE3 checksum of `reference.wav` as recorded at consent time.
+    pub reference_wav_blake3: String,
+    /// Date the consent record was created.
+    pub created: String,
+    /// Whether the consent is granted, pending, or revoked.
+    pub consent_status: ConsentStatus,
+    /// The rights record under `evidence/rights/<record-id>/` backing this consent.
+    pub rights_record_id: String,
+}
+
+/// The identity record a voice profile directory carries as `profile.json`.
+///
+/// Identity per ADR-0001 §5.2: the conditional hash and extractor identity are the synthesis
+/// identity; the reference hash is provenance.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct VoiceProfile {
+    /// Version of the profile record layout; must be `0.1-voice`.
+    pub schema_version: String,
+    /// Identifier of the voice profile, e.g. `owner-fallback-v1`.
+    pub profile_id: String,
+    /// BLAKE3 checksum of `reference.wav` (provenance).
+    pub reference_wav_blake3: String,
+    /// BLAKE3 checksum of `conditionals.pt` (synthesis identity).
+    pub conditionals_blake3: String,
+    /// Identity of the extractor that produced the conditionals.
+    pub extractor_identity: String,
+    /// The rights-record decision recorded for this profile.
+    pub approval: RightsDecision,
+}
+
+/// Why a voice record was refused.
+#[derive(Debug, Error)]
+pub enum VoiceError {
+    /// The record bytes are not the expected JSON shape.
+    #[error("voice record JSON is invalid: {0}")]
+    InvalidJson(#[from] serde_json::Error),
+    /// The record declares a layout version this build does not accept.
+    #[error("unsupported voice record schema version `{0}`")]
+    UnsupportedSchema(String),
+    /// A required record field is empty.
+    #[error("voice record field `{0}` must not be empty")]
+    MissingField(&'static str),
+    /// A recorded checksum is not a BLAKE3 digest, so it could never match a computed one.
+    ///
+    /// Caught at parse time so a malformed record is reported as malformed. Without this, an
+    /// uppercase or truncated digest reaches the runtime comparison and is reported as a
+    /// checksum *mismatch* — telling the owner their file was tampered with when the record was
+    /// simply mistyped.
+    #[error(
+        "voice record field `{field}` is not a lowercase BLAKE3 hex digest: `{value}`; correct \
+         the record rather than the artifact"
+    )]
+    MalformedChecksum {
+        /// The field holding the malformed digest.
+        field: &'static str,
+        /// The value as recorded.
+        value: String,
+    },
+    /// The consent record is not in the `granted` state.
+    #[error(
+        "voice profile `{profile_id}` is refused: consent status is `{status}`, not `granted`; \
+         profile load fails closed and the project owner must resolve the consent record before \
+         use"
+    )]
+    ConsentNotGranted {
+        /// The refused profile.
+        profile_id: String,
+        /// The recorded consent status.
+        status: String,
+    },
+    /// The rights-record decision for the profile is not `approved`.
+    #[error(
+        "voice profile `{profile_id}` is refused: rights decision is `{decision}`, not \
+         `approved`; the profile enters neither preview nor production until the project owner \
+         records approval"
+    )]
+    ProfileNotApproved {
+        /// The refused profile.
+        profile_id: String,
+        /// The recorded rights decision.
+        decision: String,
+    },
+    /// The requested use is outside the scope the consent record permits.
+    #[error(
+        "voice profile `{profile_id}` is refused: the consent record permits `{permitted}`, not \
+         the requested `{requested}`; the project owner must record consent for this use before \
+         it proceeds"
+    )]
+    ConsentScopeExcluded {
+        /// The refused profile.
+        profile_id: String,
+        /// The use that was requested.
+        requested: &'static str,
+        /// The uses the consent record permits, as recorded.
+        permitted: String,
+    },
+    /// The profile and consent records disagree about the reference-audio checksum.
+    #[error(
+        "voice profile `{profile_id}` is refused: profile.json and consent.json record \
+         different reference-audio checksums; the project owner must re-verify the profile \
+         against its rights record before use"
+    )]
+    ConsentChecksumDisagreement {
+        /// The refused profile.
+        profile_id: String,
+    },
+}
+
+impl VoiceProfile {
+    /// Parses and validates a `profile.json` record.
+    pub fn from_json(bytes: &[u8]) -> Result<Self, VoiceError> {
+        let profile: Self = serde_json::from_slice(bytes)?;
+        profile.validate()?;
+        Ok(profile)
+    }
+
+    /// Rejects a structurally complete record whose fields are absent or unsupported.
+    pub fn validate(&self) -> Result<(), VoiceError> {
+        if self.schema_version != VOICE_SCHEMA_VERSION {
+            return Err(VoiceError::UnsupportedSchema(self.schema_version.clone()));
+        }
+        require("profile_id", &self.profile_id)?;
+        require("extractor_identity", &self.extractor_identity)?;
+        require_blake3_hex("reference_wav_blake3", &self.reference_wav_blake3)?;
+        require_blake3_hex("conditionals_blake3", &self.conditionals_blake3)?;
+        Ok(())
+    }
+}
+
+impl VoiceConsent {
+    /// Parses and validates a `consent.json` record.
+    pub fn from_json(bytes: &[u8]) -> Result<Self, VoiceError> {
+        let consent: Self = serde_json::from_slice(bytes)?;
+        consent.validate()?;
+        Ok(consent)
+    }
+
+    /// Rejects a structurally complete record whose fields are absent or unsupported.
+    pub fn validate(&self) -> Result<(), VoiceError> {
+        if self.schema_version != VOICE_SCHEMA_VERSION {
+            return Err(VoiceError::UnsupportedSchema(self.schema_version.clone()));
+        }
+        require("declaration", &self.declaration)?;
+        require("created", &self.created)?;
+        require("rights_record_id", &self.rights_record_id)?;
+        require_blake3_hex("reference_wav_blake3", &self.reference_wav_blake3)?;
+        if self.permitted_use.is_empty()
+            || self.permitted_use.iter().any(|use_| use_.trim().is_empty())
+        {
+            return Err(VoiceError::MissingField("permitted_use"));
+        }
+        Ok(())
+    }
+}
+
+/// Accepts a profile for `requested` use only with granted consent, a recorded approval, a
+/// consent scope covering that use, and agreeing reference checksums.
+///
+/// `requested` is not optional by design: a consent record's `permitted_use` list is scope, and
+/// a gate that never receives the use it is gating cannot enforce scope. Every caller states
+/// what it is about to do.
+///
+/// This gate is IO-free; verifying the on-disk `reference.wav` and `conditionals.pt` bytes
+/// against the recorded checksums is the runtime's responsibility.
+pub fn validate_profile_for_use(
+    profile: &VoiceProfile,
+    consent: &VoiceConsent,
+    requested: VoiceUse,
+) -> Result<(), VoiceError> {
+    if consent.consent_status != ConsentStatus::Granted {
+        return Err(VoiceError::ConsentNotGranted {
+            profile_id: profile.profile_id.clone(),
+            status: consent.consent_status.as_str().to_owned(),
+        });
+    }
+    if profile.approval != RightsDecision::Approved {
+        return Err(VoiceError::ProfileNotApproved {
+            profile_id: profile.profile_id.clone(),
+            decision: profile.approval.as_str().to_owned(),
+        });
+    }
+    if !permits(consent, requested) {
+        return Err(VoiceError::ConsentScopeExcluded {
+            profile_id: profile.profile_id.clone(),
+            requested: requested.as_str(),
+            permitted: consent.permitted_use.join(", "),
+        });
+    }
+    if profile.reference_wav_blake3 != consent.reference_wav_blake3 {
+        return Err(VoiceError::ConsentChecksumDisagreement {
+            profile_id: profile.profile_id.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn permits(consent: &VoiceConsent, requested: VoiceUse) -> bool {
+    consent
+        .permitted_use
+        .iter()
+        .any(|scope| scope == requested.as_str())
+}
+
+fn require(field: &'static str, value: &str) -> Result<(), VoiceError> {
+    if value.trim().is_empty() {
+        return Err(VoiceError::MissingField(field));
+    }
+    Ok(())
+}
+
+/// A recorded digest must be exactly the form `blake3::Hash::to_hex` produces, because that is
+/// what the runtime compares it against byte for byte.
+fn require_blake3_hex(field: &'static str, value: &str) -> Result<(), VoiceError> {
+    require(field, value)?;
+    let well_formed = value.len() == BLAKE3_HEX_LENGTH
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+    if !well_formed {
+        return Err(VoiceError::MalformedChecksum {
+            field,
+            value: value.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    /// Stand-in digests. Any well-formed value works: this module never hashes anything, and the
+    /// runtime is what compares a recorded digest to a computed one.
+    /// Both carry hex letters, so `to_uppercase` below actually changes them.
+    const REFERENCE_DIGEST: &str =
+        "afafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafaf";
+    const CONDITIONALS_DIGEST: &str =
+        "bdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbd";
+
+    fn profile_value() -> Value {
+        json!({
+            "schema_version": "0.1-voice",
+            "profile_id": "synthetic-test-voice-v1",
+            "reference_wav_blake3": REFERENCE_DIGEST,
+            "conditionals_blake3": CONDITIONALS_DIGEST,
+            "extractor_identity": "test-extractor-v1",
+            "approval": "approved",
+        })
+    }
+
+    fn consent_value() -> Value {
+        json!({
+            "schema_version": "0.1-voice",
+            "declaration": "Owner-recorded reference with a permitted-use declaration.",
+            "permitted_use": ["private_synthesis"],
+            "reference_wav_blake3": REFERENCE_DIGEST,
+            "created": "2026-08-23",
+            "consent_status": "granted",
+            "rights_record_id": "rights-voice-owner-fallback-v1",
+        })
+    }
+
+    fn parse_profile(value: &Value) -> Result<VoiceProfile, VoiceError> {
+        VoiceProfile::from_json(&serde_json::to_vec(value).expect("profile should serialize"))
+    }
+
+    fn parse_consent(value: &Value) -> Result<VoiceConsent, VoiceError> {
+        VoiceConsent::from_json(&serde_json::to_vec(value).expect("consent should serialize"))
+    }
+
+    #[test]
+    fn t1_e0_valid_voice_records_parse_and_pass_the_use_gate() {
+        let profile = parse_profile(&profile_value()).expect("valid profile must parse");
+        let consent = parse_consent(&consent_value()).expect("valid consent must parse");
+        validate_profile_for_use(&profile, &consent, VoiceUse::PrivateSynthesis)
+            .expect("granted, approved, in-scope profile is usable");
+    }
+
+    #[test]
+    fn t1_e0_non_granted_consent_statuses_are_refused() {
+        let profile = parse_profile(&profile_value()).expect("valid profile must parse");
+        for status in ["pending", "revoked"] {
+            let mut value = consent_value();
+            value["consent_status"] = Value::String(status.to_owned());
+            let consent = parse_consent(&value).expect("record with known status must parse");
+
+            let error = validate_profile_for_use(&profile, &consent, VoiceUse::PrivateSynthesis)
+                .expect_err("non-granted consent must be refused");
+            assert!(
+                matches!(
+                    error,
+                    VoiceError::ConsentNotGranted { status: ref reported, .. }
+                        if reported == status
+                ),
+                "consent status `{status}` produced `{error}`"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e0_non_approved_rights_decisions_are_refused() {
+        let consent = parse_consent(&consent_value()).expect("valid consent must parse");
+        for decision in ["restricted", "review_required", "prohibited"] {
+            let mut value = profile_value();
+            value["approval"] = Value::String(decision.to_owned());
+            let profile = parse_profile(&value).expect("record with known decision must parse");
+
+            let error = validate_profile_for_use(&profile, &consent, VoiceUse::PrivateSynthesis)
+                .expect_err("non-approved profile must be refused");
+            assert!(
+                matches!(
+                    error,
+                    VoiceError::ProfileNotApproved { decision: ref reported, .. }
+                        if reported == decision
+                ),
+                "rights decision `{decision}` produced `{error}`"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e0_disagreeing_reference_checksums_are_refused() {
+        let profile = parse_profile(&profile_value()).expect("valid profile must parse");
+        let mut value = consent_value();
+        // Well-formed, so it reaches the agreement check rather than the format check.
+        value["reference_wav_blake3"] = Value::String(CONDITIONALS_DIGEST.to_owned());
+        let consent = parse_consent(&value).expect("valid consent must parse");
+
+        assert!(matches!(
+            validate_profile_for_use(&profile, &consent, VoiceUse::PrivateSynthesis),
+            Err(VoiceError::ConsentChecksumDisagreement { .. })
+        ));
+    }
+
+    #[test]
+    fn t1_e0_uses_outside_the_recorded_consent_scope_are_refused() {
+        let profile = parse_profile(&profile_value()).expect("valid profile must parse");
+        let mut value = consent_value();
+        value["permitted_use"] = json!(["voice_qualification"]);
+        let consent = parse_consent(&value).expect("valid consent must parse");
+
+        let error = validate_profile_for_use(&profile, &consent, VoiceUse::PrivateSynthesis)
+            .expect_err("a use outside the recorded scope must be refused");
+        assert!(
+            matches!(
+                error,
+                VoiceError::ConsentScopeExcluded { requested, ref permitted, .. }
+                    if requested == "private_synthesis" && permitted == "voice_qualification"
+            ),
+            "out-of-scope use produced `{error}`"
+        );
+
+        // The same record permits the use it was actually recorded for.
+        validate_profile_for_use(&profile, &consent, VoiceUse::VoiceQualification)
+            .expect("the recorded scope must remain usable");
+    }
+
+    #[test]
+    fn t1_e0_malformed_recorded_checksums_are_reported_as_malformed() {
+        // Uppercase is the trap this guards: `blake3::Hash::to_hex` is lowercase, so an
+        // uppercase digest would otherwise reach the runtime and be reported as tampering.
+        for malformed in [
+            &REFERENCE_DIGEST.to_uppercase(),
+            "1111",
+            "11111111111111111111111111111111111111111111111111111111111111zz",
+        ] {
+            let mut value = profile_value();
+            value["reference_wav_blake3"] = Value::String((*malformed).to_owned());
+            assert!(
+                matches!(
+                    parse_profile(&value),
+                    Err(VoiceError::MalformedChecksum { field, .. })
+                        if field == "reference_wav_blake3"
+                ),
+                "`{malformed}` must be reported as a malformed checksum"
+            );
+        }
+    }
+
+    #[test]
+    fn t3_e0_record_state_spellings_match_their_serde_representation() {
+        for status in [
+            ConsentStatus::Granted,
+            ConsentStatus::Pending,
+            ConsentStatus::Revoked,
+        ] {
+            assert_eq!(
+                serde_json::to_value(status).expect("unit variant serializes"),
+                Value::String(status.as_str().to_owned()),
+                "`{status:?}` spelling drifted from its serde representation"
+            );
+        }
+        for decision in [
+            RightsDecision::Approved,
+            RightsDecision::Restricted,
+            RightsDecision::ReviewRequired,
+            RightsDecision::Prohibited,
+        ] {
+            assert_eq!(
+                serde_json::to_value(decision).expect("unit variant serializes"),
+                Value::String(decision.as_str().to_owned()),
+                "`{decision:?}` spelling drifted from its serde representation"
+            );
+        }
+    }
+
+    #[test]
+    fn t3_e0_unknown_consent_status_and_rights_decision_are_rejected() {
+        for unknown in [
+            "\"Granted\"",
+            "\"granted \"",
+            "\"approved\"",
+            "\"withdrawn\"",
+            "\"\"",
+            "null",
+        ] {
+            assert!(
+                serde_json::from_str::<ConsentStatus>(unknown).is_err(),
+                "consent status `{unknown}` must be rejected"
+            );
+        }
+        for unknown in ["\"Approved\"", "\"review-required\"", "\"granted\"", "null"] {
+            assert!(
+                serde_json::from_str::<RightsDecision>(unknown).is_err(),
+                "rights decision `{unknown}` must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e0_absent_record_fields_have_distinct_missing_errors() {
+        for field in [
+            "profile_id",
+            "reference_wav_blake3",
+            "conditionals_blake3",
+            "extractor_identity",
+        ] {
+            let mut value = profile_value();
+            value[field] = Value::String("  ".to_owned());
+            assert!(
+                matches!(parse_profile(&value), Err(VoiceError::MissingField(name)) if name == field),
+                "profile field `{field}` must be reported as missing"
+            );
+        }
+
+        for field in [
+            "declaration",
+            "reference_wav_blake3",
+            "created",
+            "rights_record_id",
+        ] {
+            let mut value = consent_value();
+            value[field] = Value::String(String::new());
+            assert!(
+                matches!(parse_consent(&value), Err(VoiceError::MissingField(name)) if name == field),
+                "consent field `{field}` must be reported as missing"
+            );
+        }
+
+        let mut value = consent_value();
+        value["permitted_use"] = Value::Array(Vec::new());
+        assert!(matches!(
+            parse_consent(&value),
+            Err(VoiceError::MissingField("permitted_use"))
+        ));
+
+        let mut value = consent_value();
+        value["schema_version"] = Value::String("0.2-voice".to_owned());
+        assert!(matches!(
+            parse_consent(&value),
+            Err(VoiceError::UnsupportedSchema(version)) if version == "0.2-voice"
+        ));
+    }
+}
