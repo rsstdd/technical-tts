@@ -20,6 +20,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # Must match rust-toolchain.toml, which governs every cargo invocation.
+          toolchain: 1.97.1
           components: clippy, rustfmt
 
       - name: Rust Cache
@@ -35,6 +37,16 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      - name: Check Cargo.toml formatting
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/taplo.gz" \
+            https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-linux-x86_64.gz
+          echo "8fe196b894ccf9072f98d4e1013a180306e17d244830b03986ee5e8eabeb6156  $RUNNER_TEMP/taplo.gz" \
+            | sha256sum -c -
+          gunzip "$RUNNER_TEMP/taplo.gz"
+          chmod +x "$RUNNER_TEMP/taplo"
+          "$RUNNER_TEMP/taplo" fmt --check
 
       - name: Lint offline
         run: cargo clippy --offline --workspace --all-targets --all-features --locked -- -D warnings
@@ -74,3 +86,16 @@ jobs:
 
       - name: Run doc tests offline
         run: cargo test --offline --workspace --doc --locked
+
+  dependency-policy:
+    name: dependency-policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check dependency policy
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: "1.97.1"

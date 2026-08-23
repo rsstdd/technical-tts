@@ -15,3 +15,16 @@ evidence/
 
 Never overwrite an accepted report. Create a new record that explicitly supersedes the prior evidence ID.
 
+
+## Naming and criteria
+
+Every `evidence_*` item named in `DELIVERY-PLAN.md` becomes exactly one file under
+`gates/<gate>/<review-id>/`, named character for character as the delivery plan names it. A name
+that a test or a checklist looks up must be written once and matched literally, never paraphrased.
+
+Each record states its acceptance criterion **before** its result. A criterion written after the
+result is not a criterion, because a bar set afterwards cannot fail.
+
+Evidence is committed to Git. `docs/governance/RISK-OPEN-QUESTIONS-DESCOPE.md` OQ-3 records that
+this project runs on one machine with no backup for runtime state, so committing evidence is what
+protects it from machine loss.
