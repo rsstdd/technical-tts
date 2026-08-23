@@ -10,7 +10,7 @@ use study_tts_core::{
 };
 use tempfile::Builder;
 
-use crate::{AudioFault, BuildError, CacheEntryFault, SegmentSynthesizer, io_error};
+use crate::{AudioFault, BuildError, CacheEntryFault, SegmentSynthesizer, io_error, managed};
 
 const CACHE_SCHEMA_VERSION: &str = "0.1-skeleton";
 
@@ -32,6 +32,15 @@ const HASH_BUFFER_BYTES: usize = 64 * 1024;
 /// error.
 const CACHE_SHARD_WIDTH: usize = 2;
 const _: () = assert!(CACHE_SHARD_WIDTH <= CacheKey::LENGTH);
+
+/// Directory grouping every cache entry beneath the cache root.
+const SEGMENTS_DIRECTORY: &str = "segments";
+
+/// The audio one cache entry holds.
+const AUDIO_RECORD: &str = "audio.wav";
+
+/// The metadata describing that audio.
+const ARTIFACT_RECORD: &str = "artifact.json";
 
 #[derive(Clone, Debug)]
 pub(crate) struct CachedSegment {
@@ -66,9 +75,23 @@ struct CacheArtifact {
 pub(crate) fn entry_dir(cache_root: &Path, cache_key: &CacheKey) -> PathBuf {
     let key = cache_key.as_str();
     cache_root
-        .join("segments")
+        .join(SEGMENTS_DIRECTORY)
         .join(&key[..CACHE_SHARD_WIDTH])
         .join(key)
+}
+
+/// Resolves the entry directory, validating every component it creates.
+///
+/// [`entry_dir`] states the layout; this walks it. A *lexical* escape is
+/// already impossible because `CacheKey` guarantees hex, so no component can
+/// carry a separator or `..` — but a symlink planted at `segments`, at the
+/// shard, or at the entry itself is followed by `create_dir_all` and by every
+/// later read. Each level therefore goes through `managed::subdirectory`, which
+/// refuses a link and confirms the result is still beneath its parent.
+fn resolve_entry_dir(cache_root: &Path, cache_key: &CacheKey) -> Result<PathBuf, BuildError> {
+    let segments = managed::subdirectory(cache_root, SEGMENTS_DIRECTORY)?;
+    let shard = managed::subdirectory(&segments, &cache_key.as_str()[..CACHE_SHARD_WIDTH])?;
+    managed::subdirectory(&shard, cache_key.as_str())
 }
 
 /// Names the entry a fault was found in.
@@ -89,9 +112,9 @@ pub(crate) fn resolve(
     segment: &PlannedSegment,
     synthesizer: &dyn SegmentSynthesizer,
 ) -> Result<CachedSegment, BuildError> {
-    let entry_dir = entry_dir(cache_root, &segment.cache_key);
-    let audio_path = entry_dir.join("audio.wav");
-    let artifact_path = entry_dir.join("artifact.json");
+    let entry_dir = resolve_entry_dir(cache_root, &segment.cache_key)?;
+    let audio_path = managed::leaf(&entry_dir, AUDIO_RECORD)?;
+    let artifact_path = managed::leaf(&entry_dir, ARTIFACT_RECORD)?;
 
     // A partial entry is treated as a miss and re-synthesized. E2-S1 replaces
     // this with explicit reconciliation between job state, cache artifacts, and
@@ -100,7 +123,6 @@ pub(crate) fn resolve(
         return load_validated(segment, &entry_dir, &audio_path, &artifact_path);
     }
 
-    fs::create_dir_all(&entry_dir).map_err(|error| io_error(&entry_dir, error))?;
     // The temporary file reserves a unique path inside the entry directory; the
     // synthesizer replaces it with a new file at that path rather than writing
     // through the handle. E1-S3 hardens this with an explicit staging root and

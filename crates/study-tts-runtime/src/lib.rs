@@ -9,6 +9,7 @@ mod assembly;
 mod cache;
 mod error;
 mod export;
+mod managed;
 mod manifest;
 mod pipeline;
 mod synthesis;

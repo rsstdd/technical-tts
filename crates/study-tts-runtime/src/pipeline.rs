@@ -1,6 +1,6 @@
 use std::{
-    fs, io,
-    path::{Component, Path, PathBuf},
+    fs,
+    path::{Path, PathBuf},
 };
 
 use serde::Deserialize;
@@ -10,7 +10,8 @@ use study_tts_core::{
 };
 
 use crate::{
-    BuildError, SegmentSynthesizer, assembly, cache, export, io_error, manifest, tools, voice_gate,
+    BuildError, SegmentSynthesizer, assembly, cache, export, io_error, managed, manifest, tools,
+    voice_gate,
 };
 
 /// Everything one preview build needs, named explicitly rather than read from
@@ -74,9 +75,9 @@ pub fn build_preview(
     fs::create_dir_all(&request.workspace).map_err(|error| io_error(&request.workspace, error))?;
     let workspace = fs::canonicalize(&request.workspace)
         .map_err(|error| io_error(&request.workspace, error))?;
-    let cache_root = managed_subdirectory(&workspace, "cache")?;
-    let previews_root = managed_subdirectory(&workspace, "previews")?;
-    let output_root = managed_subdirectory(&previews_root, &lesson.lesson_id)?;
+    let cache_root = managed::subdirectory(&workspace, "cache")?;
+    let previews_root = managed::subdirectory(&workspace, "previews")?;
+    let output_root = managed::subdirectory(&previews_root, &lesson.lesson_id)?;
 
     let cached_segments = plan
         .segments
@@ -84,12 +85,16 @@ pub fn build_preview(
         .map(|segment| cache::resolve(&cache_root, segment, synthesizer))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let master_wav = output_root.join(manifest::MASTER_WAV_NAME);
+    // Each output is staged and renamed into place, so a link occupying one of
+    // these names would be replaced rather than followed. It is still refused:
+    // silently destroying something the operator put there is not this build's
+    // decision to make, and the refusal names what it found.
+    let master_wav = managed::leaf(&output_root, manifest::MASTER_WAV_NAME)?;
     assembly::assemble(&cached_segments, &master_wav)?;
-    let m4a = output_root.join(manifest::M4A_NAME);
+    let m4a = managed::leaf(&output_root, manifest::M4A_NAME)?;
     let ffmpeg_execution = export::export_m4a(&ffmpeg, &master_wav, &m4a)?;
     let ffprobe_execution = export::probe_m4a(&ffprobe, &m4a)?;
-    let manifest_path = output_root.join(manifest::MANIFEST_NAME);
+    let manifest_path = managed::leaf(&output_root, manifest::MANIFEST_NAME)?;
     manifest::write(
         &manifest_path,
         &lesson.lesson_id,
@@ -124,66 +129,6 @@ pub fn validate_encoded_output(
 ) -> Result<(), BuildError> {
     let ffprobe = tools::inspect("ffprobe", ffprobe_executable)?;
     export::probe_m4a(&ffprobe, encoded).map(|_| ())
-}
-
-/// Creates `root/component` and proves it stays beneath `root`.
-///
-/// `root` is always canonical: the workspace is canonicalized by the caller,
-/// and each returned path is canonical and becomes the `root` of the next call.
-/// Only the final component is therefore unresolved, and it is inspected before
-/// anything is created, because `create_dir_all` follows a symlinked leaf and
-/// would create the target outside the workspace even though the containment
-/// check afterwards rejects the result.
-///
-/// A window remains between the inspection and the creation. Closing it
-/// requires directory-relative `openat` operations and a new dependency, which
-/// belongs to the E5-S4 containment story. For a single-user local tool the
-/// attacker would already need write access to the workspace, so the
-/// check-then-verify pair is proportionate here.
-fn managed_subdirectory(root: &Path, component: &str) -> Result<PathBuf, BuildError> {
-    // Reject anything that is not a single ordinary path element.
-    // `is_portable_id` already rejects separators in `lesson_id`, but this
-    // helper is generic over its component and the two checks fail
-    // independently.
-    let mut parts = Path::new(component).components();
-    if !matches!(parts.next(), Some(Component::Normal(_))) || parts.next().is_some() {
-        return Err(BuildError::ManagedPathEscape {
-            path: root.join(component),
-            root: root.to_path_buf(),
-        });
-    }
-
-    let candidate = root.join(component);
-
-    match fs::symlink_metadata(&candidate) {
-        // `symlink_metadata` reports the link's own type, so `is_symlink`
-        // catches a leaf that would otherwise be followed. The `is_dir` clause
-        // rejects a regular file occupying the managed name; that is an
-        // obstruction rather than an escape, and it shares this variant only
-        // until E5-S4 introduces a dedicated one.
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-            return Err(BuildError::ManagedPathEscape {
-                path: candidate,
-                root: root.to_path_buf(),
-            });
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(io_error(&candidate, error)),
-    }
-
-    fs::create_dir_all(&candidate).map_err(|error| io_error(&candidate, error))?;
-
-    // Defence in depth: catches a link planted between the inspection and the
-    // creation.
-    let resolved = fs::canonicalize(&candidate).map_err(|error| io_error(&candidate, error))?;
-    if !resolved.starts_with(root) {
-        return Err(BuildError::ManagedPathEscape {
-            path: resolved,
-            root: root.to_path_buf(),
-        });
-    }
-    Ok(resolved)
 }
 
 /// Refuses publication for the E0-S0 skeleton.

@@ -545,3 +545,83 @@ fn t3_e0_registered_fixture_checksums_match_test_data_manifest() {
         "expected at least two committed lesson fixtures, checked {checked}"
     );
 }
+
+/// The cache is inside the workspace, so its interior needs the same
+/// containment as the roots above it: a planted link is how a build is made to
+/// read or write somewhere it was never given.
+#[test]
+fn t4_e0_cache_directory_symlink_escape_is_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let outer = TempDir::new().expect("create cache symlink test root");
+    let workspace = outer.path().join("workspace");
+    let escape = outer.path().join("escape");
+    std::fs::create_dir_all(workspace.join("cache")).expect("create cache root");
+    std::fs::create_dir(&escape).expect("create escape target");
+    symlink(&escape, workspace.join("cache").join("segments")).expect("plant segments symlink");
+
+    let worker = DeterministicToneWorker::default();
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), &workspace),
+        &worker,
+    )
+    .expect_err("a symlinked cache directory must be refused");
+
+    assert!(
+        matches!(error, BuildError::ManagedPathEscape { .. }),
+        "a symlinked cache directory produced `{error}`"
+    );
+    assert_eq!(
+        std::fs::read_dir(&escape)
+            .expect("read escape target")
+            .count(),
+        0,
+        "nothing may be written through the link"
+    );
+    assert_eq!(worker.synthesis_count(), 0);
+}
+
+/// A cache entry's own files are read back and trusted, so a link planted at
+/// one is a way to feed the build bytes from outside the workspace.
+#[test]
+fn t4_e0_cache_file_symlink_escape_is_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let (workspace, result, _worker) = run_skeleton();
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(result.manifest).expect("read preview manifest"))
+            .expect("parse preview manifest");
+    let cache_key: CacheKey = manifest["segments"][0]["cache_key"]
+        .as_str()
+        .expect("segment cache key")
+        .parse()
+        .expect("the manifest records a well-formed cache key");
+    let entry_dir = cache_entry_dir(&workspace.path().join("cache"), &cache_key);
+
+    let outside = workspace.path().join("outside.json");
+    std::fs::write(&outside, b"{}").expect("write outside file");
+
+    for record in ["artifact.json", "audio.wav"] {
+        let planted = entry_dir.join(record);
+        std::fs::remove_file(&planted).expect("remove the real cache record");
+        symlink(&outside, &planted).expect("plant a cache record symlink");
+
+        let worker = DeterministicToneWorker::default();
+        let error = build_preview(
+            build_request(&walking_skeleton_fixture(), workspace.path()),
+            &worker,
+        )
+        .expect_err("a symlinked cache record must be refused");
+
+        assert!(
+            matches!(error, BuildError::ManagedPathEscape { .. }),
+            "a symlinked `{record}` produced `{error}`"
+        );
+        std::fs::remove_file(&planted).expect("remove the planted symlink");
+        assert_eq!(
+            std::fs::read(&outside).expect("read outside file"),
+            b"{}",
+            "the linked-to file must not be written through"
+        );
+    }
+}
