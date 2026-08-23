@@ -73,12 +73,21 @@ impl RightsDecision {
     }
 }
 
-/// The use a caller asks a voice profile to serve.
+/// The use a caller asks a voice profile to serve, and the vocabulary a consent record's
+/// `permitted_use` scope is written in.
 ///
-/// A dedicated value object rather than a bare string: `VoiceConsent::permitted_use` is the
-/// recorded scope of a consent, and scope compared by ad-hoc string equality at each call site
-/// is how scope stops being enforced. The spellings are the ones written into `consent.json`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A dedicated value object rather than a bare string, on both sides: scope compared by ad-hoc
+/// string equality at each call site is how scope stops being enforced, and a scope *recorded*
+/// as a bare string lets an unrecognized use into the record, where it can never match a
+/// request and so is silently unenforceable. Deserializing this enum makes an unknown value a
+/// parse error at the record boundary instead.
+///
+/// The vocabulary is closed here rather than in a governance document: ADR-0001 §15.3 requires
+/// a permitted-use scope without enumerating one, and the human-readable scope lives in the
+/// rights record under `evidence/rights/<record-id>/`. Widening the machine-checked scope means
+/// adding a variant and the call site that requests it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum VoiceUse {
     /// Private lesson or preview rendering.
     PrivateSynthesis,
@@ -107,8 +116,8 @@ pub struct VoiceConsent {
     pub schema_version: String,
     /// Ownership declaration or documented subject consent for the reference recording.
     pub declaration: String,
-    /// The uses the consent permits, e.g. `private_synthesis`.
-    pub permitted_use: Vec<String>,
+    /// The uses the consent permits; an unrecognized use is a parse error, not an empty scope.
+    pub permitted_use: Vec<VoiceUse>,
     /// BLAKE3 checksum of `reference.wav` as recorded at consent time.
     pub reference_wav_blake3: String,
     /// Date the consent record was created.
@@ -256,9 +265,7 @@ impl VoiceConsent {
         require("created", &self.created)?;
         require("rights_record_id", &self.rights_record_id)?;
         require_blake3_hex("reference_wav_blake3", &self.reference_wav_blake3)?;
-        if self.permitted_use.is_empty()
-            || self.permitted_use.iter().any(|use_| use_.trim().is_empty())
-        {
+        if self.permitted_use.is_empty() {
             return Err(VoiceError::MissingField("permitted_use"));
         }
         Ok(())
@@ -295,7 +302,7 @@ pub fn validate_profile_for_use(
         return Err(VoiceError::ConsentScopeExcluded {
             profile_id: profile.profile_id.clone(),
             requested: requested.as_str(),
-            permitted: consent.permitted_use.join(", "),
+            permitted: recorded_scope(consent),
         });
     }
     if profile.reference_wav_blake3 != consent.reference_wav_blake3 {
@@ -307,10 +314,17 @@ pub fn validate_profile_for_use(
 }
 
 fn permits(consent: &VoiceConsent, requested: VoiceUse) -> bool {
+    consent.permitted_use.contains(&requested)
+}
+
+/// The recorded scope as the record spells it, for a refusal the owner can compare to the file.
+fn recorded_scope(consent: &VoiceConsent) -> String {
     consent
         .permitted_use
         .iter()
-        .any(|scope| scope == requested.as_str())
+        .map(|permitted| permitted.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn require(field: &'static str, value: &str) -> Result<(), VoiceError> {
@@ -340,7 +354,9 @@ fn require_blake3_hex(field: &'static str, value: &str) -> Result<(), VoiceError
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::de::DeserializeOwned;
     use serde_json::{Value, json};
+    use std::fmt::Debug;
 
     /// Stand-in digests. Any well-formed value works: this module never hashes anything, and the
     /// runtime is what compares a recorded digest to a computed one.
@@ -490,6 +506,59 @@ mod tests {
         }
     }
 
+    /// The spelling `consent.json` must carry for each consent status.
+    ///
+    /// Literal and independent of [`ConsentStatus::as_str`] on purpose: a table that asked the
+    /// implementation what it spells would agree with any spelling, including a wrong one. The
+    /// match is exhaustive, so a new variant is a compile error here rather than a variant no
+    /// test covers — and the compiler lands the author beside the list the test iterates.
+    fn expected_consent_status_spelling(status: ConsentStatus) -> &'static str {
+        match status {
+            ConsentStatus::Granted => "granted",
+            ConsentStatus::Pending => "pending",
+            ConsentStatus::Revoked => "revoked",
+        }
+    }
+
+    /// The spelling `profile.json` must carry for each rights decision, on the same terms.
+    fn expected_rights_decision_spelling(decision: RightsDecision) -> &'static str {
+        match decision {
+            RightsDecision::Approved => "approved",
+            RightsDecision::Restricted => "restricted",
+            RightsDecision::ReviewRequired => "review_required",
+            RightsDecision::Prohibited => "prohibited",
+        }
+    }
+
+    /// The spelling a `permitted_use` entry must carry for each use, on the same terms.
+    fn expected_voice_use_spelling(requested: VoiceUse) -> &'static str {
+        match requested {
+            VoiceUse::PrivateSynthesis => "private_synthesis",
+            VoiceUse::VoiceQualification => "voice_qualification",
+        }
+    }
+
+    /// Asserts a record value is written as `expected` and read back from it.
+    ///
+    /// Both directions matter: writing the right string while accepting a different one would
+    /// let a record spell a state one way and be gated as another.
+    fn assert_serde_spelling<T>(value: T, expected: &'static str)
+    where
+        T: Copy + Debug + PartialEq + Serialize + DeserializeOwned,
+    {
+        let recorded = Value::String(expected.to_owned());
+        assert_eq!(
+            serde_json::to_value(value).expect("unit variant serializes"),
+            recorded,
+            "`{value:?}` is not written as `{expected}`"
+        );
+        assert_eq!(
+            serde_json::from_value::<T>(recorded).expect("the recorded spelling parses"),
+            value,
+            "`{expected}` does not parse back to `{value:?}`"
+        );
+    }
+
     #[test]
     fn t3_e0_record_state_spellings_match_their_serde_representation() {
         for status in [
@@ -497,9 +566,11 @@ mod tests {
             ConsentStatus::Pending,
             ConsentStatus::Revoked,
         ] {
+            let expected = expected_consent_status_spelling(status);
+            assert_serde_spelling(status, expected);
             assert_eq!(
-                serde_json::to_value(status).expect("unit variant serializes"),
-                Value::String(status.as_str().to_owned()),
+                status.as_str(),
+                expected,
                 "`{status:?}` spelling drifted from its serde representation"
             );
         }
@@ -509,10 +580,44 @@ mod tests {
             RightsDecision::ReviewRequired,
             RightsDecision::Prohibited,
         ] {
+            let expected = expected_rights_decision_spelling(decision);
+            assert_serde_spelling(decision, expected);
             assert_eq!(
-                serde_json::to_value(decision).expect("unit variant serializes"),
-                Value::String(decision.as_str().to_owned()),
+                decision.as_str(),
+                expected,
                 "`{decision:?}` spelling drifted from its serde representation"
+            );
+        }
+        for requested in [VoiceUse::PrivateSynthesis, VoiceUse::VoiceQualification] {
+            let expected = expected_voice_use_spelling(requested);
+            assert_serde_spelling(requested, expected);
+            assert_eq!(
+                requested.as_str(),
+                expected,
+                "`{requested:?}` spelling drifted from its serde representation"
+            );
+        }
+    }
+
+    #[test]
+    fn t3_e0_unknown_permitted_use_values_are_rejected() {
+        // A recorded scope outside the vocabulary can never match a request, so as a bare string
+        // it would sit in the record unenforced. The last case is the one that matters: a record
+        // must not be able to widen its own scope with a use this build cannot gate.
+        for unknown in [
+            json!(["commercial_distribution"]),
+            json!(["PrivateSynthesis"]),
+            json!(["private-synthesis"]),
+            json!(["private_synthesis "]),
+            json!([""]),
+            json!([null]),
+            json!(["private_synthesis", "commercial_distribution"]),
+        ] {
+            let mut value = consent_value();
+            value["permitted_use"] = unknown.clone();
+            assert!(
+                matches!(parse_consent(&value), Err(VoiceError::InvalidJson(_))),
+                "permitted_use `{unknown}` must be rejected at parse time"
             );
         }
     }

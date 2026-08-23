@@ -30,7 +30,7 @@ owner verification at E0-S3.
 | Nadia voice rights record | branch `e0-s2/voice-content-model-legal` | `evidence/rights/rights-voice-nadia-v1/record.md` | `a24274f80ce036ef0e6b93621874c59ffcf8d0b04d4a01ea8a656a4a51bcde26` |
 | Tom voice rights record | branch `e0-s2/voice-content-model-legal` | `evidence/rights/rights-voice-tom-v1/record.md` | `c8e221e70c12baf9c581e6397c69f6340faf907e721e4f59e7fc5cb318c8d17f` |
 | ASR corpora rights record | branch `e0-s2/voice-content-model-legal` | `evidence/rights/rights-asr-corpora-v1/record.md` | `1e4463904466b33a187ac8b055b167ec46ded02acc71a1c0c550da66c084de7a` |
-| Rights, data, and artifact policy | branch `e0-s2/voice-content-model-legal` | `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` | `76f77c53325544e98c2a07220d27040447f6efc704177760fd8129e61490a22a` |
+| Rights, data, and artifact policy | branch `e0-s2/voice-content-model-legal` | `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` | `f23e8f065d61d590a280b39e718dc73478d29b8e20e13d9c85cb99f15719471c` |
 | Decision and failure routing | branch `e0-s2/voice-content-model-legal` | `docs/governance/ROUTING-TABLES.md` | `d7bbfb6d4f289f1fab5b1b0ea6a153f61fea26faa8db66d8d120c4a2e5a26bb8` |
 | Qualification identity table | branch `e0-s2/voice-content-model-legal` | `docs/adr/ADR-0002-model-hardware-voice-format-qualification.md` | `1155c8968cf44b8e805b45a77c02db10826e6406a4d74748f43be2992dec2888` |
 | Voice, content, and retention policy | branch `e0-s2/voice-content-model-legal` | `docs/adr/ADR-0004-voice-content-and-retention-policy.md` | `0601326885b0a122d2b85fb161193f0eb0bc7ae0c424bec9f0cce4552fe104c0` |

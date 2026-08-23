@@ -65,6 +65,7 @@ Each blocking rule above that has an executable protocol is enforced by a named 
 | A voice checksum mismatch refuses profile use | `t4_e0_voice_checksum_mismatch_blocks_use` |
 | An unresolved content classification blocks production release | `t4_e0_production_release_rejects_unresolved_content_rights_classification` |
 | A use outside a consent record's `permitted_use` scope is refused | `t1_e0_uses_outside_the_recorded_consent_scope_are_refused` |
+| A permitted-use value outside the recorded vocabulary is rejected when the consent record is parsed | `t3_e0_unknown_permitted_use_values_are_rejected` |
 
 ## Revocation and incident handling
 
