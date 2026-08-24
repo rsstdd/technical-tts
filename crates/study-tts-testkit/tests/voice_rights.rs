@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use study_tts_core::VoiceError;
+use study_tts_core::{LessonError, ReleaseStatus, VoiceError};
 use study_tts_runtime::{BuildError, BuildRequest, build_preview, validate_production_manifest};
 use study_tts_testkit::{
     DeterministicToneWorker, VoiceProfileFixtureSpec, walking_skeleton_fixture,
@@ -297,6 +297,66 @@ fn t3_e0_production_manifest_is_a_strict_typed_boundary() {
         matches!(error, BuildError::MalformedProductionManifest { .. }),
         "unknown top-level field produced `{error}`"
     );
+
+    // The typed fields are gated, not merely parsed. A status this build does
+    // not know never becomes a value a later gate could consult, and a manifest
+    // that does not claim production release is refused as the preview it says
+    // it is rather than reaching the missing-gates refusal.
+    let mut unknown_status = production_manifest(resolved.clone());
+    unknown_status["release_status"] = serde_json::json!("released");
+    let error =
+        validate(&unknown_status).expect_err("an unknown release status must refuse production");
+    assert!(
+        matches!(error, BuildError::MalformedProductionManifest { .. }),
+        "unknown release status produced `{error}`"
+    );
+
+    let mut preview = production_manifest(resolved.clone());
+    preview["release_status"] = serde_json::json!("private_preview");
+    let error = validate(&preview).expect_err("a private preview must refuse production");
+    assert!(
+        matches!(
+            error,
+            BuildError::ManifestNotProductionRelease {
+                declared: ReleaseStatus::PrivatePreview
+            }
+        ),
+        "a private-preview manifest produced `{error}`"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("private_preview") && message.contains("project owner"),
+        "refusal must quote the declared status and name the remedy owner: `{message}`"
+    );
+
+    // The lesson identifier names an output directory, so the manifest holds it
+    // to the rule lessons are held to rather than accepting anything non-empty.
+    let refuse_lesson_id = |lesson_id: &str| {
+        let mut named = production_manifest(resolved.clone());
+        named["lesson_id"] = serde_json::json!(lesson_id);
+        validate(&named).expect_err("an unusable lesson_id must refuse production")
+    };
+
+    // Absent and malformed stay different authoring mistakes here, exactly as
+    // they are for a lesson.
+    for absent in ["", "   "] {
+        let error = refuse_lesson_id(absent);
+        assert!(
+            matches!(error, BuildError::Lesson(LessonError::MissingLessonId)),
+            "blank lesson_id `{absent}` produced `{error}`"
+        );
+    }
+    for malformed in ["../escape", ".hidden", "lesson id"] {
+        let error = refuse_lesson_id(malformed);
+        assert!(
+            matches!(
+                error,
+                BuildError::Lesson(LessonError::InvalidLessonId(ref reported))
+                    if reported == malformed
+            ),
+            "lesson_id `{malformed}` produced `{error}`"
+        );
+    }
 
     // A blank identifier parses and then traces to no record, so it would
     // satisfy the classification check while naming nothing.

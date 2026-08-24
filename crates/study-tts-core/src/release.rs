@@ -37,6 +37,22 @@ pub enum ReleaseStatus {
     ProductionRelease,
 }
 
+impl ReleaseStatus {
+    /// The `snake_case` spelling this status carries in a manifest.
+    ///
+    /// Mirrors the serde representation above so a refusal quotes what the
+    /// manifest actually declares. The exhaustive match makes a new variant a
+    /// compile error rather than a silent fallback string, and
+    /// `t3_e0_release_status_spellings_match_their_serde_representation` proves
+    /// the two agree.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PrivatePreview => "private_preview",
+            Self::ProductionRelease => "production_release",
+        }
+    }
+}
+
 /// Why a claim was refused as a production release.
 #[derive(Debug, Error)]
 pub enum ReleaseError {
@@ -168,6 +184,37 @@ mod tests {
         ReleaseClaim::production_release(all_gates())
             .validate_as_production()
             .expect("a complete gate set must be accepted");
+    }
+
+    /// Every status, so a spelling cannot go untested. The match inside the
+    /// test is what makes a new variant a compile error; this array only says
+    /// which values to run it over.
+    const ALL_RELEASE_STATUSES: [ReleaseStatus; 2] = [
+        ReleaseStatus::PrivatePreview,
+        ReleaseStatus::ProductionRelease,
+    ];
+
+    #[test]
+    fn t3_e0_release_status_spellings_match_their_serde_representation() {
+        for status in ALL_RELEASE_STATUSES {
+            // Transcribed from the serde attribute on the enum rather than read
+            // from `as_str`, so this table cannot agree with a wrong spelling.
+            let spelling = match status {
+                ReleaseStatus::PrivatePreview => "private_preview",
+                ReleaseStatus::ProductionRelease => "production_release",
+            };
+
+            assert_eq!(
+                serde_json::to_value(status).expect("unit variant serializes"),
+                serde_json::Value::String(spelling.to_owned()),
+                "`{status:?}` serde representation drifted"
+            );
+            assert_eq!(
+                status.as_str(),
+                spelling,
+                "`{status:?}` spelling drifted from its serde representation"
+            );
+        }
     }
 
     #[test]

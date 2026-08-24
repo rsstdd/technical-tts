@@ -164,21 +164,17 @@ impl Lesson {
         if self.schema_version != LESSON_SCHEMA_VERSION {
             return Err(LessonError::UnsupportedSchema(self.schema_version.clone()));
         }
-        // An absent value and a malformed value are different authoring
-        // mistakes, so each keeps a distinct error. Both identifier kinds apply
-        // the same two checks in the same order.
-        if self.lesson_id.trim().is_empty() {
-            return Err(LessonError::MissingLessonId);
-        }
-        if !is_portable_id(&self.lesson_id) {
-            return Err(LessonError::InvalidLessonId(self.lesson_id.clone()));
-        }
+        // Through the shared rule, because a production manifest names this
+        // same identifier and must not accept what a lesson would refuse.
+        validate_lesson_id(&self.lesson_id)?;
         if self.segments.is_empty() {
             return Err(LessonError::MissingSegments);
         }
 
         let mut ids = HashSet::with_capacity(self.segments.len());
         for segment in &self.segments {
+            // Segment identifiers apply the same two checks in the same
+            // order, keeping an absent value and a malformed one distinct.
             if segment.id.trim().is_empty() {
                 return Err(LessonError::MissingSegmentId);
             }
@@ -229,6 +225,26 @@ impl Lesson {
 /// makes `.`, `..`, and `...` invalid without a special case for each. Length
 /// is measured in bytes, which is exact here because the byte-class check
 /// restricts the value to ASCII.
+/// Applies the lesson-identifier rules to a value that did not arrive inside a
+/// `Lesson`.
+///
+/// A production manifest names the lesson it describes, and that identifier
+/// names the same output directory the lesson's own does. One implementation
+/// rather than a second spelling of the rule in the runtime crate, so a
+/// manifest cannot name something a lesson could not.
+///
+/// An absent value and a malformed value stay different authoring mistakes,
+/// each with its own error.
+pub fn validate_lesson_id(lesson_id: &str) -> Result<(), LessonError> {
+    if lesson_id.trim().is_empty() {
+        return Err(LessonError::MissingLessonId);
+    }
+    if !is_portable_id(lesson_id) {
+        return Err(LessonError::InvalidLessonId(lesson_id.to_owned()));
+    }
+    Ok(())
+}
+
 fn is_portable_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_IDENTIFIER_LENGTH

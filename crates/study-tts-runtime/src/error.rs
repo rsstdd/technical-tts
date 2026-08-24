@@ -7,7 +7,7 @@
 
 use std::{io, path::PathBuf};
 
-use study_tts_core::CacheKey;
+use study_tts_core::{CacheKey, ReleaseStatus};
 use thiserror::Error;
 
 use crate::SynthesisError;
@@ -438,6 +438,26 @@ pub enum BuildError {
     MalformedProductionManifest {
         /// What the parser reported.
         source: serde_json::Error,
+    },
+
+    /// The manifest asks to be published while declaring itself something
+    /// other than a production release.
+    ///
+    /// Separate from `ProductionGatesUnavailable`, which is where a manifest
+    /// that does claim production release lands once its rights preconditions
+    /// pass. A preview manifest never made the claim, so reporting missing
+    /// gates would name work nobody asked for. The status is what `manifest.rs`
+    /// writes as a typed `ReleaseStatus`, and only a build that earned the
+    /// production profile may carry it.
+    #[error(
+        "production release is refused: the manifest declares release status `{}`, not \
+         `production_release`; the project owner must publish the manifest of a build that \
+         earned the production profile rather than restate the status",
+        declared.as_str()
+    )]
+    ManifestNotProductionRelease {
+        /// The status the manifest declares.
+        declared: ReleaseStatus,
     },
 
     /// The manifest names no classified source at all.

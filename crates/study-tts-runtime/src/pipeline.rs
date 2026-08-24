@@ -6,7 +6,8 @@ use std::{
 use serde::Deserialize;
 use serde_json::Value;
 use study_tts_core::{
-    Lesson, RenderPlan, RightsDecision, SourceRightsDeclaration, VoiceError, VoiceUse,
+    Lesson, ReleaseStatus, RenderPlan, RightsDecision, SourceRightsDeclaration, VoiceError,
+    VoiceUse, validate_lesson_id,
 };
 
 use crate::{
@@ -170,15 +171,9 @@ struct ManifestVersion {
 #[serde(deny_unknown_fields)]
 struct ProductionManifest {
     schema_version: String,
-    #[expect(
-        dead_code,
-        reason = "read for shape validation; gated once the release gates exist"
-    )]
-    release_status: String,
-    #[expect(
-        dead_code,
-        reason = "read for shape validation; consumed by release evidence"
-    )]
+    /// Typed, so a status this build does not know is a parse error here rather
+    /// than a string carried past every gate that would have consulted it.
+    release_status: ReleaseStatus,
     lesson_id: String,
     content_rights: Option<Value>,
     voice_profiles: Option<Value>,
@@ -224,9 +219,10 @@ fn declare_section<'de, T: Deserialize<'de>>(
 /// Always refuses publication until the production manifest and release gates
 /// exist.
 ///
-/// The rights preconditions run first, so an unresolved content classification
-/// or an unapproved voice profile is reported as itself rather than as the
-/// generic gate refusal. They enforce
+/// Every precondition this build can check runs before that refusal, so each is
+/// reported as itself rather than as the generic gate refusal. They run
+/// outward in: what the document claims to be, then what it claims about its
+/// sources. The rights checks enforce
 /// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` ("Unresolved external
 /// distribution blocks publish") over provisional `content_rights` and
 /// `voice_profiles` manifest sections that the E1-S1 schema story will version.
@@ -246,6 +242,20 @@ pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
     let manifest: ProductionManifest = serde_json::from_slice(bytes)
         .map_err(|source| BuildError::MalformedProductionManifest { source })?;
     debug_assert_eq!(manifest.schema_version, PRODUCTION_MANIFEST_VERSION);
+
+    // What the document claims to be, before what it claims about its sources.
+    // Adjudicating the rights of a manifest that never asked to be published
+    // would hand its author corrections for a release they did not request.
+    if manifest.release_status != ReleaseStatus::ProductionRelease {
+        return Err(BuildError::ManifestNotProductionRelease {
+            declared: manifest.release_status,
+        });
+    }
+
+    // Through the lesson rule rather than a blank check: this identifier names
+    // the same output directory a lesson's does, so a manifest must not name
+    // what a lesson could not.
+    validate_lesson_id(&manifest.lesson_id)?;
 
     // An absent section and an empty one are the same claim: nothing was
     // classified. A production lesson always has at least one source.
