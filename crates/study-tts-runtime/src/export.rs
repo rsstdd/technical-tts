@@ -75,12 +75,12 @@ struct ProbeStream {
     channels: Option<u16>,
 }
 
-#[derive(Clone, Debug)]
 /// What a tool was actually told to do, for the manifest to record.
 ///
 /// The arguments as they were passed, not as they were composed: a manifest
 /// that records an intended command line rather than the executed one cannot
 /// be used to reproduce a build.
+#[derive(Clone, Debug)]
 pub(crate) struct ToolExecution {
     /// The argument list the tool was invoked with, in order.
     pub arguments: Vec<String>,

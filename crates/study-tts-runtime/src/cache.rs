@@ -61,11 +61,11 @@ const AUDIO_RECORD: &str = "audio.wav";
 /// The metadata describing that audio.
 const ARTIFACT_RECORD: &str = "artifact.json";
 
-#[derive(Clone, Debug)]
 /// One segment's audio as the cache holds it, validated and ready to assemble.
 ///
 /// Produced only by [`resolve`], so nothing downstream can name a cache entry
 /// that has not passed its checks.
+#[derive(Clone, Debug)]
 pub(crate) struct CachedSegment {
     pub segment_id: String,
     pub cache_key: CacheKey,
