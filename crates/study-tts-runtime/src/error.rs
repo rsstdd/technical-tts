@@ -61,6 +61,39 @@ pub enum BuildError {
         record: &'static str,
     },
 
+    /// A record the voice policy requires is present under its name, but the
+    /// name holds something other than a regular file.
+    ///
+    /// Distinct from [`BuildError::MissingVoiceRecord`] because the record is
+    /// there: reporting it absent would send the owner looking for a file they
+    /// would find. Distinct from [`BuildError::ManagedPathEscape`] because that
+    /// variant names the root a build confined itself to, and a profile
+    /// directory is operator-supplied input this crate neither creates nor
+    /// canonicalizes, so it can make no such claim.
+    ///
+    /// The refusal is what keeps the checksum gate meaningful. `reference.wav`
+    /// and `conditionals.pt` are read and hashed through the same name, so a
+    /// link would supply both the bytes and the digest from one file outside
+    /// the directory and the gate would agree with itself, admitting audio no
+    /// consent record covers. A FIFO or device node is refused by the same
+    /// check, because hashing one never returns.
+    ///
+    /// Remedy routing per `docs/governance/ROUTING-TABLES.md` ("Voice
+    /// consent/checksum mismatch → Refuse profile load → Project owner →
+    /// Blocked"): only the owner can say what the record should contain, and
+    /// nothing here is repaired or removed automatically.
+    #[error(
+        "voice profile at `{profile_dir}` is refused: required record `{record}` is not a regular \
+         file; profile load fails closed and the project owner must supply the record itself \
+         before use"
+    )]
+    VoiceRecordNotRegularFile {
+        /// The profile directory the record was expected in.
+        profile_dir: PathBuf,
+        /// Which required record is not a regular file.
+        record: &'static str,
+    },
+
     /// A profile file no longer hashes to what its record says, so the record
     /// no longer describes it. Routing: "Voice consent/checksum mismatch →
     /// Project owner → Blocked".

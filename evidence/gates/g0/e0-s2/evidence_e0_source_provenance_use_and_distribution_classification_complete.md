@@ -23,7 +23,7 @@ conclusion about third-party material.
 | Input | Identity/revision | URI | Checksum |
 |---|---|---|---|
 | Qualification and release source classification record | branch `e0-s2/voice-content-model-legal` | `evidence/rights/rights-qualification-sources-v1/record.md` | `ef2281f119328e7ed7be9e6334f434b5dd1be5138da9c0b0d2d8f7a8986696b8` |
-| Rights, data, and artifact policy (classification vocabulary and enforcement table) | branch `e0-s2/voice-content-model-legal` | `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` | `f23e8f065d61d590a280b39e718dc73478d29b8e20e13d9c85cb99f15719471c` |
+| Rights, data, and artifact policy (classification vocabulary and enforcement table) | branch `e0-s2/voice-content-model-legal` | `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` | `f7a3fa1635242f0650e088293b0e6a7f490043cf359b0b7912356329453fa7dc` |
 | Ratified distribution scope | branch `e0-s2/voice-content-model-legal` | `docs/governance/RELEASE-PROFILES.md` | `bee9fb86528f9dac4769cae92878a0dfb24682ca58f183da3d8182e7dae9ee41` |
 | Test data manifest | branch `e0-s2/voice-content-model-legal` | `docs/testing/TEST-DATA-MANIFEST.md` | `39eebd67e3782717b6413bacc169bd9c1fef1d43ff2b1ffacf25b2405dcb244c` |
 
@@ -63,3 +63,17 @@ versioned schemas; the enforcement, not the field shape, is the claim this evide
 |---|---|---|---|
 | Project owner (approver) | Ross Todd | Approved | 2026-08-23 |
 | Qualified reviewer (rights review role) | Ross Todd | Approved | 2026-08-23 |
+
+## Amendments
+
+| Date | Change | Authority |
+|---|---|---|
+| 2026-08-24 | `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Enforcement gained one row, naming `t4_e0_voice_records_that_are_not_regular_files_are_refused` for the newly mechanized rule that a required voice record which is not a regular file refuses profile load. The Provenance checksum for that document moves from `f23e8f065d61d590a280b39e718dc73478d29b8e20e13d9c85cb99f15719471c` to `f7a3fa1635242f0650e088293b0e6a7f490043cf359b0b7912356329453fa7dc`. | Project owner, amending in place under the approval recorded above |
+
+Recorded rather than applied silently, because `evidence/README.md` holds accepted reports
+immutable and prescribes a superseding record instead. The project owner judged a single
+Enforcement row to fall within the scope already approved and directed the in-place amendment.
+
+The Acceptance criterion, Procedure, and Results above record the review as performed on
+2026-08-23 and are unchanged. This record's criterion turns on the §Classification vocabulary,
+which stands at the same eight values; the amended row is in §Enforcement only.

@@ -443,3 +443,58 @@ fn t4_e0_every_absent_voice_record_names_its_remedy_owner() {
         assert_eq!(worker.synthesis_count(), 0);
     }
 }
+
+/// A record that is present but is not a regular file is refused before its
+/// bytes are read.
+///
+/// `reference.wav` is the load-bearing case, and the link here points at an
+/// untouched copy of the fixture so its digest still matches what the profile
+/// records. Without this refusal the gate would read the bytes and compute the
+/// digest through the same link and agree with itself, admitting audio from
+/// outside the profile directory that the consent record never covered.
+#[cfg(unix)]
+#[test]
+fn t4_e0_voice_records_that_are_not_regular_files_are_refused() {
+    use std::os::unix::fs::symlink;
+
+    for record in [
+        "profile.json",
+        "consent.json",
+        "reference.wav",
+        "conditionals.pt",
+    ] {
+        let workspace = TempDir::new().expect("create isolated workspace");
+        let voice_dir = write_voice_profile_fixture(
+            &workspace.path().join("voice"),
+            &VoiceProfileFixtureSpec::default(),
+        );
+        let outside = workspace.path().join("outside");
+        std::fs::create_dir(&outside).expect("create the directory the link points into");
+        let target = outside.join(record);
+        let planted = voice_dir.join(record);
+        std::fs::rename(&planted, &target).expect("move a required record out of the profile");
+        symlink(&target, &planted).expect("plant a voice record symlink");
+        let worker = DeterministicToneWorker::default();
+
+        let error = build_preview(
+            request_without_ffmpeg(workspace.path(), &voice_dir),
+            &worker,
+        )
+        .expect_err("a planted record must refuse the profile");
+
+        assert!(
+            matches!(
+                error,
+                BuildError::VoiceRecordNotRegularFile { record: reported, .. }
+                    if reported == record
+            ),
+            "a symlinked `{record}` produced `{error}`"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains(record) && message.contains("project owner"),
+            "a symlinked `{record}` did not name the record and the remedy owner: `{message}`"
+        );
+        assert_eq!(worker.synthesis_count(), 0);
+    }
+}

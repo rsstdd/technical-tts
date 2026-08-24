@@ -30,7 +30,7 @@ owner verification at E0-S3.
 | Nadia voice rights record | branch `e0-s2/voice-content-model-legal` | `evidence/rights/rights-voice-nadia-v1/record.md` | `a24274f80ce036ef0e6b93621874c59ffcf8d0b04d4a01ea8a656a4a51bcde26` |
 | Tom voice rights record | branch `e0-s2/voice-content-model-legal` | `evidence/rights/rights-voice-tom-v1/record.md` | `c8e221e70c12baf9c581e6397c69f6340faf907e721e4f59e7fc5cb318c8d17f` |
 | ASR corpora rights record | branch `e0-s2/voice-content-model-legal` | `evidence/rights/rights-asr-corpora-v1/record.md` | `1e4463904466b33a187ac8b055b167ec46ded02acc71a1c0c550da66c084de7a` |
-| Rights, data, and artifact policy | branch `e0-s2/voice-content-model-legal` | `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` | `f23e8f065d61d590a280b39e718dc73478d29b8e20e13d9c85cb99f15719471c` |
+| Rights, data, and artifact policy | branch `e0-s2/voice-content-model-legal` | `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` | `f7a3fa1635242f0650e088293b0e6a7f490043cf359b0b7912356329453fa7dc` |
 | Decision and failure routing | branch `e0-s2/voice-content-model-legal` | `docs/governance/ROUTING-TABLES.md` | `d7bbfb6d4f289f1fab5b1b0ea6a153f61fea26faa8db66d8d120c4a2e5a26bb8` |
 | Qualification identity table | branch `e0-s2/voice-content-model-legal` | `docs/adr/ADR-0002-model-hardware-voice-format-qualification.md` | `1155c8968cf44b8e805b45a77c02db10826e6406a4d74748f43be2992dec2888` |
 | Voice, content, and retention policy | branch `e0-s2/voice-content-model-legal` | `docs/adr/ADR-0004-voice-content-and-retention-policy.md` | `0601326885b0a122d2b85fb161193f0eb0bc7ae0c424bec9f0cce4552fe104c0` |
@@ -55,7 +55,7 @@ approver is recorded. Reproduction: `ls evidence/rights/` and `sha256sum` of eac
 | ASR corpora access/retention/deletion/backup rules recorded | Required | `rights-asr-corpora-v1` Data handling section; referenced by `docs/testing/TEST-DATA-MANIFEST.md` and ADR-0004 | Pass |
 | Model, tokenizer, codec, voice, conditional, and license identities recorded | Required | Recorded or explicitly deferred-with-procedure in the records and ADR-0002; conditional and reference checksums are structural fields of `profile.json` enforced at load | Pass |
 | Approver for uses not explicitly covered | Named | Project owner/rightsholder per `docs/governance/ROUTING-TABLES.md` decision rows, cited in each record | Pass |
-| Consent-gating enforcement tests | 3 named tests passing | `t4_e0_missing_voice_consent_blocks_profile_load`, `t4_e0_unapproved_voice_profile_cannot_enter_preview_or_production`, `t4_e0_voice_checksum_mismatch_blocks_use` pass in `crates/study-tts-testkit/tests/voice_rights.rs` | Pass |
+| Consent-gating enforcement tests | 4 named tests passing | `t4_e0_missing_voice_consent_blocks_profile_load`, `t4_e0_unapproved_voice_profile_cannot_enter_preview_or_production`, `t4_e0_voice_checksum_mismatch_blocks_use`, `t4_e0_voice_records_that_are_not_regular_files_are_refused` pass in `crates/study-tts-testkit/tests/voice_rights.rs` | Pass |
 | Recorded consent scope enforced, not merely recorded | Required | `validate_profile_for_use` refuses a use absent from the consent record's `permitted_use` list; `t1_e0_uses_outside_the_recorded_consent_scope_are_refused` | Pass |
 
 **Overall: PASS.**
@@ -75,3 +75,18 @@ role separately per `docs/governance/PROJECT-EXECUTION-CHARTER.md`.
 |---|---|---|---|
 | Project owner (approver) | Ross Todd | Approved | 2026-08-23 |
 | Rightsholder (fallback voice) | Ross Todd | Approved | 2026-08-23 |
+
+## Amendments
+
+| Date | Change | Authority |
+|---|---|---|
+| 2026-08-24 | `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Enforcement gained one row, naming `t4_e0_voice_records_that_are_not_regular_files_are_refused` for the newly mechanized rule that a required voice record which is not a regular file refuses profile load. The Provenance checksum for that document moves from `f23e8f065d61d590a280b39e718dc73478d29b8e20e13d9c85cb99f15719471c` to `f7a3fa1635242f0650e088293b0e6a7f490043cf359b0b7912356329453fa7dc`. | Project owner, amending in place under the approval recorded above |
+| 2026-08-24 | The "Consent-gating enforcement tests" measurement rises from three named tests to four, adding `t4_e0_voice_records_that_are_not_regular_files_are_refused`, so the Results table matches the amended §Enforcement table it is read against. `DELIVERY-PLAN.md` §E0-S2 carries the same name in its test roster. | Project owner, re-attesting the measurement on a run of 2026-08-24 |
+
+Recorded rather than applied silently, because `evidence/README.md` holds accepted reports
+immutable and prescribes a superseding record instead. The project owner judged both changes to
+fall within the scope already approved and directed the in-place amendment.
+
+The Acceptance criterion and Procedure are unchanged, and no threshold was lowered: the
+consent-gating measurement rose from three named tests to four. All four ran on 2026-08-24 in
+`crates/study-tts-testkit/tests/voice_rights.rs` and pass.

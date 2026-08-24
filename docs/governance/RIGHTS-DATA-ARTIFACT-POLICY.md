@@ -63,6 +63,7 @@ Each blocking rule above that has an executable protocol is enforced by a named 
 | Profile load fails closed without a consent record | `t4_e0_missing_voice_consent_blocks_profile_load` |
 | An unapproved voice profile enters neither preview nor production | `t4_e0_unapproved_voice_profile_cannot_enter_preview_or_production` |
 | A voice checksum mismatch refuses profile use | `t4_e0_voice_checksum_mismatch_blocks_use` |
+| A required voice record that is not a regular file refuses profile load, so a checksum cannot be satisfied by a link to a file outside the profile directory | `t4_e0_voice_records_that_are_not_regular_files_are_refused` |
 | An unresolved content classification blocks production release | `t4_e0_production_release_rejects_unresolved_content_rights_classification` |
 | A use outside a consent record's `permitted_use` scope is refused | `t1_e0_uses_outside_the_recorded_consent_scope_are_refused` |
 | A permitted-use value outside the recorded vocabulary is rejected when the consent record is parsed | `t3_e0_unknown_permitted_use_values_are_rejected` |
