@@ -21,7 +21,7 @@ use crate::{
 /// Layout version of `manifest.json`.
 ///
 /// Independent of `CACHE_SCHEMA_VERSION` and the lesson schema despite sharing
-/// a value today: the three version different documents and move separately.
+/// a value today: each versions a different document and moves separately.
 /// E1-S1 replaces all three with versioned JSON Schemas.
 const MANIFEST_SCHEMA_VERSION: &str = "0.1-skeleton";
 
@@ -54,6 +54,7 @@ struct Manifest<'a> {
     tools: Tools<'a>,
 }
 
+/// One segment as the manifest records it: identity, digest, and length.
 #[derive(Serialize)]
 struct ManifestSegment<'a> {
     segment_id: &'a str,
@@ -63,24 +64,29 @@ struct ManifestSegment<'a> {
     pause_after_ms: u32,
 }
 
+/// The two files a build leaves in its preview directory.
 #[derive(Serialize)]
 struct Artifacts {
     master_wav: Artifact,
     m4a: Artifact,
 }
 
+/// One produced file, named relative to the preview directory and hashed.
 #[derive(Serialize)]
 struct Artifact {
     path: &'static str,
     blake3: String,
 }
 
+/// The external tools the build shelled out to.
 #[derive(Serialize)]
 struct Tools<'a> {
     ffmpeg: ToolUse<'a>,
     ffprobe: ToolUse<'a>,
 }
 
+/// One tool as the manifest records it: which binary, which version, and the
+/// arguments it was actually given.
 #[derive(Serialize)]
 struct ToolUse<'a> {
     resolved_executable: String,
@@ -93,9 +99,13 @@ struct ToolUse<'a> {
 /// Identity and execution are carried separately because they answer different
 /// questions: which binary ran, and what it was told to do.
 pub(crate) struct ToolRecords<'a> {
+    /// Which FFmpeg binary ran.
     pub ffmpeg: &'a ToolIdentity,
+    /// What that FFmpeg was told to do.
     pub ffmpeg_execution: &'a ToolExecution,
+    /// Which ffprobe binary ran.
     pub ffprobe: &'a ToolIdentity,
+    /// What that ffprobe was told to do.
     pub ffprobe_execution: &'a ToolExecution,
 }
 

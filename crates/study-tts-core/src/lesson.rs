@@ -27,7 +27,7 @@ const MAX_PAUSE_AFTER_MS: u32 = 10_000;
 /// Layout version this module accepts for a lesson document.
 ///
 /// Independent of the cache and manifest schema versions despite sharing a
-/// value today: the three version different documents and move separately.
+/// value today: each versions a different document and moves separately.
 const LESSON_SCHEMA_VERSION: &str = "0.1-skeleton";
 
 /// One authored lesson, as it is written on disk and before any planning has

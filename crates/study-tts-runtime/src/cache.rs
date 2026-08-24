@@ -28,7 +28,7 @@ use crate::{AudioFault, BuildError, CacheEntryFault, SegmentSynthesizer, io_erro
 /// Layout version this module accepts for a cache artifact.
 ///
 /// Independent of the lesson and manifest schema versions despite sharing a
-/// value today: the three version different documents and move separately. An
+/// value today: each versions a different document and moves separately. An
 /// artifact declaring anything else is refused rather than read on the guess
 /// that the layout did not change.
 const CACHE_SCHEMA_VERSION: &str = "0.1-skeleton";
@@ -67,12 +67,19 @@ const ARTIFACT_RECORD: &str = "artifact.json";
 /// that has not passed its checks.
 #[derive(Clone, Debug)]
 pub(crate) struct CachedSegment {
+    /// Identity of the segment within its lesson.
     pub segment_id: String,
+    /// The synthesis identity that named this entry.
     pub cache_key: CacheKey,
+    /// The entry directory, which a refusal names as the thing to delete.
     pub entry_dir: PathBuf,
+    /// The validated audio inside that entry.
     pub audio_path: PathBuf,
+    /// Digest of that audio, re-verified before assembly reads it.
     pub audio_blake3: String,
+    /// Frames the audio holds, agreeing with the artifact record.
     pub frames: u32,
+    /// Silence to write after this segment, in milliseconds.
     pub pause_after_ms: u32,
 }
 
