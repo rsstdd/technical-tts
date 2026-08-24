@@ -350,6 +350,27 @@ pub enum BuildError {
         source: serde_json::Error,
     },
 
+    /// The output holds a number of streams other than the one this build
+    /// writes.
+    ///
+    /// Distinct from `UnexpectedEncodedStream`, which describes a stream
+    /// that is present and wrong. Here the count itself is wrong, and a
+    /// per-stream description would have to pick one arbitrarily — which is
+    /// exactly how a second stream went unnoticed while the first one looked
+    /// correct.
+    #[error(
+        "encoded output `{path}` holds {found} streams, not {required}; the encode settings \
+         and this verification must agree before the output is used"
+    )]
+    UnexpectedEncodedStreamCount {
+        /// The output that failed verification.
+        path: PathBuf,
+        /// Streams ffprobe reported.
+        found: usize,
+        /// Streams this build writes.
+        required: usize,
+    },
+
     /// The probe was read and describes something other than the stream this
     /// build produces.
     ///

@@ -15,6 +15,12 @@ const REQUIRED_CODEC: &str = "aac";
 /// The channel count every encoded output carries, on the same terms.
 const REQUIRED_CHANNELS: u16 = 1;
 
+/// Streams every encoded output carries.
+///
+/// The encode maps one audio stream and strips video and metadata, so anything
+/// else in the container did not come from this build.
+const REQUIRED_STREAMS: usize = 1;
+
 /// The subset of an ffprobe response the pinned `-show_entries` selection asks
 /// for.
 ///
@@ -119,6 +125,17 @@ fn interpret_probe(m4a: &Path, response: &[u8]) -> Result<(), BuildError> {
             source,
         })?;
 
+    // Counted before any stream is described. Picking one out of several and
+    // reporting on it is what let a second stream pass unnoticed: the first was
+    // the stream this build writes, and nothing looked at the rest.
+    if probe.streams.len() != REQUIRED_STREAMS {
+        return Err(BuildError::UnexpectedEncodedStreamCount {
+            path: m4a.to_path_buf(),
+            found: probe.streams.len(),
+            required: REQUIRED_STREAMS,
+        });
+    }
+
     let stream = probe.streams.first();
     let codec = stream.and_then(|stream| stream.codec_name.clone());
     let channels = stream.and_then(|stream| stream.channels);
@@ -159,12 +176,15 @@ fn ffmpeg_arguments(master_wav: &Path, destination: &Path) -> Vec<OsString> {
     .into()
 }
 
+/// Asks for every stream in the container, not just the first audio one.
+///
+/// `-select_streams a:0` reported a single stream for a file holding two, so a
+/// second stream was invisible to the check. Dropping the selection entirely
+/// also surfaces video and data streams, which `a` would still have hidden.
 fn ffprobe_arguments(m4a: &Path) -> Vec<OsString> {
     [
         OsString::from("-v"),
         OsString::from("error"),
-        OsString::from("-select_streams"),
-        OsString::from("a:0"),
         OsString::from("-show_entries"),
         OsString::from("stream=codec_name,channels"),
         OsString::from("-of"),
@@ -229,7 +249,6 @@ mod tests {
                 Some("aac"),
                 Some(2),
             ),
-            ("no audio stream", br#"{"streams":[]}"#.to_vec(), None, None),
         ] {
             let error = interpret_probe(m4a, &response)
                 .expect_err("an unexpected stream must not verify an output");
@@ -241,6 +260,38 @@ mod tests {
                         channels: found_channels,
                         ..
                     } if found_codec.as_deref() == codec && found_channels == channels
+                ),
+                "{label} produced `{error}`"
+            );
+        }
+
+        // A wrong number of streams is counted, not described: with several,
+        // any description has to pick one, and picking the first is what let a
+        // second stream pass unnoticed.
+        const MONO_AAC: &str = r#"{"codec_name":"aac","channels":1}"#;
+        const VIDEO: &str = r#"{"codec_name":"h264"}"#;
+        let probe_of = |streams: &str| format!(r#"{{"streams":[{streams}]}}"#).into_bytes();
+
+        for (label, response, found) in [
+            ("no streams at all", probe_of(""), 0),
+            (
+                "a second audio stream",
+                probe_of(&format!("{MONO_AAC},{MONO_AAC}")),
+                2,
+            ),
+            (
+                "an extra video stream",
+                probe_of(&format!("{MONO_AAC},{VIDEO}")),
+                2,
+            ),
+        ] {
+            let error = interpret_probe(m4a, &response)
+                .expect_err("a wrong stream count must not verify an output");
+            assert!(
+                matches!(
+                    error,
+                    BuildError::UnexpectedEncodedStreamCount { found: reported, required: 1, .. }
+                        if reported == found
                 ),
                 "{label} produced `{error}`"
             );
@@ -290,8 +341,6 @@ mod tests {
             vec![
                 "-v",
                 "error",
-                "-select_streams",
-                "a:0",
                 "-show_entries",
                 "stream=codec_name,channels",
                 "-of",

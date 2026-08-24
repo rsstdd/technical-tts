@@ -625,3 +625,43 @@ fn t4_e0_cache_file_symlink_escape_is_rejected() {
         );
     }
 }
+
+/// A second stream is invisible to a probe that asks only for the first one,
+/// and the first one is the one this build writes correctly — so the check has
+/// to count, not sample.
+#[test]
+fn t4_e0_multi_stream_output_is_rejected() {
+    let (workspace, result, _worker) = run_skeleton();
+    let two_stream = workspace.path().join("two-stream.m4a");
+
+    let encoded = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(&result.master_wav)
+        .arg("-i")
+        .arg(&result.master_wav)
+        .args([
+            "-map", "0:a", "-map", "1:a", "-ac", "1", "-c:a", "aac", "-b:a", "96k",
+        ])
+        .arg(&two_stream)
+        .status()
+        .expect("run ffmpeg to build a two-stream export");
+    assert!(
+        encoded.success(),
+        "ffmpeg must produce the two-stream fixture"
+    );
+
+    let error = validate_encoded_output(Path::new("ffprobe"), &two_stream)
+        .expect_err("a two-stream export must not pass verification");
+
+    assert!(
+        matches!(
+            error,
+            BuildError::UnexpectedEncodedStreamCount {
+                found: 2,
+                required: 1,
+                ..
+            }
+        ),
+        "a two-stream export produced `{error}`"
+    );
+}
