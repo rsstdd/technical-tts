@@ -930,6 +930,8 @@ All worker output becomes:
 - mono, 24 kHz, 32-bit IEEE-float PCM, matching standard Chatterbox's native 24 kHz synthesis rate;
 - no lossy intermediate encoding.
 
+The rate, channel count, sample format, and bit depth above are mirrored by `CANONICAL_SAMPLE_RATE`, `CANONICAL_CHANNELS`, `CANONICAL_SAMPLE_FORMAT`, and `CANONICAL_BITS_PER_SAMPLE` in `crates/study-tts-core/src/plan.rs`. The two must agree, and changing either requires an ADR amendment rather than an edit.
+
 If the worker already emits the canonical format, no conversion occurs. Otherwise, FFmpeg converts once before cache publication.
 
 `hound` remains the initial Rust WAV implementation because its public API supports 32-bit IEEE-float samples. Phase 1 fixtures must nevertheless round-trip the exact worker, cache, assembled-master, and FFmpeg-produced WAV variants; an unsupported header or extensible-format variant triggers a bounded switch to `symphonia` or an equivalent decoder.
@@ -1092,6 +1094,8 @@ A cloned voice profile requires:
 - reference-audio checksum;
 - creation date and consent status;
 - an audit event for each build that uses it.
+
+The record fields above — declaration, permitted-use scope, reference-audio checksum, creation date, and consent status — are mirrored by `VoiceConsent` in `crates/study-tts-core/src/voice.rs`, which reads them from the profile directory's `consent.json` alongside a schema version and the identifier of the backing rights record. The two must agree, and changing either requires an ADR amendment rather than an edit. The audit event is not a record field: it is an obligation on each build that uses the profile, and it is satisfied by the component that renders with it rather than by `consent.json`.
 
 Nadia and Tom must use the approved sources and precomputed conditionals defined in Section 5.2. The packaged Chatterbox default may be used only as a single voice if its model terms and conditioning provenance satisfy the release review; it cannot be relabeled as two distinct speakers. Public-figure cloning is prohibited. PerTh watermark detection is tested across the complete output pipeline, and postprocessing must not intentionally remove it.
 
@@ -1486,7 +1490,7 @@ Release gate:
 - pinned ASR dependency stack, compilation features, model, decoder settings, input conversion, expected-pattern profile, normalizer, and thresholds verify their identities;
 - Phase 0 CPU and selected-format dialogue gates remain satisfied on the named release configuration;
 - 45–60 minute soak test passes;
-- ADR-0005's complete ASR calibration corpus passes every per-class numerical gate, stability check, and order-invariance check;
+- post-render ASR triage runs for every selected cached segment and records its verification identity, lattice evidence, findings, and adjudication. ADR-0005's calibration gates qualify ASR as a release control; failing them keeps human review authoritative and requires the release record to state that ASR is advisory, but does not block release (ADR-0001-D001);
 - ASR triage completes for every selected cache artifact and human adjudication finds no surviving technical omission, insertion, substitution, repetition, continuation, or protected-term error;
 - an explicit current takes file covers every production segment and all selected artifacts are prune-protected;
 - every production voice/style pair has a committed frozen loudness reference;
