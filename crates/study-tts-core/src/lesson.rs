@@ -16,6 +16,14 @@ use thiserror::Error;
 /// suffixes later stories append.
 const MAX_IDENTIFIER_LENGTH: usize = 64;
 
+/// Longest trailing pause a segment may declare, in milliseconds.
+///
+/// Provisional: long enough for a deliberate beat between passages, short
+/// enough that a mistyped value reads as a fault in the audio rather than as
+/// phrasing. [`LessonError::PauseOutOfRange`] states this bound rather than
+/// restating it in prose, so a change here changes what an author is told.
+const MAX_PAUSE_AFTER_MS: u32 = 10_000;
+
 /// Layout version this module accepts for a lesson document.
 ///
 /// Independent of the cache and manifest schema versions despite sharing a
@@ -104,8 +112,9 @@ pub enum LessonError {
     MissingLessonId,
     /// An identity was supplied but could not safely name a directory.
     #[error(
-        "lesson_id `{0}` must be 1-64 ASCII letters, digits, hyphen, underscore, or dot, and must \
-         not start with a dot, because it names an output directory"
+        "lesson_id `{0}` must be 1-{max} ASCII letters, digits, hyphen, underscore, or dot, and \
+         must not start with a dot, because it names an output directory",
+        max = MAX_IDENTIFIER_LENGTH
     )]
     InvalidLessonId(String),
     /// A lesson with nothing to speak is an authoring mistake, not an empty
@@ -117,8 +126,9 @@ pub enum LessonError {
     MissingSegmentId,
     /// An identity was supplied but could not safely name a path component.
     #[error(
-        "segment ID `{0}` must be 1-64 ASCII letters, digits, hyphen, underscore, or dot, and must \
-         not start with a dot"
+        "segment ID `{0}` must be 1-{max} ASCII letters, digits, hyphen, underscore, or dot, and \
+         must not start with a dot",
+        max = MAX_IDENTIFIER_LENGTH
     )]
     InvalidSegmentId(String),
     /// Two segments share an identity, which would collide in the cache and the
@@ -153,7 +163,7 @@ pub enum LessonError {
     MissingStyle(String),
     /// The pause is long enough to read as a fault in the audio rather than as
     /// phrasing.
-    #[error("segment `{0}` pause exceeds the provisional 10-second limit")]
+    #[error("segment `{0}` pause exceeds the provisional {max} ms limit", max = MAX_PAUSE_AFTER_MS)]
     PauseOutOfRange(String),
 }
 
@@ -232,7 +242,7 @@ impl Lesson {
             if segment.style.trim().is_empty() {
                 return Err(LessonError::MissingStyle(segment.id.clone()));
             }
-            if segment.pause_after_ms > 10_000 {
+            if segment.pause_after_ms > MAX_PAUSE_AFTER_MS {
                 return Err(LessonError::PauseOutOfRange(segment.id.clone()));
             }
         }
