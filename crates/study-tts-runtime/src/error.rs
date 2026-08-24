@@ -398,8 +398,40 @@ pub enum BuildError {
         required_channels: u16,
     },
 
+    /// A name the build offered a managed helper is not exactly one ordinary
+    /// path element, so nothing is joined, inspected, or created.
+    ///
+    /// Distinct from [`BuildError::ManagedPathEscape`] because the two are
+    /// different faults. Most of what this catches — `""`, `"./name"`,
+    /// `"name/"` — reaches a file this crate did not choose to name without
+    /// ever leaving the managed root; `".."` and an absolute name would leave
+    /// it, but are refused lexically here rather than by a containment check.
+    /// Reporting either as an escape tells an operator their workspace was
+    /// attacked when the fault is a caller passing a spelling the contract does
+    /// not allow.
+    ///
+    /// Routing per `docs/governance/ROUTING-TABLES.md` ("Worker protocol or
+    /// containment failure → Worker/runtime → Blocked"): the runtime owner
+    /// corrects the caller. Nothing on disk is touched, so there is nothing for
+    /// an operator to repair.
+    #[error(
+        "managed name `{name}` beneath `{root}` is not one ordinary path element; the build \
+         created nothing, and the runtime owner must correct the caller that supplied it"
+    )]
+    InvalidManagedName {
+        /// The name that was refused.
+        name: String,
+        /// The managed directory the name would have been joined beneath.
+        root: PathBuf,
+    },
+
     /// A path the build derived would leave the root it is confined to, so
     /// nothing is written.
+    ///
+    /// Reserved for a path or a link that can actually escape: a resolved path
+    /// that is no longer beneath its root, or a symlink occupying a managed
+    /// name. A name that is merely spelled wrong is
+    /// [`BuildError::InvalidManagedName`].
     #[error("managed path `{path}` resolves outside `{root}`")]
     ManagedPathEscape {
         /// The path that resolved outside its root.
@@ -620,7 +652,8 @@ pub enum AudioFault {
     /// The stream is readable but is not the one canonical format.
     #[error(
         "the stream is {channels}-channel {sample_rate} Hz {bits_per_sample}-bit \
-         {sample_format}, not canonical mono {required_sample_rate} Hz 32-bit float"
+         {sample_format}, not canonical {required_channels}-channel \
+         {required_sample_rate} Hz {required_bits_per_sample}-bit float"
     )]
     NonCanonical {
         /// Channel count the stream carries.
@@ -631,8 +664,12 @@ pub enum AudioFault {
         bits_per_sample: u16,
         /// Whether the stream is integer or float.
         sample_format: &'static str,
+        /// The one channel count this project accepts.
+        required_channels: u16,
         /// The one sample rate this project accepts, in hertz.
         required_sample_rate: u32,
+        /// The one bit depth this project accepts.
+        required_bits_per_sample: u16,
     },
 
     /// A sample is infinite, NaN, or beyond full scale, which would clip on
@@ -654,6 +691,8 @@ pub enum AudioFault {
     FrameCountOverflow,
 }
 
+/// `io::Error` carries no filename, so every filesystem failure must be given
+/// its path here or the message names nothing.
 pub(crate) fn io_error(path: impl Into<PathBuf>, source: io::Error) -> BuildError {
     BuildError::FileSystem {
         path: path.into(),

@@ -1,3 +1,13 @@
+//! Fail-closed loading of a voice profile directory.
+//!
+//! Applies `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` ("Profile load
+//! fails closed") to the ADR-0001 §12.1 layout, and adds what the core gate
+//! cannot: reading `reference.wav` and `conditionals.pt` and checking their
+//! bytes against the digests the profile records.
+//!
+//! A refusal here precedes every tool and synthesis call, so an unconsented or
+//! altered voice cannot reach audio.
+
 use std::{fs, io, path::Path};
 
 use study_tts_core::{VoiceConsent, VoiceProfile, VoiceUse, validate_profile_for_use};

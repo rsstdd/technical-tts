@@ -1,3 +1,11 @@
+//! What an artifact may claim to be, and the gates a production claim has to
+//! satisfy.
+//!
+//! [`REQUIRED_PRODUCTION_GATES`] is transcribed from ADR-0001 §18 and mirrored
+//! in `docs/governance/RELEASE-PROFILES.md` §3. The claim is checked in one
+//! place so that nothing which writes a manifest can re-derive a weaker
+//! version of it.
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -97,6 +105,41 @@ impl ReleaseClaim {
 
     /// Accepts the claim only if the profile is production and every required
     /// gate has evidence.
+    ///
+    /// # Errors
+    ///
+    /// [`ReleaseError::PrivateProfileCannotClaimProduction`] when the claim is
+    /// not a production one, and [`ReleaseError::MissingGateEvidence`] naming
+    /// every gate that has no evidence — all of them, not the first, so the
+    /// owner learns the whole remaining list in one refusal.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use study_tts_core::{ReleaseClaim, ReleaseError};
+    /// use study_tts_core::REQUIRED_PRODUCTION_GATES;
+    ///
+    /// assert!(matches!(
+    ///     ReleaseClaim::private_preview().validate_as_production(),
+    ///     Err(ReleaseError::PrivateProfileCannotClaimProduction)
+    /// ));
+    ///
+    /// let every_gate = REQUIRED_PRODUCTION_GATES
+    ///     .iter()
+    ///     .map(|gate| (*gate).to_owned())
+    ///     .collect();
+    /// assert!(
+    ///     ReleaseClaim::production_release(every_gate)
+    ///         .validate_as_production()
+    ///         .is_ok()
+    /// );
+    ///
+    /// let no_evidence = ReleaseClaim::production_release(Vec::new());
+    /// assert!(matches!(
+    ///     no_evidence.validate_as_production(),
+    ///     Err(ReleaseError::MissingGateEvidence(_))
+    /// ));
+    /// ```
     pub fn validate_as_production(&self) -> Result<(), ReleaseError> {
         if self.status != ReleaseStatus::ProductionRelease {
             return Err(ReleaseError::PrivateProfileCannotClaimProduction);

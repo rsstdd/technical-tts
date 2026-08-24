@@ -27,12 +27,16 @@ use crate::{BuildError, io_error};
 /// belongs to the E5-S4 containment story. For a single-user local tool the
 /// attacker would already need write access to the workspace, so the
 /// check-then-verify pair is proportionate here.
+///
+/// # Errors
+///
+/// [`BuildError::InvalidManagedName`] when `component` is not one ordinary path
+/// element, before anything is created. [`BuildError::ManagedPathEscape`] when
+/// a symlink or a non-directory occupies the name, or when the created
+/// directory resolves outside `root`. Otherwise [`BuildError::FileSystem`]
+/// carrying what the filesystem reported.
 pub(crate) fn subdirectory(root: &Path, component: &str) -> Result<PathBuf, BuildError> {
-    // Callers pass validated identifiers, but this helper is generic over its
-    // component and the two checks fail independently.
-    if !is_single_normal_component(component) {
-        return Err(escape(root.join(component), root));
-    }
+    validate_managed_name(root, component)?;
 
     let candidate = root.join(component);
     match fs::symlink_metadata(&candidate) {
@@ -70,14 +74,15 @@ pub(crate) fn subdirectory(root: &Path, component: &str) -> Result<PathBuf, Buil
 ///
 /// Nothing is created. The caller writes through a staged file and a rename,
 /// which replaces the name rather than following it.
+///
+/// # Errors
+///
+/// [`BuildError::InvalidManagedName`] when `name` is not one ordinary path
+/// element. [`BuildError::ManagedPathEscape`] when a symlink or a directory
+/// occupies the name. Otherwise [`BuildError::FileSystem`] carrying what the
+/// filesystem reported.
 pub(crate) fn leaf(directory: &Path, name: &str) -> Result<PathBuf, BuildError> {
-    // Before the join rather than after it. Joining an absolute name discards
-    // `directory` outright, so a path built first and inspected second is
-    // inspected in the wrong place: the link and directory checks below would
-    // be reporting on somewhere else entirely.
-    if !is_single_normal_component(name) {
-        return Err(escape(directory.join(name), directory));
-    }
+    validate_managed_name(directory, name)?;
 
     let candidate = directory.join(name);
     match fs::symlink_metadata(&candidate) {
@@ -90,11 +95,33 @@ pub(crate) fn leaf(directory: &Path, name: &str) -> Result<PathBuf, BuildError> 
     }
 }
 
-/// True when `value` names exactly one ordinary path element.
+/// Refuses a managed name that is not exactly one ordinary path element.
 ///
-/// Shared by both helpers because both promise containment and neither can keep
-/// it once a name has been joined: `Path::join` lets an absolute name replace
-/// the root it was given, and a `..` element walks out of it.
+/// Runs before either helper joins anything, because `Path::join` lets an
+/// absolute name replace the root it was given: a path built first and
+/// inspected second is inspected somewhere else entirely, and the link and
+/// directory checks would be reporting on the wrong file.
+///
+/// # Errors
+///
+/// [`BuildError::InvalidManagedName`], and never
+/// [`BuildError::ManagedPathEscape`]. Most of what this refuses — `""`,
+/// `"./name"`, `"name/"` — names a file inside the root by a route this crate
+/// did not choose, so calling it an escape would report an attack that did not
+/// happen. `".."` and an absolute name would escape, but are refused here on
+/// their spelling before any path exists to contain.
+fn validate_managed_name(root: &Path, name: &str) -> Result<(), BuildError> {
+    if is_single_normal_component(name) {
+        return Ok(());
+    }
+
+    Err(BuildError::InvalidManagedName {
+        name: name.to_owned(),
+        root: root.to_path_buf(),
+    })
+}
+
+/// True when `value` names exactly one ordinary path element.
 ///
 /// Comparing the element against the whole value is what rejects the spellings
 /// `components` would otherwise normalize away — `./name`, `name/`, `name/.` —
@@ -109,6 +136,10 @@ fn is_single_normal_component(value: &str) -> bool {
     ) && components.next().is_none()
 }
 
+/// Reports a path that resolved outside the root it was confined to.
+///
+/// Reached only once the lexical contract has held, so every caller has a real
+/// path or a planted link rather than a name that was merely spelled wrong.
 fn escape(path: PathBuf, root: &Path) -> BuildError {
     BuildError::ManagedPathEscape {
         path,
@@ -133,9 +164,12 @@ mod tests {
             );
         }
 
-        // `..` and an absolute name are the two that escape. The rest reach a
-        // file by a spelling this crate did not choose, including the forms
-        // `components` normalizes away if the element alone is inspected.
+        // `..` and an absolute name are the two that could escape; the rest
+        // reach a file inside the root by a spelling this crate did not choose,
+        // including the forms `components` normalizes away if the element alone
+        // is inspected. All of them fail the same lexical contract, so all of
+        // them must arrive as that failure rather than as a containment
+        // breach that did not happen.
         for rejected in [
             "",
             ".",
@@ -158,7 +192,7 @@ mod tests {
             ] {
                 let error = resolved.expect_err("a name that is not one element must not resolve");
                 assert!(
-                    matches!(error, BuildError::ManagedPathEscape { .. }),
+                    matches!(error, BuildError::InvalidManagedName { .. }),
                     "{helper} resolved `{rejected}` to `{error}`"
                 );
             }

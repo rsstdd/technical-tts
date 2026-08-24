@@ -1,3 +1,11 @@
+//! `manifest.json`: the record of what a build produced and what produced it.
+//!
+//! Every value written here is derived rather than restated — the artifact
+//! names from the constants `pipeline` writes the files at, the release status
+//! from the typed value, the digests from the files themselves. A manifest
+//! that could disagree with the build it describes is worse than no manifest,
+//! because `validate_production_manifest` gates on what it says.
+
 use std::path::Path;
 
 use serde::Serialize;
@@ -30,6 +38,11 @@ pub(crate) const M4A_NAME: &str = "lesson.m4a";
 /// Name of the manifest itself inside a preview directory.
 pub(crate) const MANIFEST_NAME: &str = "manifest.json";
 
+/// The manifest document, borrowed from the build that produced it.
+///
+/// Borrowed rather than owned throughout: every value already exists in the
+/// completed build, and copying them would create a second version that could
+/// disagree with it.
 #[derive(Serialize)]
 struct Manifest<'a> {
     schema_version: &'static str,
@@ -75,6 +88,10 @@ struct ToolUse<'a> {
     arguments: &'a [String],
 }
 
+/// The two external tools a build used, as the manifest must record them.
+///
+/// Identity and execution are carried separately because they answer different
+/// questions: which binary ran, and what it was told to do.
 pub(crate) struct ToolRecords<'a> {
     pub ffmpeg: &'a ToolIdentity,
     pub ffmpeg_execution: &'a ToolExecution,
@@ -82,6 +99,18 @@ pub(crate) struct ToolRecords<'a> {
     pub ffprobe_execution: &'a ToolExecution,
 }
 
+/// Writes `manifest.json` for a completed build.
+///
+/// Hashes the master and the export as it goes, so the recorded digests
+/// describe the bytes on disk rather than what the build believed it wrote.
+/// Written atomically: a half-written manifest would describe a build that
+/// does not exist.
+///
+/// # Errors
+///
+/// [`BuildError::FileSystem`] if either artifact cannot be read for hashing or
+/// the manifest cannot be written; [`BuildError::WriteJson`] if serialization
+/// fails.
 pub(crate) fn write(
     destination: &Path,
     lesson_id: &str,

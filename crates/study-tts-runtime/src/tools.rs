@@ -1,3 +1,10 @@
+//! Resolution and identification of the external binaries a build shells out
+//! to.
+//!
+//! Preflight rather than lazy discovery: a build that would fail for a missing
+//! encoder says so before it synthesizes anything, and the manifest records
+//! the binary that actually ran rather than the one that was requested.
+
 use std::{
     env, fs,
     path::{Path, PathBuf},

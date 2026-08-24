@@ -1,3 +1,12 @@
+//! The order a preview build happens in, and the gates that precede it.
+//!
+//! Every gate — lesson validity, rights classification, voice consent,
+//! external-tool preflight — runs before any synthesis or tool work. That
+//! ordering is the point of this module: a refusal must name the policy that
+//! refused rather than the first thing that happened to break, and the tests
+//! prove it by pointing a build at a missing tool and asserting the gate's own
+//! error.
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -51,6 +60,21 @@ pub struct BuildResult {
 /// Every gate runs before any tool or synthesis work, so a refusal names the
 /// gate rather than a missing binary. The result is always a private preview;
 /// only `publish` can claim more.
+///
+/// # Errors
+///
+/// The first gate to refuse, as itself: [`BuildError::ReadFile`] or
+/// [`BuildError::Lesson`] for the document, [`BuildError::Voice`] and the
+/// voice-record variants for the profile, [`BuildError::MissingTool`] for
+/// preflight, [`BuildError::UnusableCacheEntry`] for a cache entry that cannot
+/// be trusted, and [`BuildError::ManagedPathEscape`] for a link planted on a
+/// path this build owns. Later stages report the assembly, encode, probe, and
+/// manifest variants named on those functions.
+///
+/// [`BuildError::InvalidManagedName`] is not among them: every name this
+/// function offers a managed helper is either a literal or an identifier the
+/// lesson gate already refused, so an unusable spelling is reported as the
+/// authoring mistake it is.
 pub fn build_preview(
     request: BuildRequest,
     synthesizer: &dyn SegmentSynthesizer,
@@ -124,6 +148,14 @@ pub fn build_preview(
 /// `build_preview` performs this check internally; the entry point exists so
 /// the rejection path can be exercised from the integration suite, which is
 /// where a test needing a real ffprobe belongs.
+///
+/// # Errors
+///
+/// [`BuildError::MissingTool`] or [`BuildError::InspectTool`] when ffprobe
+/// cannot be resolved or launched, [`BuildError::Ffprobe`] when it fails,
+/// [`BuildError::UnreadableProbeResponse`] when its output cannot be parsed,
+/// and [`BuildError::UnexpectedEncodedStream`] when the artifact is not a
+/// single mono AAC stream.
 pub fn validate_encoded_output(
     ffprobe_executable: &Path,
     encoded: &Path,
@@ -140,6 +172,10 @@ pub fn validate_encoded_output(
 /// therefore stays correct once the production gates of
 /// `docs/governance/RELEASE-PROFILES.md` §3 exist — a preview will still not be
 /// publishable, because it is not the artifact that earned them.
+///
+/// # Errors
+///
+/// Always [`BuildError::Release`], carrying the profile rule that refused.
 pub fn publish(_preview: &BuildResult) -> Result<(), BuildError> {
     Ok(ReleaseClaim::private_preview().validate_as_production()?)
 }
@@ -226,6 +262,19 @@ fn declare_section<'de, T: Deserialize<'de>>(
 /// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` ("Unresolved external
 /// distribution blocks publish") over provisional `content_rights` and
 /// `voice_profiles` manifest sections that the E1-S1 schema story will version.
+///
+/// # Errors
+///
+/// [`BuildError::MalformedProductionManifest`] or
+/// [`BuildError::UnsupportedProductionManifest`] for what the document is;
+/// [`BuildError::ManifestNotProductionRelease`] for what it claims;
+/// [`BuildError::Lesson`] for an identifier a lesson could not name;
+/// [`BuildError::InvalidRightsDeclaration`],
+/// [`BuildError::MissingContentRightsDeclaration`],
+/// [`BuildError::UnresolvedContentRights`], or [`BuildError::Voice`] for what
+/// it claims about its sources. A manifest that clears every one of those is
+/// still refused with [`BuildError::ProductionGatesUnavailable`], because the
+/// gates it would have to satisfy do not exist yet.
 pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
     // Two stages, because the version is what says which shape is legal: a
     // document of an unknown version must be reported as an unknown version,

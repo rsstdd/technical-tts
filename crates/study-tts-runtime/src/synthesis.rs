@@ -1,3 +1,10 @@
+//! The seam a speech worker plugs into.
+//!
+//! Deliberately thin. `DELIVERY-PLAN.md` §E0-S4 baselines the real worker
+//! protocol; until then a narrow trait and one opaque error are honest about
+//! what is not yet known, where invented error variants would freeze a guess
+//! into the interface and give every caller cases no implementation produces.
+
 use std::path::Path;
 
 use study_tts_core::PlannedSegment;

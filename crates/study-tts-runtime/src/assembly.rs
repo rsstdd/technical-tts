@@ -1,6 +1,14 @@
+//! Concatenation of validated cache entries into one canonical master WAV.
+//!
+//! The expected frame total is derived from cache metadata before the write
+//! loop runs, so a master that came out the wrong length is caught against
+//! what the plan said rather than against whatever was produced. Frame
+//! arithmetic is checked throughout: a pause long enough to overflow the
+//! counter is a refusal, never a wrap.
+
 use std::path::Path;
 
-use study_tts_core::CANONICAL_SAMPLE_RATE;
+use study_tts_core::{CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_RATE};
 use tempfile::Builder;
 
 use crate::{
@@ -62,6 +70,23 @@ fn verify_recorded_audio(segment: &CachedSegment) -> Result<(), BuildError> {
     Ok(())
 }
 
+/// Concatenates validated cache entries into the master WAV, returning the
+/// frames written.
+///
+/// Each entry's audio is re-hashed against its recorded digest before a sample
+/// of it is read, so a tampered entry is refused rather than assembled. The
+/// master is staged beside its destination and renamed, so a failure part way
+/// through leaves no partial master for a later step to treat as finished.
+///
+/// # Errors
+///
+/// [`BuildError::UnrootedDestination`] when `destination` has no parent;
+/// [`BuildError::UnusableCacheEntry`] naming the entry whose digest or frame
+/// count disagrees with its record; [`BuildError::PauseFrameOverflow`] or
+/// [`BuildError::AssembledLengthOverflow`] when the frame arithmetic would
+/// wrap; [`BuildError::AssembledLengthMismatch`] when the total disagrees with
+/// what the plan required; otherwise [`BuildError::AudioAt`] or
+/// [`BuildError::FileSystem`].
 pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result<u64, BuildError> {
     let parent = destination
         .parent()
@@ -76,9 +101,9 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
         .tempfile_in(parent)
         .map_err(|error| io_error(parent, error))?;
     let spec = hound::WavSpec {
-        channels: 1,
+        channels: CANONICAL_CHANNELS,
         sample_rate: CANONICAL_SAMPLE_RATE,
-        bits_per_sample: 32,
+        bits_per_sample: CANONICAL_BITS_PER_SAMPLE,
         sample_format: hound::SampleFormat::Float,
     };
     let mut writer = hound::WavWriter::new(staged.as_file_mut(), spec)
@@ -163,9 +188,9 @@ mod tests {
 
     fn write_tone(path: &Path, frames: u32) {
         let spec = hound::WavSpec {
-            channels: 1,
+            channels: CANONICAL_CHANNELS,
             sample_rate: CANONICAL_SAMPLE_RATE,
-            bits_per_sample: 32,
+            bits_per_sample: CANONICAL_BITS_PER_SAMPLE,
             sample_format: hound::SampleFormat::Float,
         };
         let mut writer = hound::WavWriter::create(path, spec).expect("create test WAV");
@@ -265,9 +290,9 @@ mod tests {
         // altered bytes reach the master while the manifest keeps recording the
         // digest of the audio that was validated.
         let spec = hound::WavSpec {
-            channels: 1,
+            channels: CANONICAL_CHANNELS,
             sample_rate: CANONICAL_SAMPLE_RATE,
-            bits_per_sample: 32,
+            bits_per_sample: CANONICAL_BITS_PER_SAMPLE,
             sample_format: hound::SampleFormat::Float,
         };
         let mut writer = hound::WavWriter::create(&audio, spec).expect("rewrite test WAV");

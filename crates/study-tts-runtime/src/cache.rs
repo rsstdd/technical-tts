@@ -1,3 +1,15 @@
+//! The content-addressed synthesis cache: where an entry lives, what it must
+//! contain, and when it may be reused.
+//!
+//! An entry is reused only after its recorded metadata has been validated
+//! against this build's canonical audio format and its audio re-hashed to the
+//! digest the artifact records. A partial or unreadable entry is a miss, and a
+//! corrupt one is a refusal naming the entry and its remedy — never a silent
+//! repair, which would let a tampered file pass as a hit.
+//!
+//! The sharding layout is stated once, in [`entry_path_elements`], and is
+//! private to this crate.
+
 use std::{
     fs,
     io::{self, Read},
@@ -6,12 +18,19 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use study_tts_core::{
-    CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, CacheKey, PlannedSegment, is_blake3_hex,
+    CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE,
+    CacheKey, PlannedSegment, is_blake3_hex,
 };
 use tempfile::Builder;
 
 use crate::{AudioFault, BuildError, CacheEntryFault, SegmentSynthesizer, io_error, managed};
 
+/// Layout version this module accepts for a cache artifact.
+///
+/// Independent of the lesson and manifest schema versions despite sharing a
+/// value today: the three version different documents and move separately. An
+/// artifact declaring anything else is refused rather than read on the guess
+/// that the layout did not change.
 const CACHE_SCHEMA_VERSION: &str = "0.1-skeleton";
 
 /// Bytes held in memory at once while hashing a file.
@@ -26,10 +45,10 @@ const HASH_BUFFER_BYTES: usize = 64 * 1024;
 /// Characters of the cache key that name the shard directory grouping entries
 /// under `segments/`.
 ///
-/// Kept below the key length so the prefix slice in `entry_dir` is in bounds,
-/// and asserted here rather than trusted: `CacheKey` guarantees the length, and
-/// this is where that guarantee stops being a comment and becomes a compile
-/// error.
+/// Kept below the key length so the prefix slice in `entry_path_elements` is
+/// in bounds, and asserted here rather than trusted: `CacheKey` guarantees the
+/// length, and this is where that guarantee stops being a comment and becomes
+/// a compile error.
 const CACHE_SHARD_WIDTH: usize = 2;
 const _: () = assert!(CACHE_SHARD_WIDTH <= CacheKey::LENGTH);
 
@@ -43,6 +62,10 @@ const AUDIO_RECORD: &str = "audio.wav";
 const ARTIFACT_RECORD: &str = "artifact.json";
 
 #[derive(Clone, Debug)]
+/// One segment's audio as the cache holds it, validated and ready to assemble.
+///
+/// Produced only by [`resolve`], so nothing downstream can name a cache entry
+/// that has not passed its checks.
 pub(crate) struct CachedSegment {
     pub segment_id: String,
     pub cache_key: CacheKey,
@@ -53,6 +76,14 @@ pub(crate) struct CachedSegment {
     pub pause_after_ms: u32,
 }
 
+/// `artifact.json`: what one cache entry declares about the audio beside it.
+///
+/// `deny_unknown_fields` because a field this build does not know is a field
+/// it cannot check, and an entry it cannot fully check is one it must refuse
+/// rather than partly trust. The declared format is compared against this
+/// build's canonical values before the audio is reused, so an entry written by
+/// a differently configured build is a refusal instead of a silent format
+/// change part way through a master.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CacheArtifact {
@@ -65,33 +96,42 @@ struct CacheArtifact {
     frames: u32,
 }
 
-/// Directory holding one cache entry. Shared with tests so the sharding scheme
-/// is defined once.
+/// The elements naming one cache entry beneath the cache root, in order.
 ///
-/// Total for every `CacheKey`: the type guarantees `CacheKey::LENGTH` ASCII
+/// The single statement of the sharding layout, kept private to this crate:
+/// anything outside it that derived an entry path would be a second copy of
+/// the scheme, drifting silently when the shard width changes.
+///
+/// Total for every [`CacheKey`]: the type guarantees `CacheKey::LENGTH` ASCII
 /// characters, so the shard prefix is in bounds and on a character boundary.
-/// Taking a `&str` here is what made this a panic reachable from a deserialized
-/// plan.
-pub(crate) fn entry_dir(cache_root: &Path, cache_key: &CacheKey) -> PathBuf {
+/// Taking a `&str` here is what made this a panic reachable from a
+/// deserialized plan.
+fn entry_path_elements(cache_key: &CacheKey) -> [&str; 3] {
     let key = cache_key.as_str();
-    cache_root
-        .join(SEGMENTS_DIRECTORY)
-        .join(&key[..CACHE_SHARD_WIDTH])
-        .join(key)
+    [SEGMENTS_DIRECTORY, &key[..CACHE_SHARD_WIDTH], key]
 }
 
-/// Resolves the entry directory, validating every component it creates.
+/// Resolves the entry directory, validating every element it creates.
 ///
-/// [`entry_dir`] states the layout; this walks it. A *lexical* escape is
-/// already impossible because `CacheKey` guarantees hex, so no component can
-/// carry a separator or `..` — but a symlink planted at `segments`, at the
-/// shard, or at the entry itself is followed by `create_dir_all` and by every
-/// later read. Each level therefore goes through `managed::subdirectory`, which
-/// refuses a link and confirms the result is still beneath its parent.
+/// [`entry_path_elements`] states the layout; this walks it one level at a
+/// time. A *lexical* escape is already impossible because `CacheKey`
+/// guarantees hex, so no element can carry a separator or `..` — but a symlink
+/// planted at `segments`, at the shard, or at the entry itself is followed by
+/// `create_dir_all` and by every later read. Each level therefore goes through
+/// `managed::subdirectory`, which refuses a link and confirms the result is
+/// still beneath its parent.
+///
+/// # Errors
+///
+/// Whatever `managed::subdirectory` reports for the first element that fails:
+/// [`BuildError::ManagedPathEscape`] for a planted link or a result outside
+/// its parent, otherwise [`BuildError::FileSystem`].
 fn resolve_entry_dir(cache_root: &Path, cache_key: &CacheKey) -> Result<PathBuf, BuildError> {
-    let segments = managed::subdirectory(cache_root, SEGMENTS_DIRECTORY)?;
-    let shard = managed::subdirectory(&segments, &cache_key.as_str()[..CACHE_SHARD_WIDTH])?;
-    managed::subdirectory(&shard, cache_key.as_str())
+    entry_path_elements(cache_key)
+        .iter()
+        .try_fold(cache_root.to_path_buf(), |parent, element| {
+            managed::subdirectory(&parent, element)
+        })
 }
 
 /// Names the entry a fault was found in.
@@ -107,6 +147,21 @@ pub(crate) fn rejected(entry_dir: &Path, segment_id: &str, fault: CacheEntryFaul
     }
 }
 
+/// Returns the segment's audio from the cache, synthesizing it first if the
+/// entry is absent or incomplete.
+///
+/// A hit is only a hit once the entry's recorded metadata matches this build's
+/// canonical format and its audio re-hashes to the recorded digest. A partial
+/// entry is treated as a miss and re-synthesized; a corrupt one is refused
+/// rather than repaired, because a repair would let a tampered file pass.
+///
+/// # Errors
+///
+/// [`BuildError::UnusableCacheEntry`] naming the violated invariant when a
+/// published entry cannot be trusted, [`BuildError::UnusableAudio`] when fresh
+/// synthesis produces audio this build cannot use,
+/// [`BuildError::ManagedPathEscape`] when a link occupies an entry path, and
+/// [`BuildError::Synthesis`] when the worker itself refuses.
 pub(crate) fn resolve(
     cache_root: &Path,
     segment: &PlannedSegment,
@@ -142,7 +197,7 @@ pub(crate) fn resolve(
         fault,
     })?;
     if report.sample_rate != CANONICAL_SAMPLE_RATE
-        || report.channels != 1
+        || report.channels != CANONICAL_CHANNELS
         || report.frames != frames
     {
         // The WAV itself passed validation, so its shape is canonical by
@@ -154,7 +209,7 @@ pub(crate) fn resolve(
             reported_channels: report.channels,
             reported_frames: report.frames,
             written_sample_rate: CANONICAL_SAMPLE_RATE,
-            written_channels: 1,
+            written_channels: CANONICAL_CHANNELS,
             written_frames: frames,
         });
     }
@@ -168,7 +223,7 @@ pub(crate) fn resolve(
         cache_key: segment.cache_key.clone(),
         audio_blake3: audio_blake3.clone(),
         sample_rate: CANONICAL_SAMPLE_RATE,
-        channels: 1,
+        channels: CANONICAL_CHANNELS,
         sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
         frames,
     };
@@ -185,6 +240,19 @@ pub(crate) fn resolve(
     })
 }
 
+/// Accepts a published entry as a hit only once every claim it makes holds.
+///
+/// The checks run in a fixed order so each failure is reported as itself: the
+/// artifact parses, its recorded digest is well formed, its declared format is
+/// this build's, and only then is the audio re-hashed against the digest. A
+/// malformed digest reported as a mismatch would tell an operator their file
+/// was tampered with when it was merely written wrong.
+///
+/// # Errors
+///
+/// [`BuildError::UnusableCacheEntry`] carrying the [`CacheEntryFault`] that
+/// names the violated invariant, or [`BuildError::FileSystem`] if the artifact
+/// cannot be read.
 fn load_validated(
     segment: &PlannedSegment,
     entry_dir: &Path,
@@ -226,7 +294,7 @@ fn load_validated(
     // consume.
     if artifact.schema_version != CACHE_SCHEMA_VERSION
         || artifact.sample_rate != CANONICAL_SAMPLE_RATE
-        || artifact.channels != 1
+        || artifact.channels != CANONICAL_CHANNELS
         || artifact.sample_format != CANONICAL_SAMPLE_FORMAT
     {
         return Err(rejected(
@@ -239,7 +307,7 @@ fn load_validated(
                 sample_format: artifact.sample_format,
                 required_schema_version: CACHE_SCHEMA_VERSION,
                 required_sample_rate: CANONICAL_SAMPLE_RATE,
-                required_channels: 1,
+                required_channels: CANONICAL_CHANNELS,
                 required_sample_format: CANONICAL_SAMPLE_FORMAT,
             },
         ));
@@ -340,9 +408,9 @@ fn hash_stream(source: &mut impl Read) -> io::Result<String> {
 fn validate_wav(path: &Path) -> Result<u32, AudioFault> {
     let mut reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
-    if spec.channels != 1
+    if spec.channels != CANONICAL_CHANNELS
         || spec.sample_rate != CANONICAL_SAMPLE_RATE
-        || spec.bits_per_sample != 32
+        || spec.bits_per_sample != CANONICAL_BITS_PER_SAMPLE
         || spec.sample_format != hound::SampleFormat::Float
     {
         return Err(AudioFault::NonCanonical {
@@ -353,7 +421,9 @@ fn validate_wav(path: &Path) -> Result<u32, AudioFault> {
                 hound::SampleFormat::Float => "float",
                 hound::SampleFormat::Int => "integer",
             },
+            required_channels: CANONICAL_CHANNELS,
             required_sample_rate: CANONICAL_SAMPLE_RATE,
+            required_bits_per_sample: CANONICAL_BITS_PER_SAMPLE,
         });
     }
 
@@ -376,6 +446,19 @@ fn validate_wav(path: &Path) -> Result<u32, AudioFault> {
     Ok(frames)
 }
 
+/// Writes `value` as pretty JSON, replacing `path` only once the bytes are on
+/// disk.
+///
+/// Staged beside the destination and renamed, so a reader never sees a
+/// half-written record: every JSON this build produces is read back and
+/// trusted, and a truncated one would be a cache entry or a manifest that
+/// describes a build that does not exist.
+///
+/// # Errors
+///
+/// [`BuildError::UnrootedDestination`] when `path` has no parent to stage
+/// beside, [`BuildError::WriteJson`] when serialization fails, otherwise
+/// [`BuildError::FileSystem`].
 pub(crate) fn write_json_atomically<T: Serialize>(
     path: &Path,
     value: &T,
@@ -445,9 +528,9 @@ mod tests {
 
     fn write_tone(path: &Path, frames: u32, sample_rate: u32) {
         let spec = hound::WavSpec {
-            channels: 1,
+            channels: CANONICAL_CHANNELS,
             sample_rate,
-            bits_per_sample: 32,
+            bits_per_sample: CANONICAL_BITS_PER_SAMPLE,
             sample_format: hound::SampleFormat::Float,
         };
         let mut writer = hound::WavWriter::create(path, spec).expect("create test WAV");
@@ -460,7 +543,9 @@ mod tests {
     /// Publishes a valid entry, then hands back the pieces needed to corrupt
     /// it.
     fn published_entry(root: &Path, cache_key: &str) -> (PathBuf, PathBuf, PathBuf) {
-        let dir = entry_dir(root, &key(cache_key));
+        // Any unique directory will do: `load_validated` is handed its paths,
+        // so nothing here depends on where the real layout puts an entry.
+        let dir = root.join(cache_key);
         fs::create_dir_all(&dir).expect("create entry directory");
         let audio = dir.join("audio.wav");
         let artifact = dir.join("artifact.json");
@@ -470,7 +555,7 @@ mod tests {
             cache_key: key(cache_key),
             audio_blake3: hash_file(&audio).expect("hash test audio"),
             sample_rate: CANONICAL_SAMPLE_RATE,
-            channels: 1,
+            channels: CANONICAL_CHANNELS,
             sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
             frames: 2_400,
         };
@@ -600,8 +685,8 @@ mod tests {
         let cache_key = key("abcdef");
 
         assert_eq!(
-            entry_dir(Path::new("/cache"), &cache_key),
-            Path::new("/cache/segments/ab").join(cache_key.as_str())
+            entry_path_elements(&cache_key),
+            [SEGMENTS_DIRECTORY, "ab", cache_key.as_str()]
         );
     }
 

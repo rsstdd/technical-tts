@@ -1,3 +1,14 @@
+//! Rights classification of source material, and what each classification
+//! permits.
+//!
+//! Transcribed from `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`
+//! §Classification. Every permission question is answered by exhaustive match
+//! rather than by a default, so a classification added later cannot inherit
+//! permission it was never granted.
+//!
+//! The product records classification and scope. It does not encode a
+//! universal legal conclusion about any third-party material.
+
 use serde::{Deserialize, Serialize};
 
 /// Classification a nontrivial input receives before use.

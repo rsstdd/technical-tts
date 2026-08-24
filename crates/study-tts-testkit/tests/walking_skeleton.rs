@@ -7,8 +7,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use study_tts_core::{CacheKey, LessonError, ReleaseError};
 use study_tts_runtime::{
-    BuildError, BuildRequest, CacheEntryFault, build_preview, cache_entry_dir, publish,
-    validate_encoded_output, validate_production_manifest,
+    BuildError, BuildRequest, CacheEntryFault, build_preview, publish, validate_encoded_output,
+    validate_production_manifest,
 };
 use study_tts_testkit::{
     DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture,
@@ -17,6 +17,50 @@ use tempfile::TempDir;
 
 fn repository_root() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// Finds the cache entry recording `cache_key` by reading what each entry says
+/// it is.
+///
+/// The sharding scheme is private to the runtime. Deriving the path here would
+/// be a second copy of that layout in a test that is supposed to be able to
+/// fail when the layout is wrong, so the entry is discovered by its declared
+/// identity instead.
+///
+/// # Panics
+///
+/// If no entry declares `cache_key`, or if a cache directory or artifact cannot
+/// be read. Every caller has just built the preview that wrote the entry, so
+/// either is a defect in the code under test rather than a condition a test
+/// should tolerate.
+fn find_cache_entry_dir(cache_root: &Path, cache_key: &CacheKey) -> std::path::PathBuf {
+    let mut directories = vec![cache_root.to_path_buf()];
+
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(&directory).expect("read cache directory") {
+            let entry = entry.expect("read cache entry");
+            if entry.file_type().expect("read cache entry type").is_dir() {
+                directories.push(entry.path());
+                continue;
+            }
+            if entry.file_name() != "artifact.json" {
+                continue;
+            }
+
+            let artifact: Value =
+                serde_json::from_slice(&std::fs::read(entry.path()).expect("read cache artifact"))
+                    .expect("parse cache artifact");
+            if artifact["cache_key"].as_str() == Some(cache_key.as_str()) {
+                return entry
+                    .path()
+                    .parent()
+                    .expect("a cache artifact always sits inside its entry directory")
+                    .to_path_buf();
+            }
+        }
+    }
+
+    panic!("no cache entry declares `{cache_key}`");
 }
 
 fn build_request(lesson_path: &Path, workspace: &Path) -> BuildRequest {
@@ -410,9 +454,7 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         .expect("segment cache key")
         .parse()
         .expect("the manifest records a well-formed cache key");
-    // The sharding scheme is owned by `cache::entry_dir`; changing it must not
-    // require editing this test.
-    let entry_dir = cache_entry_dir(&workspace.path().join("cache"), &cache_key);
+    let entry_dir = find_cache_entry_dir(&workspace.path().join("cache"), &cache_key);
     let artifact_path = entry_dir.join("artifact.json");
     let original: Value =
         serde_json::from_slice(&std::fs::read(&artifact_path).expect("read cache artifact"))
@@ -601,7 +643,7 @@ fn t4_e0_cache_file_symlink_escape_is_rejected() {
         .expect("segment cache key")
         .parse()
         .expect("the manifest records a well-formed cache key");
-    let entry_dir = cache_entry_dir(&workspace.path().join("cache"), &cache_key);
+    let entry_dir = find_cache_entry_dir(&workspace.path().join("cache"), &cache_key);
 
     let outside = workspace.path().join("outside.json");
     std::fs::write(&outside, b"{}").expect("write outside file");

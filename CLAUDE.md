@@ -9,8 +9,8 @@ drift from them.
 
 | When | Load |
 |---|---|
-| Writing, generating, or editing **any Rust** in this workspace | `clean-code` **and** `rust-review` |
-| Reviewing a diff, file, module tree, or crate | `rust-review`, with `clean-code` |
+| Writing, generating, or editing **any Rust** in this workspace | `clean-code`, `rust-review`, **and** `rust-comment` |
+| Reviewing a diff, file, module tree, or crate | `rust-review`, with `clean-code` and `rust-comment` |
 | Writing or editing any other code | `clean-code` |
 
 Load them **before the first edit, not after**. `rust-review` is the standard the code will be
