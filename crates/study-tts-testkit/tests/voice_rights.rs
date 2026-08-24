@@ -251,8 +251,8 @@ fn t4_e0_production_release_rejects_unresolved_content_rights_classification() {
     );
 
     // An unknown classification value is a parse error, never silently
-    // accepted, and it is reported as an invalid rights declaration rather than
-    // as the generic JSON catch-all.
+    // accepted, and it names the rights section rather than reporting that some
+    // JSON somewhere failed to parse.
     let unknown = production_manifest(serde_json::json!([{
         "source_id": "lesson-source-1",
         "classification": "unclassified",
@@ -278,8 +278,8 @@ fn t3_e0_production_manifest_is_a_strict_typed_boundary() {
         "rights_record_id": "rights-qualification-sources-v1",
     }]);
 
-    // Bytes that are not JSON at all are reported as a manifest failure, not as
-    // the generic JSON catch-all, which names no subsystem.
+    // Bytes that are not JSON at all are still reported as a manifest failure,
+    // so the refusal names the artifact the operator has to correct.
     let error = validate_production_manifest(b"{ not json")
         .expect_err("malformed bytes must refuse production");
     assert!(

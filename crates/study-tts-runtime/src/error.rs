@@ -92,10 +92,10 @@ pub enum BuildError {
     /// A manifest's rights section does not parse — an unknown classification,
     /// a missing field, or the wrong shape.
     ///
-    /// Distinct from the `Json` catch-all below: on the publication path the
-    /// section is known and worth naming, and an operator reading "JSON
-    /// operation failed" would not learn that their manifest declared a
-    /// classification outside the recorded vocabulary.
+    /// One of several parse failures that each name their own artifact, rather
+    /// than one shared JSON variant: an operator reading "JSON operation
+    /// failed" would not learn that their manifest declared a classification
+    /// outside the recorded vocabulary.
     #[error(
         "production release is refused: the `{section}` manifest section is not a valid rights \
          declaration ({source}); the project owner must correct the manifest before publication"
@@ -427,11 +427,10 @@ pub enum BuildError {
     /// The manifest is not JSON, or not the shape its declared version
     /// requires.
     ///
-    /// Distinct from the `Json` catch-all: the subsystem is known here, and an
-    /// operator reading "JSON operation failed" would not learn that
-    /// publication refused their manifest. An unknown top-level field lands
-    /// here too, because a field this build cannot evaluate is one it must not
-    /// publish past.
+    /// Named for the manifest rather than for JSON, because an operator reading
+    /// "JSON operation failed" would not learn that publication refused their
+    /// manifest. An unknown top-level field lands here too, because a field
+    /// this build cannot evaluate is one it must not publish past.
     #[error(
         "production release is refused: the manifest is not a valid production manifest \
          ({source}); the project owner must correct the manifest before publication"

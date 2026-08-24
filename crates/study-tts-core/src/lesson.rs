@@ -221,10 +221,6 @@ impl Lesson {
     }
 }
 
-/// A leading dot is rejected because it produces a hidden directory, which also
-/// makes `.`, `..`, and `...` invalid without a special case for each. Length
-/// is measured in bytes, which is exact here because the byte-class check
-/// restricts the value to ASCII.
 /// Applies the lesson-identifier rules to a value that did not arrive inside a
 /// `Lesson`.
 ///
@@ -245,6 +241,10 @@ pub fn validate_lesson_id(lesson_id: &str) -> Result<(), LessonError> {
     Ok(())
 }
 
+/// A leading dot is rejected because it produces a hidden directory, which also
+/// makes `.`, `..`, and `...` invalid without a special case for each. Length
+/// is measured in bytes, which is exact here because the byte-class check
+/// restricts the value to ASCII.
 fn is_portable_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_IDENTIFIER_LENGTH
