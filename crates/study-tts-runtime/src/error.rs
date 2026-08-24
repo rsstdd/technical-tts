@@ -242,6 +242,11 @@ pub enum BuildError {
     },
 
     /// A segment's trailing pause is too long to express as a frame count.
+    ///
+    /// A guard rather than a condition a caller should expect: at the canonical
+    /// 24 kHz no `u32` pause can overflow the frame count, and `pause_frames`
+    /// in `assembly` records the arithmetic and what would have to change for
+    /// this to become reachable.
     #[error(
         "the pause of {pause_after_ms} ms after segment `{segment_id}` overflows the frame count \
          this build can assemble; shorten the pause in the lesson"
@@ -255,6 +260,10 @@ pub enum BuildError {
 
     /// The planned lesson is longer than the build can represent, before any
     /// audio was written.
+    ///
+    /// Reachable only if the ten-second pause cap in `study_tts_core::Lesson`
+    /// stops holding; `expected_frames` in `assembly` records why. Kept so
+    /// assembly's arithmetic does not depend on a bound another crate enforces.
     #[error(
         "the planned lesson exceeds the frame count this build can assemble; split the lesson \
          into shorter lessons"
@@ -263,6 +272,11 @@ pub enum BuildError {
 
     /// The master grew past what the build can count while it was being
     /// written.
+    ///
+    /// No input reaches either of the two checks that raise it: one counts a
+    /// single WAV, whose length a data chunk declares in 32 bits, and the other
+    /// re-sums totals the pre-pass already summed without overflow. Both are
+    /// checked so the write loop stands on its own arithmetic.
     #[error(
         "assembling `{destination}` exceeded the frame count this build can track; split the \
          lesson into shorter lessons"
@@ -736,6 +750,11 @@ pub enum AudioFault {
     Empty,
 
     /// The file holds more frames than the frame counter can represent.
+    ///
+    /// Not reachable through a WAV: the ceiling is about 17 GB of sample data,
+    /// four times what a data chunk can declare. Kept because the counter is
+    /// the `u32` the artifact record carries, so a container without that cap
+    /// would wrap here first.
     #[error("it holds more frames than this build can count")]
     FrameCountOverflow,
 }

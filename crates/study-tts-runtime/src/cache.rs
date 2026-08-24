@@ -434,6 +434,12 @@ fn validate_wav(path: &Path) -> Result<u32, AudioFault> {
         });
     }
 
+    // `frames` is the `u32` the artifact record and the manifest carry, so it
+    // is counted at that width rather than counted wide and narrowed. No file
+    // reaches the ceiling: 4.29e9 f32 frames is about 17 GB of sample data,
+    // four times what a WAV data chunk can declare in its 32-bit length. The
+    // check is what makes that a refusal rather than a wrap should the
+    // canonical format ever move to a container without the cap.
     let mut frames = 0_u32;
     for sample in reader.samples::<f32>() {
         let sample = sample?;

@@ -22,6 +22,14 @@ const MILLISECONDS_PER_SECOND: u64 = 1_000;
 
 /// Frames of silence written after a segment. Shared by the expected-total
 /// calculation and the write loop so the two cannot drift apart.
+///
+/// No pause reaches the overflow: the widest value a `u32` can hold, times a
+/// 24 kHz sample rate, is near `1.0e14` against a `u64` ceiling near `1.8e19`.
+/// The check is kept because it binds that headroom to the constant rather
+/// than to a reader's memory of it. Overflow would need `CANONICAL_SAMPLE_RATE`
+/// above roughly `4.3e9` Hz or a wider pause field, and a change that large
+/// should be refused here rather than wrap into a master whose length every
+/// downstream duration inherits.
 fn pause_frames(segment: &CachedSegment) -> Result<u64, BuildError> {
     Ok(u64::from(segment.pause_after_ms)
         .checked_mul(u64::from(CANONICAL_SAMPLE_RATE))
@@ -34,6 +42,15 @@ fn pause_frames(segment: &CachedSegment) -> Result<u64, BuildError> {
 
 /// Total frames the master must contain, derived from validated cache metadata
 /// rather than from what the write loop happens to produce.
+///
+/// The running total is checked so this crate's arithmetic does not rest on a
+/// bound another crate enforces. Under `Lesson::validate`, which caps a pause
+/// at ten seconds, a segment contributes at most about `4.3e9` frames and
+/// overflowing a `u64` would take billions of segments — more `CachedSegment`
+/// values than a machine holds. Without that upstream cap the figure falls to
+/// roughly 180,000 segments, an ordinary allocation. The check is what keeps
+/// the difference between those two worlds a refusal instead of a wrapped
+/// length.
 fn expected_frames(segments: &[CachedSegment]) -> Result<u64, BuildError> {
     let mut expected = 0_u64;
     for segment in segments {
@@ -87,7 +104,8 @@ fn verify_recorded_audio(segment: &CachedSegment) -> Result<(), BuildError> {
 /// [`BuildError::UnusableCacheEntry`] naming the entry whose digest or frame
 /// count disagrees with its record; [`BuildError::PauseFrameOverflow`] or
 /// [`BuildError::AssembledLengthOverflow`] when the frame arithmetic would
-/// wrap; [`BuildError::AssembledLengthMismatch`] when the total disagrees with
+/// wrap, neither of which any input this build accepts reaches;
+/// [`BuildError::AssembledLengthMismatch`] when the total disagrees with
 /// what the plan required; otherwise [`BuildError::AudioAt`] or
 /// [`BuildError::FileSystem`].
 pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result<u64, BuildError> {
@@ -127,6 +145,12 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
             writer
                 .write_sample(sample)
                 .map_err(|error| audio_error(destination, error))?;
+            // One WAV cannot wrap a `u64` frame counter: a data chunk
+            // declares its length in 32 bits, so `hound` yields at most about
+            // `1.1e9` f32 samples from the file, and the equality check below
+            // refuses anything past the `u32` the entry recorded long before
+            // the counter is in danger. Checked so the write loop does not
+            // depend on the container's field width for its arithmetic.
             segment_frames = segment_frames.checked_add(1).ok_or_else(|| {
                 BuildError::AssembledLengthOverflow {
                     destination: destination.to_path_buf(),
@@ -154,6 +178,11 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
                 .map_err(|error| audio_error(destination, error))?;
         }
 
+        // Unreachable while `expected_frames` succeeded above: each segment
+        // contributes exactly the count that pre-pass already summed without
+        // overflow. Checked because the two totals are built by separate
+        // loops, and holding both to the same limit is what makes the
+        // comparison below meaningful.
         total_frames = total_frames
             .checked_add(segment_frames)
             .and_then(|running| running.checked_add(pause))
