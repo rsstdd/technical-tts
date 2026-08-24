@@ -24,10 +24,26 @@ const REQUIRED_STREAMS: usize = 1;
 /// The subset of an ffprobe response the pinned `-show_entries` selection asks
 /// for.
 ///
-/// Deliberately not `deny_unknown_fields`: this is another program's output,
-/// not a contract this project defines, and a future ffprobe adding a field
-/// must not fail a build. What bounds the shape is the pinned selection in
-/// `ffprobe_arguments`.
+/// The one deserialization boundary here without `deny_unknown_fields`, which
+/// `.claude/skills/rust-review/SKILL.md` requires of every other one. It is an
+/// exception on the terms `PRINCIPLES.md` sets for them: narrow, explained
+/// beside the suppression, and covered by a test.
+///
+/// Strictness here would guard nothing and break something. ffprobe already
+/// emits an empty `programs` array under this selection, and the version used
+/// is whichever one the operator has installed — `tools.rs` records it rather
+/// than pinning it — so a release that adds a section would stop every build
+/// with `UnreadableProbeResponse`, reporting a sound artifact as unverifiable.
+/// The unknown field the rule exists to catch is one carrying meaning its
+/// author intended and this program ignored; an extra ffprobe section is a
+/// tool describing itself to no one in particular.
+///
+/// What makes the leniency safe is that it can only refuse, never accept.
+/// Every field below is absent-or-wrong rather than defaulted, so a renamed or
+/// withdrawn one reaches a refusal instead of a pass:
+/// `t1_e0_probe_leniency_cannot_accept_an_unverified_stream` holds that, and
+/// `t4_e0_ffprobe_rejects_non_aac_input` runs a real ffprobe so the accepted
+/// shape is observed rather than assumed.
 #[derive(Debug, Deserialize)]
 struct ProbeResponse {
     #[serde(default)]
@@ -299,6 +315,72 @@ mod tests {
 
         interpret_probe(m4a, br#"{"streams":[{"codec_name":"aac","channels":1}]}"#)
             .expect("one mono AAC stream is the stream this build produces");
+    }
+
+    // Bounds the `deny_unknown_fields` exception recorded on `ProbeResponse`:
+    // the parser may ignore what ffprobe adds, but nothing it fails to read
+    // may become an acceptance.
+    #[test]
+    fn t1_e0_probe_leniency_cannot_accept_an_unverified_stream() {
+        let m4a = Path::new("/lesson.m4a");
+        let response_for =
+            |stream: &str| format!(r#"{{"programs":[],"streams":[{stream}]}}"#).into_bytes();
+
+        // The shape a real ffprobe 6.1 emits under the pinned selection. The
+        // `programs` array it volunteers is the field strictness would reject.
+        interpret_probe(m4a, &response_for(r#"{"codec_name":"aac","channels":1}"#))
+            .expect("the response a real ffprobe emits must be accepted");
+
+        // Each field read here is absent-or-wrong, never defaulted, so a
+        // spelling this build no longer recognizes is reported as a stream it
+        // could not confirm rather than passed as one it did.
+        for (label, stream, codec, channels) in [
+            (
+                "codec_name renamed",
+                r#"{"codec":"aac","channels":1}"#,
+                None,
+                Some(1),
+            ),
+            (
+                "channels renamed",
+                r#"{"codec_name":"aac","channel_count":1}"#,
+                Some("aac"),
+                None,
+            ),
+            (
+                "a wrong stream padded with fields this build ignores",
+                r#"{"codec_name":"mp3","channels":2,"profile":"HE-AAC"}"#,
+                Some("mp3"),
+                Some(2),
+            ),
+        ] {
+            let error = interpret_probe(m4a, &response_for(stream))
+                .expect_err("an unconfirmed stream must not verify an output");
+            assert!(
+                matches!(
+                    error,
+                    BuildError::UnexpectedEncodedStream {
+                        codec: ref found_codec,
+                        channels: found_channels,
+                        ..
+                    } if found_codec.as_deref() == codec && found_channels == channels
+                ),
+                "{label} produced `{error}`"
+            );
+        }
+
+        // The container itself is the one rename with nothing to describe, and
+        // `#[serde(default)]` is what would otherwise make it look like a file
+        // holding no streams rather than a response this build cannot read.
+        let error = interpret_probe(m4a, br#"{"programs":[],"stream":[]}"#)
+            .expect_err("a response with no readable streams must not verify an output");
+        assert!(
+            matches!(
+                error,
+                BuildError::UnexpectedEncodedStreamCount { found: 0, .. }
+            ),
+            "a renamed streams array produced `{error}`"
+        );
     }
 
     #[test]
