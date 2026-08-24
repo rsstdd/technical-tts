@@ -106,6 +106,9 @@ pub struct SourceRightsDeclaration {
 mod tests {
     use super::*;
 
+    /// Every classification, so a spelling cannot go untested. The exhaustive
+    /// matches inside the tests are what make a new variant a compile error;
+    /// this array only says which values to run them over.
     const ALL_CLASSIFICATIONS: [SourceClassification; 8] = [
         SourceClassification::OwnerAuthored,
         SourceClassification::PublicDomain,
@@ -168,9 +171,33 @@ mod tests {
     #[test]
     fn t3_e0_classification_spellings_match_their_serde_representation() {
         for classification in ALL_CLASSIFICATIONS {
+            // Transcribed from `RIGHTS-DATA-ARTIFACT-POLICY.md` §Classification
+            // rather than read from `as_str`: a table that asked the
+            // implementation what it spells would agree with any spelling,
+            // including a wrong one. Asserting the serde form against `as_str`
+            // alone only proves the two mechanisms move together, which they
+            // would do through a rename of both.
+            let spelling = match classification {
+                SourceClassification::OwnerAuthored => "owner_authored",
+                SourceClassification::PublicDomain => "public_domain",
+                SourceClassification::PermissivelyLicensed => "permissively_licensed",
+                SourceClassification::CommerciallyOrPrivatelyLicensed => {
+                    "commercially_or_privately_licensed"
+                }
+                SourceClassification::ConsentedVoiceReference => "consented_voice_reference",
+                SourceClassification::EvaluationOnly => "evaluation_only",
+                SourceClassification::RightsReviewRequired => "rights_review_required",
+                SourceClassification::Prohibited => "prohibited",
+            };
+
             assert_eq!(
                 serde_json::to_value(classification).expect("unit variant serializes"),
-                serde_json::Value::String(classification.as_str().to_owned()),
+                serde_json::Value::String(spelling.to_owned()),
+                "`{classification:?}` serde representation drifted"
+            );
+            assert_eq!(
+                classification.as_str(),
+                spelling,
                 "`{classification:?}` spelling drifted from its serde representation"
             );
         }
