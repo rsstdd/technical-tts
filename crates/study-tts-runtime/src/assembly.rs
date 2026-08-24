@@ -17,6 +17,9 @@ use crate::{
     io_error,
 };
 
+/// Milliseconds in one second, for turning a declared pause into frames.
+const MILLISECONDS_PER_SECOND: u64 = 1_000;
+
 /// Frames of silence written after a segment. Shared by the expected-total
 /// calculation and the write loop so the two cannot drift apart.
 fn pause_frames(segment: &CachedSegment) -> Result<u64, BuildError> {
@@ -26,7 +29,7 @@ fn pause_frames(segment: &CachedSegment) -> Result<u64, BuildError> {
             segment_id: segment.segment_id.clone(),
             pause_after_ms: segment.pause_after_ms,
         })?
-        / 1_000)
+        / MILLISECONDS_PER_SECOND)
 }
 
 /// Total frames the master must contain, derived from validated cache metadata

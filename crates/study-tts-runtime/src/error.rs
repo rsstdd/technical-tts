@@ -188,7 +188,7 @@ pub enum BuildError {
     #[error(
         "synthesizer reported {reported_sample_rate} Hz, {reported_channels} channels, and \
          {reported_frames} frames for segment `{segment_id}` but wrote a WAV with \
-         {written_sample_rate} Hz, {written_channels} channel, and {written_frames} frames; the \
+         {written_sample_rate} Hz, {written_channels} channels, and {written_frames} frames; the \
          worker is misreporting its own output and must be corrected before this build is rerun"
     )]
     SynthesizerReportMismatch {
@@ -566,8 +566,8 @@ pub enum CacheEntryFault {
     #[error(
         "the artifact declares schema `{schema_version}`, {sample_rate} Hz, {channels} channels, \
          and format `{sample_format}` but this build requires schema \
-         `{required_schema_version}`, {required_sample_rate} Hz, {required_channels} channel, and \
-         `{required_sample_format}`"
+         `{required_schema_version}`, {required_sample_rate} Hz, {required_channels} channels, \
+         and `{required_sample_format}`"
     )]
     IncompatibleArtifact {
         /// Schema the artifact declares.

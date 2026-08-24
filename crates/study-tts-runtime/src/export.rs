@@ -32,6 +32,17 @@ const REQUIRED_CODEC: &str = "aac";
 /// export carries the master's channel layout, so the two cannot drift apart.
 const REQUIRED_CHANNELS: u16 = CANONICAL_CHANNELS;
 
+/// The channel layout FFmpeg is told to write, which must describe
+/// [`REQUIRED_CHANNELS`].
+///
+/// FFmpeg names layouts rather than counting them, so this cannot be derived
+/// from the count the way `-ac` is. The assertion is what keeps the two from
+/// drifting: a changed canonical channel count becomes a compile error here
+/// rather than an `-ac 2 -channel_layout mono` contradiction FFmpeg would be
+/// left to resolve on its own.
+const REQUIRED_CHANNEL_LAYOUT: &str = "mono";
+const _: () = assert!(REQUIRED_CHANNELS == 1);
+
 /// Streams every encoded output carries.
 ///
 /// The encode maps one audio stream and strips video and metadata, so anything
@@ -233,8 +244,8 @@ fn interpret_probe(m4a: &Path, response: &[u8]) -> Result<(), BuildError> {
 /// Every flag is load-bearing. `-nostdin` keeps a prompt from hanging an
 /// offline render; `-map_metadata -1` and `-vn` strip anything that did not
 /// come from the master, so the container holds exactly the single stream
-/// `probe_m4a` verifies; the codec and channel count come from the constants
-/// that verification also reads, so the two cannot drift.
+/// `probe_m4a` verifies; the codec, channel count, and channel layout come from
+/// the constants that verification also reads, so the two cannot drift.
 fn ffmpeg_arguments(master_wav: &Path, destination: &Path) -> Vec<OsString> {
     [
         OsString::from("-nostdin"),
