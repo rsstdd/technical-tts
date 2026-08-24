@@ -538,6 +538,22 @@ pub enum BuildError {
     )]
     MissingContentRightsDeclaration,
 
+    /// The manifest names no voice profile at all.
+    ///
+    /// Separate from `ProfileNotApproved`, which is a profile whose rights
+    /// decision was recorded and does not permit release. Declaring no voice is
+    /// not the same as declaring an unapproved one, and the remedies differ, so
+    /// this is the `content_rights` refusal above applied to the other half of
+    /// the same rule: `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`
+    /// ("Generated release") requires source *and* voice record IDs, and every
+    /// artifact this project releases is spoken by at least one voice.
+    #[error(
+        "production release is refused: the manifest declares no `voice_profiles` for the \
+         voices it was rendered with; the project owner must declare each voice profile and \
+         its rights record before publication"
+    )]
+    MissingVoiceProfileDeclaration,
+
     /// A declaration names an identifier but leaves it blank.
     ///
     /// Distinct from an absent field, which serde refuses outright: a blank

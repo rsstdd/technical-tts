@@ -42,12 +42,20 @@ fn refused_build(spec: &VoiceProfileFixtureSpec) -> (BuildError, DeterministicTo
     (error, worker)
 }
 
+/// A manifest whose voices are declared and approved, so a test varying
+/// `content_rights` is not refused for the section it is not exercising. Tests
+/// that exercise `voice_profiles` overwrite the key.
 fn production_manifest(content_rights: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "schema_version": "1.0",
         "release_status": "production_release",
         "lesson_id": "e0-s2-rights",
         "content_rights": content_rights,
+        "voice_profiles": [{
+            "profile_id": "synthetic-test-voice-v1",
+            "approval": "approved",
+            "rights_record_id": "rights-voice-owner-fallback-v1",
+        }],
     })
 }
 
@@ -265,6 +273,47 @@ fn t4_e0_production_release_rejects_unresolved_content_rights_classification() {
             BuildError::InvalidRightsDeclaration { section, .. } if section == "content_rights"
         ),
         "unknown classification produced `{error}`"
+    );
+}
+
+/// The two rights sections are held to one rule. `content_rights` already
+/// refuses an absent section and an empty one as the same claim; this pins
+/// `voice_profiles` to the same refusal, so a manifest cannot omit the voices
+/// it was rendered with while being held to name its sources.
+///
+/// Not a `DELIVERY-PLAN.md` §E0-S2 name: it guards the symmetry the two
+/// declaration sections share rather than one planned behavior.
+#[test]
+fn t4_e0_production_release_rejects_an_undeclared_voice_profile() {
+    let mut undeclared = production_manifest(serde_json::json!([{
+        "source_id": "lesson-source-1",
+        "classification": "owner_authored",
+        "rights_record_id": "rights-qualification-sources-v1",
+    }]));
+
+    undeclared["voice_profiles"] = serde_json::json!([]);
+    assert!(
+        matches!(
+            validate(&undeclared),
+            Err(BuildError::MissingVoiceProfileDeclaration)
+        ),
+        "an empty voice_profiles list must be refused as undeclared"
+    );
+
+    undeclared
+        .as_object_mut()
+        .expect("manifest is an object")
+        .remove("voice_profiles");
+    let error =
+        validate(&undeclared).expect_err("an undeclared voice profile must refuse production");
+    assert!(
+        matches!(error, BuildError::MissingVoiceProfileDeclaration),
+        "an absent voice_profiles section produced `{error}`"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("voice_profiles") && message.contains("project owner"),
+        "refusal must name the section and the remedy owner: `{message}`"
     );
 }
 
