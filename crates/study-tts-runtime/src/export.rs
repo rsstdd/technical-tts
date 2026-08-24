@@ -88,9 +88,18 @@ pub(crate) struct ToolExecution {
 
 /// Encodes the master WAV to M4A, returning what FFmpeg was told to do.
 ///
-/// Encoded to a staged file beside the destination and renamed on success, so
-/// a failed or interrupted encode never leaves a partial `.m4a` that a later
-/// step could publish.
+/// Encoded to a staged path beside the destination and renamed on success, so
+/// a failed encode never leaves a partial `.m4a` for a later step to find. The
+/// staging guard is held across the encode rather than released once it has
+/// reserved a name: FFmpeg opens its output container before it can discover
+/// it cannot finish, so a failure after that point leaves a partial file that
+/// only the guard's drop removes. Previews are what an operator listens
+/// through, and one that accumulates a partial `.m4a` per failed encode stops
+/// being a record of what the build produced.
+///
+/// A process killed outright still leaves the staged file, because no drop
+/// runs. That is a crash-recovery sweep rather than an encode concern, and it
+/// belongs with the reconciliation E2-S1 introduces.
 ///
 /// # Errors
 ///
@@ -108,15 +117,17 @@ pub(crate) fn export_m4a(
         .ok_or_else(|| BuildError::UnrootedDestination {
             path: destination.to_path_buf(),
         })?;
+    // The handle is closed but the path is kept, because FFmpeg writes the
+    // file itself rather than through a handle this process holds. Dropping the
+    // whole `NamedTempFile` here would take the cleanup with it.
     let staged = Builder::new()
         .prefix("lesson-")
         .suffix(".m4a")
         .tempfile_in(parent)
-        .map_err(|error| io_error(parent, error))?;
-    let staged_path = staged.path().to_path_buf();
-    drop(staged);
+        .map_err(|error| io_error(parent, error))?
+        .into_temp_path();
 
-    let arguments = ffmpeg_arguments(master_wav, &staged_path);
+    let arguments = ffmpeg_arguments(master_wav, &staged);
     let output = Command::new(&ffmpeg.resolved_executable)
         .args(&arguments)
         .output()
@@ -130,7 +141,9 @@ pub(crate) fn export_m4a(
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
-    std::fs::rename(&staged_path, destination).map_err(|error| io_error(destination, error))?;
+    staged
+        .persist(destination)
+        .map_err(|error| io_error(destination, error.error))?;
     Ok(ToolExecution {
         arguments: display_arguments(&arguments),
     })
@@ -237,7 +250,7 @@ fn ffmpeg_arguments(master_wav: &Path, destination: &Path) -> Vec<OsString> {
         OsString::from("-ac"),
         OsString::from(REQUIRED_CHANNELS.to_string()),
         OsString::from("-channel_layout"),
-        OsString::from("mono"),
+        OsString::from(REQUIRED_CHANNEL_LAYOUT),
         OsString::from("-c:a"),
         OsString::from(REQUIRED_CODEC),
         OsString::from("-b:a"),
@@ -279,10 +292,76 @@ fn display_arguments(arguments: &[OsString]) -> Vec<String> {
 mod tests {
     use super::*;
 
-    // Only tool-free tests belong here. Anything requiring a real ffmpeg or
-    // ffprobe lives in the testkit integration suite, so `cargo test -p
-    // study-tts-runtime` stays runnable on a machine with neither binary
-    // installed.
+    // No test here runs a real ffmpeg or ffprobe; anything that does lives in
+    // the testkit integration suite, so `cargo test -p study-tts-runtime` stays
+    // runnable on a machine with neither binary installed. The failing-encoder
+    // test below stands one in rather than reaching for the real thing.
+    //
+    // Unix-gated on the same terms as the executable-bit check in `tools.rs`:
+    // the stand-in has to be marked executable, and ADR-0001 targets WSL2.
+    #[cfg(unix)]
+    #[test]
+    fn t1_e0_a_failed_encode_leaves_no_staged_file_behind() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        use tempfile::TempDir;
+
+        // The failure that matters is the one where the encoder runs, creates
+        // its output, and then exits non-zero: FFmpeg opens the container
+        // before it can discover it cannot finish, and an interrupted encode
+        // leaves the same partial file. A stand-in encoder reproduces exactly
+        // that shape without needing FFmpeg installed — pointing at a binary
+        // that never starts would leave nothing behind either way, and so
+        // could not fail if the guard were dropped.
+        let directory = TempDir::new().expect("create a directory to encode into");
+        let encoder = directory.path().join("failing-encoder");
+        // POSIX `sh`, so this runs under dash as well as bash: the loop leaves
+        // `output` holding the last argument, which is the path this build
+        // told the encoder to write. The receipt is what keeps the assertions
+        // below from passing because the encoder did nothing at all.
+        let script = concat!(
+            "#!/bin/sh\n",
+            "for output; do :; done\n",
+            ": > \"$output\"\n",
+            ": > \"$(dirname \"$output\")/ran\"\n",
+            "exit 1\n",
+        );
+        fs::write(&encoder, script).expect("write the stand-in encoder");
+        fs::set_permissions(&encoder, fs::Permissions::from_mode(0o755))
+            .expect("make the stand-in encoder executable");
+
+        let identity = ToolIdentity {
+            resolved_executable: encoder,
+            version: "failing-encoder-v1".to_owned(),
+        };
+        let destination = directory.path().join("lesson.m4a");
+
+        let error = export_m4a(&identity, Path::new("/master.wav"), &destination)
+            .expect_err("an encoder that exits non-zero must not report success");
+        assert!(
+            matches!(error, BuildError::Ffmpeg { .. }),
+            "a failing encoder produced `{error}`"
+        );
+
+        // Nothing the encode staged may outlive it. A leftover is not merely
+        // untidy: previews are what an operator listens through, and a
+        // directory that accumulates one partial `.m4a` per failed encode
+        // stops being a record of what the build produced.
+        assert!(
+            directory.path().join("ran").is_file(),
+            "the stand-in encoder never ran, so nothing was staged to clean up"
+        );
+        let leftovers: Vec<_> = fs::read_dir(directory.path())
+            .expect("read the directory back")
+            .map(|entry| entry.expect("read a directory entry").file_name())
+            .filter(|name| name != "failing-encoder" && name != "ran")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "a failed encode left {leftovers:?} behind"
+        );
+    }
+
     #[test]
     fn t1_e0_unreadable_and_unexpected_probes_are_reported_separately() {
         let m4a = Path::new("/lesson.m4a");
