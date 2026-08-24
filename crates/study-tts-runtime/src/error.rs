@@ -408,12 +408,13 @@ pub enum BuildError {
         root: PathBuf,
     },
 
-    /// Publication was refused by policy rather than by a failure.
-    #[error("production publication is refused: {reason}")]
-    PublicationRefused {
-        /// Which policy refused, in terms an operator can act on.
-        reason: String,
-    },
+    /// A release profile refused the claim made on it.
+    ///
+    /// Transparent because `ReleaseError` already names the profile rule that
+    /// refused, and restating it here would be a second copy of a policy the
+    /// core crate owns.
+    #[error(transparent)]
+    Release(#[from] study_tts_core::ReleaseError),
 
     /// A manifest was offered for publication under a version this build cannot
     /// evaluate.
@@ -492,9 +493,10 @@ pub enum BuildError {
     /// The manifest satisfied every rights precondition this build can check,
     /// and the release gates that would decide the rest do not exist yet.
     ///
-    /// Separate from `PublicationRefused` so a manifest that passed its rights
-    /// checks is not reported the same way as one refused by policy. Reaching
-    /// this is the closest a manifest can currently come to acceptance.
+    /// Separate from `Release`, which refuses a claim on its profile. A
+    /// manifest that passed its rights checks is not reported the same way as
+    /// an artifact that never earned the profile. Reaching this is the closest
+    /// a manifest can currently come to acceptance.
     #[error(
         "production release is refused: manifest acceptance is unavailable before the \
          production gates of `docs/governance/RELEASE-PROFILES.md` §3 are implemented"
@@ -509,13 +511,6 @@ pub enum BuildError {
         /// What the serializer reported.
         source: serde_json::Error,
     },
-
-    /// Catch-all for `?` on a `serde_json` call with no useful context to add.
-    /// Prefer a variant that carries the path or the subsystem; this exists so
-    /// a future call site cannot silently inherit an unrelated error message
-    /// the way the former `Manifest` variant did.
-    #[error("JSON operation failed: {0}")]
-    Json(#[from] serde_json::Error),
 }
 
 /// Which invariant a published cache entry violated.

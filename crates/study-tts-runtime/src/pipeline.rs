@@ -6,8 +6,8 @@ use std::{
 use serde::Deserialize;
 use serde_json::Value;
 use study_tts_core::{
-    Lesson, ReleaseStatus, RenderPlan, RightsDecision, SourceRightsDeclaration, VoiceError,
-    VoiceUse, validate_lesson_id,
+    Lesson, ReleaseClaim, ReleaseStatus, RenderPlan, RightsDecision, SourceRightsDeclaration,
+    VoiceError, VoiceUse, validate_lesson_id,
 };
 
 use crate::{
@@ -134,14 +134,14 @@ pub fn validate_encoded_output(
 
 /// Refuses publication for the E0-S0 skeleton.
 ///
-/// The production gates of `docs/governance/RELEASE-PROFILES.md` §3 are not
-/// implemented, and a build that cannot evaluate them must refuse rather than
-/// publish unevaluated.
+/// Asked of the release profile rather than answered with a sentence: every
+/// `build_preview` output is a private preview holding no gate evidence, and
+/// `ReleaseClaim` already owns what such a claim may become. The refusal
+/// therefore stays correct once the production gates of
+/// `docs/governance/RELEASE-PROFILES.md` §3 exist — a preview will still not be
+/// publishable, because it is not the artifact that earned them.
 pub fn publish(_preview: &BuildResult) -> Result<(), BuildError> {
-    Err(BuildError::PublicationRefused {
-        reason: "E0-S0 outputs are private previews and production gates are not implemented"
-            .to_owned(),
-    })
+    Ok(ReleaseClaim::private_preview().validate_as_production()?)
 }
 
 /// The one manifest version this build knows how to evaluate.

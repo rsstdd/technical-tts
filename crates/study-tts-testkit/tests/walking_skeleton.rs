@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use study_tts_core::{CacheKey, LessonError};
+use study_tts_core::{CacheKey, LessonError, ReleaseError};
 use study_tts_runtime::{
     BuildError, BuildRequest, CacheEntryFault, build_preview, cache_entry_dir, publish,
     validate_encoded_output, validate_production_manifest,
@@ -493,9 +493,14 @@ fn t4_e0_private_preview_cannot_enter_production_publication() {
     let (_workspace, result, _worker) = run_skeleton();
     let manifest_bytes = std::fs::read(&result.manifest).expect("read preview manifest");
 
+    // The refusal is the release profile's, not a sentence this build writes:
+    // a preview holds no gate evidence, so it cannot claim production however
+    // many gates are implemented.
     assert!(matches!(
         publish(&result),
-        Err(BuildError::PublicationRefused { .. })
+        Err(BuildError::Release(
+            ReleaseError::PrivateProfileCannotClaimProduction
+        ))
     ));
     assert!(matches!(
         validate_production_manifest(&manifest_bytes),

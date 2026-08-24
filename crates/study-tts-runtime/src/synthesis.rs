@@ -16,6 +16,17 @@ pub struct SynthesisReport {
 }
 
 /// A synthesizer refused or failed to produce audio for a segment.
+///
+/// The one opaque failure this crate keeps, and deliberately so: naming the
+/// ways synthesis can fail means naming a worker's vocabulary, and no worker
+/// exists to own one yet. Inventing variants here would freeze a guess into the
+/// seam that `DELIVERY-PLAN.md` §E0-S4 exists to baseline, and every caller
+/// would then match on cases no implementation produces.
+///
+/// It is not a catch-all in the sense the repository refuses: the subsystem is
+/// named, and nothing else is routed through it. E0-S4 replaces it along with
+/// the trait below, at which point a failing worker reports which invariant it
+/// violated rather than a sentence.
 #[derive(Debug, Error)]
 #[error("synthesis failed: {message}")]
 pub struct SynthesisError {
