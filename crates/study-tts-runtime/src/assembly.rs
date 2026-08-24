@@ -30,6 +30,8 @@ const MILLISECONDS_PER_SECOND: u64 = 1_000;
 /// above roughly `4.3e9` Hz or a wider pause field, and a change that large
 /// should be refused here rather than wrap into a master whose length every
 /// downstream duration inherits.
+/// `t1_e0_the_widest_pause_a_segment_can_declare_does_not_overflow` pins the
+/// frame count that headroom rests on.
 fn pause_frames(segment: &CachedSegment) -> Result<u64, BuildError> {
     Ok(u64::from(segment.pause_after_ms)
         .checked_mul(u64::from(CANONICAL_SAMPLE_RATE))
@@ -43,14 +45,19 @@ fn pause_frames(segment: &CachedSegment) -> Result<u64, BuildError> {
 /// Total frames the master must contain, derived from validated cache metadata
 /// rather than from what the write loop happens to produce.
 ///
-/// The running total is checked so this crate's arithmetic does not rest on a
-/// bound another crate enforces. Under `Lesson::validate`, which caps a pause
-/// at ten seconds, a segment contributes at most about `4.3e9` frames and
-/// overflowing a `u64` would take billions of segments — more `CachedSegment`
-/// values than a machine holds. Without that upstream cap the figure falls to
-/// roughly 180,000 segments, an ordinary allocation. The check is what keeps
-/// the difference between those two worlds a refusal instead of a wrapped
-/// length.
+/// No plan reaches the overflow. With every field at its `u32` maximum a
+/// segment contributes 107,374,182,375 frames, so a `u64` holds 171,798,691 of
+/// them; under the ten-second pause cap `study_tts_core` enforces the figure
+/// rises to 4,294,727,310. Neither is a segment count a machine could hold in
+/// memory.
+///
+/// The check is kept because those are properties of the current field widths
+/// rather than of the lesson format: the total is a `u64` fed by counts that
+/// could be widened, and this crate's arithmetic should not rest on a bound
+/// another crate enforces.
+/// `t1_e0_the_widest_plan_the_types_allow_leaves_frame_headroom` pins both
+/// figures, so widening a field fails a test rather than eroding the margin
+/// quietly.
 fn expected_frames(segments: &[CachedSegment]) -> Result<u64, BuildError> {
     let mut expected = 0_u64;
     for segment in segments {
@@ -250,6 +257,49 @@ mod tests {
             frames: declared_frames,
             pause_after_ms,
         }
+    }
+
+    /// The pause arithmetic has room at the widest value the field can hold,
+    /// so `PauseFrameOverflow` guards the sample rate rather than the input.
+    /// Pins the figure `pause_frames` argues from: the multiplication peaks
+    /// near `1.0e14`, five orders below a `u64`, and the widest declarable
+    /// pause is 103,079,215,080 frames.
+    ///
+    /// Not a `DELIVERY-PLAN.md` §E0 name: it pins the headroom behind a check
+    /// no input reaches, rather than a planned behavior.
+    #[test]
+    fn t1_e0_the_widest_pause_a_segment_can_declare_does_not_overflow() {
+        let workspace = TempDir::new().expect("create assembly workspace");
+        // The frame arithmetic reads the declared counts and never the audio,
+        // so these segments deliberately name a file that was never written.
+        let widest = segment(workspace.path().join("absent.wav"), 0, u32::MAX);
+
+        let frames = pause_frames(&widest).expect("the widest declarable pause must not overflow");
+
+        assert_eq!(frames, 103_079_215_080);
+    }
+
+    /// A plan whose every field sits at its maximum still sums without
+    /// overflowing, so `PlannedLengthOverflow` guards the field widths rather
+    /// than refusing any lesson a person could write. Pins the figure
+    /// `expected_frames` argues from: one such segment contributes
+    /// 107,374,182,375 frames, of which a `u64` holds 171,798,691.
+    ///
+    /// Not a `DELIVERY-PLAN.md` §E0 name: it pins the headroom behind a check
+    /// no input reaches, rather than a planned behavior.
+    #[test]
+    fn t1_e0_the_widest_plan_the_types_allow_leaves_frame_headroom() {
+        let workspace = TempDir::new().expect("create assembly workspace");
+        let absent = workspace.path().join("absent.wav");
+        let segments = vec![
+            segment(absent.clone(), u32::MAX, u32::MAX),
+            segment(absent, u32::MAX, u32::MAX),
+        ];
+
+        let total =
+            expected_frames(&segments).expect("the widest declarable plan must not overflow");
+
+        assert_eq!(total, 214_748_364_750);
     }
 
     #[test]

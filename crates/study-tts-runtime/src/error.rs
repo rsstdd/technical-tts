@@ -261,9 +261,11 @@ pub enum BuildError {
     /// The planned lesson is longer than the build can represent, before any
     /// audio was written.
     ///
-    /// Reachable only if the ten-second pause cap in `study_tts_core::Lesson`
-    /// stops holding; `expected_frames` in `assembly` records why. Kept so
-    /// assembly's arithmetic does not depend on a bound another crate enforces.
+    /// No plan reaches it: overflow needs 171,798,691 segments with every
+    /// field at its `u32` maximum, and four billion under the pause cap
+    /// `study_tts_core` enforces. Kept because those are properties of the
+    /// current field widths rather than of the lesson format; `expected_frames`
+    /// in `assembly` records the arithmetic.
     #[error(
         "the planned lesson exceeds the frame count this build can assemble; split the lesson \
          into shorter lessons"
