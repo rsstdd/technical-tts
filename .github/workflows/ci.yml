@@ -40,6 +40,12 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Check Rust conventions
+        # rustfmt does not apply max_width to comment text, wrap_comments is
+        # nightly-only, and it preserves doc/attribute order, so the AGENTS.md
+        # line, comment, and doc-order rules need their own check.
+        run: python3 scripts/check-rust-conventions.py
+
       - name: Check Cargo.toml formatting
         run: |
           curl -fsSL -o "$RUNNER_TEMP/taplo.gz" \

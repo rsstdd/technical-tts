@@ -93,4 +93,5 @@ internal scope must not be redistributed on the strength of gates that were eval
 | A private preview cannot claim production release | `t3_e0_private_profile_cannot_report_production_release` |
 | A production release with missing gate evidence is refused | `t3_e0_production_profile_rejects_missing_gate_evidence` |
 | An unrecognized release status is rejected at parse time | `t3_e0_unknown_release_status_is_rejected` |
+| `REQUIRED_PRODUCTION_GATES` still lists exactly the twelve gates of §3 | `t3_e0_required_gates_match_the_release_profile_document` |
 | The E0-S0 manifest cannot enter production publication | `t4_e0_private_preview_cannot_enter_production_publication` |

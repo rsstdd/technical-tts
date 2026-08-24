@@ -6,12 +6,23 @@ use std::{
 
 use crate::BuildError;
 
+/// Which external binary a build actually used, for the manifest to record.
 #[derive(Clone, Debug)]
 pub(crate) struct ToolIdentity {
+    /// Absolute path the request resolved to, after `PATH` lookup.
     pub resolved_executable: PathBuf,
+    /// First line the tool reports for `-version`.
     pub version: String,
 }
 
+/// Resolves an external tool and records its identity, before any work runs.
+///
+/// Preflight rather than lazy discovery: a build that would fail for a missing
+/// encoder must say so before it synthesizes anything, and the manifest must
+/// name the binary that actually ran rather than the one that was asked for.
+///
+/// `-version` is the flag both FFmpeg and ffprobe answer; a tool that does not
+/// is not one this function can identify.
 pub(crate) fn inspect(tool: &str, requested: &Path) -> Result<ToolIdentity, BuildError> {
     let resolved_executable =
         resolve_executable(requested).ok_or_else(|| BuildError::MissingTool {
@@ -53,24 +64,31 @@ pub(crate) fn inspect(tool: &str, requested: &Path) -> Result<ToolIdentity, Buil
     })
 }
 
+/// Finds the binary a request names, searching `PATH` only for a bare name.
+///
+/// A request carrying any path separator is taken literally, so an operator who
+/// names an exact binary gets that one rather than whichever `PATH` prefers.
 fn resolve_executable(requested: &Path) -> Option<PathBuf> {
     if requested.components().count() > 1 {
         return executable_file(requested);
     }
 
-    env::var_os("PATH")
-        .into_iter()
-        .flat_map(|paths| env::split_paths(&paths).collect::<Vec<_>>())
+    let search_path = env::var_os("PATH")?;
+    env::split_paths(&search_path)
         .map(|directory| directory.join(requested))
         .find_map(|candidate| executable_file(&candidate))
 }
 
+/// Accepts a candidate only if it is a file this process could execute.
 fn executable_file(candidate: &Path) -> Option<PathBuf> {
     let metadata = fs::metadata(candidate).ok()?;
     if !metadata.is_file() {
         return None;
     }
 
+    // ADR-0001 targets WSL2, so the executable bit is the meaningful check.
+    // Other platforms fall back to "is a file", which is what `Command` would
+    // discover anyway, one step later and with a worse message.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

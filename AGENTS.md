@@ -113,6 +113,8 @@ Approved target. Create incrementally. Absent paths are planned, not missing wor
 | Job / cache / recovery          | `crates/study-tts-runtime/`                                               | Runtime, manifest schemas, recovery tests                                               |
 | External-process safety         | `crates/study-tts-runtime/`                                               | Pool + FFmpeg adapters + containment tests; ASR in-process                              |
 | Test patterns                   | `crates/study-tts-testkit/`, colocated tests                              | Fake-worker, property, contract, recovery tests                                         |
+| Code review standard            | `.claude/skills/rust-review/SKILL.md`                                     | This file + `PRINCIPLES.md`; review reports, never edits unless asked                   |
+| Code style rules                | `.claude/skills/clean-code/SKILL.md`                                      | Applies to all code; this file, `PRINCIPLES.md`, and accepted ADRs win on conflict      |
 | TDD / tiers                     | `docs/testing/TEST-STRATEGY.md`                                           | Delivery Plan named tests + tier policy                                                 |
 | Qualification evidence          | `docs/testing/EVIDENCE-AND-QUALIFICATION.md`                              | Immutable reports + governed raw artifacts                                              |
 | Test-data provenance            | `docs/testing/TEST-DATA-MANIFEST.md`                                      | IDs, checksums, rights, sensitivity, retention, owner                                   |
@@ -180,6 +182,7 @@ Spoken-output changes: automated checks are necessary but not sufficient. Listen
 
 ## Coding conventions
 
+- **Style.** Load `.claude/skills/clean-code/SKILL.md` before writing or editing any code, and `.claude/skills/rust-review/SKILL.md` as well before any Rust — the review standard governs generation, not just review, so write to it rather than refactoring to it later. Both are guidance, not authority: this file, `PRINCIPLES.md`, and the accepted ADRs win on any genuine conflict, and the settled conflicts are tabulated in the clean-code file. Flag a new conflict; do not resolve it silently. `CLAUDE.md` carries the same table for agents that read it first.
 - **Naming.** `study-tts-*` crates; stable lowercase kebab-case CLI names; versioned schemas (`lesson-v1`); segment IDs independent of mutable display text.
 - **Errors.** Typed internal errors + source-aware user diagnostics. Distinct classes: invalid input, missing dependency, incompatible environment, worker failure, audio-quality failure, cancellation, resource exhaustion, integrity failure, internal error. Never silently fall back to another model or device.
 - **Logging.** Structured `tracing` with `job_id`, stage, segment ID, attempt, worker/model identity, duration, error class. Concise terminal. Worker stdout is protocol-only.
@@ -230,6 +233,7 @@ Do not copy a root rule into a nested file unless the local rule changes or clar
 - Doc routing: `docs/INDEX.md`
 - Execution: `docs/governance/PROJECT-EXECUTION-CHARTER.md`
 - Contribution: `CONTRIBUTING.md`, `.github/PULL_REQUEST_TEMPLATE.md`
-- Style: rustfmt 2024 defaults + Clippy when configured
+- Style: rustfmt 2024 defaults + Clippy when configured, plus `.claude/skills/clean-code/SKILL.md`
+- Review: `.claude/skills/rust-review/SKILL.md` (`.claude/skills/react-review/SKILL.md` is held for a frontend that ADR-0001 has not authorized)
 - Python worker: `worker/pyproject.toml` + lockfile when created
 - Operations: `docs/operations/`

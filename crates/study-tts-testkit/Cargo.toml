@@ -8,9 +8,12 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+# Candidates in ADR-0001 §7.2 are declared when the story that needs
+# them lands, not in advance: an unused dependency is still audited,
+# licensed, and carried in Cargo.lock.
 [dependencies]
+blake3 = "1.8.6"
 hound = "3.5.1"
-proptest = "1.11.0"
 serde_json = "1.0.151"
 sha2 = "0.10.9"
 study-tts-core = { version = "0.1.0", path = "../study-tts-core" }

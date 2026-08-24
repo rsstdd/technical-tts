@@ -8,6 +8,7 @@ The root `AGENTS.md` governs the whole repository; this file adds the rules and 
 
 ## Rules
 
+- Load `.claude/skills/rust-review/SKILL.md` and `.claude/skills/clean-code/SKILL.md` before writing, generating, or editing anything in this tree. The review standard governs generation, not only review: writing to it costs less than being refactored to it. Before reporting done, run its review sections and severity scale against your own diff.
 - Test-driven development: write the failing test before the production change. Name tests `t<tier>_e<epic>_<behavior_sentence>` (for example `t1_e0_duplicate_segment_id_is_rejected`); the tier definitions are in `docs/testing/TEST-STRATEGY.md`. The test is the documentation of intended behavior and lets the change be validated without a human in the loop.
 - One-sentence `///` doc comment on every public type, function, and module. Cheap grounding context for whoever touches nearby code next; repetition over abstraction.
 - Document non-trivial cross-file and code-to-document coupling in the code, on both sides, at the point of coupling. Grep is the practical discovery tool; anything only implied by git history or convention is invisible. The load-bearing example: `study-tts-core/src/release.rs` (`REQUIRED_PRODUCTION_GATES`) must mirror `docs/governance/RELEASE-PROFILES.md` §3 — a comment at each end must name the other.
@@ -88,7 +89,7 @@ Version-sort wherever sorting is required: compare alternating digit and non-dig
 - One space after `//`. Single-line block comment: one space inside each sigil. Multi-line: newline after the opening sigil and before the closing sigil.
 - Own line where possible; one space before a trailing comment.
 - Complete sentences, capital letter, terminal period. Inline block comments may be unpunctuated notes.
-- Whole-line comments: 80 chars including sigils, excluding indentation — or the 100-char limit including indentation, whichever is smaller.
+- Whole-line comments: 80 columns, counting indentation and sigils. Code lines keep the 100-column limit; a comment is held to the stricter one so it stays readable beside a diff.
 - Doc comments precede attributes.
 - No comment on a brace line; none inside a function signature.
 
@@ -324,7 +325,7 @@ Uncovered cases resolve in the style team's priority order:
 
 ## 12. Pre-output checklist
 
-- 4-space indentation, no tabs, no line over 100 chars, whole-line comments within 80.
+- 4-space indentation, no tabs, no line over 100 chars, whole-line comments within 80 columns including indentation.
 - Trailing commas on every broken list and nowhere on single-line lists.
 - Imports and `extern crate` version-sorted within groups; groups unchanged.
 - One attribute per line, single derive.

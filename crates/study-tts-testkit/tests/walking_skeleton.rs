@@ -1,11 +1,14 @@
+//! Tier 3 and 4 tests for the E0-S0 walking skeleton: real filesystem, fake
+//! worker, real FFmpeg.
+
 use std::path::Path;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use study_tts_core::LessonError;
+use study_tts_core::{CacheKey, LessonError, ReleaseError};
 use study_tts_runtime::{
-    BuildError, BuildRequest, build_preview, cache_entry_dir, publish, validate_encoded_output,
-    validate_production_manifest,
+    BuildError, BuildRequest, CacheEntryFault, build_preview, cache_entry_dir, publish,
+    validate_encoded_output, validate_production_manifest,
 };
 use study_tts_testkit::{
     DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture,
@@ -22,6 +25,7 @@ fn build_request(lesson_path: &Path, workspace: &Path) -> BuildRequest {
         workspace: workspace.to_path_buf(),
         ffmpeg_executable: "ffmpeg".into(),
         ffprobe_executable: "ffprobe".into(),
+        voice_profile_dir: None,
     }
 }
 
@@ -149,8 +153,9 @@ fn t4_e0_cache_hit_avoids_synthesis_and_is_byte_identical() {
         2,
         "cache hits must avoid synthesis"
     );
-    // This byte comparison applies only to the deterministic fake synthesizer and exact Rust
-    // assembly. It does not claim byte-identical Chatterbox output from repeated synthesis.
+    // This byte comparison applies only to the deterministic fake synthesizer
+    // and exact Rust assembly. It does not claim byte-identical Chatterbox
+    // output from repeated synthesis.
     assert_eq!(
         std::fs::read(first.master_wav).expect("read first master"),
         std::fs::read(second.master_wav).expect("read second master")
@@ -168,8 +173,8 @@ fn t4_e0_cache_identity_proves_hits_and_speech_affecting_misses() {
     )
     .expect("cache identity fixture should build");
 
-    // seg-a synthesizes; seg-b and seg-e hit it; seg-c, seg-d, and seg-f each miss for a
-    // different speech-affecting reason.
+    // seg-a synthesizes; seg-b and seg-e hit it; seg-c, seg-d, and seg-f each
+    // miss for a different speech-affecting reason.
     assert_eq!(
         worker.synthesis_count(),
         4,
@@ -205,8 +210,9 @@ fn t4_e0_cache_identity_proves_hits_and_speech_affecting_misses() {
         "speaker must be included in synthesis identity"
     );
 
-    // Order is meaningful while synthesis is sequential. E5-S2 introduces the configurable worker
-    // pool, after which this must become a set comparison rather than a sequence comparison.
+    // Order is meaningful while synthesis is sequential. E5-S2 introduces the
+    // configurable worker pool, after which this must become a set comparison
+    // rather than a sequence comparison.
     let submitted = worker.synthesized_texts();
     assert_eq!(
         submitted,
@@ -260,11 +266,21 @@ fn t4_e0_ffprobe_rejects_non_aac_input() {
     validate_encoded_output(Path::new("ffprobe"), &result.m4a)
         .expect("a mono AAC export must be accepted");
 
-    // The PCM master is a valid audio file that is not a valid encoded output, which is the shape
-    // an encoder failing open would produce.
+    // The PCM master is a valid audio file that is not a valid encoded output,
+    // which is the shape an encoder failing open would produce.
     let error = validate_encoded_output(Path::new("ffprobe"), &result.master_wav)
         .expect_err("a PCM master must not pass encoded-output validation");
-    assert!(matches!(error, BuildError::InvalidEncodedOutput(_)));
+    // The probe is readable; what it describes is wrong. Naming the codec it
+    // actually found is what tells an operator the encoder failed open rather
+    // than that ffprobe misbehaved.
+    assert!(
+        matches!(
+            error,
+            BuildError::UnexpectedEncodedStream { ref codec, .. }
+                if codec.as_deref() != Some("aac")
+        ),
+        "a PCM master produced `{error}`"
+    );
 }
 
 #[test]
@@ -389,12 +405,14 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(result.manifest).expect("read preview manifest"))
             .expect("parse preview manifest");
-    let cache_key = manifest["segments"][0]["cache_key"]
+    let cache_key: CacheKey = manifest["segments"][0]["cache_key"]
         .as_str()
-        .expect("segment cache key");
-    // The sharding scheme is owned by `cache::entry_dir`; changing it must not require editing
-    // this test.
-    let entry_dir = cache_entry_dir(&workspace.path().join("cache"), cache_key);
+        .expect("segment cache key")
+        .parse()
+        .expect("the manifest records a well-formed cache key");
+    // The sharding scheme is owned by `cache::entry_dir`; changing it must not
+    // require editing this test.
+    let entry_dir = cache_entry_dir(&workspace.path().join("cache"), &cache_key);
     let artifact_path = entry_dir.join("artifact.json");
     let original: Value =
         serde_json::from_slice(&std::fs::read(&artifact_path).expect("read cache artifact"))
@@ -421,9 +439,19 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         )
         .expect_err("corrupt cache metadata must be rejected");
 
-        assert!(matches!(error, BuildError::InvalidCache(_)));
+        // Every one of these mutations makes the artifact describe audio this
+        // build cannot consume, so they must all arrive as that fault rather
+        // than merely as some cache error.
+        let BuildError::UnusableCacheEntry { fault, .. } = &error else {
+            panic!("`{field}` mutation produced the wrong variant: `{error}`");
+        };
+        assert!(
+            matches!(**fault, CacheEntryFault::IncompatibleArtifact { .. }),
+            "`{field}` mutation produced the wrong fault: `{fault}`"
+        );
         let message = error.to_string();
-        // A poisoned entry fails every later build, so the message must name what to delete.
+        // A poisoned entry fails every later build, so the message must name
+        // what to delete.
         assert!(
             message.contains(&entry_dir.display().to_string()),
             "`{field}` mutation did not name the entry directory: `{message}`"
@@ -446,7 +474,15 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         &worker,
     )
     .expect_err("an unknown artifact field must be rejected");
-    assert!(matches!(error, BuildError::InvalidCache(_)));
+    // `deny_unknown_fields` rejects this before any field is read, so it is a
+    // parse failure and not an incompatible-metadata one.
+    let BuildError::UnusableCacheEntry { fault, .. } = &error else {
+        panic!("an unknown artifact field produced the wrong variant: `{error}`");
+    };
+    assert!(
+        matches!(**fault, CacheEntryFault::UnparseableArtifact { .. }),
+        "an unknown artifact field produced the wrong fault: `{fault}`"
+    );
     assert!(error.to_string().contains("delete"));
 
     assert_eq!(worker.synthesis_count(), 2);
@@ -457,9 +493,14 @@ fn t4_e0_private_preview_cannot_enter_production_publication() {
     let (_workspace, result, _worker) = run_skeleton();
     let manifest_bytes = std::fs::read(&result.manifest).expect("read preview manifest");
 
+    // The refusal is the release profile's, not a sentence this build writes:
+    // a preview holds no gate evidence, so it cannot claim production however
+    // many gates are implemented.
     assert!(matches!(
         publish(&result),
-        Err(BuildError::PublicationRefused { .. })
+        Err(BuildError::Release(
+            ReleaseError::PrivateProfileCannotClaimProduction
+        ))
     ));
     assert!(matches!(
         validate_production_manifest(&manifest_bytes),
@@ -476,8 +517,8 @@ fn t3_e0_registered_fixture_checksums_match_test_data_manifest() {
             .expect("read test-data manifest");
     let lessons = repository_root.join("fixtures/lessons");
 
-    // Every committed fixture is discovered rather than listed, so a new fixture cannot be added
-    // without a manifest row.
+    // Every committed fixture is discovered rather than listed, so a new
+    // fixture cannot be added without a manifest row.
     let mut checked = 0_usize;
     for entry in std::fs::read_dir(&lessons).expect("read lesson fixtures") {
         let entry = entry.expect("read lesson fixture entry");
@@ -507,5 +548,125 @@ fn t3_e0_registered_fixture_checksums_match_test_data_manifest() {
     assert!(
         checked >= 2,
         "expected at least two committed lesson fixtures, checked {checked}"
+    );
+}
+
+/// The cache is inside the workspace, so its interior needs the same
+/// containment as the roots above it: a planted link is how a build is made to
+/// read or write somewhere it was never given.
+#[test]
+fn t4_e0_cache_directory_symlink_escape_is_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let outer = TempDir::new().expect("create cache symlink test root");
+    let workspace = outer.path().join("workspace");
+    let escape = outer.path().join("escape");
+    std::fs::create_dir_all(workspace.join("cache")).expect("create cache root");
+    std::fs::create_dir(&escape).expect("create escape target");
+    symlink(&escape, workspace.join("cache").join("segments")).expect("plant segments symlink");
+
+    let worker = DeterministicToneWorker::default();
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), &workspace),
+        &worker,
+    )
+    .expect_err("a symlinked cache directory must be refused");
+
+    assert!(
+        matches!(error, BuildError::ManagedPathEscape { .. }),
+        "a symlinked cache directory produced `{error}`"
+    );
+    assert_eq!(
+        std::fs::read_dir(&escape)
+            .expect("read escape target")
+            .count(),
+        0,
+        "nothing may be written through the link"
+    );
+    assert_eq!(worker.synthesis_count(), 0);
+}
+
+/// A cache entry's own files are read back and trusted, so a link planted at
+/// one is a way to feed the build bytes from outside the workspace.
+#[test]
+fn t4_e0_cache_file_symlink_escape_is_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let (workspace, result, _worker) = run_skeleton();
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(result.manifest).expect("read preview manifest"))
+            .expect("parse preview manifest");
+    let cache_key: CacheKey = manifest["segments"][0]["cache_key"]
+        .as_str()
+        .expect("segment cache key")
+        .parse()
+        .expect("the manifest records a well-formed cache key");
+    let entry_dir = cache_entry_dir(&workspace.path().join("cache"), &cache_key);
+
+    let outside = workspace.path().join("outside.json");
+    std::fs::write(&outside, b"{}").expect("write outside file");
+
+    for record in ["artifact.json", "audio.wav"] {
+        let planted = entry_dir.join(record);
+        std::fs::remove_file(&planted).expect("remove the real cache record");
+        symlink(&outside, &planted).expect("plant a cache record symlink");
+
+        let worker = DeterministicToneWorker::default();
+        let error = build_preview(
+            build_request(&walking_skeleton_fixture(), workspace.path()),
+            &worker,
+        )
+        .expect_err("a symlinked cache record must be refused");
+
+        assert!(
+            matches!(error, BuildError::ManagedPathEscape { .. }),
+            "a symlinked `{record}` produced `{error}`"
+        );
+        std::fs::remove_file(&planted).expect("remove the planted symlink");
+        assert_eq!(
+            std::fs::read(&outside).expect("read outside file"),
+            b"{}",
+            "the linked-to file must not be written through"
+        );
+    }
+}
+
+/// A second stream is invisible to a probe that asks only for the first one,
+/// and the first one is the one this build writes correctly — so the check has
+/// to count, not sample.
+#[test]
+fn t4_e0_multi_stream_output_is_rejected() {
+    let (workspace, result, _worker) = run_skeleton();
+    let two_stream = workspace.path().join("two-stream.m4a");
+
+    let encoded = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(&result.master_wav)
+        .arg("-i")
+        .arg(&result.master_wav)
+        .args([
+            "-map", "0:a", "-map", "1:a", "-ac", "1", "-c:a", "aac", "-b:a", "96k",
+        ])
+        .arg(&two_stream)
+        .status()
+        .expect("run ffmpeg to build a two-stream export");
+    assert!(
+        encoded.success(),
+        "ffmpeg must produce the two-stream fixture"
+    );
+
+    let error = validate_encoded_output(Path::new("ffprobe"), &two_stream)
+        .expect_err("a two-stream export must not pass verification");
+
+    assert!(
+        matches!(
+            error,
+            BuildError::UnexpectedEncodedStreamCount {
+                found: 2,
+                required: 1,
+                ..
+            }
+        ),
+        "a two-stream export produced `{error}`"
     );
 }

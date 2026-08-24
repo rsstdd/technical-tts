@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use serde::Serialize;
+use study_tts_core::{CacheKey, PlanHash, ReleaseStatus};
 
 use crate::{
     BuildError,
@@ -9,12 +10,32 @@ use crate::{
     tools::ToolIdentity,
 };
 
+/// Layout version of `manifest.json`.
+///
+/// Independent of `CACHE_SCHEMA_VERSION` and the lesson schema despite sharing
+/// a value today: the three version different documents and move separately.
+/// E1-S1 replaces all three with versioned JSON Schemas.
+const MANIFEST_SCHEMA_VERSION: &str = "0.1-skeleton";
+
+/// Name of the assembled master inside a preview directory.
+///
+/// Owned here because the manifest records these paths; `pipeline` writes the
+/// files at the same names. Two literals could drift, leaving the manifest
+/// pointing at a file that is not there.
+pub(crate) const MASTER_WAV_NAME: &str = "lesson.wav";
+
+/// Name of the encoded export inside a preview directory.
+pub(crate) const M4A_NAME: &str = "lesson.m4a";
+
+/// Name of the manifest itself inside a preview directory.
+pub(crate) const MANIFEST_NAME: &str = "manifest.json";
+
 #[derive(Serialize)]
 struct Manifest<'a> {
     schema_version: &'static str,
-    release_status: &'static str,
+    release_status: ReleaseStatus,
     lesson_id: &'a str,
-    plan_hash: &'a str,
+    plan_hash: &'a PlanHash,
     segments: Vec<ManifestSegment<'a>>,
     artifacts: Artifacts,
     tools: Tools<'a>,
@@ -23,7 +44,7 @@ struct Manifest<'a> {
 #[derive(Serialize)]
 struct ManifestSegment<'a> {
     segment_id: &'a str,
-    cache_key: &'a str,
+    cache_key: &'a CacheKey,
     audio_blake3: &'a str,
     frames: u32,
     pause_after_ms: u32,
@@ -64,15 +85,18 @@ pub(crate) struct ToolRecords<'a> {
 pub(crate) fn write(
     destination: &Path,
     lesson_id: &str,
-    plan_hash: &str,
+    plan_hash: &PlanHash,
     segments: &[CachedSegment],
     master_wav: &Path,
     m4a: &Path,
     tool_records: ToolRecords<'_>,
 ) -> Result<(), BuildError> {
     let manifest = Manifest {
-        schema_version: "0.1-skeleton",
-        release_status: "private_preview",
+        schema_version: MANIFEST_SCHEMA_VERSION,
+        // The typed value, not a hand-written spelling of it. A literal here
+        // would keep whatever it said if `ReleaseStatus` were ever respelled,
+        // and this field is what `validate_production_manifest` gates on.
+        release_status: ReleaseStatus::PrivatePreview,
         lesson_id,
         plan_hash,
         segments: segments
@@ -87,11 +111,11 @@ pub(crate) fn write(
             .collect(),
         artifacts: Artifacts {
             master_wav: Artifact {
-                path: "lesson.wav",
+                path: MASTER_WAV_NAME,
                 blake3: hash_file(master_wav)?,
             },
             m4a: Artifact {
-                path: "lesson.m4a",
+                path: M4A_NAME,
                 blake3: hash_file(m4a)?,
             },
         },

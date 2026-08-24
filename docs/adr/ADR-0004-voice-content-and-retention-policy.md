@@ -22,10 +22,10 @@ Approve voice profiles, consent scopes, watermark requirements, source-content c
 
 | Record | Owner/rightsholder | Scope | Retention | Watermark | Status |
 |---|---|---|---|---|---|
-| Primary voice profile | TBD | TBD | TBD | TBD | Pending |
-| Fallback owner voice | Ross Todd | TBD consent record | TBD | TBD | Pending |
-| Qualification source corpus | TBD | TBD | TBD | N/A | Pending |
-| External distribution | Project owner | TBD | TBD | TBD | Pending |
+| Primary voice profile | TBD (`rights-voice-nadia-v1`, `rights-voice-tom-v1`) | TBD; no lawful source acquired | TBD | TBD | Review required; fallback owner voice is the authorized substitute |
+| Fallback owner voice | Ross Todd (`rights-voice-owner-fallback-v1`) | Private synthesis, internal owner use only | Per consent scope; raw reference outside Git under the restricted voice root | Deferred to OQ-09 (before G3) | Pre-authorized per E0-S2 task 3 |
+| Qualification source corpus | Ross Todd (`rights-qualification-sources-v1`) | owner-authored; private qualification use | Repository lifetime for committed fixtures; ADR-0005 for external corpora (`rights-asr-corpora-v1`) | N/A | Approved for recorded scope |
+| External distribution | Project owner | Internal, owner use only per `docs/governance/RELEASE-PROFILES.md` §4 | Release artifacts per this policy's retention defaults | TBD (OQ-09) | Recorded; reopening conditions in RELEASE-PROFILES §4 |
 
 ## Acceptance
 
