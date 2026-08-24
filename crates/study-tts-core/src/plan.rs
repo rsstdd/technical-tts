@@ -214,6 +214,28 @@ impl RenderPlan {
     /// Deterministic: the same lesson and the same synthesizer always produce
     /// the same plan hash and the same cache keys, which is what makes a
     /// rebuild reuse its cache.
+    ///
+    /// # Panics
+    ///
+    /// If serializing a synthesis identity or the segment list fails, which
+    /// no argument to this function can cause. `serde_json` reports failure
+    /// for a `Serialize` implementation that returns an error, a map key
+    /// that serializes to neither a string nor a number, or a writer that
+    /// returns an I/O error. Both structures derive `Serialize` over
+    /// `String`s and integers plus a [`CacheKey`] that serializes through an
+    /// infallible `Into<String>`, neither holds a map, and `to_vec` writes
+    /// into a `Vec<u8>`. A field whose type reintroduces any of the three is
+    /// what makes this reachable, so the panic messages name the shape that
+    /// must hold rather than the call that failed.
+    ///
+    /// Panicking rather than returning an error is the choice, not the
+    /// leftover. These bytes *are* the identity: they are hashed into a
+    /// cache key and a plan hash, so the only alternative to stopping is
+    /// hashing different bytes, which names a cache entry holding audio the
+    /// identity does not describe. Silent misidentification is the failure
+    /// this project is least able to detect later. A typed variant would
+    /// also oblige every caller to handle a case no input can produce and no
+    /// test could assert.
     pub fn for_lesson(lesson: &Lesson, synthesizer_identity: &str) -> Self {
         let segments = lesson
             .segments
@@ -230,7 +252,7 @@ impl RenderPlan {
                     sample_format: CANONICAL_SAMPLE_FORMAT,
                 };
                 let identity_bytes = serde_json::to_vec(&identity)
-                    .expect("serializing a fixed synthesis identity cannot fail");
+                    .expect("a synthesis identity of strings and integers serializes");
 
                 PlannedSegment {
                     id: segment.id.clone(),
@@ -243,7 +265,8 @@ impl RenderPlan {
             })
             .collect::<Vec<_>>();
         let plan_hash = blake3::hash(
-            &serde_json::to_vec(&segments).expect("serializing a render plan cannot fail"),
+            &serde_json::to_vec(&segments)
+                .expect("a segment list of strings and integers serializes"),
         )
         .into();
 
