@@ -42,12 +42,20 @@ fn refused_build(spec: &VoiceProfileFixtureSpec) -> (BuildError, DeterministicTo
     (error, worker)
 }
 
+/// A manifest whose voices are declared and approved, so a test varying
+/// `content_rights` is not refused for the section it is not exercising. Tests
+/// that exercise `voice_profiles` overwrite the key.
 fn production_manifest(content_rights: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "schema_version": "1.0",
         "release_status": "production_release",
         "lesson_id": "e0-s2-rights",
         "content_rights": content_rights,
+        "voice_profiles": [{
+            "profile_id": "synthetic-test-voice-v1",
+            "approval": "approved",
+            "rights_record_id": "rights-voice-owner-fallback-v1",
+        }],
     })
 }
 
@@ -268,6 +276,47 @@ fn t4_e0_production_release_rejects_unresolved_content_rights_classification() {
     );
 }
 
+/// The two rights sections are held to one rule. `content_rights` already
+/// refuses an absent section and an empty one as the same claim; this pins
+/// `voice_profiles` to the same refusal, so a manifest cannot omit the voices
+/// it was rendered with while being held to name its sources.
+///
+/// Not a `DELIVERY-PLAN.md` §E0-S2 name: it guards the symmetry the two
+/// declaration sections share rather than one planned behavior.
+#[test]
+fn t4_e0_production_release_rejects_an_undeclared_voice_profile() {
+    let mut undeclared = production_manifest(serde_json::json!([{
+        "source_id": "lesson-source-1",
+        "classification": "owner_authored",
+        "rights_record_id": "rights-qualification-sources-v1",
+    }]));
+
+    undeclared["voice_profiles"] = serde_json::json!([]);
+    assert!(
+        matches!(
+            validate(&undeclared),
+            Err(BuildError::MissingVoiceProfileDeclaration)
+        ),
+        "an empty voice_profiles list must be refused as undeclared"
+    );
+
+    undeclared
+        .as_object_mut()
+        .expect("manifest is an object")
+        .remove("voice_profiles");
+    let error =
+        validate(&undeclared).expect_err("an undeclared voice profile must refuse production");
+    assert!(
+        matches!(error, BuildError::MissingVoiceProfileDeclaration),
+        "an absent voice_profiles section produced `{error}`"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("voice_profiles") && message.contains("project owner"),
+        "refusal must name the section and the remedy owner: `{message}`"
+    );
+}
+
 /// The manifest is an external contract, so its whole shape is refused when it
 /// is wrong — not only the parts a rights check happens to read.
 #[test]
@@ -439,6 +488,61 @@ fn t4_e0_every_absent_voice_record_names_its_remedy_owner() {
         assert!(
             message.contains(record) && message.contains("project owner"),
             "removing `{record}` did not name the record and the remedy owner: `{message}`"
+        );
+        assert_eq!(worker.synthesis_count(), 0);
+    }
+}
+
+/// A record that is present but is not a regular file is refused before its
+/// bytes are read.
+///
+/// `reference.wav` is the load-bearing case, and the link here points at an
+/// untouched copy of the fixture so its digest still matches what the profile
+/// records. Without this refusal the gate would read the bytes and compute the
+/// digest through the same link and agree with itself, admitting audio from
+/// outside the profile directory that the consent record never covered.
+#[cfg(unix)]
+#[test]
+fn t4_e0_voice_records_that_are_not_regular_files_are_refused() {
+    use std::os::unix::fs::symlink;
+
+    for record in [
+        "profile.json",
+        "consent.json",
+        "reference.wav",
+        "conditionals.pt",
+    ] {
+        let workspace = TempDir::new().expect("create isolated workspace");
+        let voice_dir = write_voice_profile_fixture(
+            &workspace.path().join("voice"),
+            &VoiceProfileFixtureSpec::default(),
+        );
+        let outside = workspace.path().join("outside");
+        std::fs::create_dir(&outside).expect("create the directory the link points into");
+        let target = outside.join(record);
+        let planted = voice_dir.join(record);
+        std::fs::rename(&planted, &target).expect("move a required record out of the profile");
+        symlink(&target, &planted).expect("plant a voice record symlink");
+        let worker = DeterministicToneWorker::default();
+
+        let error = build_preview(
+            request_without_ffmpeg(workspace.path(), &voice_dir),
+            &worker,
+        )
+        .expect_err("a planted record must refuse the profile");
+
+        assert!(
+            matches!(
+                error,
+                BuildError::VoiceRecordNotRegularFile { record: reported, .. }
+                    if reported == record
+            ),
+            "a symlinked `{record}` produced `{error}`"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains(record) && message.contains("project owner"),
+            "a symlinked `{record}` did not name the record and the remedy owner: `{message}`"
         );
         assert_eq!(worker.synthesis_count(), 0);
     }

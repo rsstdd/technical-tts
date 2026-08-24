@@ -1,3 +1,16 @@
+//! Voice profile and consent records, and the gate that decides whether a
+//! profile may serve a particular use.
+//!
+//! Everything here fails closed per
+//! `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` ("Profile load fails
+//! closed"): a profile is usable only while its consent is granted, its rights
+//! decision is approved, the requested use is inside the recorded scope, and
+//! the recorded checksums agree.
+//!
+//! This module handles only the records that describe a voice. It is IO-free;
+//! reading `reference.wav` and `conditionals.pt` and checking them against the
+//! recorded digests belongs to the runtime.
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -5,6 +18,8 @@ use crate::digest::is_blake3_hex;
 
 /// Schema version this module accepts for `profile.json` and `consent.json`.
 ///
+/// A record declaring anything else is refused rather than read on the guess
+/// that its fields still mean what this build expects.
 const VOICE_SCHEMA_VERSION: &str = "0.1-voice";
 
 /// Consent status recorded for a voice reference.
@@ -238,6 +253,11 @@ pub enum VoiceError {
 
 impl VoiceProfile {
     /// Parses and validates a `profile.json` record.
+    ///
+    /// # Errors
+    ///
+    /// [`VoiceError::InvalidJson`] when the bytes are not this record's shape,
+    /// otherwise whichever variant [`VoiceProfile::validate`] returns.
     pub fn from_json(bytes: &[u8]) -> Result<Self, VoiceError> {
         let profile: Self = serde_json::from_slice(bytes)?;
         profile.validate()?;
@@ -246,6 +266,14 @@ impl VoiceProfile {
 
     /// Rejects a structurally complete record whose fields are absent or
     /// unsupported.
+    ///
+    /// # Errors
+    ///
+    /// [`VoiceError::UnsupportedSchema`] for a version this build cannot read,
+    /// [`VoiceError::MissingField`] for a blank identity field, and
+    /// [`VoiceError::MalformedChecksum`] for a recorded digest that is not one
+    /// — reported as malformed rather than as a mismatch, so the owner is not
+    /// told their file was tampered with.
     pub fn validate(&self) -> Result<(), VoiceError> {
         if self.schema_version != VOICE_SCHEMA_VERSION {
             return Err(VoiceError::UnsupportedSchema(self.schema_version.clone()));
@@ -260,6 +288,11 @@ impl VoiceProfile {
 
 impl VoiceConsent {
     /// Parses and validates a `consent.json` record.
+    ///
+    /// # Errors
+    ///
+    /// [`VoiceError::InvalidJson`] when the bytes are not this record's shape,
+    /// otherwise whichever variant [`VoiceConsent::validate`] returns.
     pub fn from_json(bytes: &[u8]) -> Result<Self, VoiceError> {
         let consent: Self = serde_json::from_slice(bytes)?;
         consent.validate()?;
@@ -268,6 +301,13 @@ impl VoiceConsent {
 
     /// Rejects a structurally complete record whose fields are absent or
     /// unsupported.
+    ///
+    /// # Errors
+    ///
+    /// [`VoiceError::UnsupportedSchema`], [`VoiceError::MissingField`] — which
+    /// an empty `permitted_use` also produces, because a record granting no
+    /// scope grants nothing — and [`VoiceError::MalformedChecksum`], on the
+    /// same terms as [`VoiceProfile::validate`].
     pub fn validate(&self) -> Result<(), VoiceError> {
         if self.schema_version != VOICE_SCHEMA_VERSION {
             return Err(VoiceError::UnsupportedSchema(self.schema_version.clone()));
@@ -294,6 +334,17 @@ impl VoiceConsent {
 /// This gate is IO-free; verifying the on-disk `reference.wav` and
 /// `conditionals.pt` bytes against the recorded checksums is the runtime's
 /// responsibility.
+///
+/// # Errors
+///
+/// Structure first, so a malformed record is reported as malformed rather
+/// than as a refused permission: whatever [`VoiceProfile::validate`] and
+/// [`VoiceConsent::validate`] return. Then authorization, one variant per
+/// refusal — [`VoiceError::ConsentNotGranted`],
+/// [`VoiceError::ProfileNotApproved`], [`VoiceError::ConsentScopeExcluded`]
+/// naming the requested use against the recorded scope, and
+/// [`VoiceError::ConsentChecksumDisagreement`] when the two records no longer
+/// describe the same reference audio.
 pub fn validate_profile_for_use(
     profile: &VoiceProfile,
     consent: &VoiceConsent,
@@ -335,6 +386,7 @@ pub fn validate_profile_for_use(
     Ok(())
 }
 
+/// Whether the recorded consent scope covers the use being requested.
 fn permits(consent: &VoiceConsent, requested: VoiceUse) -> bool {
     consent.permitted_use.contains(&requested)
 }
@@ -350,6 +402,8 @@ fn recorded_scope(consent: &VoiceConsent) -> String {
         .join(", ")
 }
 
+/// Rejects a blank required field, naming it so the owner knows what to fill
+/// in.
 fn require(field: &'static str, value: &str) -> Result<(), VoiceError> {
     if value.trim().is_empty() {
         return Err(VoiceError::MissingField(field));

@@ -61,6 +61,39 @@ pub enum BuildError {
         record: &'static str,
     },
 
+    /// A record the voice policy requires is present under its name, but the
+    /// name holds something other than a regular file.
+    ///
+    /// Distinct from [`BuildError::MissingVoiceRecord`] because the record is
+    /// there: reporting it absent would send the owner looking for a file they
+    /// would find. Distinct from [`BuildError::ManagedPathEscape`] because that
+    /// variant names the root a build confined itself to, and a profile
+    /// directory is operator-supplied input this crate neither creates nor
+    /// canonicalizes, so it can make no such claim.
+    ///
+    /// The refusal is what keeps the checksum gate meaningful. `reference.wav`
+    /// and `conditionals.pt` are read and hashed through the same name, so a
+    /// link would supply both the bytes and the digest from one file outside
+    /// the directory and the gate would agree with itself, admitting audio no
+    /// consent record covers. A FIFO or device node is refused by the same
+    /// check, because hashing one never returns.
+    ///
+    /// Remedy routing per `docs/governance/ROUTING-TABLES.md` ("Voice
+    /// consent/checksum mismatch → Refuse profile load → Project owner →
+    /// Blocked"): only the owner can say what the record should contain, and
+    /// nothing here is repaired or removed automatically.
+    #[error(
+        "voice profile at `{profile_dir}` is refused: required record `{record}` is not a regular \
+         file; profile load fails closed and the project owner must supply the record itself \
+         before use"
+    )]
+    VoiceRecordNotRegularFile {
+        /// The profile directory the record was expected in.
+        profile_dir: PathBuf,
+        /// Which required record is not a regular file.
+        record: &'static str,
+    },
+
     /// A profile file no longer hashes to what its record says, so the record
     /// no longer describes it. Routing: "Voice consent/checksum mismatch →
     /// Project owner → Blocked".
@@ -188,7 +221,7 @@ pub enum BuildError {
     #[error(
         "synthesizer reported {reported_sample_rate} Hz, {reported_channels} channels, and \
          {reported_frames} frames for segment `{segment_id}` but wrote a WAV with \
-         {written_sample_rate} Hz, {written_channels} channel, and {written_frames} frames; the \
+         {written_sample_rate} Hz, {written_channels} channels, and {written_frames} frames; the \
          worker is misreporting its own output and must be corrected before this build is rerun"
     )]
     SynthesizerReportMismatch {
@@ -209,6 +242,11 @@ pub enum BuildError {
     },
 
     /// A segment's trailing pause is too long to express as a frame count.
+    ///
+    /// A guard rather than a condition a caller should expect: at the canonical
+    /// 24 kHz no `u32` pause can overflow the frame count, and `pause_frames`
+    /// in `assembly` records the arithmetic and what would have to change for
+    /// this to become reachable.
     #[error(
         "the pause of {pause_after_ms} ms after segment `{segment_id}` overflows the frame count \
          this build can assemble; shorten the pause in the lesson"
@@ -222,6 +260,12 @@ pub enum BuildError {
 
     /// The planned lesson is longer than the build can represent, before any
     /// audio was written.
+    ///
+    /// No plan reaches it: overflow needs 171,798,691 segments with every
+    /// field at its `u32` maximum, and four billion under the pause cap
+    /// `study_tts_core` enforces. Kept because those are properties of the
+    /// current field widths rather than of the lesson format; `expected_frames`
+    /// in `assembly` records the arithmetic.
     #[error(
         "the planned lesson exceeds the frame count this build can assemble; split the lesson \
          into shorter lessons"
@@ -230,6 +274,11 @@ pub enum BuildError {
 
     /// The master grew past what the build can count while it was being
     /// written.
+    ///
+    /// No input reaches either of the two checks that raise it: one counts a
+    /// single WAV, whose length a data chunk declares in 32 bits, and the other
+    /// re-sums totals the pre-pass already summed without overflow. Both are
+    /// checked so the write loop stands on its own arithmetic.
     #[error(
         "assembling `{destination}` exceeded the frame count this build can track; split the \
          lesson into shorter lessons"
@@ -398,8 +447,40 @@ pub enum BuildError {
         required_channels: u16,
     },
 
+    /// A name the build offered a managed helper is not exactly one ordinary
+    /// path element, so nothing is joined, inspected, or created.
+    ///
+    /// Distinct from [`BuildError::ManagedPathEscape`] because the two are
+    /// different faults. Most of what this catches — `""`, `"./name"`,
+    /// `"name/"` — reaches a file this crate did not choose to name without
+    /// ever leaving the managed root; `".."` and an absolute name would leave
+    /// it, but are refused lexically here rather than by a containment check.
+    /// Reporting either as an escape tells an operator their workspace was
+    /// attacked when the fault is a caller passing a spelling the contract does
+    /// not allow.
+    ///
+    /// Routing per `docs/governance/ROUTING-TABLES.md` ("Worker protocol or
+    /// containment failure → Worker/runtime → Blocked"): the runtime owner
+    /// corrects the caller. Nothing on disk is touched, so there is nothing for
+    /// an operator to repair.
+    #[error(
+        "managed name `{name}` beneath `{root}` is not one ordinary path element; the build \
+         created nothing, and the runtime owner must correct the caller that supplied it"
+    )]
+    InvalidManagedName {
+        /// The name that was refused.
+        name: String,
+        /// The managed directory the name would have been joined beneath.
+        root: PathBuf,
+    },
+
     /// A path the build derived would leave the root it is confined to, so
     /// nothing is written.
+    ///
+    /// Reserved for a path or a link that can actually escape: a resolved path
+    /// that is no longer beneath its root, or a symlink occupying a managed
+    /// name. A name that is merely spelled wrong is
+    /// [`BuildError::InvalidManagedName`].
     #[error("managed path `{path}` resolves outside `{root}`")]
     ManagedPathEscape {
         /// The path that resolved outside its root.
@@ -473,6 +554,22 @@ pub enum BuildError {
     )]
     MissingContentRightsDeclaration,
 
+    /// The manifest names no voice profile at all.
+    ///
+    /// Separate from `ProfileNotApproved`, which is a profile whose rights
+    /// decision was recorded and does not permit release. Declaring no voice is
+    /// not the same as declaring an unapproved one, and the remedies differ, so
+    /// this is the `content_rights` refusal above applied to the other half of
+    /// the same rule: `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`
+    /// ("Generated release") requires source *and* voice record IDs, and every
+    /// artifact this project releases is spoken by at least one voice.
+    #[error(
+        "production release is refused: the manifest declares no `voice_profiles` for the \
+         voices it was rendered with; the project owner must declare each voice profile and \
+         its rights record before publication"
+    )]
+    MissingVoiceProfileDeclaration,
+
     /// A declaration names an identifier but leaves it blank.
     ///
     /// Distinct from an absent field, which serde refuses outright: a blank
@@ -534,8 +631,8 @@ pub enum CacheEntryFault {
     #[error(
         "the artifact declares schema `{schema_version}`, {sample_rate} Hz, {channels} channels, \
          and format `{sample_format}` but this build requires schema \
-         `{required_schema_version}`, {required_sample_rate} Hz, {required_channels} channel, and \
-         `{required_sample_format}`"
+         `{required_schema_version}`, {required_sample_rate} Hz, {required_channels} channels, \
+         and `{required_sample_format}`"
     )]
     IncompatibleArtifact {
         /// Schema the artifact declares.
@@ -620,7 +717,8 @@ pub enum AudioFault {
     /// The stream is readable but is not the one canonical format.
     #[error(
         "the stream is {channels}-channel {sample_rate} Hz {bits_per_sample}-bit \
-         {sample_format}, not canonical mono {required_sample_rate} Hz 32-bit float"
+         {sample_format}, not canonical {required_channels}-channel \
+         {required_sample_rate} Hz {required_bits_per_sample}-bit float"
     )]
     NonCanonical {
         /// Channel count the stream carries.
@@ -631,8 +729,12 @@ pub enum AudioFault {
         bits_per_sample: u16,
         /// Whether the stream is integer or float.
         sample_format: &'static str,
+        /// The one channel count this project accepts.
+        required_channels: u16,
         /// The one sample rate this project accepts, in hertz.
         required_sample_rate: u32,
+        /// The one bit depth this project accepts.
+        required_bits_per_sample: u16,
     },
 
     /// A sample is infinite, NaN, or beyond full scale, which would clip on
@@ -650,10 +752,17 @@ pub enum AudioFault {
     Empty,
 
     /// The file holds more frames than the frame counter can represent.
+    ///
+    /// Not reachable through a WAV: the ceiling is about 17 GB of sample data,
+    /// four times what a data chunk can declare. Kept because the counter is
+    /// the `u32` the artifact record carries, so a container without that cap
+    /// would wrap here first.
     #[error("it holds more frames than this build can count")]
     FrameCountOverflow,
 }
 
+/// `io::Error` carries no filename, so every filesystem failure must be given
+/// its path here or the message names nothing.
 pub(crate) fn io_error(path: impl Into<PathBuf>, source: io::Error) -> BuildError {
     BuildError::FileSystem {
         path: path.into(),

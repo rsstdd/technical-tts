@@ -1,3 +1,11 @@
+//! `manifest.json`: the record of what a build produced and what produced it.
+//!
+//! Every value written here is derived rather than restated — the artifact
+//! names from the constants `pipeline` writes the files at, the release status
+//! from the typed value, the digests from the files themselves. A manifest
+//! that could disagree with the build it describes is worse than no manifest,
+//! because `validate_production_manifest` gates on what it says.
+
 use std::path::Path;
 
 use serde::Serialize;
@@ -13,7 +21,7 @@ use crate::{
 /// Layout version of `manifest.json`.
 ///
 /// Independent of `CACHE_SCHEMA_VERSION` and the lesson schema despite sharing
-/// a value today: the three version different documents and move separately.
+/// a value today: each versions a different document and moves separately.
 /// E1-S1 replaces all three with versioned JSON Schemas.
 const MANIFEST_SCHEMA_VERSION: &str = "0.1-skeleton";
 
@@ -30,6 +38,11 @@ pub(crate) const M4A_NAME: &str = "lesson.m4a";
 /// Name of the manifest itself inside a preview directory.
 pub(crate) const MANIFEST_NAME: &str = "manifest.json";
 
+/// The manifest document, borrowed from the build that produced it.
+///
+/// Borrowed rather than owned throughout: every value already exists in the
+/// completed build, and copying them would create a second version that could
+/// disagree with it.
 #[derive(Serialize)]
 struct Manifest<'a> {
     schema_version: &'static str,
@@ -41,6 +54,7 @@ struct Manifest<'a> {
     tools: Tools<'a>,
 }
 
+/// One segment as the manifest records it: identity, digest, and length.
 #[derive(Serialize)]
 struct ManifestSegment<'a> {
     segment_id: &'a str,
@@ -50,24 +64,29 @@ struct ManifestSegment<'a> {
     pause_after_ms: u32,
 }
 
+/// The two files a build leaves in its preview directory.
 #[derive(Serialize)]
 struct Artifacts {
     master_wav: Artifact,
     m4a: Artifact,
 }
 
+/// One produced file, named relative to the preview directory and hashed.
 #[derive(Serialize)]
 struct Artifact {
     path: &'static str,
     blake3: String,
 }
 
+/// The external tools the build shelled out to.
 #[derive(Serialize)]
 struct Tools<'a> {
     ffmpeg: ToolUse<'a>,
     ffprobe: ToolUse<'a>,
 }
 
+/// One tool as the manifest records it: which binary, which version, and the
+/// arguments it was actually given.
 #[derive(Serialize)]
 struct ToolUse<'a> {
     resolved_executable: String,
@@ -75,13 +94,33 @@ struct ToolUse<'a> {
     arguments: &'a [String],
 }
 
+/// The two external tools a build used, as the manifest must record them.
+///
+/// Identity and execution are carried separately because they answer different
+/// questions: which binary ran, and what it was told to do.
 pub(crate) struct ToolRecords<'a> {
+    /// Which FFmpeg binary ran.
     pub ffmpeg: &'a ToolIdentity,
+    /// What that FFmpeg was told to do.
     pub ffmpeg_execution: &'a ToolExecution,
+    /// Which ffprobe binary ran.
     pub ffprobe: &'a ToolIdentity,
+    /// What that ffprobe was told to do.
     pub ffprobe_execution: &'a ToolExecution,
 }
 
+/// Writes `manifest.json` for a completed build.
+///
+/// Hashes the master and the export as it goes, so the recorded digests
+/// describe the bytes on disk rather than what the build believed it wrote.
+/// Written atomically: a half-written manifest would describe a build that
+/// does not exist.
+///
+/// # Errors
+///
+/// [`BuildError::FileSystem`] if either artifact cannot be read for hashing or
+/// the manifest cannot be written; [`BuildError::WriteJson`] if serialization
+/// fails.
 pub(crate) fn write(
     destination: &Path,
     lesson_id: &str,

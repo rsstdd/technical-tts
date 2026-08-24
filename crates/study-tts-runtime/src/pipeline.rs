@@ -1,3 +1,12 @@
+//! The order a preview build happens in, and the gates that precede it.
+//!
+//! Every gate — lesson validity, rights classification, voice consent,
+//! external-tool preflight — runs before any synthesis or tool work. That
+//! ordering is the point of this module: a refusal must name the policy that
+//! refused rather than the first thing that happened to break, and the tests
+//! prove it by pointing a build at a missing tool and asserting the gate's own
+//! error.
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -51,6 +60,21 @@ pub struct BuildResult {
 /// Every gate runs before any tool or synthesis work, so a refusal names the
 /// gate rather than a missing binary. The result is always a private preview;
 /// only `publish` can claim more.
+///
+/// # Errors
+///
+/// The first gate to refuse, as itself: [`BuildError::ReadFile`] or
+/// [`BuildError::Lesson`] for the document, [`BuildError::Voice`] and the
+/// voice-record variants for the profile, [`BuildError::MissingTool`] for
+/// preflight, [`BuildError::UnusableCacheEntry`] for a cache entry that cannot
+/// be trusted, and [`BuildError::ManagedPathEscape`] for a link planted on a
+/// path this build owns. Later stages report the assembly, encode, probe, and
+/// manifest variants named on those functions.
+///
+/// [`BuildError::InvalidManagedName`] is not among them: every name this
+/// function offers a managed helper is either a literal or an identifier the
+/// lesson gate already refused, so an unusable spelling is reported as the
+/// authoring mistake it is.
 pub fn build_preview(
     request: BuildRequest,
     synthesizer: &dyn SegmentSynthesizer,
@@ -124,6 +148,14 @@ pub fn build_preview(
 /// `build_preview` performs this check internally; the entry point exists so
 /// the rejection path can be exercised from the integration suite, which is
 /// where a test needing a real ffprobe belongs.
+///
+/// # Errors
+///
+/// [`BuildError::MissingTool`] or [`BuildError::InspectTool`] when ffprobe
+/// cannot be resolved or launched, [`BuildError::Ffprobe`] when it fails,
+/// [`BuildError::UnreadableProbeResponse`] when its output cannot be parsed,
+/// and [`BuildError::UnexpectedEncodedStream`] when the artifact is not a
+/// single mono AAC stream.
 pub fn validate_encoded_output(
     ffprobe_executable: &Path,
     encoded: &Path,
@@ -140,6 +172,10 @@ pub fn validate_encoded_output(
 /// therefore stays correct once the production gates of
 /// `docs/governance/RELEASE-PROFILES.md` §3 exist — a preview will still not be
 /// publishable, because it is not the artifact that earned them.
+///
+/// # Errors
+///
+/// Always [`BuildError::Release`], carrying the profile rule that refused.
 pub fn publish(_preview: &BuildResult) -> Result<(), BuildError> {
     Ok(ReleaseClaim::private_preview().validate_as_production()?)
 }
@@ -203,17 +239,40 @@ fn require_identifier(
     Ok(())
 }
 
-/// Parses one rights section of a production manifest, naming the section when
-/// it does not parse.
+/// Parses one rights section of a production manifest, refusing a section that
+/// declares nothing.
+///
+/// An absent section and an empty one are one refusal, reported as
+/// `undeclared`: both name no record, and a gate reading either as "no
+/// obligations here" would let a manifest omit its way past a check the
+/// sections beside it have to satisfy. Malformed content stays separate and
+/// names the section it is in, because `serde_json` errors carry no field path
+/// and an operator told only that parsing failed would not know which
+/// declaration to correct.
 ///
 /// Borrows the subtree rather than cloning it: `&Value` is itself a
 /// deserializer.
-fn declare_section<'de, T: Deserialize<'de>>(
+///
+/// # Errors
+///
+/// [`BuildError::InvalidRightsDeclaration`] when the section is present and
+/// does not parse; otherwise `undeclared` when it declares nothing.
+fn require_declarations<'de, T: Deserialize<'de>>(
     section: &'static str,
-    value: &'de Value,
+    value: Option<&'de Value>,
+    undeclared: BuildError,
 ) -> Result<Vec<T>, BuildError> {
-    Vec::<T>::deserialize(value)
-        .map_err(|source| BuildError::InvalidRightsDeclaration { section, source })
+    let declarations = value
+        .map(|section_value| {
+            Vec::<T>::deserialize(section_value)
+                .map_err(|source| BuildError::InvalidRightsDeclaration { section, source })
+        })
+        .transpose()?
+        .unwrap_or_default();
+    if declarations.is_empty() {
+        return Err(undeclared);
+    }
+    Ok(declarations)
 }
 
 /// Always refuses publication until the production manifest and release gates
@@ -221,11 +280,27 @@ fn declare_section<'de, T: Deserialize<'de>>(
 ///
 /// Every precondition this build can check runs before that refusal, so each is
 /// reported as itself rather than as the generic gate refusal. They run
-/// outward in: what the document claims to be, then what it claims about its
-/// sources. The rights checks enforce
-/// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` ("Unresolved external
-/// distribution blocks publish") over provisional `content_rights` and
+/// outward in: what the document claims to be, then what it claims about the
+/// sources and voices it was made from. The rights checks enforce
+/// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` — "Unresolved external
+/// distribution blocks publish", and the source *and* voice record identifiers
+/// its "Generated release" row requires — over provisional `content_rights` and
 /// `voice_profiles` manifest sections that the E1-S1 schema story will version.
+///
+/// # Errors
+///
+/// [`BuildError::MalformedProductionManifest`] or
+/// [`BuildError::UnsupportedProductionManifest`] for what the document is;
+/// [`BuildError::ManifestNotProductionRelease`] for what it claims;
+/// [`BuildError::Lesson`] for an identifier a lesson could not name;
+/// [`BuildError::InvalidRightsDeclaration`],
+/// [`BuildError::MissingContentRightsDeclaration`],
+/// [`BuildError::UnresolvedContentRights`],
+/// [`BuildError::MissingVoiceProfileDeclaration`], or [`BuildError::Voice`] for
+/// what it claims about its sources and its voices. A manifest that clears
+/// every one of those is still refused with
+/// [`BuildError::ProductionGatesUnavailable`], because the gates it would have
+/// to satisfy do not exist yet.
 pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
     // Two stages, because the version is what says which shape is legal: a
     // document of an unknown version must be reported as an unknown version,
@@ -258,17 +333,16 @@ pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
     validate_lesson_id(&manifest.lesson_id)?;
 
     // An absent section and an empty one are the same claim: nothing was
-    // classified. A production lesson always has at least one source.
-    let declared = manifest
-        .content_rights
-        .as_ref()
-        .map(|section| declare_section::<SourceRightsDeclaration>("content_rights", section))
-        .transpose()?
-        .unwrap_or_default();
-    if declared.is_empty() {
-        return Err(BuildError::MissingContentRightsDeclaration);
-    }
-    for source in &declared {
+    // declared. Both sections are held to it, because a production lesson
+    // always has at least one source and is always spoken by at least one
+    // voice, and `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` ("Generated
+    // release") requires a release to record the identifiers of both.
+    let sources: Vec<SourceRightsDeclaration> = require_declarations(
+        "content_rights",
+        manifest.content_rights.as_ref(),
+        BuildError::MissingContentRightsDeclaration,
+    )?;
+    for source in &sources {
         require_identifier("content_rights", "source_id", &source.source_id)?;
         require_identifier(
             "content_rights",
@@ -283,20 +357,23 @@ pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
         }
     }
 
-    if let Some(section) = &manifest.voice_profiles {
-        for profile in declare_section::<DeclaredVoiceProfile>("voice_profiles", section)? {
-            require_identifier("voice_profiles", "profile_id", &profile.profile_id)?;
-            require_identifier(
-                "voice_profiles",
-                "rights_record_id",
-                &profile.rights_record_id,
-            )?;
-            if profile.approval != RightsDecision::Approved {
-                return Err(BuildError::Voice(VoiceError::ProfileNotApproved {
-                    profile_id: profile.profile_id,
-                    decision: profile.approval.as_str().to_owned(),
-                }));
-            }
+    let profiles: Vec<DeclaredVoiceProfile> = require_declarations(
+        "voice_profiles",
+        manifest.voice_profiles.as_ref(),
+        BuildError::MissingVoiceProfileDeclaration,
+    )?;
+    for profile in profiles {
+        require_identifier("voice_profiles", "profile_id", &profile.profile_id)?;
+        require_identifier(
+            "voice_profiles",
+            "rights_record_id",
+            &profile.rights_record_id,
+        )?;
+        if profile.approval != RightsDecision::Approved {
+            return Err(BuildError::Voice(VoiceError::ProfileNotApproved {
+                profile_id: profile.profile_id,
+                decision: profile.approval.as_str().to_owned(),
+            }));
         }
     }
 

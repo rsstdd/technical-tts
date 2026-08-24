@@ -13,9 +13,15 @@ use std::{
     },
 };
 
-use study_tts_core::{CANONICAL_SAMPLE_RATE, PlannedSegment};
+use study_tts_core::{
+    CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_RATE, PlannedSegment,
+};
 use study_tts_runtime::{SegmentSynthesizer, SynthesisError, SynthesisReport};
 
+/// Frames in every synthetic tone this crate writes: one tenth of a second.
+///
+/// Short because no test here measures duration; what they measure is that the
+/// same inputs produce the same bytes.
 const TONE_FRAMES: u32 = CANONICAL_SAMPLE_RATE / 10;
 
 /// A synthesizer that writes a tone derived from the segment's cache key.
@@ -37,6 +43,10 @@ impl DeterministicToneWorker {
     }
 
     /// The spoken text of every segment synthesized so far, in call order.
+    ///
+    /// A poisoned lock is recovered from rather than panicked on: poisoning
+    /// means a test already failed while holding it, and panicking here would
+    /// replace that failure with this one.
     pub fn synthesized_texts(&self) -> Vec<String> {
         self.synthesized_texts
             .lock()
@@ -64,9 +74,9 @@ impl SegmentSynthesizer for DeterministicToneWorker {
                     .fold(0_u8, |accumulator, byte| accumulator.wrapping_add(byte)),
             );
         let spec = hound::WavSpec {
-            channels: 1,
+            channels: CANONICAL_CHANNELS,
             sample_rate: CANONICAL_SAMPLE_RATE,
-            bits_per_sample: 32,
+            bits_per_sample: CANONICAL_BITS_PER_SAMPLE,
             sample_format: hound::SampleFormat::Float,
         };
         let mut writer = hound::WavWriter::create(destination, spec)
@@ -92,7 +102,7 @@ impl SegmentSynthesizer for DeterministicToneWorker {
 
         Ok(SynthesisReport {
             sample_rate: CANONICAL_SAMPLE_RATE,
-            channels: 1,
+            channels: CANONICAL_CHANNELS,
             frames: TONE_FRAMES,
         })
     }
@@ -135,14 +145,20 @@ impl Default for VoiceProfileFixtureSpec {
 /// disabled) `consent.json`, with self-consistent BLAKE3 checksums, and returns
 /// the profile directory. Registered as `voice-profile-synthetic-v1` in
 /// `docs/testing/TEST-DATA-MANIFEST.md`; the two must stay in step.
+///
+/// # Panics
+///
+/// If any of those files cannot be written or read back for hashing. Callers
+/// are tests writing into a fresh temporary directory, where a filesystem
+/// failure is a broken test environment rather than a case to handle.
 pub fn write_voice_profile_fixture(dir: &Path, spec: &VoiceProfileFixtureSpec) -> PathBuf {
     std::fs::create_dir_all(dir).expect("create voice profile fixture directory");
 
     let reference_path = dir.join("reference.wav");
     let wav_spec = hound::WavSpec {
-        channels: 1,
+        channels: CANONICAL_CHANNELS,
         sample_rate: CANONICAL_SAMPLE_RATE,
-        bits_per_sample: 32,
+        bits_per_sample: CANONICAL_BITS_PER_SAMPLE,
         sample_format: hound::SampleFormat::Float,
     };
     let mut writer = hound::WavWriter::create(&reference_path, wav_spec)
@@ -198,6 +214,11 @@ pub fn write_voice_profile_fixture(dir: &Path, spec: &VoiceProfileFixtureSpec) -
     dir.to_path_buf()
 }
 
+/// Hashes a fixture file so the record written beside it agrees with its
+/// bytes.
+///
+/// Panics on the same terms as [`write_voice_profile_fixture`], which is its
+/// only caller.
 fn hash_fixture_file(path: &Path) -> String {
     let bytes = std::fs::read(path).expect("read fixture file for hashing");
     blake3::hash(&bytes).to_hex().to_string()

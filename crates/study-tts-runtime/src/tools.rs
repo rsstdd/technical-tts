@@ -1,3 +1,10 @@
+//! Resolution and identification of the external binaries a build shells out
+//! to.
+//!
+//! Preflight rather than lazy discovery: a build that would fail for a missing
+//! encoder says so before it synthesizes anything, and the manifest records
+//! the binary that actually ran rather than the one that was requested.
+
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -23,6 +30,14 @@ pub(crate) struct ToolIdentity {
 ///
 /// `-version` is the flag both FFmpeg and ffprobe answer; a tool that does not
 /// is not one this function can identify.
+///
+/// # Errors
+///
+/// [`BuildError::MissingTool`] when the request resolves to nothing executable,
+/// [`BuildError::InspectTool`] when the binary exists but cannot be launched,
+/// and [`BuildError::ToolProbeFailed`] when it runs but reports no version this
+/// build can record — an unsuccessful exit or empty output alike, since a
+/// manifest that names no version cannot say what produced the build.
 pub(crate) fn inspect(tool: &str, requested: &Path) -> Result<ToolIdentity, BuildError> {
     let resolved_executable =
         resolve_executable(requested).ok_or_else(|| BuildError::MissingTool {

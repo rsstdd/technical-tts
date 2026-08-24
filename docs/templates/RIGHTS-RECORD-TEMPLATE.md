@@ -33,5 +33,8 @@
 - [ ] Review required
 - [ ] Prohibited
 
+This list is mirrored by `RightsDecision` in `crates/study-tts-core/src/voice.rs`. The two must
+agree, and changing either requires a template amendment rather than an edit.
+
 Rationale and approver:
 

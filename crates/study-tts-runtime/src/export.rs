@@ -1,6 +1,20 @@
+//! Encoding the master WAV to M4A through FFmpeg, and verifying the result
+//! with ffprobe.
+//!
+//! The codec, channel count, and stream count this build produces are named
+//! once and used by both ends: the encode maps them and the probe verifies
+//! them, so the verification cannot drift into passing something the encoder
+//! no longer writes.
+//!
+//! `ProbeResponse` is the one deserialization boundary in this workspace
+//! without `deny_unknown_fields`. It parses a diagnostic tool's output rather
+//! than a format this project defines, and the exception is argued and tested
+//! beside the type itself.
+
 use std::{ffi::OsString, path::Path, process::Command};
 
 use serde::Deserialize;
+use study_tts_core::CANONICAL_CHANNELS;
 use tempfile::Builder;
 
 use crate::{BuildError, io_error, tools::ToolIdentity};
@@ -13,7 +27,21 @@ use crate::{BuildError, io_error, tools::ToolIdentity};
 const REQUIRED_CODEC: &str = "aac";
 
 /// The channel count every encoded output carries, on the same terms.
-const REQUIRED_CHANNELS: u16 = 1;
+///
+/// Derived from [`CANONICAL_CHANNELS`] rather than repeating its value: the
+/// export carries the master's channel layout, so the two cannot drift apart.
+const REQUIRED_CHANNELS: u16 = CANONICAL_CHANNELS;
+
+/// The channel layout FFmpeg is told to write, which must describe
+/// [`REQUIRED_CHANNELS`].
+///
+/// FFmpeg names layouts rather than counting them, so this cannot be derived
+/// from the count the way `-ac` is. The assertion is what keeps the two from
+/// drifting: a changed canonical channel count becomes a compile error here
+/// rather than an `-ac 2 -channel_layout mono` contradiction FFmpeg would be
+/// left to resolve on its own.
+const REQUIRED_CHANNEL_LAYOUT: &str = "mono";
+const _: () = assert!(REQUIRED_CHANNELS == 1);
 
 /// Streams every encoded output carries.
 ///
@@ -58,11 +86,38 @@ struct ProbeStream {
     channels: Option<u16>,
 }
 
+/// What a tool was actually told to do, for the manifest to record.
+///
+/// The arguments as they were passed, not as they were composed: a manifest
+/// that records an intended command line rather than the executed one cannot
+/// be used to reproduce a build.
 #[derive(Clone, Debug)]
 pub(crate) struct ToolExecution {
+    /// The argument list the tool was invoked with, in order.
     pub arguments: Vec<String>,
 }
 
+/// Encodes the master WAV to M4A, returning what FFmpeg was told to do.
+///
+/// Encoded to a staged path beside the destination and renamed on success, so
+/// a failed encode never leaves a partial `.m4a` for a later step to find. The
+/// staging guard is held across the encode rather than released once it has
+/// reserved a name: FFmpeg opens its output container before it can discover
+/// it cannot finish, so a failure after that point leaves a partial file that
+/// only the guard's drop removes. Previews are what an operator listens
+/// through, and one that accumulates a partial `.m4a` per failed encode stops
+/// being a record of what the build produced.
+///
+/// A process killed outright still leaves the staged file, because no drop
+/// runs. That is a crash-recovery sweep rather than an encode concern, and it
+/// belongs with the reconciliation E2-S1 introduces.
+///
+/// # Errors
+///
+/// [`BuildError::UnrootedDestination`] when `destination` has no parent;
+/// [`BuildError::StartFfmpeg`] when the binary cannot be launched;
+/// [`BuildError::Ffmpeg`] carrying the status and stderr when it runs and
+/// fails; otherwise [`BuildError::FileSystem`].
 pub(crate) fn export_m4a(
     ffmpeg: &ToolIdentity,
     master_wav: &Path,
@@ -73,15 +128,17 @@ pub(crate) fn export_m4a(
         .ok_or_else(|| BuildError::UnrootedDestination {
             path: destination.to_path_buf(),
         })?;
+    // The handle is closed but the path is kept, because FFmpeg writes the
+    // file itself rather than through a handle this process holds. Dropping the
+    // whole `NamedTempFile` here would take the cleanup with it.
     let staged = Builder::new()
         .prefix("lesson-")
         .suffix(".m4a")
         .tempfile_in(parent)
-        .map_err(|error| io_error(parent, error))?;
-    let staged_path = staged.path().to_path_buf();
-    drop(staged);
+        .map_err(|error| io_error(parent, error))?
+        .into_temp_path();
 
-    let arguments = ffmpeg_arguments(master_wav, &staged_path);
+    let arguments = ffmpeg_arguments(master_wav, &staged);
     let output = Command::new(&ffmpeg.resolved_executable)
         .args(&arguments)
         .output()
@@ -95,12 +152,27 @@ pub(crate) fn export_m4a(
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
-    std::fs::rename(&staged_path, destination).map_err(|error| io_error(destination, error))?;
+    staged
+        .persist(destination)
+        .map_err(|error| io_error(destination, error.error))?;
     Ok(ToolExecution {
         arguments: display_arguments(&arguments),
     })
 }
 
+/// Verifies an encoded output against what this build claims to produce.
+///
+/// Counts the streams rather than sampling the first one: a second stream is
+/// invisible to a probe that asks only about stream zero, and stream zero is
+/// the one this build writes correctly.
+///
+/// # Errors
+///
+/// [`BuildError::InspectTool`] when ffprobe cannot be launched;
+/// [`BuildError::Ffprobe`] when it runs and fails;
+/// [`BuildError::UnreadableProbeResponse`] when its output cannot be parsed;
+/// [`BuildError::UnexpectedEncodedStream`] when the codec, channel count, or
+/// stream count is not the one this build encodes to.
 pub(crate) fn probe_m4a(ffprobe: &ToolIdentity, m4a: &Path) -> Result<ToolExecution, BuildError> {
     let arguments = ffprobe_arguments(m4a);
     let output = Command::new(&ffprobe.resolved_executable)
@@ -167,6 +239,13 @@ fn interpret_probe(m4a: &Path, response: &[u8]) -> Result<(), BuildError> {
     Ok(())
 }
 
+/// The encode this build performs, stated as one list.
+///
+/// Every flag is load-bearing. `-nostdin` keeps a prompt from hanging an
+/// offline render; `-map_metadata -1` and `-vn` strip anything that did not
+/// come from the master, so the container holds exactly the single stream
+/// `probe_m4a` verifies; the codec, channel count, and channel layout come from
+/// the constants that verification also reads, so the two cannot drift.
 fn ffmpeg_arguments(master_wav: &Path, destination: &Path) -> Vec<OsString> {
     [
         OsString::from("-nostdin"),
@@ -182,7 +261,7 @@ fn ffmpeg_arguments(master_wav: &Path, destination: &Path) -> Vec<OsString> {
         OsString::from("-ac"),
         OsString::from(REQUIRED_CHANNELS.to_string()),
         OsString::from("-channel_layout"),
-        OsString::from("mono"),
+        OsString::from(REQUIRED_CHANNEL_LAYOUT),
         OsString::from("-c:a"),
         OsString::from(REQUIRED_CODEC),
         OsString::from("-b:a"),
@@ -224,10 +303,76 @@ fn display_arguments(arguments: &[OsString]) -> Vec<String> {
 mod tests {
     use super::*;
 
-    // Only tool-free tests belong here. Anything requiring a real ffmpeg or
-    // ffprobe lives in the testkit integration suite, so `cargo test -p
-    // study-tts-runtime` stays runnable on a machine with neither binary
-    // installed.
+    // No test here runs a real ffmpeg or ffprobe; anything that does lives in
+    // the testkit integration suite, so `cargo test -p study-tts-runtime` stays
+    // runnable on a machine with neither binary installed. The failing-encoder
+    // test below stands one in rather than reaching for the real thing.
+    //
+    // Unix-gated on the same terms as the executable-bit check in `tools.rs`:
+    // the stand-in has to be marked executable, and ADR-0001 targets WSL2.
+    #[cfg(unix)]
+    #[test]
+    fn t1_e0_a_failed_encode_leaves_no_staged_file_behind() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        use tempfile::TempDir;
+
+        // The failure that matters is the one where the encoder runs, creates
+        // its output, and then exits non-zero: FFmpeg opens the container
+        // before it can discover it cannot finish, and an interrupted encode
+        // leaves the same partial file. A stand-in encoder reproduces exactly
+        // that shape without needing FFmpeg installed — pointing at a binary
+        // that never starts would leave nothing behind either way, and so
+        // could not fail if the guard were dropped.
+        let directory = TempDir::new().expect("create a directory to encode into");
+        let encoder = directory.path().join("failing-encoder");
+        // POSIX `sh`, so this runs under dash as well as bash: the loop leaves
+        // `output` holding the last argument, which is the path this build
+        // told the encoder to write. The receipt is what keeps the assertions
+        // below from passing because the encoder did nothing at all.
+        let script = concat!(
+            "#!/bin/sh\n",
+            "for output; do :; done\n",
+            ": > \"$output\"\n",
+            ": > \"$(dirname \"$output\")/ran\"\n",
+            "exit 1\n",
+        );
+        fs::write(&encoder, script).expect("write the stand-in encoder");
+        fs::set_permissions(&encoder, fs::Permissions::from_mode(0o755))
+            .expect("make the stand-in encoder executable");
+
+        let identity = ToolIdentity {
+            resolved_executable: encoder,
+            version: "failing-encoder-v1".to_owned(),
+        };
+        let destination = directory.path().join("lesson.m4a");
+
+        let error = export_m4a(&identity, Path::new("/master.wav"), &destination)
+            .expect_err("an encoder that exits non-zero must not report success");
+        assert!(
+            matches!(error, BuildError::Ffmpeg { .. }),
+            "a failing encoder produced `{error}`"
+        );
+
+        // Nothing the encode staged may outlive it. A leftover is not merely
+        // untidy: previews are what an operator listens through, and a
+        // directory that accumulates one partial `.m4a` per failed encode
+        // stops being a record of what the build produced.
+        assert!(
+            directory.path().join("ran").is_file(),
+            "the stand-in encoder never ran, so nothing was staged to clean up"
+        );
+        let leftovers: Vec<_> = fs::read_dir(directory.path())
+            .expect("read the directory back")
+            .map(|entry| entry.expect("read a directory entry").file_name())
+            .filter(|name| name != "failing-encoder" && name != "ran")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "a failed encode left {leftovers:?} behind"
+        );
+    }
+
     #[test]
     fn t1_e0_unreadable_and_unexpected_probes_are_reported_separately() {
         let m4a = Path::new("/lesson.m4a");

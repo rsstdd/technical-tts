@@ -1,3 +1,14 @@
+//! Deterministic render planning, and the identity values a plan carries.
+//!
+//! [`CacheKey`] and [`PlanHash`] are value objects rather than strings because
+//! both are compared, written into manifests, and — in the key's case — used
+//! as a path component. Parsing at the boundary is what makes the cache's
+//! prefix slice total rather than usually correct.
+//!
+//! Plans are serialized and never read back. ADR-0001 §12.2 puts persisted
+//! plans at E2, where a versioned fail-closed loader gives a parse boundary
+//! something to mean.
+
 use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
@@ -12,15 +23,34 @@ use crate::{
 /// in hertz.
 ///
 /// Fixed rather than configurable so a cached segment, an assembled master, and
-/// an export can never disagree about what a frame is.
+/// an export can never disagree about what a frame is. Transcribed from
+/// ADR-0001 §13.1 "Canonical intermediate".
 pub const CANONICAL_SAMPLE_RATE: u32 = 24_000;
+
+/// The one channel count this project renders, caches, assembles, and exports.
+///
+/// A cache-key input like the sample rate and the sample format. Mono is what
+/// keeps a frame one sample wide everywhere, so the assembler can concatenate
+/// segments and count durations without ever reading a channel layout.
+/// Transcribed from ADR-0001 §13.1 "Canonical intermediate".
+pub const CANONICAL_CHANNELS: u16 = 1;
 
 /// The one sample format this project renders, caches, assembles, and exports.
 ///
 /// Named alongside the sample rate because both are speech-affecting inputs to
 /// every cache key: changing either invalidates every cache entry in the
-/// project, which is a decision rather than an edit.
+/// project, which is a decision rather than an edit. Transcribed from ADR-0001
+/// §13.1 "Canonical intermediate".
 pub const CANONICAL_SAMPLE_FORMAT: &str = "f32le";
+
+/// The bit depth of the canonical sample format.
+///
+/// The WAV-side spelling of [`CANONICAL_SAMPLE_FORMAT`]: `f32le` is 32-bit
+/// little-endian float, but a WAV header records the width and the float-ness
+/// separately, so a validator has to check both — an integer stream of the
+/// same width is not this format. Transcribed from ADR-0001 §13.1 "Canonical
+/// intermediate".
+pub const CANONICAL_BITS_PER_SAMPLE: u16 = 32;
 
 /// The synthesis identity of one segment: BLAKE3 over the canonical
 /// serialization of every speech-affecting input, rendered as lowercase
@@ -47,6 +77,21 @@ impl CacheKey {
     pub const LENGTH: usize = BLAKE3_HEX_LENGTH;
 
     /// The key as it is written to a plan, a manifest, and a cache artifact.
+    ///
+    /// # Examples
+    ///
+    /// A key is parsed at the boundary, so the cache's prefix slice is total
+    /// rather than usually correct:
+    ///
+    /// ```rust
+    /// use study_tts_core::CacheKey;
+    ///
+    /// let key: CacheKey = "a".repeat(CacheKey::LENGTH).parse()?;
+    /// assert_eq!(key.as_str().len(), CacheKey::LENGTH);
+    ///
+    /// assert!("not-a-digest".parse::<CacheKey>().is_err());
+    /// # Ok::<(), study_tts_core::MalformedCacheKey>(())
+    /// ```
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -248,7 +293,7 @@ impl RenderPlan {
                     spoken_text: &segment.spoken_text,
                     style: &segment.style,
                     sample_rate: CANONICAL_SAMPLE_RATE,
-                    channels: 1,
+                    channels: CANONICAL_CHANNELS,
                     sample_format: CANONICAL_SAMPLE_FORMAT,
                 };
                 let identity_bytes = serde_json::to_vec(&identity)

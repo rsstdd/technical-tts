@@ -1,3 +1,11 @@
+//! The authored lesson document: the shape it has on disk, and every invariant
+//! it must satisfy before anything is planned or synthesized.
+//!
+//! Refusal happens here rather than downstream, so an authoring mistake is
+//! reported to its author instead of surfacing later as audio nobody asked
+//! for. Absent and malformed stay distinct throughout: they are different
+//! mistakes with different fixes.
+
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
@@ -8,10 +16,18 @@ use thiserror::Error;
 /// suffixes later stories append.
 const MAX_IDENTIFIER_LENGTH: usize = 64;
 
+/// Longest trailing pause a segment may declare, in milliseconds.
+///
+/// Provisional: long enough for a deliberate beat between passages, short
+/// enough that a mistyped value reads as a fault in the audio rather than as
+/// phrasing. [`LessonError::PauseOutOfRange`] states this bound rather than
+/// restating it in prose, so a change here changes what an author is told.
+const MAX_PAUSE_AFTER_MS: u32 = 10_000;
+
 /// Layout version this module accepts for a lesson document.
 ///
 /// Independent of the cache and manifest schema versions despite sharing a
-/// value today: the three version different documents and move separately.
+/// value today: each versions a different document and moves separately.
 const LESSON_SCHEMA_VERSION: &str = "0.1-skeleton";
 
 /// One authored lesson, as it is written on disk and before any planning has
@@ -96,8 +112,9 @@ pub enum LessonError {
     MissingLessonId,
     /// An identity was supplied but could not safely name a directory.
     #[error(
-        "lesson_id `{0}` must be 1-64 ASCII letters, digits, hyphen, underscore, or dot, and must \
-         not start with a dot, because it names an output directory"
+        "lesson_id `{0}` must be 1-{max} ASCII letters, digits, hyphen, underscore, or dot, and \
+         must not start with a dot, because it names an output directory",
+        max = MAX_IDENTIFIER_LENGTH
     )]
     InvalidLessonId(String),
     /// A lesson with nothing to speak is an authoring mistake, not an empty
@@ -109,8 +126,9 @@ pub enum LessonError {
     MissingSegmentId,
     /// An identity was supplied but could not safely name a path component.
     #[error(
-        "segment ID `{0}` must be 1-64 ASCII letters, digits, hyphen, underscore, or dot, and must \
-         not start with a dot"
+        "segment ID `{0}` must be 1-{max} ASCII letters, digits, hyphen, underscore, or dot, and \
+         must not start with a dot",
+        max = MAX_IDENTIFIER_LENGTH
     )]
     InvalidSegmentId(String),
     /// Two segments share an identity, which would collide in the cache and the
@@ -145,13 +163,18 @@ pub enum LessonError {
     MissingStyle(String),
     /// The pause is long enough to read as a fault in the audio rather than as
     /// phrasing.
-    #[error("segment `{0}` pause exceeds the provisional 10-second limit")]
+    #[error("segment `{0}` pause exceeds the provisional {max} ms limit", max = MAX_PAUSE_AFTER_MS)]
     PauseOutOfRange(String),
 }
 
 impl Lesson {
     /// Parses and validates a lesson document, refusing anything synthesis
     /// could not use.
+    ///
+    /// # Errors
+    ///
+    /// [`LessonError::InvalidJson`] when the bytes are not this document's
+    /// shape, otherwise whichever variant [`Lesson::validate`] returns.
     pub fn from_json(bytes: &[u8]) -> Result<Self, LessonError> {
         let lesson: Self = serde_json::from_slice(bytes)?;
         lesson.validate()?;
@@ -160,6 +183,13 @@ impl Lesson {
 
     /// Checks every lesson invariant, returning the first violation as its own
     /// error.
+    ///
+    /// # Errors
+    ///
+    /// One [`LessonError`] variant per violated invariant — the schema
+    /// version, the lesson identifier, then each segment in order — so a
+    /// caller can tell an author exactly which rule they broke rather than
+    /// that something was wrong.
     pub fn validate(&self) -> Result<(), LessonError> {
         if self.schema_version != LESSON_SCHEMA_VERSION {
             return Err(LessonError::UnsupportedSchema(self.schema_version.clone()));
@@ -212,7 +242,7 @@ impl Lesson {
             if segment.style.trim().is_empty() {
                 return Err(LessonError::MissingStyle(segment.id.clone()));
             }
-            if segment.pause_after_ms > 10_000 {
+            if segment.pause_after_ms > MAX_PAUSE_AFTER_MS {
                 return Err(LessonError::PauseOutOfRange(segment.id.clone()));
             }
         }
@@ -229,8 +259,28 @@ impl Lesson {
 /// rather than a second spelling of the rule in the runtime crate, so a
 /// manifest cannot name something a lesson could not.
 ///
-/// An absent value and a malformed value stay different authoring mistakes,
-/// each with its own error.
+/// # Errors
+///
+/// [`LessonError::MissingLessonId`] when the value is blank and
+/// [`LessonError::InvalidLessonId`] when it is present but could not name a
+/// directory. The two stay separate because they are different authoring
+/// mistakes with different fixes.
+///
+/// # Examples
+///
+/// ```rust
+/// use study_tts_core::{LessonError, validate_lesson_id};
+///
+/// assert!(validate_lesson_id("e0-s0-walking-skeleton").is_ok());
+/// assert!(matches!(
+///     validate_lesson_id("../escape"),
+///     Err(LessonError::InvalidLessonId(_))
+/// ));
+/// assert!(matches!(
+///     validate_lesson_id("  "),
+///     Err(LessonError::MissingLessonId)
+/// ));
+/// ```
 pub fn validate_lesson_id(lesson_id: &str) -> Result<(), LessonError> {
     if lesson_id.trim().is_empty() {
         return Err(LessonError::MissingLessonId);

@@ -265,6 +265,7 @@ The arrows define prerequisites, not a requirement to serialize independent trac
 - `t4_e0_missing_voice_consent_blocks_profile_load`
 - `t4_e0_unapproved_voice_profile_cannot_enter_preview_or_production`
 - `t4_e0_voice_checksum_mismatch_blocks_use`
+- `t4_e0_voice_records_that_are_not_regular_files_are_refused`
 - `t4_e0_production_release_rejects_unresolved_content_rights_classification`
 
 **Acceptance:** a lawful voice configuration and content source are available for the intended use, or an approved fallback is selected before real lesson rendering. The product records classification and scope; it does not encode a universal legal conclusion about all third-party material.
