@@ -13,17 +13,21 @@
 
 use std::{ffi::OsString, path::Path, process::Command};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use study_tts_core::CANONICAL_CHANNELS;
 use tempfile::Builder;
 
-use crate::{BuildError, ManagedPathError, ToolError, io_error, tools::ToolIdentity};
+use crate::{
+    BuildError, ManagedPathError, ToolError, ToolInvocation, ToolOperation, io_error,
+    process::{self, CommandRunError, FFMPEG_ENCODE_POLICY, FFPROBE_POLICY},
+    tools::ToolIdentity,
+};
 
 /// The audio codec every encoded output carries.
 ///
-/// One definition for both ends of the agreement: `ffmpeg_arguments` encodes to
-/// it and `probe_m4a` verifies it. Two literals could drift apart silently,
-/// leaving the verification passing something the encoder no longer produces.
+/// One definition for both ends of the agreement: the FFmpeg profile encodes
+/// to it and `probe_m4a` verifies it. Two literals could drift apart silently,
+/// leaving verification passing something the encoder no longer produces.
 const REQUIRED_CODEC: &str = "aac";
 
 /// The channel count every encoded output carries, on the same terms.
@@ -48,6 +52,41 @@ const _: () = assert!(REQUIRED_CHANNELS == 1);
 /// The encode maps one audio stream and strips video and metadata, so anything
 /// else in the container did not come from this build.
 const REQUIRED_STREAMS: usize = 1;
+
+const INPUT_PATH_ARGUMENT: &str = "{input_path}";
+const OUTPUT_PATH_ARGUMENT: &str = "{output_path}";
+
+const FFMPEG_ARGUMENT_PROFILE: &[&str] = &[
+    "-nostdin",
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-y",
+    "-i",
+    INPUT_PATH_ARGUMENT,
+    "-map_metadata",
+    "-1",
+    "-vn",
+    "-ac",
+    "1",
+    "-channel_layout",
+    REQUIRED_CHANNEL_LAYOUT,
+    "-c:a",
+    REQUIRED_CODEC,
+    "-b:a",
+    "96k",
+    OUTPUT_PATH_ARGUMENT,
+];
+
+const FFPROBE_ARGUMENT_PROFILE: &[&str] = &[
+    "-v",
+    "error",
+    "-show_entries",
+    "stream=codec_name,channels",
+    "-of",
+    "json",
+    INPUT_PATH_ARGUMENT,
+];
 
 /// The subset of an ffprobe response the pinned `-show_entries` selection asks
 /// for.
@@ -95,6 +134,66 @@ struct ProbeStream {
 pub(crate) struct ToolExecution {
     /// The argument list the tool was invoked with, in order.
     pub arguments: Vec<String>,
+    /// Digest of the path-normalized argument profile that produced the list.
+    pub argument_profile_blake3: String,
+}
+
+/// Path-normalized FFmpeg and ffprobe argument identities for one build.
+#[derive(Clone, Debug)]
+pub(crate) struct ExportProfiles {
+    /// Encoding argument identity.
+    pub ffmpeg: ToolProfile,
+    /// Probe argument identity.
+    pub ffprobe: ToolProfile,
+}
+
+/// One tool's normalized argument sequence and deterministic identity.
+#[derive(Clone, Debug)]
+pub(crate) struct ToolProfile {
+    normalized_arguments: Vec<String>,
+    identity: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+struct ProfileIdentity<'a> {
+    identity_version: &'static str,
+    tool: &'a str,
+    normalized_arguments: &'a [String],
+}
+
+impl ToolProfile {
+    /// Derives an identity from a path-normalized argument sequence.
+    pub(crate) fn new(tool: &str, arguments: &[&str]) -> Self {
+        let normalized_arguments = arguments
+            .iter()
+            .map(|argument| (*argument).to_owned())
+            .collect::<Vec<_>>();
+        let bytes = serde_json::to_vec(&ProfileIdentity {
+            identity_version: "0.1-skeleton-tool-profile",
+            tool,
+            normalized_arguments: &normalized_arguments,
+        })
+        .expect("tool profiles contain only infallibly serializable values");
+        let identity = blake3::hash(&bytes).to_hex().to_string();
+        Self {
+            normalized_arguments,
+            identity,
+        }
+    }
+
+    /// Returns the deterministic path-normalized argument identity.
+    pub(crate) fn identity(&self) -> &str {
+        &self.identity
+    }
+}
+
+/// Returns the command profiles that define this build's export behavior.
+pub(crate) fn export_profiles() -> ExportProfiles {
+    ExportProfiles {
+        ffmpeg: ToolProfile::new("ffmpeg", FFMPEG_ARGUMENT_PROFILE),
+        ffprobe: ToolProfile::new("ffprobe", FFPROBE_ARGUMENT_PROFILE),
+    }
 }
 
 /// Encodes the master WAV to M4A, returning what FFmpeg was told to do.
@@ -108,18 +207,38 @@ pub(crate) struct ToolExecution {
 /// through, and one that accumulates a partial `.m4a` per failed encode stops
 /// being a record of what the build produced.
 ///
-/// A process killed outright still leaves the staged file, because no drop
-/// runs. That is a crash-recovery sweep rather than an encode concern, and it
-/// belongs with the reconciliation E2-S1 introduces.
+/// A process killed outright still leaves the staged file because no drop runs.
+/// The next preview reconciliation quarantines its incomplete package stage.
 ///
 /// # Errors
 ///
 /// [`ManagedPathError::UnrootedDestination`] when `destination` has no parent;
 /// [`ToolError::StartFfmpeg`] when the binary cannot be launched;
+/// [`ToolError::ToolTimedOut`] when the encode deadline expires;
+/// [`ToolError::ToolOutputOverflow`] when either output stream exceeds its
+/// ceiling; [`ToolError::ToolPipeUnavailable`],
+/// [`ToolError::ToolCaptureConfigurationFailed`],
+/// [`ToolError::ToolCaptureStartFailed`],
+/// [`ToolError::ToolCaptureReadFailed`],
+/// [`ToolError::ToolCaptureChannelClosed`],
+/// [`ToolError::ToolCaptureThreadPanicked`],
+/// [`ToolError::ToolCaptureShutdownTimedOut`],
+/// [`ToolError::ToolCaptureIncomplete`],
+/// [`ToolError::ToolCleanupFailed`],
+/// [`ToolError::ToolChildInspectionFailed`],
+/// [`ToolError::ToolTerminationSignalFailed`],
+/// [`ToolError::ToolContainmentInspectionFailed`],
+/// [`ToolError::ToolContainmentSignalFailed`],
+/// [`ToolError::ToolChildReapFailed`],
+/// [`ToolError::ToolTerminationTimedOut`],
+/// [`ToolError::ToolReaperStartFailed`], or
+/// [`ToolError::ToolCaptureReaperStartFailed`] when the named supervision
+/// invariant fails;
 /// [`ToolError::Ffmpeg`] carrying the status and stderr when it runs and fails;
 /// otherwise [`crate::IoError::FileSystem`].
 pub(crate) fn export_m4a(
     ffmpeg: &ToolIdentity,
+    profile: &ToolProfile,
     master_wav: &Path,
     destination: &Path,
 ) -> Result<ToolExecution, BuildError> {
@@ -138,13 +257,17 @@ pub(crate) fn export_m4a(
         .map_err(|error| io_error(parent, error))?
         .into_temp_path();
 
-    let arguments = ffmpeg_arguments(master_wav, &staged);
-    let output = Command::new(&ffmpeg.resolved_executable)
-        .args(&arguments)
-        .output()
-        .map_err(|source| ToolError::StartFfmpeg {
-            executable: ffmpeg.resolved_executable.clone(),
-            source,
+    let arguments = materialize_arguments(profile, master_wav, Some(&staged));
+    let mut command = Command::new(&ffmpeg.resolved_executable);
+    command.args(&arguments);
+    let invocation = ToolInvocation::new("FFmpeg", ToolOperation::M4aEncode, destination);
+    let output =
+        process::run(invocation, command, FFMPEG_ENCODE_POLICY).map_err(|error| match error {
+            CommandRunError::Start(source) => ToolError::StartFfmpeg {
+                executable: ffmpeg.resolved_executable.clone(),
+                source,
+            },
+            CommandRunError::Supervision(error) => error,
         })?;
     if !output.status.success() {
         return Err(ToolError::Ffmpeg {
@@ -158,6 +281,7 @@ pub(crate) fn export_m4a(
         .map_err(|error| io_error(destination, error.error))?;
     Ok(ToolExecution {
         arguments: display_arguments(&arguments),
+        argument_profile_blake3: profile.identity().to_owned(),
     })
 }
 
@@ -170,20 +294,48 @@ pub(crate) fn export_m4a(
 /// # Errors
 ///
 /// [`ToolError::InspectTool`] when ffprobe cannot be launched;
+/// [`ToolError::ToolTimedOut`] when its deadline expires;
+/// [`ToolError::ToolOutputOverflow`] when either output stream exceeds its
+/// ceiling; [`ToolError::ToolPipeUnavailable`],
+/// [`ToolError::ToolCaptureConfigurationFailed`],
+/// [`ToolError::ToolCaptureStartFailed`],
+/// [`ToolError::ToolCaptureReadFailed`],
+/// [`ToolError::ToolCaptureChannelClosed`],
+/// [`ToolError::ToolCaptureThreadPanicked`],
+/// [`ToolError::ToolCaptureShutdownTimedOut`],
+/// [`ToolError::ToolCaptureIncomplete`],
+/// [`ToolError::ToolCleanupFailed`],
+/// [`ToolError::ToolChildInspectionFailed`],
+/// [`ToolError::ToolTerminationSignalFailed`],
+/// [`ToolError::ToolContainmentInspectionFailed`],
+/// [`ToolError::ToolContainmentSignalFailed`],
+/// [`ToolError::ToolChildReapFailed`],
+/// [`ToolError::ToolTerminationTimedOut`],
+/// [`ToolError::ToolReaperStartFailed`], or
+/// [`ToolError::ToolCaptureReaperStartFailed`] when the named supervision
+/// invariant fails;
 /// [`ToolError::Ffprobe`] when it runs and fails;
 /// [`ToolError::UnreadableProbeResponse`] when its output cannot be parsed;
 /// [`ToolError::UnexpectedEncodedStreamCount`] when the stream count differs;
 /// or [`ToolError::UnexpectedEncodedStream`] when the codec or channel count is
 /// not the one this build encodes to.
-pub(crate) fn probe_m4a(ffprobe: &ToolIdentity, m4a: &Path) -> Result<ToolExecution, BuildError> {
-    let arguments = ffprobe_arguments(m4a);
-    let output = Command::new(&ffprobe.resolved_executable)
-        .args(&arguments)
-        .output()
-        .map_err(|source| ToolError::InspectTool {
-            tool: "ffprobe".to_owned(),
-            executable: ffprobe.resolved_executable.clone(),
-            source,
+pub(crate) fn probe_m4a(
+    ffprobe: &ToolIdentity,
+    profile: &ToolProfile,
+    m4a: &Path,
+) -> Result<ToolExecution, BuildError> {
+    let arguments = materialize_arguments(profile, m4a, None);
+    let mut command = Command::new(&ffprobe.resolved_executable);
+    command.args(&arguments);
+    let invocation = ToolInvocation::new("ffprobe", ToolOperation::M4aValidation, m4a);
+    let output =
+        process::run(invocation, command, FFPROBE_POLICY).map_err(|error| match error {
+            CommandRunError::Start(source) => ToolError::InspectTool {
+                tool: "ffprobe".to_owned(),
+                executable: ffprobe.resolved_executable.clone(),
+                source,
+            },
+            CommandRunError::Supervision(error) => error,
         })?;
     if !output.status.success() {
         return Err(ToolError::Ffprobe {
@@ -196,6 +348,7 @@ pub(crate) fn probe_m4a(ffprobe: &ToolIdentity, m4a: &Path) -> Result<ToolExecut
 
     Ok(ToolExecution {
         arguments: display_arguments(&arguments),
+        argument_profile_blake3: profile.identity().to_owned(),
     })
 }
 
@@ -251,47 +404,23 @@ fn interpret_probe(m4a: &Path, response: &[u8]) -> Result<(), BuildError> {
 /// come from the master, so the container holds exactly the single stream
 /// `probe_m4a` verifies; the codec, channel count, and channel layout come from
 /// the constants that verification also reads, so the two cannot drift.
-fn ffmpeg_arguments(master_wav: &Path, destination: &Path) -> Vec<OsString> {
-    [
-        OsString::from("-nostdin"),
-        OsString::from("-hide_banner"),
-        OsString::from("-loglevel"),
-        OsString::from("error"),
-        OsString::from("-y"),
-        OsString::from("-i"),
-        master_wav.as_os_str().to_owned(),
-        OsString::from("-map_metadata"),
-        OsString::from("-1"),
-        OsString::from("-vn"),
-        OsString::from("-ac"),
-        OsString::from(REQUIRED_CHANNELS.to_string()),
-        OsString::from("-channel_layout"),
-        OsString::from(REQUIRED_CHANNEL_LAYOUT),
-        OsString::from("-c:a"),
-        OsString::from(REQUIRED_CODEC),
-        OsString::from("-b:a"),
-        OsString::from("96k"),
-        destination.as_os_str().to_owned(),
-    ]
-    .into()
-}
-
-/// Asks for every stream in the container, not just the first audio one.
-///
-/// `-select_streams a:0` reported a single stream for a file holding two, so a
-/// second stream was invisible to the check. Dropping the selection entirely
-/// also surfaces video and data streams, which `a` would still have hidden.
-fn ffprobe_arguments(m4a: &Path) -> Vec<OsString> {
-    [
-        OsString::from("-v"),
-        OsString::from("error"),
-        OsString::from("-show_entries"),
-        OsString::from("stream=codec_name,channels"),
-        OsString::from("-of"),
-        OsString::from("json"),
-        m4a.as_os_str().to_owned(),
-    ]
-    .into()
+fn materialize_arguments(
+    profile: &ToolProfile,
+    input: &Path,
+    output: Option<&Path>,
+) -> Vec<OsString> {
+    profile
+        .normalized_arguments
+        .iter()
+        .map(|argument| match argument.as_str() {
+            INPUT_PATH_ARGUMENT => input.as_os_str().to_owned(),
+            OUTPUT_PATH_ARGUMENT => output
+                .expect("only the FFmpeg profile contains an output placeholder")
+                .as_os_str()
+                .to_owned(),
+            argument => OsString::from(argument),
+        })
+        .collect()
 }
 
 /// Non-UTF-8 arguments are rendered lossily. Authoritative non-UTF-8 path
@@ -352,8 +481,14 @@ mod tests {
         };
         let destination = directory.path().join("lesson.m4a");
 
-        let error = export_m4a(&identity, Path::new("/master.wav"), &destination)
-            .expect_err("an encoder that exits non-zero must not report success");
+        let profiles = export_profiles();
+        let error = export_m4a(
+            &identity,
+            &profiles.ffmpeg,
+            Path::new("/master.wav"),
+            &destination,
+        )
+        .expect_err("an encoder that exits non-zero must not report success");
         assert!(
             matches!(error, BuildError::Tool(ToolError::Ffmpeg { .. })),
             "a failing encoder produced `{error}`"
@@ -542,7 +677,12 @@ mod tests {
 
     #[test]
     fn t1_e0_ffmpeg_arguments_are_pinned_and_explicit() {
-        let arguments = ffmpeg_arguments(Path::new("/input.wav"), Path::new("/output.m4a"));
+        let profiles = export_profiles();
+        let arguments = materialize_arguments(
+            &profiles.ffmpeg,
+            Path::new("/input.wav"),
+            Some(Path::new("/output.m4a")),
+        );
         assert_eq!(
             arguments,
             vec![
@@ -574,7 +714,8 @@ mod tests {
 
     #[test]
     fn t1_e0_ffprobe_arguments_are_pinned_and_explicit() {
-        let arguments = ffprobe_arguments(Path::new("/output.m4a"));
+        let profiles = export_profiles();
+        let arguments = materialize_arguments(&profiles.ffprobe, Path::new("/output.m4a"), None);
         assert_eq!(
             arguments,
             vec![

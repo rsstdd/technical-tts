@@ -11,7 +11,8 @@ use std::{
     process::Command,
 };
 
-use crate::{BuildError, ToolError};
+use crate::process::{self, CommandRunError, VERSION_PROBE_POLICY};
+use crate::{BuildError, ToolError, ToolInvocation, ToolOperation};
 
 /// Which external binary a build actually used, for the manifest to record.
 #[derive(Clone, Debug)]
@@ -35,22 +36,47 @@ pub(crate) struct ToolIdentity {
 ///
 /// [`ToolError::MissingTool`] when the request resolves to nothing executable,
 /// [`ToolError::InspectTool`] when the binary exists but cannot be launched,
-/// and [`ToolError::ToolProbeFailed`] when it runs but reports no version this
-/// build can record — an unsuccessful exit or empty output alike, since a
-/// manifest that names no version cannot say what produced the build.
+/// [`ToolError::ToolTimedOut`] when the version deadline expires,
+/// [`ToolError::ToolOutputOverflow`] when either output stream exceeds its
+/// ceiling, [`ToolError::ToolPipeUnavailable`],
+/// [`ToolError::ToolCaptureConfigurationFailed`],
+/// [`ToolError::ToolCaptureStartFailed`],
+/// [`ToolError::ToolCaptureReadFailed`],
+/// [`ToolError::ToolCaptureChannelClosed`],
+/// [`ToolError::ToolCaptureThreadPanicked`],
+/// [`ToolError::ToolCaptureShutdownTimedOut`], or
+/// [`ToolError::ToolCaptureIncomplete`] for an exact capture failure,
+/// [`ToolError::ToolCleanupFailed`] when cleanup also fails after a primary
+/// supervision failure,
+/// [`ToolError::ToolChildInspectionFailed`],
+/// [`ToolError::ToolTerminationSignalFailed`],
+/// [`ToolError::ToolContainmentInspectionFailed`],
+/// [`ToolError::ToolContainmentSignalFailed`],
+/// [`ToolError::ToolChildReapFailed`],
+/// [`ToolError::ToolTerminationTimedOut`],
+/// [`ToolError::ToolReaperStartFailed`], or
+/// [`ToolError::ToolCaptureReaperStartFailed`] for an exact cleanup failure,
+/// and
+/// [`ToolError::ToolProbeFailed`] when the tool reports no version this build
+/// can record — an unsuccessful exit or empty output alike, since a manifest
+/// that names no version cannot say what produced the build.
 pub(crate) fn inspect(tool: &str, requested: &Path) -> Result<ToolIdentity, BuildError> {
     let resolved_executable =
         resolve_executable(requested).ok_or_else(|| ToolError::MissingTool {
             tool: tool.to_owned(),
             requested: requested.to_path_buf(),
         })?;
-    let output = Command::new(&resolved_executable)
-        .arg("-version")
-        .output()
-        .map_err(|source| ToolError::InspectTool {
-            tool: tool.to_owned(),
-            executable: resolved_executable.clone(),
-            source,
+    let mut command = Command::new(&resolved_executable);
+    command.arg("-version");
+    let invocation = ToolInvocation::new(tool, ToolOperation::VersionProbe, &resolved_executable);
+    let output =
+        process::run(invocation, command, VERSION_PROBE_POLICY).map_err(|error| match error {
+            CommandRunError::Start(source) => ToolError::InspectTool {
+                tool: tool.to_owned(),
+                executable: resolved_executable.clone(),
+                source,
+            },
+            CommandRunError::Supervision(error) => error,
         })?;
     if !output.status.success() {
         return Err(ToolError::ToolProbeFailed {

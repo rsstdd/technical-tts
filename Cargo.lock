@@ -299,6 +299,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "hound",
+ "rustix",
  "serde",
  "serde_json",
  "study-tts-core",
@@ -312,6 +313,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "hound",
+ "rustix",
  "serde_json",
  "sha2",
  "study-tts-core",

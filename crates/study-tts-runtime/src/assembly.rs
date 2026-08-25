@@ -354,7 +354,10 @@ mod tests {
         );
         let message = error.to_string();
         assert!(message.contains("seg-0001"), "message was `{message}`");
-        assert!(message.contains("delete"), "message was `{message}`");
+        assert!(
+            message.contains("runtime reconciliation"),
+            "message was `{message}`"
+        );
         assert!(
             !master.exists(),
             "a rejected assembly must not persist a master WAV"

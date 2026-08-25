@@ -19,3 +19,6 @@ sha2 = "0.10.9"
 study-tts-core = { version = "0.1.0", path = "../study-tts-core" }
 study-tts-runtime = { version = "0.1.0", path = "../study-tts-runtime" }
 tempfile = "3.27.0"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["fs"] }

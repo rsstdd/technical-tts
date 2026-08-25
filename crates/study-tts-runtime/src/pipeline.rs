@@ -8,27 +8,31 @@
 //! error.
 
 use std::{
-    fs,
+    fs::{self, File},
+    io::Read,
     path::{Path, PathBuf},
 };
 
 use serde::Deserialize;
 use serde_json::Value;
 use study_tts_core::{
-    Lesson, ReleaseClaim, ReleaseStatus, RenderPlan, RightsDecision, SourceRightsDeclaration,
-    VoiceError, VoiceUse, validate_lesson_id,
+    MAX_LESSON_JSON_BYTES, ReleaseClaim, ReleaseStatus, RenderPlan, RightsDecision,
+    SourceRightsDeclaration, ValidatedLesson, VoiceError, VoiceUse, validate_lesson_id,
 };
 
 use crate::{
     BuildError, IoError, PublicationError, RightsError, SegmentSynthesizer, assembly, cache,
-    export, io_error, managed, manifest, tools, voice_gate,
+    durable::OsDurableFileSystem, export, io_error, locking, managed, manifest, preview, tools,
+    voice_gate,
 };
 
 /// Everything one preview build needs, named explicitly rather than read from
 /// ambient state.
 #[derive(Clone, Debug)]
 pub struct BuildRequest {
-    /// The lesson document to build.
+    /// The lesson document to build; its validated `lesson_id` is the
+    /// provisional E0 lock and publication identity until versioned job IDs
+    /// land in E2.
     pub lesson_path: PathBuf,
     /// Root the build owns; outputs, cache, and staging all resolve beneath it.
     pub workspace: PathBuf,
@@ -47,6 +51,10 @@ pub struct BuildRequest {
 /// What a successful preview build wrote.
 #[derive(Clone, Debug)]
 pub struct BuildResult {
+    /// Immutable directory holding the selected preview generation.
+    pub package_dir: PathBuf,
+    /// Atomic record selecting `package_dir` for preview consumers.
+    pub publication_record: PathBuf,
     /// The assembled canonical-format master.
     pub master_wav: PathBuf,
     /// The encoded distribution copy.
@@ -63,8 +71,10 @@ pub struct BuildResult {
 ///
 /// # Errors
 ///
-/// [`IoError::ReadFile`] when the lesson cannot be read. Lesson parsing and
-/// validation return [`study_tts_core::LessonError::InvalidJson`],
+/// [`IoError::ReadFile`] when the lesson cannot be opened or read and
+/// [`IoError::LessonNotRegularFile`] when the opened descriptor is not a
+/// regular file. Lesson parsing and validation return
+/// [`study_tts_core::LessonError::InvalidJson`],
 /// [`study_tts_core::LessonError::UnsupportedSchema`],
 /// [`study_tts_core::LessonError::MissingLessonId`],
 /// [`study_tts_core::LessonError::InvalidLessonId`],
@@ -80,7 +90,14 @@ pub struct BuildResult {
 /// [`study_tts_core::LessonError::UnapprovedSegment`],
 /// [`study_tts_core::LessonError::MissingSpeaker`],
 /// [`study_tts_core::LessonError::MissingStyle`], or
-/// [`study_tts_core::LessonError::PauseOutOfRange`].
+/// [`study_tts_core::LessonError::PauseOutOfRange`]. Resource refusal returns
+/// [`study_tts_core::LessonError::LessonJsonTooLarge`],
+/// [`study_tts_core::LessonError::TooManySegments`],
+/// [`study_tts_core::LessonError::SpokenTextTooLong`],
+/// [`study_tts_core::LessonError::DisplayTextTooLong`],
+/// [`study_tts_core::LessonError::TooManySourceRefs`],
+/// [`study_tts_core::LessonError::SourceRefTooLong`], or
+/// [`study_tts_core::LessonError::AuthoredTextTooLarge`].
 ///
 /// Voice gating returns [`crate::VoiceProfileError::MissingVoiceRecord`],
 /// [`crate::VoiceProfileError::VoiceRecordNotRegularFile`],
@@ -97,7 +114,25 @@ pub struct BuildResult {
 /// Tool work returns [`crate::ToolError::MissingTool`],
 /// [`crate::ToolError::InspectTool`], [`crate::ToolError::ToolProbeFailed`],
 /// [`crate::ToolError::StartFfmpeg`], [`crate::ToolError::Ffmpeg`],
-/// [`crate::ToolError::Ffprobe`],
+/// [`crate::ToolError::Ffprobe`], [`crate::ToolError::ToolTimedOut`],
+/// [`crate::ToolError::ToolOutputOverflow`],
+/// [`crate::ToolError::ToolPipeUnavailable`],
+/// [`crate::ToolError::ToolCaptureConfigurationFailed`],
+/// [`crate::ToolError::ToolCaptureStartFailed`],
+/// [`crate::ToolError::ToolCaptureReadFailed`],
+/// [`crate::ToolError::ToolCaptureChannelClosed`],
+/// [`crate::ToolError::ToolCaptureThreadPanicked`],
+/// [`crate::ToolError::ToolCaptureShutdownTimedOut`],
+/// [`crate::ToolError::ToolCaptureIncomplete`],
+/// [`crate::ToolError::ToolCleanupFailed`],
+/// [`crate::ToolError::ToolChildInspectionFailed`],
+/// [`crate::ToolError::ToolTerminationSignalFailed`],
+/// [`crate::ToolError::ToolContainmentInspectionFailed`],
+/// [`crate::ToolError::ToolContainmentSignalFailed`],
+/// [`crate::ToolError::ToolChildReapFailed`],
+/// [`crate::ToolError::ToolTerminationTimedOut`],
+/// [`crate::ToolError::ToolReaperStartFailed`],
+/// [`crate::ToolError::ToolCaptureReaperStartFailed`],
 /// [`crate::ToolError::UnreadableProbeResponse`],
 /// [`crate::ToolError::UnexpectedEncodedStreamCount`], or
 /// [`crate::ToolError::UnexpectedEncodedStream`].
@@ -119,15 +154,48 @@ pub struct BuildResult {
 /// name this function offers a managed helper is either a literal or an
 /// identifier the lesson gate already refused, so an unusable spelling is
 /// reported as the authoring mistake it is.
+///
+/// Durable ownership and publication may return
+/// [`crate::DurableStateError::LiveJobLock`],
+/// [`crate::DurableStateError::MalformedJobLock`],
+/// [`crate::DurableStateError::IncompatibleJobLock`],
+/// [`crate::DurableStateError::CacheLockTimeout`],
+/// [`crate::DurableStateError::MalformedPublicationJournal`],
+/// [`crate::DurableStateError::MalformedCurrentPreview`],
+/// [`crate::DurableStateError::UnsupportedDurableRecord`],
+/// [`crate::DurableStateError::CurrentLessonMismatch`],
+/// [`crate::DurableStateError::PublicationJournalLessonMismatch`],
+/// [`crate::DurableStateError::InvalidCurrentPackageReference`],
+/// [`crate::DurableStateError::MissingPackageDirectory`],
+/// [`crate::DurableStateError::MalformedPackageManifest`],
+/// [`crate::DurableStateError::UnsupportedPackageManifest`],
+/// [`crate::DurableStateError::PackageReleaseStatusMismatch`],
+/// [`crate::DurableStateError::PackageLessonMismatch`],
+/// [`crate::DurableStateError::MalformedPackagePlanHash`],
+/// [`crate::DurableStateError::EmptyPackageSegmentId`],
+/// [`crate::DurableStateError::MalformedPackageSegmentChecksum`],
+/// [`crate::DurableStateError::EmptyPackageSegmentAudio`],
+/// [`crate::DurableStateError::UnexpectedPackageArtifactPath`],
+/// [`crate::DurableStateError::MalformedPackageArtifactChecksum`],
+/// [`crate::DurableStateError::PackageArtifactChecksumMismatch`],
+/// [`crate::DurableStateError::MissingPackageToolArguments`],
+/// [`crate::DurableStateError::MalformedPackageToolProfile`],
+/// [`crate::DurableStateError::PackageManifestChecksumMismatch`],
+/// [`crate::DurableStateError::MalformedDurableDigest`],
+/// [`crate::DurableStateError::MissingCurrentPreview`],
+/// [`crate::DurableStateError::JournalSelectionMismatch`],
+/// [`crate::DurableStateError::PackagePlanMismatch`],
+/// [`crate::DurableStateError::InvalidJobDirectoryName`],
+/// [`crate::DurableStateError::PublicationConflict`], or
+/// [`crate::DurableStateError::QuarantineFailed`]. A live job lock directs the
+/// caller to wait; integrity failures preserve their records for the runtime
+/// owner rather than deleting or overwriting them.
 pub fn build_preview(
     request: BuildRequest,
     synthesizer: &dyn SegmentSynthesizer,
 ) -> Result<BuildResult, BuildError> {
-    let lesson_bytes = fs::read(&request.lesson_path).map_err(|source| IoError::ReadFile {
-        path: request.lesson_path.clone(),
-        source,
-    })?;
-    let lesson = Lesson::from_json(&lesson_bytes)?;
+    let lesson_bytes = read_lesson(&request.lesson_path)?;
+    let lesson = ValidatedLesson::from_json(&lesson_bytes)?;
     let plan = RenderPlan::for_lesson(&lesson, synthesizer.identity());
 
     // Rights precede work: the profile gate runs before tool preflight and
@@ -140,50 +208,175 @@ pub fn build_preview(
 
     let ffmpeg = tools::inspect("FFmpeg", &request.ffmpeg_executable)?;
     let ffprobe = tools::inspect("ffprobe", &request.ffprobe_executable)?;
+    let export_profiles = export::export_profiles();
 
     fs::create_dir_all(&request.workspace).map_err(|error| io_error(&request.workspace, error))?;
     let workspace = fs::canonicalize(&request.workspace)
         .map_err(|error| io_error(&request.workspace, error))?;
+    let filesystem = OsDurableFileSystem;
     let cache_root = managed::subdirectory(&workspace, "cache")?;
-    let previews_root = managed::subdirectory(&workspace, "previews")?;
-    let output_root = managed::subdirectory(&previews_root, &lesson.lesson_id)?;
+    let roots = preview::roots(&workspace, lesson.lesson_id())?;
+    let _job_lock = locking::acquire_job_lock(&filesystem, &roots.job_dir, lesson.lesson_id())?;
+    preview::reconcile(&filesystem, &roots, lesson.lesson_id())?;
 
     let cached_segments = plan
         .segments
         .iter()
-        .map(|segment| cache::resolve(&cache_root, segment, synthesizer))
+        .map(|segment| {
+            cache::resolve(
+                &filesystem,
+                &cache_root,
+                &roots.quarantine_root,
+                lesson.lesson_id(),
+                segment,
+                synthesizer,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // Each output is staged and renamed into place, so a link occupying one of
-    // these names would be replaced rather than followed. It is still refused:
-    // silently destroying something the operator put there is not this build's
-    // decision to make, and the refusal names what it found.
-    let master_wav = managed::leaf(&output_root, manifest::MASTER_WAV_NAME)?;
-    assembly::assemble(&cached_segments, &master_wav)?;
-    let m4a = managed::leaf(&output_root, manifest::M4A_NAME)?;
-    let ffmpeg_execution = export::export_m4a(&ffmpeg, &master_wav, &m4a)?;
-    let ffprobe_execution = export::probe_m4a(&ffprobe, &m4a)?;
-    let manifest_path = managed::leaf(&output_root, manifest::MANIFEST_NAME)?;
-    manifest::write(
-        &manifest_path,
-        &lesson.lesson_id,
+    if let Some(package) = preview::current_for_build(
+        &roots,
+        lesson.lesson_id(),
         &plan.plan_hash,
-        &cached_segments,
-        &master_wav,
-        &m4a,
-        manifest::ToolRecords {
-            ffmpeg: &ffmpeg,
-            ffmpeg_execution: &ffmpeg_execution,
-            ffprobe: &ffprobe,
-            ffprobe_execution: &ffprobe_execution,
-        },
+        &ffmpeg,
+        &ffprobe,
+        &export_profiles,
+    )? {
+        return Ok(BuildResult {
+            package_dir: package.package_dir,
+            publication_record: package.publication_record,
+            master_wav: package.master_wav,
+            m4a: package.m4a,
+            manifest: package.manifest,
+        });
+    }
+
+    let transaction = preview::start_transaction(
+        &filesystem,
+        &roots,
+        lesson.lesson_id(),
+        &plan.plan_hash,
+        &ffmpeg,
+        &ffprobe,
+        &export_profiles,
     )?;
 
+    let master_wav = managed::leaf(&transaction.stage_dir, manifest::MASTER_WAV_NAME)?;
+    assembly::assemble(&cached_segments, &master_wav)?;
+    let m4a = managed::leaf(&transaction.stage_dir, manifest::M4A_NAME)?;
+    let ffmpeg_execution = export::export_m4a(&ffmpeg, &export_profiles.ffmpeg, &master_wav, &m4a)?;
+    let ffprobe_execution = export::probe_m4a(&ffprobe, &export_profiles.ffprobe, &m4a)?;
+    let manifest_path = managed::leaf(&transaction.stage_dir, manifest::MANIFEST_NAME)?;
+    manifest::write(
+        &filesystem,
+        &manifest_path,
+        manifest::ManifestRecords {
+            lesson_id: lesson.lesson_id(),
+            plan_hash: &plan.plan_hash,
+            segments: &cached_segments,
+            master_wav: &master_wav,
+            m4a: &m4a,
+            tools: manifest::ToolRecords {
+                ffmpeg: &ffmpeg,
+                ffmpeg_execution: &ffmpeg_execution,
+                ffprobe: &ffprobe,
+                ffprobe_execution: &ffprobe_execution,
+            },
+        },
+    )?;
+    let package = preview::publish_transaction(&filesystem, &roots, &transaction)?;
+
     Ok(BuildResult {
-        master_wav,
-        m4a,
-        manifest: manifest_path,
+        package_dir: package.package_dir,
+        publication_record: package.publication_record,
+        master_wav: package.master_wav,
+        m4a: package.m4a,
+        manifest: package.manifest,
     })
+}
+
+/// Reads at most one byte beyond the core lesson envelope.
+///
+/// Metadata avoids reading a file already known to be oversized; the bounded
+/// read remains authoritative because the file may grow after that preflight.
+fn read_lesson(path: &Path) -> Result<Vec<u8>, BuildError> {
+    let file = open_lesson(path)?;
+
+    let metadata = file.metadata().map_err(|source| IoError::ReadFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(IoError::LessonNotRegularFile {
+            path: path.to_path_buf(),
+        }
+        .into());
+    }
+
+    read_lesson_from_reader(path, file, metadata.len())
+}
+
+#[cfg(unix)]
+fn open_lesson(path: &Path) -> Result<File, BuildError> {
+    use rustix::fs::{Mode, OFlags, open};
+
+    let descriptor = open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|source| IoError::ReadFile {
+        path: path.to_path_buf(),
+        source: source.into(),
+    })?;
+    Ok(File::from(descriptor))
+}
+
+#[cfg(not(unix))]
+fn open_lesson(path: &Path) -> Result<File, BuildError> {
+    File::open(path).map_err(|source| {
+        IoError::ReadFile {
+            path: path.to_path_buf(),
+            source,
+        }
+        .into()
+    })
+}
+
+fn read_lesson_from_reader(
+    path: &Path,
+    reader: impl Read,
+    advertised_bytes: u64,
+) -> Result<Vec<u8>, BuildError> {
+    if advertised_bytes > MAX_LESSON_JSON_BYTES as u64 {
+        return Err(study_tts_core::LessonError::LessonJsonTooLarge {
+            max_bytes: MAX_LESSON_JSON_BYTES,
+        }
+        .into());
+    }
+
+    let initial_capacity = usize::try_from(advertised_bytes)
+        .unwrap_or(MAX_LESSON_JSON_BYTES)
+        .min(MAX_LESSON_JSON_BYTES)
+        .saturating_add(1);
+
+    let mut bytes = Vec::with_capacity(initial_capacity);
+
+    reader
+        .take((MAX_LESSON_JSON_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|source| IoError::ReadFile {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+    if bytes.len() > MAX_LESSON_JSON_BYTES {
+        return Err(study_tts_core::LessonError::LessonJsonTooLarge {
+            max_bytes: MAX_LESSON_JSON_BYTES,
+        }
+        .into());
+    }
+    Ok(bytes)
 }
 
 /// Preflights ffprobe and requires the encoded artifact to be a single mono AAC
@@ -198,6 +391,27 @@ pub fn build_preview(
 /// [`crate::ToolError::MissingTool`] or [`crate::ToolError::InspectTool`] when
 /// ffprobe cannot be resolved or launched,
 /// [`crate::ToolError::ToolProbeFailed`] when its version probe fails,
+/// [`crate::ToolError::ToolTimedOut`] when either ffprobe operation exceeds its
+/// deadline, [`crate::ToolError::ToolOutputOverflow`] when either captured
+/// stream exceeds its ceiling, and
+/// [`crate::ToolError::ToolPipeUnavailable`],
+/// [`crate::ToolError::ToolCaptureConfigurationFailed`],
+/// [`crate::ToolError::ToolCaptureStartFailed`],
+/// [`crate::ToolError::ToolCaptureReadFailed`],
+/// [`crate::ToolError::ToolCaptureChannelClosed`],
+/// [`crate::ToolError::ToolCaptureThreadPanicked`],
+/// [`crate::ToolError::ToolCaptureShutdownTimedOut`],
+/// [`crate::ToolError::ToolCaptureIncomplete`],
+/// [`crate::ToolError::ToolCleanupFailed`],
+/// [`crate::ToolError::ToolChildInspectionFailed`],
+/// [`crate::ToolError::ToolTerminationSignalFailed`],
+/// [`crate::ToolError::ToolContainmentInspectionFailed`],
+/// [`crate::ToolError::ToolContainmentSignalFailed`],
+/// [`crate::ToolError::ToolChildReapFailed`],
+/// [`crate::ToolError::ToolTerminationTimedOut`],
+/// [`crate::ToolError::ToolReaperStartFailed`], or
+/// [`crate::ToolError::ToolCaptureReaperStartFailed`] when the named
+/// supervision invariant fails,
 /// [`crate::ToolError::Ffprobe`] when output inspection fails,
 /// [`crate::ToolError::UnreadableProbeResponse`] when its output cannot be
 /// parsed, and [`crate::ToolError::UnexpectedEncodedStreamCount`] or
@@ -208,7 +422,8 @@ pub fn validate_encoded_output(
     encoded: &Path,
 ) -> Result<(), BuildError> {
     let ffprobe = tools::inspect("ffprobe", ffprobe_executable)?;
-    export::probe_m4a(&ffprobe, encoded).map(|_| ())
+    let profiles = export::export_profiles();
+    export::probe_m4a(&ffprobe, &profiles.ffprobe, encoded).map(|_| ())
 }
 
 /// Refuses publication for the E0-S0 skeleton.
@@ -236,6 +451,7 @@ const PRODUCTION_MANIFEST_VERSION: &str = "1.0";
 /// Deliberately not strict: the version is what says which fields are legal, so
 /// a document cannot be held to a shape before it has been read.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 struct ManifestVersion {
     schema_version: Option<String>,
 }
@@ -253,6 +469,7 @@ struct ManifestVersion {
 /// operator that something failed to parse without saying where.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 struct ProductionManifest {
     schema_version: String,
     /// Typed, so a status this build does not know is a parse error here rather
@@ -269,6 +486,7 @@ struct ProductionManifest {
 /// `content_rights` below.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 struct DeclaredVoiceProfile {
     profile_id: String,
     approval: RightsDecision,
@@ -431,4 +649,31 @@ pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
     }
 
     Err(PublicationError::ProductionGatesUnavailable.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{self, Read},
+        path::Path,
+    };
+
+    use study_tts_core::{LessonError, MAX_LESSON_JSON_BYTES};
+
+    use super::read_lesson_from_reader;
+    use crate::BuildError;
+
+    #[test]
+    fn t1_e0_bounded_lesson_reader_refuses_growth_after_metadata_preflight() {
+        let reader = io::repeat(b'{').take((MAX_LESSON_JSON_BYTES + 1) as u64);
+
+        let error = read_lesson_from_reader(Path::new("lesson.json"), reader, 1)
+            .expect_err("a stream that grows beyond its advertised size must be refused");
+
+        assert!(matches!(
+            error,
+            BuildError::Lesson(LessonError::LessonJsonTooLarge { max_bytes })
+                if max_bytes == MAX_LESSON_JSON_BYTES
+        ));
+    }
 }

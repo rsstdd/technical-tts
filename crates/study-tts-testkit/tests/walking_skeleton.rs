@@ -1,19 +1,30 @@
 //! Tier 3 and 4 tests for the E0-S0 walking skeleton: real filesystem, fake
 //! worker, real FFmpeg.
 
-use std::path::Path;
+use std::{
+    path::Path,
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use study_tts_core::{CacheKey, LessonError, ReleaseError};
+use study_tts_core::{CacheKey, LessonError, MAX_LESSON_JSON_BYTES, PlannedSegment, ReleaseError};
 use study_tts_runtime::{
-    BuildError, BuildRequest, CacheEntryFault, CacheError, ManagedPathError, PublicationError,
+    BuildError, BuildRequest, CacheEntryFault, CacheError, DurableStateError, IoError,
+    ManagedPathError, PublicationError, SegmentSynthesizer, SynthesisError, SynthesisReport,
     ToolError, build_preview, publish, validate_encoded_output, validate_production_manifest,
 };
 use study_tts_testkit::{
     DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture,
 };
 use tempfile::TempDir;
+
+const CONCURRENCY_TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn repository_root() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -104,6 +115,86 @@ fn write_lesson_with_id(root: &Path, file_name: &str, lesson_id: &str) -> std::p
     path
 }
 
+struct PausingWorker {
+    inner: DeterministicToneWorker,
+    first_request: AtomicBool,
+    started: (Mutex<bool>, Condvar),
+    released: (Mutex<bool>, Condvar),
+}
+
+struct StopOnDrop {
+    stop: Arc<AtomicBool>,
+}
+
+impl StopOnDrop {
+    fn new(stop: Arc<AtomicBool>) -> Self {
+        Self { stop }
+    }
+}
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+impl PausingWorker {
+    fn new() -> Self {
+        Self {
+            inner: DeterministicToneWorker::default(),
+            first_request: AtomicBool::new(true),
+            started: (Mutex::new(false), Condvar::new()),
+            released: (Mutex::new(false), Condvar::new()),
+        }
+    }
+
+    fn wait_until_started(&self) {
+        let (lock, ready) = &self.started;
+        let started = lock.lock().expect("started lock");
+        let (started, timeout) = ready
+            .wait_timeout_while(started, CONCURRENCY_TEST_TIMEOUT, |started| !*started)
+            .expect("started wait");
+        assert!(!timeout.timed_out(), "worker did not start before deadline");
+        drop(started);
+    }
+
+    fn release(&self) {
+        let (lock, ready) = &self.released;
+        *lock.lock().expect("release lock") = true;
+        ready.notify_all();
+    }
+}
+
+impl SegmentSynthesizer for PausingWorker {
+    fn identity(&self) -> &str {
+        "pausing-tone-worker-v1"
+    }
+
+    fn synthesize(
+        &self,
+        segment: &PlannedSegment,
+        destination: &Path,
+    ) -> Result<SynthesisReport, SynthesisError> {
+        if self.first_request.swap(false, Ordering::SeqCst) {
+            let (started_lock, started_ready) = &self.started;
+            *started_lock.lock().expect("started lock") = true;
+            started_ready.notify_all();
+
+            let (release_lock, release_ready) = &self.released;
+            let released = release_lock.lock().expect("release lock");
+            let (released, timeout) = release_ready
+                .wait_timeout_while(released, CONCURRENCY_TEST_TIMEOUT, |released| !*released)
+                .expect("release wait");
+            assert!(
+                !timeout.timed_out(),
+                "worker was not released before deadline"
+            );
+            drop(released);
+        }
+        self.inner.synthesize(segment, destination)
+    }
+}
+
 #[test]
 fn t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest() {
     let (workspace, result, worker) = run_skeleton();
@@ -112,10 +203,38 @@ fn t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest() {
     assert!(result.master_wav.is_file());
     assert!(result.m4a.is_file());
     assert!(result.manifest.is_file());
+    assert!(result.package_dir.is_dir());
+    assert!(result.publication_record.is_file());
+    assert_eq!(
+        result.master_wav.parent(),
+        Some(result.package_dir.as_path())
+    );
+    assert_eq!(result.m4a.parent(), Some(result.package_dir.as_path()));
+    assert_eq!(result.manifest.parent(), Some(result.package_dir.as_path()));
     assert!(
         result
             .master_wav
             .starts_with(workspace.path().join("previews/e0-s0-walking-skeleton"))
+    );
+
+    let current: Value = serde_json::from_slice(
+        &std::fs::read(&result.publication_record).expect("read publication record"),
+    )
+    .expect("parse publication record");
+    assert_eq!(current["schema_version"], "0.1-skeleton-current");
+    assert_eq!(current["lesson_id"], "e0-s0-walking-skeleton");
+    assert!(
+        current["package_path"]
+            .as_str()
+            .is_some_and(|path| path.starts_with("packages/"))
+    );
+    let manifest_checksum =
+        blake3::hash(&std::fs::read(&result.manifest).expect("hash selected manifest"))
+            .to_hex()
+            .to_string();
+    assert_eq!(
+        current["manifest_blake3"].as_str(),
+        Some(manifest_checksum.as_str())
     );
 
     let reader = hound::WavReader::open(&result.master_wav).expect("open assembled WAV");
@@ -133,7 +252,7 @@ fn t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest() {
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(&result.manifest).expect("read minimal manifest"))
             .expect("parse minimal manifest");
-    assert_eq!(manifest["schema_version"], "0.1-skeleton");
+    assert_eq!(manifest["schema_version"], "0.2-skeleton");
     assert_eq!(manifest["release_status"], "private_preview");
     assert_eq!(manifest["lesson_id"], "e0-s0-walking-skeleton");
     assert_eq!(manifest["segments"].as_array().map(Vec::len), Some(2));
@@ -179,7 +298,7 @@ fn t4_e0_skeleton_runs_without_model_artifacts() {
         })
         .collect::<Vec<_>>();
     entries.sort();
-    assert_eq!(entries, ["cache", "previews"]);
+    assert_eq!(entries, ["cache", "jobs", "previews", "quarantine"]);
     assert_eq!(worker.synthesis_count(), 2);
 }
 
@@ -204,6 +323,469 @@ fn t4_e0_cache_hit_avoids_synthesis_and_is_byte_identical() {
         std::fs::read(first.master_wav).expect("read first master"),
         std::fs::read(second.master_wav).expect("read second master")
     );
+    assert_eq!(first.package_dir, second.package_dir);
+    assert_eq!(first.manifest, second.manifest);
+    assert_eq!(first.publication_record, second.publication_record);
+}
+
+#[test]
+fn t4_e0_concurrent_jobs_share_one_internally_consistent_cache_winner() {
+    let root = TempDir::new().expect("create concurrent workspace");
+    let first_lesson = write_lesson_with_id(root.path(), "first.json", "concurrent-first");
+    let second_lesson = write_lesson_with_id(root.path(), "second.json", "concurrent-second");
+    let workspace = root.path().join("workspace");
+    let worker = Arc::new(DeterministicToneWorker::default());
+
+    let (first, second) = thread::scope(|scope| {
+        let first_worker = Arc::clone(&worker);
+        let first_workspace = workspace.clone();
+        let first = scope.spawn(move || {
+            build_preview(
+                build_request(&first_lesson, &first_workspace),
+                first_worker.as_ref(),
+            )
+        });
+        let second_worker = Arc::clone(&worker);
+        let second_workspace = workspace.clone();
+        let second = scope.spawn(move || {
+            build_preview(
+                build_request(&second_lesson, &second_workspace),
+                second_worker.as_ref(),
+            )
+        });
+        (
+            first.join().expect("first build thread"),
+            second.join().expect("second build thread"),
+        )
+    });
+
+    let first = first.expect("first concurrent job");
+    let second = second.expect("second concurrent job");
+    assert_eq!(
+        worker.synthesis_count(),
+        2,
+        "both lessons use the same two keys, so only one producer may synthesize each"
+    );
+    assert_ne!(first.package_dir, second.package_dir);
+    assert!(first.manifest.is_file());
+    assert!(second.manifest.is_file());
+}
+
+#[test]
+fn t4_e0_live_lesson_job_lock_refuses_a_second_build() {
+    let workspace = TempDir::new().expect("create lock workspace");
+    let worker = Arc::new(PausingWorker::new());
+
+    thread::scope(|scope| {
+        let first_worker = Arc::clone(&worker);
+        let first_workspace = workspace.path().to_path_buf();
+        let first = scope.spawn(move || {
+            build_preview(
+                build_request(&walking_skeleton_fixture(), &first_workspace),
+                first_worker.as_ref(),
+            )
+        });
+
+        worker.wait_until_started();
+        let error = build_preview(
+            build_request(&walking_skeleton_fixture(), workspace.path()),
+            worker.as_ref(),
+        )
+        .expect_err("the live lesson owner must be refused");
+        assert!(matches!(
+            error,
+            BuildError::DurableState(ref state)
+                if matches!(**state, DurableStateError::LiveJobLock { .. })
+        ));
+        assert!(error.remedy().is_none());
+        assert!(!error.to_string().contains("state corruption"));
+        assert!(!error.to_string().contains("reconciliation"));
+
+        worker.release();
+        first
+            .join()
+            .expect("first build thread")
+            .expect("first build completes");
+    });
+}
+
+#[test]
+fn t4_e0_corrupt_current_preview_is_refused_without_overwrite() {
+    let (workspace, result, worker) = run_skeleton();
+    std::fs::write(&result.publication_record, b"{corrupt").expect("corrupt current record");
+
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect_err("corrupt authoritative current record must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::DurableState(ref state)
+            if matches!(**state, DurableStateError::MalformedCurrentPreview { .. })
+    ));
+    assert_eq!(
+        std::fs::read(result.publication_record).expect("current record remains"),
+        b"{corrupt"
+    );
+}
+
+#[test]
+fn t4_e0_corrupt_publication_journal_is_refused_without_overwrite() {
+    let (workspace, result, worker) = run_skeleton();
+    let current = std::fs::read(&result.publication_record).expect("read current record");
+    let journal = workspace
+        .path()
+        .join("jobs/e0-s0-walking-skeleton/publication.json");
+    std::fs::write(&journal, b"{corrupt").expect("corrupt journal");
+
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect_err("corrupt authoritative journal must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::DurableState(ref state)
+            if matches!(**state, DurableStateError::MalformedPublicationJournal { .. })
+    ));
+    assert_eq!(
+        std::fs::read(journal).expect("journal remains"),
+        b"{corrupt"
+    );
+    assert_eq!(
+        std::fs::read(result.publication_record).expect("current remains"),
+        current
+    );
+}
+
+#[test]
+fn t4_e0_publication_journal_lesson_mismatch_has_its_own_error() {
+    let (workspace, result, worker) = run_skeleton();
+    let journal = workspace
+        .path()
+        .join("jobs/e0-s0-walking-skeleton/publication.json");
+    let mut record: Value =
+        serde_json::from_slice(&std::fs::read(&journal).expect("read publication journal"))
+            .expect("parse publication journal");
+    record["lesson_id"] = Value::String("different-lesson".to_owned());
+    std::fs::write(
+        &journal,
+        serde_json::to_vec_pretty(&record).expect("serialize mismatched journal"),
+    )
+    .expect("write mismatched journal");
+
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect_err("a mismatched journal lesson must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::DurableState(ref state)
+            if matches!(
+                **state,
+                DurableStateError::PublicationJournalLessonMismatch { .. }
+            )
+    ));
+    assert!(result.publication_record.is_file());
+}
+
+#[test]
+fn t4_e0_corrupt_selected_manifest_is_refused_without_replacement() {
+    let (workspace, result, worker) = run_skeleton();
+    let current = std::fs::read(&result.publication_record).expect("read current record");
+    std::fs::write(&result.manifest, b"{}").expect("corrupt selected manifest");
+
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect_err("a corrupt selected manifest must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::DurableState(ref state)
+            if matches!(**state, DurableStateError::MalformedPackageManifest { .. })
+    ));
+    assert_eq!(
+        std::fs::read(result.publication_record).expect("current remains"),
+        current
+    );
+    assert_eq!(
+        std::fs::read(result.manifest).expect("manifest remains"),
+        b"{}"
+    );
+}
+
+#[test]
+fn t4_e0_missing_selected_package_has_its_own_error() {
+    let (workspace, result, worker) = run_skeleton();
+    std::fs::remove_dir_all(&result.package_dir).expect("remove generated test package");
+
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect_err("a missing selected package must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::DurableState(ref state)
+            if matches!(**state, DurableStateError::MissingPackageDirectory { .. })
+    ));
+}
+
+#[test]
+fn t4_e0_selected_manifest_checksum_mismatch_has_its_own_error() {
+    let (workspace, result, worker) = run_skeleton();
+    let mut manifest = std::fs::read(&result.manifest).expect("read selected manifest");
+    manifest.push(b'\n');
+    std::fs::write(&result.manifest, manifest).expect("rewrite valid manifest bytes");
+
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect_err("a selected manifest checksum mismatch must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::DurableState(ref state)
+            if matches!(
+                **state,
+                DurableStateError::PackageManifestChecksumMismatch { .. }
+            )
+    ));
+}
+
+#[test]
+fn t4_e0_publication_plan_mismatch_has_its_own_error() {
+    let (workspace, result, worker) = run_skeleton();
+    let journal = workspace
+        .path()
+        .join("jobs/e0-s0-walking-skeleton/publication.json");
+    let mut record: Value =
+        serde_json::from_slice(&std::fs::read(&journal).expect("read publication journal"))
+            .expect("parse publication journal");
+    record["plan_hash"] = Value::String(blake3::hash(b"different plan").to_hex().to_string());
+    std::fs::write(
+        &journal,
+        serde_json::to_vec_pretty(&record).expect("serialize mismatched journal"),
+    )
+    .expect("write mismatched journal");
+
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect_err("a journal/package plan mismatch must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::DurableState(ref state)
+            if matches!(**state, DurableStateError::PackagePlanMismatch { .. })
+    ));
+    assert!(result.publication_record.is_file());
+}
+
+#[test]
+fn t4_e0_durable_unselected_package_is_selected_during_reconciliation() {
+    let (workspace, result, worker) = run_skeleton();
+    let journal_path = workspace
+        .path()
+        .join("jobs/e0-s0-walking-skeleton/publication.json");
+    let mut journal: Value =
+        serde_json::from_slice(&std::fs::read(&journal_path).expect("read publication journal"))
+            .expect("parse publication journal");
+    let manifest_blake3 = journal["transaction"]["manifest_blake3"]
+        .as_str()
+        .expect("completed journal checksum")
+        .to_owned();
+    journal["transaction"] = serde_json::json!({
+        "state": "package_durable",
+        "manifest_blake3": manifest_blake3,
+    });
+    std::fs::write(
+        &journal_path,
+        serde_json::to_vec_pretty(&journal).expect("serialize interrupted journal"),
+    )
+    .expect("write interrupted journal");
+    std::fs::remove_file(&result.publication_record).expect("remove not-yet-selected pointer");
+
+    let recovered = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect("reconciliation must select the durable package");
+
+    assert_eq!(recovered.package_dir, result.package_dir);
+    assert!(recovered.publication_record.is_file());
+    assert_eq!(worker.synthesis_count(), 2);
+}
+
+#[test]
+fn t4_e0_current_readers_observe_only_complete_generations() {
+    let (workspace, first, worker) = run_skeleton();
+    let changed_lesson = workspace.path().join("reader-change.json");
+    let mut lesson: Value = serde_json::from_slice(
+        &std::fs::read(walking_skeleton_fixture()).expect("read walking-skeleton fixture"),
+    )
+    .expect("parse walking-skeleton fixture");
+    lesson["segments"][1]["spoken_text"] = Value::String("A second generation.".to_owned());
+    std::fs::write(
+        &changed_lesson,
+        serde_json::to_vec_pretty(&lesson).expect("serialize changed lesson"),
+    )
+    .expect("write changed lesson");
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let reads = Arc::new(AtomicUsize::new(0));
+    thread::scope(|scope| {
+        let shutdown = StopOnDrop::new(Arc::clone(&stop));
+        let reader_stop = Arc::clone(&stop);
+        let reader_reads = Arc::clone(&reads);
+        let current_path = first.publication_record.clone();
+        let preview_dir = current_path
+            .parent()
+            .expect("current record has preview directory")
+            .to_path_buf();
+        let reader = scope.spawn(move || {
+            while !reader_stop.load(Ordering::SeqCst) {
+                let current: Value = serde_json::from_slice(
+                    &std::fs::read(&current_path).expect("read one complete current record"),
+                )
+                .expect("parse one complete current record");
+                let package = preview_dir.join(
+                    current["package_path"]
+                        .as_str()
+                        .expect("current package path"),
+                );
+                assert!(package.join("lesson.wav").is_file());
+                assert!(package.join("lesson.m4a").is_file());
+                assert!(package.join("manifest.json").is_file());
+                reader_reads.fetch_add(1, Ordering::SeqCst);
+                thread::yield_now();
+            }
+        });
+
+        build_preview(build_request(&changed_lesson, workspace.path()), &worker)
+            .expect("publish second generation");
+        drop(shutdown);
+        reader.join().expect("current reader");
+    });
+
+    assert!(reads.load(Ordering::SeqCst) > 0);
+}
+
+#[test]
+fn t4_e0_legacy_flat_preview_artifacts_are_preserved() {
+    let workspace = TempDir::new().expect("create legacy workspace");
+    let legacy_dir = workspace.path().join("previews/e0-s0-walking-skeleton");
+    std::fs::create_dir_all(&legacy_dir).expect("create legacy preview directory");
+    let legacy = legacy_dir.join("lesson.wav");
+    std::fs::write(&legacy, b"legacy-preview-bytes").expect("write legacy preview");
+
+    let result = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &DeterministicToneWorker::default(),
+    )
+    .expect("new immutable preview should build beside legacy artifacts");
+
+    assert_eq!(
+        std::fs::read(legacy).expect("legacy preview remains"),
+        b"legacy-preview-bytes"
+    );
+    assert!(result.package_dir.starts_with(legacy_dir.join("packages")));
+}
+
+#[cfg(unix)]
+#[test]
+fn t4_e0_ffmpeg_failure_leaves_previous_current_preview_unchanged() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (workspace, first, worker) = run_skeleton();
+    let previous_current =
+        std::fs::read(&first.publication_record).expect("read previous current record");
+    let changed_lesson = workspace.path().join("changed.json");
+    let mut lesson: Value = serde_json::from_slice(
+        &std::fs::read(walking_skeleton_fixture()).expect("read walking-skeleton fixture"),
+    )
+    .expect("parse walking-skeleton fixture");
+    lesson["segments"][0]["spoken_text"] = Value::String("Changed speech.".to_owned());
+    std::fs::write(
+        &changed_lesson,
+        serde_json::to_vec_pretty(&lesson).expect("serialize changed lesson"),
+    )
+    .expect("write changed lesson");
+
+    let failing_ffmpeg = workspace.path().join("failing-ffmpeg");
+    std::fs::write(
+        &failing_ffmpeg,
+        b"#!/bin/sh\n\
+if [ \"$1\" = \"-version\" ]; then\n\
+  echo 'ffmpeg version test-failure'\n\
+  exit 0\n\
+fi\n\
+exit 12\n",
+    )
+    .expect("write failing FFmpeg wrapper");
+    let mut permissions = std::fs::metadata(&failing_ffmpeg)
+        .expect("wrapper metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&failing_ffmpeg, permissions).expect("make wrapper executable");
+
+    let mut request = build_request(&changed_lesson, workspace.path());
+    request.ffmpeg_executable = failing_ffmpeg;
+    let error = build_preview(request, &worker).expect_err("FFmpeg encode failure must surface");
+
+    assert!(matches!(error, BuildError::Tool(ToolError::Ffmpeg { .. })));
+    assert_eq!(
+        std::fs::read(&first.publication_record).expect("read retained current record"),
+        previous_current
+    );
+    assert!(first.package_dir.is_dir());
+}
+
+#[cfg(unix)]
+#[test]
+fn t4_e0_ffprobe_failure_leaves_previous_current_preview_unchanged() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (workspace, first, worker) = run_skeleton();
+    let previous_current =
+        std::fs::read(&first.publication_record).expect("read previous current record");
+    let failing_ffprobe = workspace.path().join("failing-ffprobe");
+    std::fs::write(
+        &failing_ffprobe,
+        b"#!/bin/sh\n\
+if [ \"$1\" = \"-version\" ]; then\n\
+  echo 'ffprobe version test-failure'\n\
+  exit 0\n\
+fi\n\
+exit 12\n",
+    )
+    .expect("write failing ffprobe wrapper");
+    let mut permissions = std::fs::metadata(&failing_ffprobe)
+        .expect("wrapper metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&failing_ffprobe, permissions).expect("make wrapper executable");
+
+    let mut request = build_request(&walking_skeleton_fixture(), workspace.path());
+    request.ffprobe_executable = failing_ffprobe;
+    let error = build_preview(request, &worker).expect_err("ffprobe failure must surface");
+
+    assert!(matches!(error, BuildError::Tool(ToolError::Ffprobe { .. })));
+    assert_eq!(
+        std::fs::read(&first.publication_record).expect("read retained current record"),
+        previous_current
+    );
+    assert!(first.package_dir.is_dir());
 }
 
 #[test]
@@ -450,6 +1032,52 @@ fn t4_e0_unapproved_content_fails_before_tools_and_synthesis() {
 }
 
 #[test]
+fn t4_e0_oversized_lesson_fails_before_tools_workspace_and_synthesis() {
+    let root = TempDir::new().expect("create oversized-lesson test root");
+    let lesson = root.path().join("oversized.json");
+    std::fs::write(&lesson, vec![b'{'; MAX_LESSON_JSON_BYTES + 1]).expect("write oversized lesson");
+    let workspace = root.path().join("workspace");
+    let worker = DeterministicToneWorker::default();
+    let mut request = build_request(&lesson, &workspace);
+    request.ffmpeg_executable = "study-tts-missing-ffmpeg".into();
+    request.ffprobe_executable = "study-tts-missing-ffprobe".into();
+
+    let error = build_preview(request, &worker).expect_err("oversized lesson must fail");
+
+    assert!(matches!(
+        error,
+        BuildError::Lesson(LessonError::LessonJsonTooLarge { max_bytes })
+            if max_bytes == MAX_LESSON_JSON_BYTES
+    ));
+    assert_eq!(worker.synthesis_count(), 0);
+    assert!(!workspace.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn t4_e0_lesson_fifo_fails_before_tools_workspace_and_synthesis() {
+    use rustix::fs::{CWD, Mode, mkfifoat};
+
+    let root = TempDir::new().expect("create lesson-FIFO test root");
+    let lesson = root.path().join("lesson.json");
+    mkfifoat(CWD, &lesson, Mode::RUSR | Mode::WUSR).expect("create lesson FIFO");
+    let workspace = root.path().join("workspace");
+    let worker = DeterministicToneWorker::default();
+    let mut request = build_request(&lesson, &workspace);
+    request.ffmpeg_executable = "study-tts-missing-ffmpeg".into();
+    request.ffprobe_executable = "study-tts-missing-ffprobe".into();
+
+    let error = build_preview(request, &worker).expect_err("a lesson FIFO must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::Io(IoError::LessonNotRegularFile { path }) if path == lesson
+    ));
+    assert_eq!(worker.synthesis_count(), 0);
+    assert!(!workspace.exists());
+}
+
+#[test]
 fn t4_e0_cache_metadata_mismatch_is_rejected() {
     let (workspace, result, worker) = run_skeleton();
     let manifest: Value =
@@ -499,14 +1127,14 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         );
         let message = error.to_string();
         // A poisoned entry fails every later build, so the message must name
-        // what to delete.
+        // the artifact runtime reconciliation owns.
         assert!(
             message.contains(&entry_dir.display().to_string()),
             "`{field}` mutation did not name the entry directory: `{message}`"
         );
         assert!(
-            message.contains("delete"),
-            "`{field}` mutation did not state the remedy: `{message}`"
+            message.contains("runtime reconciliation"),
+            "`{field}` mutation did not route reconciliation: `{message}`"
         );
     }
 
@@ -531,7 +1159,7 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         matches!(**fault, CacheEntryFault::UnparseableArtifact { .. }),
         "an unknown artifact field produced the wrong fault: `{fault}`"
     );
-    assert!(error.to_string().contains("delete"));
+    assert!(error.to_string().contains("runtime reconciliation"));
 
     assert_eq!(worker.synthesis_count(), 2);
 }
@@ -555,7 +1183,7 @@ fn t4_e0_private_preview_cannot_enter_production_publication() {
         Err(BuildError::Publication(
             PublicationError::UnsupportedProductionManifest { ref version }
         ))
-            if version == "0.1-skeleton"
+            if version == "0.2-skeleton"
     ));
 }
 
@@ -637,6 +1265,56 @@ fn t4_e0_cache_directory_symlink_escape_is_rejected() {
         "nothing may be written through the link"
     );
     assert_eq!(worker.synthesis_count(), 0);
+}
+
+/// Recovery must validate a matching stage as a real managed directory before
+/// it reads or publishes any files beneath that name.
+#[cfg(unix)]
+#[test]
+fn t4_e0_recovered_cache_stage_symlink_escape_is_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let (workspace, result, worker) = run_skeleton();
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(result.manifest).expect("read preview manifest"))
+            .expect("parse preview manifest");
+    let cache_key: CacheKey = manifest["segments"][0]["cache_key"]
+        .as_str()
+        .expect("segment cache key")
+        .parse()
+        .expect("the manifest records a well-formed cache key");
+    let entry_dir = find_cache_entry_dir(&workspace.path().join("cache"), &cache_key);
+    let shard = entry_dir.parent().expect("cache entry has a shard");
+
+    let outside = TempDir::new().expect("create outside stage target");
+    std::fs::copy(
+        entry_dir.join("audio.wav"),
+        outside.path().join("audio.wav"),
+    )
+    .expect("copy valid audio outside the workspace");
+    std::fs::copy(
+        entry_dir.join("artifact.json"),
+        outside.path().join("artifact.json"),
+    )
+    .expect("copy valid artifact outside the workspace");
+    std::fs::remove_dir_all(&entry_dir).expect("remove the published test entry");
+    let recovered_stage = shard.join(format!(".cache-stage-{}-planted", cache_key.as_str()));
+    symlink(outside.path(), &recovered_stage).expect("plant recovered-stage symlink");
+
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect_err("a recovered-stage symlink must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::ManagedPath(ManagedPathError::ManagedPathEscape { .. })
+    ));
+    assert!(recovered_stage.is_symlink());
+    assert!(outside.path().join("audio.wav").is_file());
+    assert!(outside.path().join("artifact.json").is_file());
+    assert_eq!(worker.synthesis_count(), 2);
 }
 
 /// A cache entry's own files are read back and trusted, so a link planted at

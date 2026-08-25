@@ -17,17 +17,16 @@ pub enum CacheError {
     /// `docs/architecture/WALKING-SKELETON.md` keeps [`crate::BuildError`] at
     /// 80 bytes without allocating on successful results.
     ///
-    /// The routing table calls for reconciliation without overwrite. E0-S0
-    /// has no reconciliation command—E2-S1 adds it—so the existing safe action
-    /// is explicit deletion of this cache entry; the next build regenerates
-    /// only this segment from the durable plan.
+    /// The routing table calls for reconciliation without overwrite. The E0
+    /// durability foundation preserves the entry for the runtime owner rather
+    /// than telling an operator to delete authoritative content-addressed data.
     #[error(
-        "cache entry for segment `{segment_id}` is unusable: {fault}; delete `{}` to regenerate \
-         this segment",
+        "cache entry for segment `{segment_id}` at `{}` is unusable: {fault}; preserve it for \
+         runtime reconciliation",
         entry_dir.display()
     )]
     UnusableCacheEntry {
-        /// The entry directory to delete in order to regenerate the segment.
+        /// The entry directory runtime reconciliation must inspect.
         entry_dir: PathBuf,
         /// The segment the entry belongs to.
         segment_id: String,
@@ -42,7 +41,7 @@ impl CacheError {
         match self {
             Self::UnusableCacheEntry { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::Runtime,
-                "delete the unusable cache entry to regenerate the segment",
+                "preserve the unusable cache entry and run runtime reconciliation",
                 Some("State or checksum corruption"),
             )),
         }

@@ -29,6 +29,7 @@ mod io_error;
 mod managed_path;
 mod publication;
 mod rights;
+mod state;
 mod tool;
 mod voice_profile;
 
@@ -38,7 +39,8 @@ pub use io_error::IoError;
 pub use managed_path::ManagedPathError;
 pub use publication::PublicationError;
 pub use rights::RightsError;
-pub use tool::ToolError;
+pub use state::DurableStateError;
+pub use tool::{ToolError, ToolInvocation, ToolOperation, ToolOutputStream};
 pub use voice_profile::VoiceProfileError;
 
 /// Why a build or publication was refused, grouped by its owning boundary.
@@ -74,6 +76,9 @@ pub enum BuildError {
     /// A managed name, path, or destination was unsafe or unusable.
     #[error(transparent)]
     ManagedPath(#[from] ManagedPathError),
+    /// Durable ownership, journal, or selected-package state was unsafe.
+    #[error(transparent)]
+    DurableState(Box<DurableStateError>),
     /// The synthesizer refused or failed.
     #[error(transparent)]
     Synthesis(#[from] SynthesisError),
@@ -92,6 +97,7 @@ impl BuildError {
             Self::Audio(error) => error.remedy(),
             Self::Tool(error) => error.remedy(),
             Self::ManagedPath(error) => error.remedy(),
+            Self::DurableState(error) => error.remedy(),
         }
     }
 }
@@ -101,6 +107,12 @@ impl BuildError {
 impl From<ReleaseError> for BuildError {
     fn from(error: ReleaseError) -> Self {
         Self::Publication(PublicationError::Release(error))
+    }
+}
+
+impl From<DurableStateError> for BuildError {
+    fn from(error: DurableStateError) -> Self {
+        Self::DurableState(Box::new(error))
     }
 }
 
@@ -239,7 +251,7 @@ mod tests {
         match error {
             CacheError::UnusableCacheEntry { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::Runtime,
-                "delete the unusable cache entry to regenerate the segment",
+                "preserve the unusable cache entry and run runtime reconciliation",
                 Some("State or checksum corruption"),
             )),
         }
@@ -313,7 +325,30 @@ mod tests {
                 "reconcile the encode settings with output verification",
                 Some("Invalid or over-range audio"),
             )),
+            ToolError::ToolCleanupFailed { .. }
+            | ToolError::ToolChildInspectionFailed { .. }
+            | ToolError::ToolTerminationSignalFailed { .. }
+            | ToolError::ToolContainmentInspectionFailed { .. }
+            | ToolError::ToolContainmentSignalFailed { .. }
+            | ToolError::ToolChildReapFailed { .. }
+            | ToolError::ToolTerminationTimedOut { .. }
+            | ToolError::ToolReaperStartFailed { .. }
+            | ToolError::ToolCaptureReaperStartFailed { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::WorkerRuntime,
+                "preserve diagnostics and correct the external-tool containment lifecycle",
+                Some("Worker protocol or containment failure"),
+            )),
             ToolError::Ffmpeg { .. }
+            | ToolError::ToolTimedOut { .. }
+            | ToolError::ToolOutputOverflow { .. }
+            | ToolError::ToolPipeUnavailable { .. }
+            | ToolError::ToolCaptureConfigurationFailed { .. }
+            | ToolError::ToolCaptureStartFailed { .. }
+            | ToolError::ToolCaptureReadFailed { .. }
+            | ToolError::ToolCaptureChannelClosed { .. }
+            | ToolError::ToolCaptureThreadPanicked { .. }
+            | ToolError::ToolCaptureShutdownTimedOut { .. }
+            | ToolError::ToolCaptureIncomplete { .. }
             | ToolError::StartFfmpeg { .. }
             | ToolError::MissingTool { .. }
             | ToolError::InspectTool { .. }
@@ -334,8 +369,88 @@ mod tests {
         }
     }
 
+    fn expected_durable_state_remedy(error: &DurableStateError) -> Option<RemedyAdvice> {
+        match error {
+            DurableStateError::LiveJobLock { .. } => None,
+            DurableStateError::CacheLockTimeout { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::Runtime,
+                "preserve attempts and inspect the cache-key owner before retrying",
+                None,
+            )),
+            DurableStateError::QuarantineFailed { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::Runtime,
+                "preserve the staging attempt and repair quarantine before retrying",
+                None,
+            )),
+            DurableStateError::MalformedJobLock { .. }
+            | DurableStateError::IncompatibleJobLock { .. }
+            | DurableStateError::MalformedPublicationJournal { .. }
+            | DurableStateError::MalformedCurrentPreview { .. }
+            | DurableStateError::UnsupportedDurableRecord { .. }
+            | DurableStateError::CurrentLessonMismatch { .. }
+            | DurableStateError::PublicationJournalLessonMismatch { .. }
+            | DurableStateError::InvalidCurrentPackageReference { .. }
+            | DurableStateError::MissingPackageDirectory { .. }
+            | DurableStateError::MalformedPackageManifest { .. }
+            | DurableStateError::UnsupportedPackageManifest { .. }
+            | DurableStateError::PackageReleaseStatusMismatch { .. }
+            | DurableStateError::PackageLessonMismatch { .. }
+            | DurableStateError::MalformedPackagePlanHash { .. }
+            | DurableStateError::EmptyPackageSegmentId { .. }
+            | DurableStateError::MalformedPackageSegmentChecksum { .. }
+            | DurableStateError::EmptyPackageSegmentAudio { .. }
+            | DurableStateError::UnexpectedPackageArtifactPath { .. }
+            | DurableStateError::MalformedPackageArtifactChecksum { .. }
+            | DurableStateError::PackageArtifactChecksumMismatch { .. }
+            | DurableStateError::MissingPackageToolArguments { .. }
+            | DurableStateError::MalformedPackageToolProfile { .. }
+            | DurableStateError::PackageManifestChecksumMismatch { .. }
+            | DurableStateError::MalformedDurableDigest { .. }
+            | DurableStateError::MissingCurrentPreview { .. }
+            | DurableStateError::JournalSelectionMismatch { .. }
+            | DurableStateError::PackagePlanMismatch { .. }
+            | DurableStateError::InvalidJobDirectoryName { .. }
+            | DurableStateError::PublicationConflict { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::Runtime,
+                concat!(
+                    "preserve the artifacts and run runtime reconciliation without overwrite ",
+                    "or deletion",
+                ),
+                Some("State or checksum corruption"),
+            )),
+        }
+    }
+
     fn assert_expected_remedy(error: BuildError, expected: Option<RemedyAdvice>) {
         assert_eq!(error.remedy(), expected, "`{error}` has the wrong remedy");
+    }
+
+    fn assert_durable_state_remedy(error: DurableStateError, expected: Option<RemedyAdvice>) {
+        assert_eq!(expected_durable_state_remedy(&error), expected);
+        assert_expected_remedy(error.into(), expected);
+    }
+
+    fn tool_invocation() -> ToolInvocation {
+        ToolInvocation::new("FFmpeg", ToolOperation::M4aEncode, Path::new("lesson.m4a"))
+    }
+
+    #[test]
+    fn t1_e0_tool_invocation_preserves_typed_operation_context() {
+        for (operation, expected_label) in [
+            (ToolOperation::VersionProbe, "version probe"),
+            (ToolOperation::M4aEncode, "M4A encode"),
+            (ToolOperation::M4aValidation, "M4A validation"),
+        ] {
+            let invocation = ToolInvocation::new("tool", operation, Path::new("subject"));
+
+            assert_eq!(invocation.tool(), "tool");
+            assert_eq!(invocation.operation(), operation);
+            assert_eq!(invocation.subject(), Path::new("subject"));
+            assert_eq!(
+                invocation.to_string(),
+                format!("tool {expected_label} for `subject`")
+            );
+        }
     }
 
     #[test]
@@ -366,6 +481,9 @@ mod tests {
             BuildError::from(ManagedPathError::InvalidManagedName {
                 name: "../escape".to_owned(),
                 root: PathBuf::from("workspace"),
+            }),
+            BuildError::from(DurableStateError::PublicationConflict {
+                path: PathBuf::from("package"),
             }),
         ];
 
@@ -401,6 +519,7 @@ mod tests {
             cases[7],
             BuildError::ManagedPath(ManagedPathError::InvalidManagedName { .. })
         ));
+        assert!(matches!(cases[8], BuildError::DurableState(_)));
     }
 
     #[test]
@@ -577,6 +696,49 @@ mod tests {
                 required_codec: "aac",
                 required_channels: 1,
             },
+            ToolError::ToolTerminationSignalFailed {
+                invocation: tool_invocation(),
+                source: io::Error::other("termination failure"),
+            },
+            ToolError::ToolChildInspectionFailed {
+                invocation: tool_invocation(),
+                source: io::Error::other("child inspection failure"),
+            },
+            ToolError::ToolContainmentInspectionFailed {
+                invocation: tool_invocation(),
+                source: io::Error::other("containment inspection failure"),
+            },
+            ToolError::ToolContainmentSignalFailed {
+                invocation: tool_invocation(),
+                pid: 7,
+                source: io::Error::other("containment signal failure"),
+            },
+            ToolError::ToolChildReapFailed {
+                invocation: tool_invocation(),
+                source: io::Error::other("child reap failure"),
+            },
+            ToolError::ToolTerminationTimedOut {
+                invocation: tool_invocation(),
+                timeout_ms: 1,
+            },
+            ToolError::ToolReaperStartFailed {
+                invocation: tool_invocation(),
+                source: io::Error::other("child reaper failure"),
+            },
+            ToolError::ToolCaptureReaperStartFailed {
+                invocation: tool_invocation(),
+                source: io::Error::other("capture reaper failure"),
+            },
+            ToolError::ToolCleanupFailed {
+                primary: Box::new(ToolError::ToolTimedOut {
+                    invocation: tool_invocation(),
+                    timeout_ms: 1,
+                }),
+                cleanup: Box::new(ToolError::ToolTerminationTimedOut {
+                    invocation: tool_invocation(),
+                    timeout_ms: 1,
+                }),
+            },
         ] {
             let expected = expected_tool_remedy(&error);
             assert_expected_remedy(error.into(), expected);
@@ -606,6 +768,68 @@ mod tests {
             let expected = expected_managed_path_remedy(&error);
             assert_expected_remedy(error.into(), expected);
         }
+
+        let live_lock = DurableStateError::LiveJobLock {
+            path: PathBuf::from("build.lock"),
+            pid: 7,
+            process_start: 11,
+        };
+        assert_durable_state_remedy(live_lock, None);
+
+        let cache_lock = DurableStateError::CacheLockTimeout {
+            path: PathBuf::from("cache.lock"),
+            cache_key: "a"
+                .repeat(study_tts_core::CacheKey::LENGTH)
+                .parse()
+                .expect("valid cache key"),
+            timeout_ms: 1,
+        };
+        assert_durable_state_remedy(
+            cache_lock,
+            Some(RemedyAdvice::new(
+                RemedyOwner::Runtime,
+                "preserve attempts and inspect the cache-key owner before retrying",
+                None,
+            )),
+        );
+
+        let quarantine = DurableStateError::QuarantineFailed {
+            staging_path: PathBuf::from("staging"),
+            primary: Box::new(BuildError::from(SynthesisError::new("worker failed"))),
+            cleanup: Box::new(BuildError::from(IoError::FileSystem {
+                path: PathBuf::from("quarantine"),
+                source: io::Error::other("quarantine failure"),
+            })),
+        };
+        assert_durable_state_remedy(
+            quarantine,
+            Some(RemedyAdvice::new(
+                RemedyOwner::Runtime,
+                "preserve the staging attempt and repair quarantine before retrying",
+                None,
+            )),
+        );
+
+        for shared in [
+            DurableStateError::PublicationConflict {
+                path: PathBuf::from("package"),
+            },
+            DurableStateError::MissingCurrentPreview {
+                path: PathBuf::from("current.json"),
+            },
+        ] {
+            assert_durable_state_remedy(
+                shared,
+                Some(RemedyAdvice::new(
+                    RemedyOwner::Runtime,
+                    concat!(
+                        "preserve the artifacts and run runtime reconciliation without overwrite ",
+                        "or deletion",
+                    ),
+                    Some("State or checksum corruption"),
+                )),
+            );
+        }
     }
 
     #[test]
@@ -614,6 +838,9 @@ mod tests {
             BuildError::from(IoError::ReadFile {
                 path: PathBuf::from("lesson.json"),
                 source: io::Error::other("read failure"),
+            }),
+            BuildError::from(IoError::LessonNotRegularFile {
+                path: PathBuf::from("lesson.json"),
             }),
             BuildError::from(LessonError::MissingLessonId),
             BuildError::from(VoiceError::UnsupportedSchema("future".to_owned())),
@@ -631,6 +858,20 @@ mod tests {
             BuildError::from(ToolError::MissingTool {
                 tool: "FFmpeg".to_owned(),
                 requested: PathBuf::from("ffmpeg"),
+            }),
+            BuildError::from(ToolError::ToolTimedOut {
+                invocation: tool_invocation(),
+                timeout_ms: 1,
+            }),
+            BuildError::from(ToolError::ToolOutputOverflow {
+                invocation: tool_invocation(),
+                stream: ToolOutputStream::Stderr,
+                limit_bytes: 1,
+            }),
+            BuildError::from(ToolError::ToolCaptureReadFailed {
+                invocation: tool_invocation(),
+                stream: ToolOutputStream::Stderr,
+                source: io::Error::other("capture failure"),
             }),
             BuildError::from(ManagedPathError::UnrootedDestination {
                 path: PathBuf::new(),
@@ -672,10 +913,14 @@ mod tests {
             fault: AudioFault::Empty,
         });
 
-        assert!(cache.to_string().contains("delete `cache-entry`"));
+        assert!(
+            cache
+                .to_string()
+                .contains("preserve it for runtime reconciliation")
+        );
         assert_eq!(
             cache.remedy().map(RemedyAdvice::action),
-            Some("delete the unusable cache entry to regenerate the segment")
+            Some("preserve the unusable cache entry and run runtime reconciliation")
         );
         assert!(!fresh.to_string().contains("delete"));
         assert_eq!(

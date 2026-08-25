@@ -11,9 +11,9 @@ use super::{RemedyAdvice, RemedyOwner};
 pub enum AudioError {
     /// Freshly synthesized audio or a staged master failed validation.
     ///
-    /// This carries no deletion instruction because the staged file is
-    /// discarded on drop; only a published cache entry can name deletion as a
-    /// usable recovery action.
+    /// This carries no deletion instruction because the staged cache attempt
+    /// is moved to collision-free quarantine; authoritative content is never
+    /// an operator-directed deletion remedy.
     #[error("`{path}` is not usable lesson audio: {fault}")]
     UnusableAudio {
         /// The audio file that failed validation.

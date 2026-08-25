@@ -13,7 +13,10 @@ mod rights;
 mod voice;
 
 pub use digest::is_blake3_hex;
-pub use lesson::{Lesson, LessonError, LessonSegment, ReviewStatus, validate_lesson_id};
+pub use lesson::{
+    AuthoredLesson, LessonError, LessonSegment, MAX_LESSON_JSON_BYTES, ReviewStatus,
+    ValidatedLesson, validate_lesson_id,
+};
 pub use plan::{
     CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE,
     CacheKey, MalformedCacheKey, PlanHash, PlannedSegment, RenderPlan,

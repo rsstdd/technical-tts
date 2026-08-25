@@ -7,18 +7,23 @@
 
 mod assembly;
 mod cache;
+mod durable;
 mod error;
 mod export;
+mod locking;
 mod managed;
 mod manifest;
 mod pipeline;
+mod preview;
+mod process;
 mod synthesis;
 mod tools;
 mod voice_gate;
 
 pub use error::{
-    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, IoError, ManagedPathError,
-    PublicationError, RemedyAdvice, RemedyOwner, RightsError, ToolError, VoiceProfileError,
+    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, DurableStateError, IoError,
+    ManagedPathError, PublicationError, RemedyAdvice, RemedyOwner, RightsError, ToolError,
+    ToolInvocation, ToolOperation, ToolOutputStream, VoiceProfileError,
 };
 pub use pipeline::{
     BuildRequest, BuildResult, build_preview, publish, validate_encoded_output,
