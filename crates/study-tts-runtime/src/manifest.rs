@@ -118,9 +118,9 @@ pub(crate) struct ToolRecords<'a> {
 ///
 /// # Errors
 ///
-/// [`BuildError::FileSystem`] if either artifact cannot be read for hashing or
-/// the manifest cannot be written; [`BuildError::WriteJson`] if serialization
-/// fails.
+/// [`crate::IoError::FileSystem`] if either artifact cannot be read for hashing
+/// or the manifest cannot be written; [`crate::IoError::WriteJson`] if
+/// serialization fails.
 pub(crate) fn write(
     destination: &Path,
     lesson_id: &str,

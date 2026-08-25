@@ -31,7 +31,7 @@ owner verification at E0-S3.
 | Tom voice rights record | branch `e0-s2/voice-content-model-legal` | `evidence/rights/rights-voice-tom-v1/record.md` | `c8e221e70c12baf9c581e6397c69f6340faf907e721e4f59e7fc5cb318c8d17f` |
 | ASR corpora rights record | branch `e0-s2/voice-content-model-legal` | `evidence/rights/rights-asr-corpora-v1/record.md` | `1e4463904466b33a187ac8b055b167ec46ded02acc71a1c0c550da66c084de7a` |
 | Rights, data, and artifact policy | branch `e0-s2/voice-content-model-legal` | `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` | `f7a3fa1635242f0650e088293b0e6a7f490043cf359b0b7912356329453fa7dc` |
-| Decision and failure routing | branch `e0-s2/voice-content-model-legal` | `docs/governance/ROUTING-TABLES.md` | `d7bbfb6d4f289f1fab5b1b0ea6a153f61fea26faa8db66d8d120c4a2e5a26bb8` |
+| Decision and failure routing | branch `e0-s2/voice-content-model-legal` | `docs/governance/ROUTING-TABLES.md` | `177c2f81a4e034ccbe25c41790d202e38bbe37654858fdfa27533607dc89c1b8` |
 | Qualification identity table | branch `e0-s2/voice-content-model-legal` | `docs/adr/ADR-0002-model-hardware-voice-format-qualification.md` | `1155c8968cf44b8e805b45a77c02db10826e6406a4d74748f43be2992dec2888` |
 | Voice, content, and retention policy | branch `e0-s2/voice-content-model-legal` | `docs/adr/ADR-0004-voice-content-and-retention-policy.md` | `0601326885b0a122d2b85fb161193f0eb0bc7ae0c424bec9f0cce4552fe104c0` |
 
@@ -82,9 +82,10 @@ role separately per `docs/governance/PROJECT-EXECUTION-CHARTER.md`.
 |---|---|---|
 | 2026-08-24 | `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Enforcement gained one row, naming `t4_e0_voice_records_that_are_not_regular_files_are_refused` for the newly mechanized rule that a required voice record which is not a regular file refuses profile load. The Provenance checksum for that document moves from `f23e8f065d61d590a280b39e718dc73478d29b8e20e13d9c85cb99f15719471c` to `f7a3fa1635242f0650e088293b0e6a7f490043cf359b0b7912356329453fa7dc`. | Project owner, amending in place under the approval recorded above |
 | 2026-08-24 | The "Consent-gating enforcement tests" measurement rises from three named tests to four, adding `t4_e0_voice_records_that_are_not_regular_files_are_refused`, so the Results table matches the amended §Enforcement table it is read against. `DELIVERY-PLAN.md` §E0-S2 carries the same name in its test roster. | Project owner, re-attesting the measurement on a run of 2026-08-24 |
+| 2026-08-25 | `docs/governance/ROUTING-TABLES.md` §Failure routing now names `BuildError::remedy`, its category mappings, and `t1_e0_governed_remedy_mappings_are_exhaustive` as the executable mirror. No routing decision changed. The Provenance checksum for that document moves from `d7bbfb6d4f289f1fab5b1b0ea6a153f61fea26faa8db66d8d120c4a2e5a26bb8` to `177c2f81a4e034ccbe25c41790d202e38bbe37654858fdfa27533607dc89c1b8`. | Project owner, amending in place under the approval recorded above |
 
 Recorded rather than applied silently, because `evidence/README.md` holds accepted reports
-immutable and prescribes a superseding record instead. The project owner judged both changes to
+immutable and prescribes a superseding record instead. The project owner judged these changes to
 fall within the scope already approved and directed the in-place amendment.
 
 The Acceptance criterion and Procedure are unchanged, and no threshold was lowered: the

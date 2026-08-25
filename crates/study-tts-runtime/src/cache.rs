@@ -23,7 +23,10 @@ use study_tts_core::{
 };
 use tempfile::Builder;
 
-use crate::{AudioFault, BuildError, CacheEntryFault, SegmentSynthesizer, io_error, managed};
+use crate::{
+    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, IoError, ManagedPathError,
+    SegmentSynthesizer, io_error, managed,
+};
 
 /// Layout version this module accepts for a cache artifact.
 ///
@@ -131,8 +134,8 @@ fn entry_path_elements(cache_key: &CacheKey) -> [&str; 3] {
 /// # Errors
 ///
 /// Whatever `managed::subdirectory` reports for the first element that fails:
-/// [`BuildError::ManagedPathEscape`] for a planted link or a result outside
-/// its parent, otherwise [`BuildError::FileSystem`].
+/// [`ManagedPathError::ManagedPathEscape`] for a planted link or a result
+/// outside its parent, otherwise [`IoError::FileSystem`].
 fn resolve_entry_dir(cache_root: &Path, cache_key: &CacheKey) -> Result<PathBuf, BuildError> {
     entry_path_elements(cache_key)
         .iter()
@@ -147,11 +150,12 @@ fn resolve_entry_dir(cache_root: &Path, cache_key: &CacheKey) -> Result<PathBuf,
 /// both report the same violated invariant with the same remedy rather than two
 /// messages that happen to agree.
 pub(crate) fn rejected(entry_dir: &Path, segment_id: &str, fault: CacheEntryFault) -> BuildError {
-    BuildError::UnusableCacheEntry {
+    CacheError::UnusableCacheEntry {
         entry_dir: entry_dir.to_path_buf(),
         segment_id: segment_id.to_owned(),
         fault: Box::new(fault),
     }
+    .into()
 }
 
 /// Returns the segment's audio from the cache, synthesizing it first if the
@@ -164,11 +168,11 @@ pub(crate) fn rejected(entry_dir: &Path, segment_id: &str, fault: CacheEntryFaul
 ///
 /// # Errors
 ///
-/// [`BuildError::UnusableCacheEntry`] naming the violated invariant when a
-/// published entry cannot be trusted, [`BuildError::UnusableAudio`] when fresh
+/// [`CacheError::UnusableCacheEntry`] naming the violated invariant when a
+/// published entry cannot be trusted, [`AudioError::UnusableAudio`] when fresh
 /// synthesis produces audio this build cannot use,
-/// [`BuildError::ManagedPathEscape`] when a link occupies an entry path, and
-/// [`BuildError::Synthesis`] when the worker itself refuses.
+/// [`ManagedPathError::ManagedPathEscape`] when a link occupies an entry path,
+/// and [`BuildError::Synthesis`] when the worker itself refuses.
 pub(crate) fn resolve(
     cache_root: &Path,
     segment: &PlannedSegment,
@@ -199,7 +203,7 @@ pub(crate) fn resolve(
 
     // Freshly synthesized output carries no remedy: the staged file is
     // discarded on drop and there is no published entry for the user to delete.
-    let frames = validate_wav(&staged_path).map_err(|fault| BuildError::UnusableAudio {
+    let frames = validate_wav(&staged_path).map_err(|fault| AudioError::UnusableAudio {
         path: staged_path.clone(),
         fault,
     })?;
@@ -210,7 +214,7 @@ pub(crate) fn resolve(
         // The WAV itself passed validation, so its shape is canonical by
         // construction; what disagrees is the worker's account of what it
         // wrote.
-        return Err(BuildError::SynthesizerReportMismatch {
+        return Err(AudioError::SynthesizerReportMismatch {
             segment_id: segment.id.clone(),
             reported_sample_rate: report.sample_rate,
             reported_channels: report.channels,
@@ -218,7 +222,8 @@ pub(crate) fn resolve(
             written_sample_rate: CANONICAL_SAMPLE_RATE,
             written_channels: CANONICAL_CHANNELS,
             written_frames: frames,
-        });
+        }
+        .into());
     }
     let audio_blake3 = hash_file(&staged_path)?;
     staged
@@ -257,8 +262,8 @@ pub(crate) fn resolve(
 ///
 /// # Errors
 ///
-/// [`BuildError::UnusableCacheEntry`] carrying the [`CacheEntryFault`] that
-/// names the violated invariant, or [`BuildError::FileSystem`] if the artifact
+/// [`CacheError::UnusableCacheEntry`] carrying the [`CacheEntryFault`] that
+/// names the violated invariant, or [`IoError::FileSystem`] if the artifact
 /// cannot be read.
 fn load_validated(
     segment: &PlannedSegment,
@@ -469,16 +474,16 @@ fn validate_wav(path: &Path) -> Result<u32, AudioFault> {
 ///
 /// # Errors
 ///
-/// [`BuildError::UnrootedDestination`] when `path` has no parent to stage
-/// beside, [`BuildError::WriteJson`] when serialization fails, otherwise
-/// [`BuildError::FileSystem`].
+/// [`ManagedPathError::UnrootedDestination`] when `path` has no parent to stage
+/// beside, [`IoError::WriteJson`] when serialization fails, otherwise
+/// [`IoError::FileSystem`].
 pub(crate) fn write_json_atomically<T: Serialize>(
     path: &Path,
     value: &T,
 ) -> Result<(), BuildError> {
     let parent = path
         .parent()
-        .ok_or_else(|| BuildError::UnrootedDestination {
+        .ok_or_else(|| ManagedPathError::UnrootedDestination {
             path: path.to_path_buf(),
         })?;
     let mut staged = Builder::new()
@@ -487,7 +492,7 @@ pub(crate) fn write_json_atomically<T: Serialize>(
         .tempfile_in(parent)
         .map_err(|error| io_error(parent, error))?;
     serde_json::to_writer_pretty(staged.as_file_mut(), value).map_err(|error| {
-        BuildError::WriteJson {
+        IoError::WriteJson {
             path: path.to_path_buf(),
             source: error,
         }
@@ -781,11 +786,11 @@ mod tests {
         ];
 
         for (label, error, dir, reports_expected_fault) in paths {
-            let BuildError::UnusableCacheEntry {
+            let BuildError::Cache(CacheError::UnusableCacheEntry {
                 entry_dir,
                 segment_id,
                 fault,
-            } = &error
+            }) = &error
             else {
                 panic!("{label} produced the wrong variant: {error}");
             };
@@ -836,7 +841,7 @@ mod tests {
             let error = load_validated(&planned(label), &dir, &audio, &artifact)
                 .expect_err("a malformed recorded digest must be rejected");
 
-            let BuildError::UnusableCacheEntry { fault, .. } = &error else {
+            let BuildError::Cache(CacheError::UnusableCacheEntry { fault, .. }) = &error else {
                 panic!("`{malformed}` produced the wrong variant: {error}");
             };
             assert!(
@@ -866,10 +871,10 @@ mod tests {
         // path that does not exist. `AudioFault` carries no remedy at all, and
         // the caller that knows whether the file is published is the one that
         // attaches one — `load_validated` does, `resolve` does not.
-        let error = BuildError::UnusableAudio {
+        let error = BuildError::from(AudioError::UnusableAudio {
             path: staged.clone(),
             fault,
-        };
+        });
         assert!(!error.to_string().contains("delete"), "error was `{error}`");
         assert!(
             error.to_string().contains(&staged.display().to_string()),

@@ -49,8 +49,25 @@ flowchart LR
 | PCM concatenation and silence | `study-tts-runtime` | Extended in E1-S4 and E2-S3 |
 | FFmpeg and ffprobe invocation | `study-tts-runtime` | Extended in E1-S4 without changing pinned arguments, preflight, provenance, or the no-shell rule |
 | Minimal manifest | `study-tts-runtime` | Replaced by the E1-S1 versioned manifest schema |
+| Build refusal API | `study-tts-runtime::BuildError` and public category enums | Frozen with the other public Rust interfaces at G1 |
 
 The word provisional is material. The fixture uses `schema_version: 0.1-skeleton` so it cannot be mistaken for the complete lesson `1.0` contract accepted in ADR-0001. Later stories may version or replace these contracts, but they must preserve this test path or update it in the same change so the end-to-end integration order remains executable.
+
+Before G1, the provisional flat `BuildError` was intentionally replaced by
+transparent category variants with exact leaf refusals beneath them. This was a
+source-breaking Rust pattern change, accepted while workspace consumers were
+still migrated together: it preserved each failure distinction, message,
+source chain, and operator remedy while making the category boundary explicit
+before interface freeze. On the supported `x86_64-unknown-linux-gnu` target,
+`size_of::<BuildError>()` measured 80 bytes before and 80 bytes after the
+refactor, so the existing boxed cache fault remained the only boxed payload. The
+baseline is enforced by
+`error::tests::t1_e0_build_error_does_not_grow_during_category_refactor` in
+`crates/study-tts-runtime/src/error/mod.rs`, using
+`PRE_REFACTOR_BUILD_ERROR_SIZE_BYTES`; update this record and that constant
+together. Structured remedy advice supplements the actionable messages. Rich
+`miette` reports remain deferred until the product CLI diagnostics and
+JSON-output contract exist.
 
 ## Permanent check
 

@@ -11,7 +11,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use crate::{BuildError, io_error};
+use crate::{BuildError, ManagedPathError, io_error};
 
 /// Creates `root/component` and proves it stays beneath `root`.
 ///
@@ -30,11 +30,12 @@ use crate::{BuildError, io_error};
 ///
 /// # Errors
 ///
-/// [`BuildError::InvalidManagedName`] when `component` is not one ordinary path
-/// element, before anything is created. [`BuildError::ManagedPathEscape`] when
-/// a symlink or a non-directory occupies the name, or when the created
-/// directory resolves outside `root`. Otherwise [`BuildError::FileSystem`]
-/// carrying what the filesystem reported.
+/// [`ManagedPathError::InvalidManagedName`] when `component` is not one
+/// ordinary path element, before anything is created.
+/// [`ManagedPathError::ManagedPathEscape`] when a symlink or a non-directory
+/// occupies the name, or when the created directory resolves outside `root`.
+/// Otherwise [`crate::IoError::FileSystem`] carries what the filesystem
+/// reported.
 pub(crate) fn subdirectory(root: &Path, component: &str) -> Result<PathBuf, BuildError> {
     validate_managed_name(root, component)?;
 
@@ -77,10 +78,10 @@ pub(crate) fn subdirectory(root: &Path, component: &str) -> Result<PathBuf, Buil
 ///
 /// # Errors
 ///
-/// [`BuildError::InvalidManagedName`] when `name` is not one ordinary path
-/// element. [`BuildError::ManagedPathEscape`] when a symlink or a directory
-/// occupies the name. Otherwise [`BuildError::FileSystem`] carrying what the
-/// filesystem reported.
+/// [`ManagedPathError::InvalidManagedName`] when `name` is not one ordinary
+/// path element. [`ManagedPathError::ManagedPathEscape`] when a symlink or a
+/// directory occupies the name. Otherwise [`crate::IoError::FileSystem`]
+/// carries what the filesystem reported.
 pub(crate) fn leaf(directory: &Path, name: &str) -> Result<PathBuf, BuildError> {
     validate_managed_name(directory, name)?;
 
@@ -104,8 +105,8 @@ pub(crate) fn leaf(directory: &Path, name: &str) -> Result<PathBuf, BuildError> 
 ///
 /// # Errors
 ///
-/// [`BuildError::InvalidManagedName`], and never
-/// [`BuildError::ManagedPathEscape`]. Most of what this refuses — `""`,
+/// [`ManagedPathError::InvalidManagedName`], and never
+/// [`ManagedPathError::ManagedPathEscape`]. Most of what this refuses — `""`,
 /// `"./name"`, `"name/"` — names a file inside the root by a route this crate
 /// did not choose, so calling it an escape would report an attack that did not
 /// happen. `".."` and an absolute name would escape, but are refused here on
@@ -115,10 +116,11 @@ fn validate_managed_name(root: &Path, name: &str) -> Result<(), BuildError> {
         return Ok(());
     }
 
-    Err(BuildError::InvalidManagedName {
+    Err(ManagedPathError::InvalidManagedName {
         name: name.to_owned(),
         root: root.to_path_buf(),
-    })
+    }
+    .into())
 }
 
 /// True when `value` names exactly one ordinary path element.
@@ -141,10 +143,11 @@ fn is_single_normal_component(value: &str) -> bool {
 /// Reached only once the lexical contract has held, so every caller has a real
 /// path or a planted link rather than a name that was merely spelled wrong.
 fn escape(path: PathBuf, root: &Path) -> BuildError {
-    BuildError::ManagedPathEscape {
+    ManagedPathError::ManagedPathEscape {
         path,
         root: root.to_path_buf(),
     }
+    .into()
 }
 
 #[cfg(test)]
@@ -192,7 +195,10 @@ mod tests {
             ] {
                 let error = resolved.expect_err("a name that is not one element must not resolve");
                 assert!(
-                    matches!(error, BuildError::InvalidManagedName { .. }),
+                    matches!(
+                        error,
+                        BuildError::ManagedPath(ManagedPathError::InvalidManagedName { .. })
+                    ),
                     "{helper} resolved `{rejected}` to `{error}`"
                 );
             }

@@ -7,8 +7,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use study_tts_core::{CacheKey, LessonError, ReleaseError};
 use study_tts_runtime::{
-    BuildError, BuildRequest, CacheEntryFault, build_preview, publish, validate_encoded_output,
-    validate_production_manifest,
+    BuildError, BuildRequest, CacheEntryFault, CacheError, ManagedPathError, PublicationError,
+    ToolError, build_preview, publish, validate_encoded_output, validate_production_manifest,
 };
 use study_tts_testkit::{
     DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture,
@@ -284,7 +284,7 @@ fn t4_e0_external_tool_preflight_names_missing_binary() {
     let error = build_preview(request, &worker).expect_err("missing FFmpeg must fail preflight");
     assert!(matches!(
         error,
-        BuildError::MissingTool { ref tool, .. } if tool == "FFmpeg"
+        BuildError::Tool(ToolError::MissingTool { ref tool, .. }) if tool == "FFmpeg"
     ));
     assert!(error.to_string().contains("study-tts-missing-ffmpeg"));
 
@@ -293,7 +293,7 @@ fn t4_e0_external_tool_preflight_names_missing_binary() {
     let error = build_preview(request, &worker).expect_err("missing ffprobe must fail preflight");
     assert!(matches!(
         error,
-        BuildError::MissingTool { ref tool, .. } if tool == "ffprobe"
+        BuildError::Tool(ToolError::MissingTool { ref tool, .. }) if tool == "ffprobe"
     ));
     assert!(error.to_string().contains("study-tts-missing-ffprobe"));
     assert_eq!(
@@ -320,7 +320,7 @@ fn t4_e0_ffprobe_rejects_non_aac_input() {
     assert!(
         matches!(
             error,
-            BuildError::UnexpectedEncodedStream { ref codec, .. }
+            BuildError::Tool(ToolError::UnexpectedEncodedStream { ref codec, .. })
                 if codec.as_deref() != Some("aac")
         ),
         "a PCM master produced `{error}`"
@@ -376,7 +376,10 @@ fn t4_e0_managed_directory_symlink_escape_is_rejected() {
     )
     .expect_err("managed-directory symlink escape must fail");
 
-    assert!(matches!(error, BuildError::ManagedPathEscape { .. }));
+    assert!(matches!(
+        error,
+        BuildError::ManagedPath(ManagedPathError::ManagedPathEscape { .. })
+    ));
     assert!(
         std::fs::read_dir(&escape)
             .expect("read escape target")
@@ -408,7 +411,10 @@ fn t4_e0_leaf_symlink_escape_is_rejected_before_creating_anything() {
     )
     .expect_err("leaf symlink escape must fail");
 
-    assert!(matches!(error, BuildError::ManagedPathEscape { .. }));
+    assert!(matches!(
+        error,
+        BuildError::ManagedPath(ManagedPathError::ManagedPathEscape { .. })
+    ));
     assert!(
         !escape_target.exists(),
         "the escape target must never be created"
@@ -484,7 +490,7 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         // Every one of these mutations makes the artifact describe audio this
         // build cannot consume, so they must all arrive as that fault rather
         // than merely as some cache error.
-        let BuildError::UnusableCacheEntry { fault, .. } = &error else {
+        let BuildError::Cache(CacheError::UnusableCacheEntry { fault, .. }) = &error else {
             panic!("`{field}` mutation produced the wrong variant: `{error}`");
         };
         assert!(
@@ -518,7 +524,7 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
     .expect_err("an unknown artifact field must be rejected");
     // `deny_unknown_fields` rejects this before any field is read, so it is a
     // parse failure and not an incompatible-metadata one.
-    let BuildError::UnusableCacheEntry { fault, .. } = &error else {
+    let BuildError::Cache(CacheError::UnusableCacheEntry { fault, .. }) = &error else {
         panic!("an unknown artifact field produced the wrong variant: `{error}`");
     };
     assert!(
@@ -540,13 +546,15 @@ fn t4_e0_private_preview_cannot_enter_production_publication() {
     // many gates are implemented.
     assert!(matches!(
         publish(&result),
-        Err(BuildError::Release(
+        Err(BuildError::Publication(PublicationError::Release(
             ReleaseError::PrivateProfileCannotClaimProduction
-        ))
+        )))
     ));
     assert!(matches!(
         validate_production_manifest(&manifest_bytes),
-        Err(BuildError::UnsupportedProductionManifest { ref version })
+        Err(BuildError::Publication(
+            PublicationError::UnsupportedProductionManifest { ref version }
+        ))
             if version == "0.1-skeleton"
     ));
 }
@@ -615,7 +623,10 @@ fn t4_e0_cache_directory_symlink_escape_is_rejected() {
     .expect_err("a symlinked cache directory must be refused");
 
     assert!(
-        matches!(error, BuildError::ManagedPathEscape { .. }),
+        matches!(
+            error,
+            BuildError::ManagedPath(ManagedPathError::ManagedPathEscape { .. })
+        ),
         "a symlinked cache directory produced `{error}`"
     );
     assert_eq!(
@@ -661,7 +672,10 @@ fn t4_e0_cache_file_symlink_escape_is_rejected() {
         .expect_err("a symlinked cache record must be refused");
 
         assert!(
-            matches!(error, BuildError::ManagedPathEscape { .. }),
+            matches!(
+                error,
+                BuildError::ManagedPath(ManagedPathError::ManagedPathEscape { .. })
+            ),
             "a symlinked `{record}` produced `{error}`"
         );
         std::fs::remove_file(&planted).expect("remove the planted symlink");
@@ -703,11 +717,11 @@ fn t4_e0_multi_stream_output_is_rejected() {
     assert!(
         matches!(
             error,
-            BuildError::UnexpectedEncodedStreamCount {
+            BuildError::Tool(ToolError::UnexpectedEncodedStreamCount {
                 found: 2,
                 required: 1,
                 ..
-            }
+            })
         ),
         "a two-stream export produced `{error}`"
     );

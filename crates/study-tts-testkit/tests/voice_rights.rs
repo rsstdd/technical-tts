@@ -8,7 +8,10 @@
 use std::path::Path;
 
 use study_tts_core::{LessonError, ReleaseStatus, VoiceError};
-use study_tts_runtime::{BuildError, BuildRequest, build_preview, validate_production_manifest};
+use study_tts_runtime::{
+    BuildError, BuildRequest, PublicationError, RightsError, ToolError, VoiceProfileError,
+    build_preview, validate_production_manifest,
+};
 use study_tts_testkit::{
     DeterministicToneWorker, VoiceProfileFixtureSpec, walking_skeleton_fixture,
     write_voice_profile_fixture,
@@ -73,7 +76,8 @@ fn t4_e0_missing_voice_consent_blocks_profile_load() {
     assert!(
         matches!(
             error,
-            BuildError::MissingVoiceRecord { record, .. } if record == "consent.json"
+            BuildError::VoiceProfile(VoiceProfileError::MissingVoiceRecord { record, .. })
+                if record == "consent.json"
         ),
         "missing consent produced `{error}`"
     );
@@ -114,7 +118,7 @@ fn t4_e0_unapproved_voice_profile_cannot_enter_preview_or_production() {
     // covered by the walking-skeleton suite.
     let (error, worker) = refused_build(&VoiceProfileFixtureSpec::default());
     assert!(
-        matches!(error, BuildError::MissingTool { .. }),
+        matches!(error, BuildError::Tool(ToolError::MissingTool { .. })),
         "an approved profile must pass the gate and fail later, but produced `{error}`"
     );
     assert_eq!(worker.synthesis_count(), 0);
@@ -183,7 +187,10 @@ fn t4_e0_voice_checksum_mismatch_blocks_use() {
         assert!(
             matches!(
                 error,
-                BuildError::VoiceChecksumMismatch { ref path, .. } if path == &tampered_path
+                BuildError::VoiceProfile(VoiceProfileError::VoiceChecksumMismatch {
+                    ref path,
+                    ..
+                }) if path == &tampered_path
             ),
             "tampering `{tampered}` produced `{error}`"
         );
@@ -217,7 +224,10 @@ fn t4_e0_production_release_rejects_unresolved_content_rights_classification() {
         assert!(
             matches!(
                 error,
-                BuildError::UnresolvedContentRights { ref source_id, ref classification }
+                BuildError::Rights(RightsError::UnresolvedContentRights {
+                    ref source_id,
+                    ref classification,
+                })
                     if source_id == "external-source-1" && classification == unresolved
             ),
             "classification `{unresolved}` produced `{error}`"
@@ -234,7 +244,9 @@ fn t4_e0_production_release_rejects_unresolved_content_rights_classification() {
     }]));
     assert!(matches!(
         validate(&resolved),
-        Err(BuildError::ProductionGatesUnavailable)
+        Err(BuildError::Publication(
+            PublicationError::ProductionGatesUnavailable
+        ))
     ));
 
     // Declaring nothing and declaring something unresolved are different claims
@@ -244,7 +256,9 @@ fn t4_e0_production_release_rejects_unresolved_content_rights_classification() {
     assert!(
         matches!(
             validate(&undeclared),
-            Err(BuildError::MissingContentRightsDeclaration)
+            Err(BuildError::Rights(
+                RightsError::MissingContentRightsDeclaration
+            ))
         ),
         "an empty classification list must be refused as undeclared"
     );
@@ -254,7 +268,10 @@ fn t4_e0_production_release_rejects_unresolved_content_rights_classification() {
         .remove("content_rights");
     let error = validate(&undeclared).expect_err("an undeclared manifest must refuse production");
     assert!(
-        matches!(error, BuildError::MissingContentRightsDeclaration),
+        matches!(
+            error,
+            BuildError::Rights(RightsError::MissingContentRightsDeclaration)
+        ),
         "undeclared rights produced `{error}`"
     );
 
@@ -270,7 +287,8 @@ fn t4_e0_production_release_rejects_unresolved_content_rights_classification() {
     assert!(
         matches!(
             error,
-            BuildError::InvalidRightsDeclaration { section, .. } if section == "content_rights"
+            BuildError::Rights(RightsError::InvalidRightsDeclaration { section, .. })
+                if section == "content_rights"
         ),
         "unknown classification produced `{error}`"
     );
@@ -295,7 +313,9 @@ fn t4_e0_production_release_rejects_an_undeclared_voice_profile() {
     assert!(
         matches!(
             validate(&undeclared),
-            Err(BuildError::MissingVoiceProfileDeclaration)
+            Err(BuildError::Rights(
+                RightsError::MissingVoiceProfileDeclaration
+            ))
         ),
         "an empty voice_profiles list must be refused as undeclared"
     );
@@ -307,7 +327,10 @@ fn t4_e0_production_release_rejects_an_undeclared_voice_profile() {
     let error =
         validate(&undeclared).expect_err("an undeclared voice profile must refuse production");
     assert!(
-        matches!(error, BuildError::MissingVoiceProfileDeclaration),
+        matches!(
+            error,
+            BuildError::Rights(RightsError::MissingVoiceProfileDeclaration)
+        ),
         "an absent voice_profiles section produced `{error}`"
     );
     let message = error.to_string();
@@ -332,7 +355,10 @@ fn t3_e0_production_manifest_is_a_strict_typed_boundary() {
     let error = validate_production_manifest(b"{ not json")
         .expect_err("malformed bytes must refuse production");
     assert!(
-        matches!(error, BuildError::MalformedProductionManifest { .. }),
+        matches!(
+            error,
+            BuildError::Publication(PublicationError::MalformedProductionManifest { .. })
+        ),
         "malformed JSON produced `{error}`"
     );
 
@@ -343,7 +369,10 @@ fn t3_e0_production_manifest_is_a_strict_typed_boundary() {
     extra["unexpected_field"] = serde_json::json!(true);
     let error = validate(&extra).expect_err("an unknown top-level field must refuse production");
     assert!(
-        matches!(error, BuildError::MalformedProductionManifest { .. }),
+        matches!(
+            error,
+            BuildError::Publication(PublicationError::MalformedProductionManifest { .. })
+        ),
         "unknown top-level field produced `{error}`"
     );
 
@@ -356,7 +385,10 @@ fn t3_e0_production_manifest_is_a_strict_typed_boundary() {
     let error =
         validate(&unknown_status).expect_err("an unknown release status must refuse production");
     assert!(
-        matches!(error, BuildError::MalformedProductionManifest { .. }),
+        matches!(
+            error,
+            BuildError::Publication(PublicationError::MalformedProductionManifest { .. })
+        ),
         "unknown release status produced `{error}`"
     );
 
@@ -366,9 +398,9 @@ fn t3_e0_production_manifest_is_a_strict_typed_boundary() {
     assert!(
         matches!(
             error,
-            BuildError::ManifestNotProductionRelease {
+            BuildError::Publication(PublicationError::ManifestNotProductionRelease {
                 declared: ReleaseStatus::PrivatePreview
-            }
+            })
         ),
         "a private-preview manifest produced `{error}`"
     );
@@ -443,10 +475,10 @@ fn t3_e0_production_manifest_is_a_strict_typed_boundary() {
         assert!(
             matches!(
                 error,
-                BuildError::EmptyManifestIdentifier {
+                BuildError::Rights(RightsError::EmptyManifestIdentifier {
                     section: reported_section,
                     field: reported_field,
-                } if reported_section == section && reported_field == field
+                }) if reported_section == section && reported_field == field
             ),
             "blank `{section}.{field}` produced `{error}`"
         );
@@ -480,7 +512,10 @@ fn t4_e0_every_absent_voice_record_names_its_remedy_owner() {
         assert!(
             matches!(
                 error,
-                BuildError::MissingVoiceRecord { record: reported, .. } if reported == record
+                BuildError::VoiceProfile(VoiceProfileError::MissingVoiceRecord {
+                    record: reported,
+                    ..
+                }) if reported == record
             ),
             "removing `{record}` produced `{error}`"
         );
@@ -534,7 +569,10 @@ fn t4_e0_voice_records_that_are_not_regular_files_are_refused() {
         assert!(
             matches!(
                 error,
-                BuildError::VoiceRecordNotRegularFile { record: reported, .. }
+                BuildError::VoiceProfile(VoiceProfileError::VoiceRecordNotRegularFile {
+                    record: reported,
+                    ..
+                })
                     if reported == record
             ),
             "a symlinked `{record}` produced `{error}`"
