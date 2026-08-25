@@ -8,15 +8,16 @@
 //! error.
 
 use std::{
-    fs,
+    fs::{self, File},
+    io::Read,
     path::{Path, PathBuf},
 };
 
 use serde::Deserialize;
 use serde_json::Value;
 use study_tts_core::{
-    ReleaseClaim, ReleaseStatus, RenderPlan, RightsDecision, SourceRightsDeclaration,
-    ValidatedLesson, VoiceError, VoiceUse, validate_lesson_id,
+    MAX_LESSON_JSON_BYTES, ReleaseClaim, ReleaseStatus, RenderPlan, RightsDecision,
+    SourceRightsDeclaration, ValidatedLesson, VoiceError, VoiceUse, validate_lesson_id,
 };
 
 use crate::{
@@ -63,8 +64,10 @@ pub struct BuildResult {
 ///
 /// # Errors
 ///
-/// [`IoError::ReadFile`] when the lesson cannot be read. Lesson parsing and
-/// validation return [`study_tts_core::LessonError::InvalidJson`],
+/// [`IoError::ReadFile`] when the lesson cannot be opened or read and
+/// [`IoError::LessonNotRegularFile`] when the opened descriptor is not a
+/// regular file. Lesson parsing and validation return
+/// [`study_tts_core::LessonError::InvalidJson`],
 /// [`study_tts_core::LessonError::UnsupportedSchema`],
 /// [`study_tts_core::LessonError::MissingLessonId`],
 /// [`study_tts_core::LessonError::InvalidLessonId`],
@@ -80,7 +83,14 @@ pub struct BuildResult {
 /// [`study_tts_core::LessonError::UnapprovedSegment`],
 /// [`study_tts_core::LessonError::MissingSpeaker`],
 /// [`study_tts_core::LessonError::MissingStyle`], or
-/// [`study_tts_core::LessonError::PauseOutOfRange`].
+/// [`study_tts_core::LessonError::PauseOutOfRange`]. Resource refusal returns
+/// [`study_tts_core::LessonError::LessonJsonTooLarge`],
+/// [`study_tts_core::LessonError::TooManySegments`],
+/// [`study_tts_core::LessonError::SpokenTextTooLong`],
+/// [`study_tts_core::LessonError::DisplayTextTooLong`],
+/// [`study_tts_core::LessonError::TooManySourceRefs`],
+/// [`study_tts_core::LessonError::SourceRefTooLong`], or
+/// [`study_tts_core::LessonError::AuthoredTextTooLarge`].
 ///
 /// Voice gating returns [`crate::VoiceProfileError::MissingVoiceRecord`],
 /// [`crate::VoiceProfileError::VoiceRecordNotRegularFile`],
@@ -97,7 +107,25 @@ pub struct BuildResult {
 /// Tool work returns [`crate::ToolError::MissingTool`],
 /// [`crate::ToolError::InspectTool`], [`crate::ToolError::ToolProbeFailed`],
 /// [`crate::ToolError::StartFfmpeg`], [`crate::ToolError::Ffmpeg`],
-/// [`crate::ToolError::Ffprobe`],
+/// [`crate::ToolError::Ffprobe`], [`crate::ToolError::ToolTimedOut`],
+/// [`crate::ToolError::ToolOutputOverflow`],
+/// [`crate::ToolError::ToolPipeUnavailable`],
+/// [`crate::ToolError::ToolCaptureConfigurationFailed`],
+/// [`crate::ToolError::ToolCaptureStartFailed`],
+/// [`crate::ToolError::ToolCaptureReadFailed`],
+/// [`crate::ToolError::ToolCaptureChannelClosed`],
+/// [`crate::ToolError::ToolCaptureThreadPanicked`],
+/// [`crate::ToolError::ToolCaptureShutdownTimedOut`],
+/// [`crate::ToolError::ToolCaptureIncomplete`],
+/// [`crate::ToolError::ToolCleanupFailed`],
+/// [`crate::ToolError::ToolChildInspectionFailed`],
+/// [`crate::ToolError::ToolTerminationSignalFailed`],
+/// [`crate::ToolError::ToolContainmentInspectionFailed`],
+/// [`crate::ToolError::ToolContainmentSignalFailed`],
+/// [`crate::ToolError::ToolChildReapFailed`],
+/// [`crate::ToolError::ToolTerminationTimedOut`],
+/// [`crate::ToolError::ToolReaperStartFailed`],
+/// [`crate::ToolError::ToolCaptureReaperStartFailed`],
 /// [`crate::ToolError::UnreadableProbeResponse`],
 /// [`crate::ToolError::UnexpectedEncodedStreamCount`], or
 /// [`crate::ToolError::UnexpectedEncodedStream`].
@@ -123,10 +151,7 @@ pub fn build_preview(
     request: BuildRequest,
     synthesizer: &dyn SegmentSynthesizer,
 ) -> Result<BuildResult, BuildError> {
-    let lesson_bytes = fs::read(&request.lesson_path).map_err(|source| IoError::ReadFile {
-        path: request.lesson_path.clone(),
-        source,
-    })?;
+    let lesson_bytes = read_lesson(&request.lesson_path)?;
     let lesson = ValidatedLesson::from_json(&lesson_bytes)?;
     let plan = RenderPlan::for_lesson(&lesson, synthesizer.identity());
 
@@ -186,6 +211,90 @@ pub fn build_preview(
     })
 }
 
+/// Reads at most one byte beyond the core lesson envelope.
+///
+/// Metadata avoids reading a file already known to be oversized; the bounded
+/// read remains authoritative because the file may grow after that preflight.
+fn read_lesson(path: &Path) -> Result<Vec<u8>, BuildError> {
+    let file = open_lesson(path)?;
+
+    let metadata = file.metadata().map_err(|source| IoError::ReadFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(IoError::LessonNotRegularFile {
+            path: path.to_path_buf(),
+        }
+        .into());
+    }
+
+    read_lesson_from_reader(path, file, metadata.len())
+}
+
+#[cfg(unix)]
+fn open_lesson(path: &Path) -> Result<File, BuildError> {
+    use rustix::fs::{Mode, OFlags, open};
+
+    let descriptor = open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|source| IoError::ReadFile {
+        path: path.to_path_buf(),
+        source: source.into(),
+    })?;
+    Ok(File::from(descriptor))
+}
+
+#[cfg(not(unix))]
+fn open_lesson(path: &Path) -> Result<File, BuildError> {
+    File::open(path).map_err(|source| {
+        IoError::ReadFile {
+            path: path.to_path_buf(),
+            source,
+        }
+        .into()
+    })
+}
+
+fn read_lesson_from_reader(
+    path: &Path,
+    reader: impl Read,
+    advertised_bytes: u64,
+) -> Result<Vec<u8>, BuildError> {
+    if advertised_bytes > MAX_LESSON_JSON_BYTES as u64 {
+        return Err(study_tts_core::LessonError::LessonJsonTooLarge {
+            max_bytes: MAX_LESSON_JSON_BYTES,
+        }
+        .into());
+    }
+
+    let initial_capacity = usize::try_from(advertised_bytes)
+        .unwrap_or(MAX_LESSON_JSON_BYTES)
+        .min(MAX_LESSON_JSON_BYTES)
+        .saturating_add(1);
+
+    let mut bytes = Vec::with_capacity(initial_capacity);
+
+    reader
+        .take((MAX_LESSON_JSON_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|source| IoError::ReadFile {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+    if bytes.len() > MAX_LESSON_JSON_BYTES {
+        return Err(study_tts_core::LessonError::LessonJsonTooLarge {
+            max_bytes: MAX_LESSON_JSON_BYTES,
+        }
+        .into());
+    }
+    Ok(bytes)
+}
+
 /// Preflights ffprobe and requires the encoded artifact to be a single mono AAC
 /// stream.
 ///
@@ -198,6 +307,27 @@ pub fn build_preview(
 /// [`crate::ToolError::MissingTool`] or [`crate::ToolError::InspectTool`] when
 /// ffprobe cannot be resolved or launched,
 /// [`crate::ToolError::ToolProbeFailed`] when its version probe fails,
+/// [`crate::ToolError::ToolTimedOut`] when either ffprobe operation exceeds its
+/// deadline, [`crate::ToolError::ToolOutputOverflow`] when either captured
+/// stream exceeds its ceiling, and
+/// [`crate::ToolError::ToolPipeUnavailable`],
+/// [`crate::ToolError::ToolCaptureConfigurationFailed`],
+/// [`crate::ToolError::ToolCaptureStartFailed`],
+/// [`crate::ToolError::ToolCaptureReadFailed`],
+/// [`crate::ToolError::ToolCaptureChannelClosed`],
+/// [`crate::ToolError::ToolCaptureThreadPanicked`],
+/// [`crate::ToolError::ToolCaptureShutdownTimedOut`],
+/// [`crate::ToolError::ToolCaptureIncomplete`],
+/// [`crate::ToolError::ToolCleanupFailed`],
+/// [`crate::ToolError::ToolChildInspectionFailed`],
+/// [`crate::ToolError::ToolTerminationSignalFailed`],
+/// [`crate::ToolError::ToolContainmentInspectionFailed`],
+/// [`crate::ToolError::ToolContainmentSignalFailed`],
+/// [`crate::ToolError::ToolChildReapFailed`],
+/// [`crate::ToolError::ToolTerminationTimedOut`],
+/// [`crate::ToolError::ToolReaperStartFailed`], or
+/// [`crate::ToolError::ToolCaptureReaperStartFailed`] when the named
+/// supervision invariant fails,
 /// [`crate::ToolError::Ffprobe`] when output inspection fails,
 /// [`crate::ToolError::UnreadableProbeResponse`] when its output cannot be
 /// parsed, and [`crate::ToolError::UnexpectedEncodedStreamCount`] or
@@ -431,4 +561,31 @@ pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
     }
 
     Err(PublicationError::ProductionGatesUnavailable.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{self, Read},
+        path::Path,
+    };
+
+    use study_tts_core::{LessonError, MAX_LESSON_JSON_BYTES};
+
+    use super::read_lesson_from_reader;
+    use crate::BuildError;
+
+    #[test]
+    fn t1_e0_bounded_lesson_reader_refuses_growth_after_metadata_preflight() {
+        let reader = io::repeat(b'{').take((MAX_LESSON_JSON_BYTES + 1) as u64);
+
+        let error = read_lesson_from_reader(Path::new("lesson.json"), reader, 1)
+            .expect_err("a stream that grows beyond its advertised size must be refused");
+
+        assert!(matches!(
+            error,
+            BuildError::Lesson(LessonError::LessonJsonTooLarge { max_bytes })
+                if max_bytes == MAX_LESSON_JSON_BYTES
+        ));
+    }
 }

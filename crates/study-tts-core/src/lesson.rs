@@ -16,6 +16,21 @@ use thiserror::Error;
 /// suffixes later stories append.
 const MAX_IDENTIFIER_LENGTH: usize = 64;
 
+/// Largest canonical lesson JSON document accepted, in UTF-8 bytes.
+///
+/// This provisional security ceiling mirrors
+/// `docs/architecture/WALKING-SKELETON.md` §Provisional resource ceilings;
+/// runtime ingestion imports it rather than maintaining a second value.
+pub const MAX_LESSON_JSON_BYTES: usize = 16 * 1024 * 1024;
+
+// The five provisional authored-input ceilings below mirror
+// `docs/architecture/WALKING-SKELETON.md` §Provisional resource ceilings.
+const MAX_LESSON_SEGMENTS: usize = 4_096;
+const MAX_SEGMENT_TEXT_BYTES: usize = 64 * 1024;
+const MAX_SOURCE_REFS_PER_SEGMENT: usize = 256;
+const MAX_SOURCE_REF_BYTES: usize = 4 * 1024;
+const MAX_AUTHORED_TEXT_BYTES: usize = 16 * 1024 * 1024;
+
 /// Longest trailing pause a segment may declare, in milliseconds.
 ///
 /// Provisional: long enough for a deliberate beat between passages, short
@@ -110,6 +125,12 @@ pub enum ReviewStatus {
 /// authoring mistakes with different fixes.
 #[derive(Debug, Error)]
 pub enum LessonError {
+    /// The input exceeds the fixed envelope within which parsing is allowed.
+    #[error("lesson JSON exceeds the provisional {max_bytes}-byte limit")]
+    LessonJsonTooLarge {
+        /// Largest lesson document this build accepts.
+        max_bytes: usize,
+    },
     /// The bytes are not JSON, or not the shape this schema declares.
     #[error("lesson JSON is invalid: {0}")]
     InvalidJson(#[from] serde_json::Error),
@@ -131,6 +152,15 @@ pub enum LessonError {
     /// build.
     #[error("lesson must contain at least one segment")]
     MissingSegments,
+    /// The lesson would create more planning and synthesis units than this
+    /// provisional build accepts.
+    #[error("lesson contains {found} segments, exceeding the provisional limit of {max}")]
+    TooManySegments {
+        /// Segments the authored lesson contains.
+        found: usize,
+        /// Largest segment count this build accepts.
+        max: usize,
+    },
     /// A segment supplied no identity at all.
     #[error("segment ID must not be empty")]
     MissingSegmentId,
@@ -148,18 +178,70 @@ pub enum LessonError {
     /// The segment has nothing to synthesize.
     #[error("segment `{0}` has empty spoken_text")]
     MissingSpokenText(String),
+    /// The exact synthesis input exceeds its fixed memory ceiling.
+    #[error(
+        "segment `{segment_id}` spoken_text is {bytes} UTF-8 bytes, exceeding the provisional \
+         {max_bytes}-byte limit"
+    )]
+    SpokenTextTooLong {
+        /// Segment carrying the oversized field.
+        segment_id: String,
+        /// UTF-8 bytes the field contains.
+        bytes: usize,
+        /// Largest accepted field length.
+        max_bytes: usize,
+    },
     /// The segment has nothing for a reviewer to read against the audio.
     #[error("segment `{0}` has empty display_text")]
     MissingDisplayText(String),
+    /// The review transcript field exceeds its fixed memory ceiling.
+    #[error(
+        "segment `{segment_id}` display_text is {bytes} UTF-8 bytes, exceeding the provisional \
+         {max_bytes}-byte limit"
+    )]
+    DisplayTextTooLong {
+        /// Segment carrying the oversized field.
+        segment_id: String,
+        /// UTF-8 bytes the field contains.
+        bytes: usize,
+        /// Largest accepted field length.
+        max_bytes: usize,
+    },
     /// The segment declares no role, so review context cannot be established.
     #[error("segment `{0}` has an empty role")]
     MissingRole(String),
     /// The segment cites no source, so its claims cannot be traced back.
     #[error("segment `{0}` must contain at least one source reference")]
     MissingSourceRefs(String),
+    /// A segment cites more source blocks than this provisional build accepts.
+    #[error(
+        "segment `{segment_id}` contains {found} source references, exceeding the provisional \
+         limit of {max}"
+    )]
+    TooManySourceRefs {
+        /// Segment carrying the oversized reference list.
+        segment_id: String,
+        /// References the segment contains.
+        found: usize,
+        /// Largest accepted reference count.
+        max: usize,
+    },
     /// A citation is present but blank, which traces to nothing.
     #[error("segment `{0}` contains an empty source reference")]
     EmptySourceRef(String),
+    /// One source reference exceeds its fixed memory ceiling.
+    #[error(
+        "segment `{segment_id}` contains a {bytes}-byte source reference, exceeding the \
+         provisional {max_bytes}-byte limit"
+    )]
+    SourceRefTooLong {
+        /// Segment carrying the oversized reference.
+        segment_id: String,
+        /// UTF-8 bytes the reference contains.
+        bytes: usize,
+        /// Largest accepted reference length.
+        max_bytes: usize,
+    },
     /// No human approved this segment; synthesis accepts only
     /// `ReviewStatus::Approved`.
     #[error("segment `{0}` is not approved for synthesis")]
@@ -175,6 +257,12 @@ pub enum LessonError {
     /// phrasing.
     #[error("segment `{0}` pause exceeds the provisional {max} ms limit", max = MAX_PAUSE_AFTER_MS)]
     PauseOutOfRange(String),
+    /// Authored strings collectively exceed the lesson memory envelope.
+    #[error("lesson authored text exceeds the provisional {max_bytes}-byte aggregate limit")]
+    AuthoredTextTooLarge {
+        /// Largest accepted aggregate authored-text length.
+        max_bytes: usize,
+    },
 }
 
 impl AuthoredLesson {
@@ -184,18 +272,24 @@ impl AuthoredLesson {
     ///
     /// [`LessonError::UnsupportedSchema`],
     /// [`LessonError::MissingLessonId`],
-    /// [`LessonError::InvalidLessonId`], or [`LessonError::MissingSegments`]
-    /// for a lesson-level violation. Segment validation returns
+    /// [`LessonError::InvalidLessonId`], [`LessonError::MissingSegments`],
+    /// [`LessonError::TooManySegments`], or
+    /// [`LessonError::AuthoredTextTooLarge`] for a lesson-level violation.
+    /// Segment validation returns
     /// [`LessonError::MissingSegmentId`],
     /// [`LessonError::InvalidSegmentId`],
     /// [`LessonError::DuplicateSegmentId`],
     /// [`LessonError::MissingSpokenText`],
-    /// [`LessonError::MissingDisplayText`], [`LessonError::MissingRole`],
-    /// [`LessonError::MissingSourceRefs`], [`LessonError::EmptySourceRef`],
+    /// [`LessonError::SpokenTextTooLong`],
+    /// [`LessonError::MissingDisplayText`],
+    /// [`LessonError::DisplayTextTooLong`], [`LessonError::MissingRole`],
+    /// [`LessonError::MissingSourceRefs`],
+    /// [`LessonError::TooManySourceRefs`], [`LessonError::EmptySourceRef`],
+    /// [`LessonError::SourceRefTooLong`],
     /// [`LessonError::UnapprovedSegment`], [`LessonError::MissingSpeaker`],
     /// [`LessonError::MissingStyle`], or [`LessonError::PauseOutOfRange`].
-    /// Validation preserves that order so the first reported violation is
-    /// deterministic.
+    /// Existing semantic checks preserve their relative order; resource checks
+    /// occur beside the count or field they bound.
     pub fn validate(self) -> Result<ValidatedLesson, LessonError> {
         if self.schema_version != LESSON_SCHEMA_VERSION {
             return Err(LessonError::UnsupportedSchema(self.schema_version.clone()));
@@ -206,8 +300,15 @@ impl AuthoredLesson {
         if self.segments.is_empty() {
             return Err(LessonError::MissingSegments);
         }
+        if self.segments.len() > MAX_LESSON_SEGMENTS {
+            return Err(LessonError::TooManySegments {
+                found: self.segments.len(),
+                max: MAX_LESSON_SEGMENTS,
+            });
+        }
 
         let mut ids = HashSet::with_capacity(self.segments.len());
+        let mut authored_text_bytes = self.title.len();
         for segment in &self.segments {
             // Segment identifiers apply the same two checks in the same
             // order, keeping an absent value and a malformed one distinct.
@@ -223,8 +324,22 @@ impl AuthoredLesson {
             if segment.spoken_text.trim().is_empty() {
                 return Err(LessonError::MissingSpokenText(segment.id.clone()));
             }
+            if segment.spoken_text.len() > MAX_SEGMENT_TEXT_BYTES {
+                return Err(LessonError::SpokenTextTooLong {
+                    segment_id: segment.id.clone(),
+                    bytes: segment.spoken_text.len(),
+                    max_bytes: MAX_SEGMENT_TEXT_BYTES,
+                });
+            }
             if segment.display_text.trim().is_empty() {
                 return Err(LessonError::MissingDisplayText(segment.id.clone()));
+            }
+            if segment.display_text.len() > MAX_SEGMENT_TEXT_BYTES {
+                return Err(LessonError::DisplayTextTooLong {
+                    segment_id: segment.id.clone(),
+                    bytes: segment.display_text.len(),
+                    max_bytes: MAX_SEGMENT_TEXT_BYTES,
+                });
             }
             if segment.role.trim().is_empty() {
                 return Err(LessonError::MissingRole(segment.id.clone()));
@@ -232,12 +347,30 @@ impl AuthoredLesson {
             if segment.source_refs.is_empty() {
                 return Err(LessonError::MissingSourceRefs(segment.id.clone()));
             }
+            if segment.source_refs.len() > MAX_SOURCE_REFS_PER_SEGMENT {
+                return Err(LessonError::TooManySourceRefs {
+                    segment_id: segment.id.clone(),
+                    found: segment.source_refs.len(),
+                    max: MAX_SOURCE_REFS_PER_SEGMENT,
+                });
+            }
             if segment
                 .source_refs
                 .iter()
                 .any(|source_ref| source_ref.trim().is_empty())
             {
                 return Err(LessonError::EmptySourceRef(segment.id.clone()));
+            }
+            if let Some(source_ref) = segment
+                .source_refs
+                .iter()
+                .find(|source_ref| source_ref.len() > MAX_SOURCE_REF_BYTES)
+            {
+                return Err(LessonError::SourceRefTooLong {
+                    segment_id: segment.id.clone(),
+                    bytes: source_ref.len(),
+                    max_bytes: MAX_SOURCE_REF_BYTES,
+                });
             }
             if segment.review_status != ReviewStatus::Approved {
                 return Err(LessonError::UnapprovedSegment(segment.id.clone()));
@@ -251,6 +384,25 @@ impl AuthoredLesson {
             if segment.pause_after_ms > MAX_PAUSE_AFTER_MS {
                 return Err(LessonError::PauseOutOfRange(segment.id.clone()));
             }
+
+            for field in [
+                &segment.id,
+                &segment.speaker,
+                &segment.role,
+                &segment.display_text,
+                &segment.spoken_text,
+                &segment.style,
+            ] {
+                authored_text_bytes = authored_text_bytes.saturating_add(field.len());
+            }
+            for source_ref in &segment.source_refs {
+                authored_text_bytes = authored_text_bytes.saturating_add(source_ref.len());
+            }
+            if authored_text_bytes > MAX_AUTHORED_TEXT_BYTES {
+                return Err(LessonError::AuthoredTextTooLarge {
+                    max_bytes: MAX_AUTHORED_TEXT_BYTES,
+                });
+            }
         }
 
         Ok(ValidatedLesson { authored: self })
@@ -263,10 +415,17 @@ impl ValidatedLesson {
     ///
     /// # Errors
     ///
-    /// [`LessonError::InvalidJson`] when the bytes are not this document's
-    /// shape. Parsed authoring data can return every lesson-level or
-    /// segment-level variant documented by [`AuthoredLesson::validate`].
+    /// [`LessonError::LessonJsonTooLarge`] when the input exceeds
+    /// [`MAX_LESSON_JSON_BYTES`], and [`LessonError::InvalidJson`] when the
+    /// bytes are not this document's shape. Parsed authoring data can return
+    /// every lesson-level or segment-level variant documented by
+    /// [`AuthoredLesson::validate`].
     pub fn from_json(bytes: &[u8]) -> Result<Self, LessonError> {
+        if bytes.len() > MAX_LESSON_JSON_BYTES {
+            return Err(LessonError::LessonJsonTooLarge {
+                max_bytes: MAX_LESSON_JSON_BYTES,
+            });
+        }
         let lesson: AuthoredLesson = serde_json::from_slice(bytes)?;
         lesson.validate()
     }
@@ -361,6 +520,10 @@ mod tests {
         ValidatedLesson::from_json(
             &serde_json::to_vec(value).expect("test lesson should serialize"),
         )
+    }
+
+    fn authored_fixture() -> AuthoredLesson {
+        serde_json::from_value(fixture()).expect("fixture shape should deserialize")
     }
 
     #[test]
@@ -561,5 +724,161 @@ mod tests {
                 "lesson_id `{safe_id}` must be accepted"
             );
         }
+    }
+
+    #[test]
+    fn t1_e0_lesson_json_byte_limit_accepts_the_boundary_and_precedes_parsing() {
+        let mut exact = fixture();
+        exact["title"] = Value::String(String::new());
+        let baseline = serde_json::to_vec(&exact)
+            .expect("test lesson should serialize")
+            .len();
+        exact["title"] = Value::String("x".repeat(MAX_LESSON_JSON_BYTES - baseline));
+        let exact_bytes = serde_json::to_vec(&exact).expect("boundary lesson should serialize");
+        assert_eq!(exact_bytes.len(), MAX_LESSON_JSON_BYTES);
+        ValidatedLesson::from_json(&exact_bytes).expect("the byte boundary must be accepted");
+
+        let oversized = vec![b'{'; MAX_LESSON_JSON_BYTES + 1];
+        assert!(matches!(
+            ValidatedLesson::from_json(&oversized),
+            Err(LessonError::LessonJsonTooLarge { max_bytes })
+                if max_bytes == MAX_LESSON_JSON_BYTES
+        ));
+    }
+
+    #[test]
+    fn t1_e0_segment_count_limit_accepts_the_boundary_and_rejects_one_more() {
+        let segment = authored_fixture().segments.remove(0);
+        let segments = (0..MAX_LESSON_SEGMENTS)
+            .map(|index| LessonSegment {
+                id: format!("seg-{index}"),
+                ..segment.clone()
+            })
+            .collect::<Vec<_>>();
+        let mut authored = authored_fixture();
+        authored.segments = segments.clone();
+        authored
+            .validate()
+            .expect("the segment-count boundary must be accepted");
+
+        let mut authored = authored_fixture();
+        authored.segments = segments;
+        authored.segments.push(LessonSegment {
+            id: "one-too-many".to_owned(),
+            ..segment
+        });
+        assert!(matches!(
+            authored.validate(),
+            Err(LessonError::TooManySegments { found, max })
+                if found == MAX_LESSON_SEGMENTS + 1 && max == MAX_LESSON_SEGMENTS
+        ));
+    }
+
+    #[test]
+    fn t1_e0_spoken_text_limit_counts_utf8_bytes() {
+        let mut exact = authored_fixture();
+        exact.segments[0].spoken_text = "é".repeat(MAX_SEGMENT_TEXT_BYTES / 2);
+        exact
+            .validate()
+            .expect("the spoken-text byte boundary must be accepted");
+
+        let mut oversized = authored_fixture();
+        oversized.segments[0].spoken_text = format!("{}a", "é".repeat(MAX_SEGMENT_TEXT_BYTES / 2));
+        assert!(matches!(
+            oversized.validate(),
+            Err(LessonError::SpokenTextTooLong { segment_id, bytes, max_bytes })
+                if segment_id == "seg-0001"
+                    && bytes == MAX_SEGMENT_TEXT_BYTES + 1
+                    && max_bytes == MAX_SEGMENT_TEXT_BYTES
+        ));
+    }
+
+    #[test]
+    fn t1_e0_display_text_limit_counts_utf8_bytes() {
+        let mut exact = authored_fixture();
+        exact.segments[0].display_text = "é".repeat(MAX_SEGMENT_TEXT_BYTES / 2);
+        exact
+            .validate()
+            .expect("the display-text byte boundary must be accepted");
+
+        let mut oversized = authored_fixture();
+        oversized.segments[0].display_text = format!("{}a", "é".repeat(MAX_SEGMENT_TEXT_BYTES / 2));
+        assert!(matches!(
+            oversized.validate(),
+            Err(LessonError::DisplayTextTooLong { segment_id, bytes, max_bytes })
+                if segment_id == "seg-0001"
+                    && bytes == MAX_SEGMENT_TEXT_BYTES + 1
+                    && max_bytes == MAX_SEGMENT_TEXT_BYTES
+        ));
+    }
+
+    #[test]
+    fn t1_e0_source_reference_limits_accept_boundaries_and_count_utf8_bytes() {
+        let mut exact_count = authored_fixture();
+        exact_count.segments[0].source_refs = vec!["x".to_owned(); MAX_SOURCE_REFS_PER_SEGMENT];
+        exact_count
+            .validate()
+            .expect("the source-reference count boundary must be accepted");
+
+        let mut oversized_count = authored_fixture();
+        oversized_count.segments[0].source_refs =
+            vec!["x".to_owned(); MAX_SOURCE_REFS_PER_SEGMENT + 1];
+        assert!(matches!(
+            oversized_count.validate(),
+            Err(LessonError::TooManySourceRefs { segment_id, found, max })
+                if segment_id == "seg-0001"
+                    && found == MAX_SOURCE_REFS_PER_SEGMENT + 1
+                    && max == MAX_SOURCE_REFS_PER_SEGMENT
+        ));
+
+        let mut exact_length = authored_fixture();
+        exact_length.segments[0].source_refs = vec!["é".repeat(MAX_SOURCE_REF_BYTES / 2)];
+        exact_length
+            .validate()
+            .expect("the source-reference byte boundary must be accepted");
+
+        let mut oversized_length = authored_fixture();
+        oversized_length.segments[0].source_refs =
+            vec![format!("{}a", "é".repeat(MAX_SOURCE_REF_BYTES / 2))];
+        assert!(matches!(
+            oversized_length.validate(),
+            Err(LessonError::SourceRefTooLong {
+                segment_id,
+                bytes,
+                max_bytes,
+            }) if segment_id == "seg-0001"
+                && bytes == MAX_SOURCE_REF_BYTES + 1
+                && max_bytes == MAX_SOURCE_REF_BYTES
+        ));
+    }
+
+    #[test]
+    fn t1_e0_programmatic_authored_text_limit_accepts_the_boundary() {
+        const OTHER_AUTHORED_BYTES: usize = 7;
+        let lesson_with_title = |title_bytes| AuthoredLesson {
+            schema_version: LESSON_SCHEMA_VERSION.to_owned(),
+            lesson_id: "aggregate-boundary".to_owned(),
+            title: "t".repeat(title_bytes),
+            segments: vec![LessonSegment {
+                id: "i".to_owned(),
+                speaker: "s".to_owned(),
+                role: "r".to_owned(),
+                source_refs: vec!["x".to_owned()],
+                display_text: "d".to_owned(),
+                spoken_text: "p".to_owned(),
+                style: "y".to_owned(),
+                pause_after_ms: 0,
+                review_status: ReviewStatus::Approved,
+            }],
+        };
+
+        lesson_with_title(MAX_AUTHORED_TEXT_BYTES - OTHER_AUTHORED_BYTES)
+            .validate()
+            .expect("the aggregate authored-text boundary must be accepted");
+        assert!(matches!(
+            lesson_with_title(MAX_AUTHORED_TEXT_BYTES - OTHER_AUTHORED_BYTES + 1).validate(),
+            Err(LessonError::AuthoredTextTooLarge { max_bytes })
+                if max_bytes == MAX_AUTHORED_TEXT_BYTES
+        ));
     }
 }

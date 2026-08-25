@@ -5,10 +5,11 @@ use std::path::Path;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use study_tts_core::{CacheKey, LessonError, ReleaseError};
+use study_tts_core::{CacheKey, LessonError, MAX_LESSON_JSON_BYTES, ReleaseError};
 use study_tts_runtime::{
-    BuildError, BuildRequest, CacheEntryFault, CacheError, ManagedPathError, PublicationError,
-    ToolError, build_preview, publish, validate_encoded_output, validate_production_manifest,
+    BuildError, BuildRequest, CacheEntryFault, CacheError, IoError, ManagedPathError,
+    PublicationError, ToolError, build_preview, publish, validate_encoded_output,
+    validate_production_manifest,
 };
 use study_tts_testkit::{
     DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture,
@@ -447,6 +448,52 @@ fn t4_e0_unapproved_content_fails_before_tools_and_synthesis() {
         BuildError::Lesson(LessonError::UnapprovedSegment(_))
     ));
     assert_eq!(worker.synthesis_count(), 0);
+}
+
+#[test]
+fn t4_e0_oversized_lesson_fails_before_tools_workspace_and_synthesis() {
+    let root = TempDir::new().expect("create oversized-lesson test root");
+    let lesson = root.path().join("oversized.json");
+    std::fs::write(&lesson, vec![b'{'; MAX_LESSON_JSON_BYTES + 1]).expect("write oversized lesson");
+    let workspace = root.path().join("workspace");
+    let worker = DeterministicToneWorker::default();
+    let mut request = build_request(&lesson, &workspace);
+    request.ffmpeg_executable = "study-tts-missing-ffmpeg".into();
+    request.ffprobe_executable = "study-tts-missing-ffprobe".into();
+
+    let error = build_preview(request, &worker).expect_err("oversized lesson must fail");
+
+    assert!(matches!(
+        error,
+        BuildError::Lesson(LessonError::LessonJsonTooLarge { max_bytes })
+            if max_bytes == MAX_LESSON_JSON_BYTES
+    ));
+    assert_eq!(worker.synthesis_count(), 0);
+    assert!(!workspace.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn t4_e0_lesson_fifo_fails_before_tools_workspace_and_synthesis() {
+    use rustix::fs::{CWD, Mode, mkfifoat};
+
+    let root = TempDir::new().expect("create lesson-FIFO test root");
+    let lesson = root.path().join("lesson.json");
+    mkfifoat(CWD, &lesson, Mode::RUSR | Mode::WUSR).expect("create lesson FIFO");
+    let workspace = root.path().join("workspace");
+    let worker = DeterministicToneWorker::default();
+    let mut request = build_request(&lesson, &workspace);
+    request.ffmpeg_executable = "study-tts-missing-ffmpeg".into();
+    request.ffprobe_executable = "study-tts-missing-ffprobe".into();
+
+    let error = build_preview(request, &worker).expect_err("a lesson FIFO must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::Io(IoError::LessonNotRegularFile { path }) if path == lesson
+    ));
+    assert_eq!(worker.synthesis_count(), 0);
+    assert!(!workspace.exists());
 }
 
 #[test]

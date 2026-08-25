@@ -51,6 +51,95 @@ flowchart LR
 | Minimal manifest | `study-tts-runtime` | Replaced by the E1-S1 versioned manifest schema |
 | Build refusal API | `study-tts-runtime::BuildError` and public category enums | Frozen with the other public Rust interfaces at G1 |
 
+## Provisional resource ceilings
+
+E0-S0 refuses unbounded authored input and FFmpeg-family execution within the
+fixed envelope below. These values are security ceilings, not measured
+performance budgets or backend segmentation limits. They remain fixed until a
+configuration milestone owns them; this does not move or redefine the
+configurable worker supervision assigned to E5.
+
+| Resource | Provisional ceiling |
+| --- | ---: |
+| Canonical lesson JSON | 16 MiB UTF-8 bytes |
+| Segments per lesson | 4,096 |
+| `display_text` per segment | 64 KiB UTF-8 bytes |
+| `spoken_text` per segment | 64 KiB UTF-8 bytes |
+| Source references per segment | 256 |
+| One source reference | 4 KiB UTF-8 bytes |
+| Aggregate title and segment string/reference fields | 16 MiB UTF-8 bytes |
+| Version probe deadline | 5 seconds |
+| ffprobe deadline | 30 seconds |
+| FFmpeg encode deadline | 30 minutes |
+| Captured stdout per tool execution | 1 MiB |
+| Captured stderr per tool execution | 1 MiB |
+
+The lesson values mirror the constants in
+`crates/study-tts-core/src/lesson.rs`; its public
+`MAX_LESSON_JSON_BYTES` is also imported by
+`crates/study-tts-runtime/src/pipeline.rs::read_lesson`. That reader performs a
+nonblocking Unix open, requires the opened descriptor to be a regular file,
+performs a metadata preflight, and then reads at most
+`MAX_LESSON_JSON_BYTES + 1`. A FIFO therefore cannot block the open, and a
+file that grows after preflight remains bounded. Oversized input returns
+`LessonError::LessonJsonTooLarge`; a special file returns
+`IoError::LessonNotRegularFile`. Both refusals precede planning, tool
+inspection, workspace creation, and synthesis.
+
+The tool values mirror `TOOL_OUTPUT_LIMIT_BYTES`, `VERSION_PROBE_POLICY`,
+`FFPROBE_POLICY`, and `FFMPEG_ENCODE_POLICY` in
+`crates/study-tts-runtime/src/process.rs`. The shared runner drains stdout and
+stderr concurrently through nonblocking, cancellable capture workers. On Unix
+it creates a dedicated process group. On Linux it also records both capture
+pipe identities and terminates any process outside that group that retains a
+pipe, so a descendant cannot escape cleanup with `setsid` and strand capture.
+Direct-child exit observation precedes the otherwise blocking `Child::wait`,
+and capture joins are attempted only after `JoinHandle::is_finished`. Either
+kind of cleanup that exceeds its one-second observation window transfers the
+owned handle to a dedicated background reaper before returning a typed
+failure. Other targets retain a bounded direct-child fallback. Existing
+nonzero-exit categories remain the owner of bounded stderr diagnostics.
+
+The ceiling-to-test traceability is mechanized by the following exact test
+names:
+
+- Lesson JSON boundary and parse ordering:
+  `t1_e0_lesson_json_byte_limit_accepts_the_boundary_and_precedes_parsing`.
+- Segment-count boundary:
+  `t1_e0_segment_count_limit_accepts_the_boundary_and_rejects_one_more`.
+- Per-field UTF-8 byte boundaries:
+  `t1_e0_spoken_text_limit_counts_utf8_bytes`,
+  `t1_e0_display_text_limit_counts_utf8_bytes`, and
+  `t1_e0_source_reference_limits_accept_boundaries_and_count_utf8_bytes`.
+- Aggregate authored-text boundary:
+  `t1_e0_programmatic_authored_text_limit_accepts_the_boundary`.
+- Metadata-preflight growth protection:
+  `t1_e0_bounded_lesson_reader_refuses_growth_after_metadata_preflight`.
+- Pre-work runtime ordering:
+  `t4_e0_oversized_lesson_fails_before_tools_workspace_and_synthesis` and
+  `t4_e0_lesson_fifo_fails_before_tools_workspace_and_synthesis`.
+- Independent pipe overflow:
+  `t4_e0_bounded_command_reports_the_stream_that_overflows`.
+- Deadline enforcement:
+  `t4_e0_bounded_command_times_out_with_an_injected_policy` and
+  `t4_e0_deadline_includes_capture_setup_and_precedes_success`.
+- Monitoring failure cleanup:
+  `t4_e0_capture_thread_start_failure_terminates_and_reaps_child`.
+- Non-reaping process-group observation:
+  `t4_e0_exit_observation_keeps_process_group_leader_waitable`.
+- Descendant cleanup:
+  `t4_e0_timeout_terminates_and_reaps_the_process_group` and
+  `t4_e0_successful_child_terminates_and_reaps_lingering_descendants`.
+- Escaped pipe-holder containment:
+  `t4_e0_timeout_terminates_escaped_descendant_retaining_capture_pipes`.
+
+The process-executing T4 tests are intentionally colocated in
+`crates/study-tts-runtime/src/process.rs` because their injected short policy
+and capture-start failure seams are private implementation details. Moving
+them to `study-tts-testkit` would widen production visibility solely for the
+test harness; the tests still exercise real filesystem and `/bin/sh` process
+boundaries and retain their T4 names and budget.
+
 The word provisional is material. The fixture uses `schema_version: 0.1-skeleton` so it cannot be mistaken for the complete lesson `1.0` contract accepted in ADR-0001. Later stories may version or replace these contracts, but they must preserve this test path or update it in the same change so the end-to-end integration order remains executable.
 
 Before G1, the provisional flat `BuildError` was intentionally replaced by

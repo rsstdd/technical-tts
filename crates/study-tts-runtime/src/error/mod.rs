@@ -38,7 +38,7 @@ pub use io_error::IoError;
 pub use managed_path::ManagedPathError;
 pub use publication::PublicationError;
 pub use rights::RightsError;
-pub use tool::ToolError;
+pub use tool::{ToolError, ToolInvocation, ToolOperation, ToolOutputStream};
 pub use voice_profile::VoiceProfileError;
 
 /// Why a build or publication was refused, grouped by its owning boundary.
@@ -313,7 +313,30 @@ mod tests {
                 "reconcile the encode settings with output verification",
                 Some("Invalid or over-range audio"),
             )),
+            ToolError::ToolCleanupFailed { .. }
+            | ToolError::ToolChildInspectionFailed { .. }
+            | ToolError::ToolTerminationSignalFailed { .. }
+            | ToolError::ToolContainmentInspectionFailed { .. }
+            | ToolError::ToolContainmentSignalFailed { .. }
+            | ToolError::ToolChildReapFailed { .. }
+            | ToolError::ToolTerminationTimedOut { .. }
+            | ToolError::ToolReaperStartFailed { .. }
+            | ToolError::ToolCaptureReaperStartFailed { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::WorkerRuntime,
+                "preserve diagnostics and correct the external-tool containment lifecycle",
+                Some("Worker protocol or containment failure"),
+            )),
             ToolError::Ffmpeg { .. }
+            | ToolError::ToolTimedOut { .. }
+            | ToolError::ToolOutputOverflow { .. }
+            | ToolError::ToolPipeUnavailable { .. }
+            | ToolError::ToolCaptureConfigurationFailed { .. }
+            | ToolError::ToolCaptureStartFailed { .. }
+            | ToolError::ToolCaptureReadFailed { .. }
+            | ToolError::ToolCaptureChannelClosed { .. }
+            | ToolError::ToolCaptureThreadPanicked { .. }
+            | ToolError::ToolCaptureShutdownTimedOut { .. }
+            | ToolError::ToolCaptureIncomplete { .. }
             | ToolError::StartFfmpeg { .. }
             | ToolError::MissingTool { .. }
             | ToolError::InspectTool { .. }
@@ -336,6 +359,29 @@ mod tests {
 
     fn assert_expected_remedy(error: BuildError, expected: Option<RemedyAdvice>) {
         assert_eq!(error.remedy(), expected, "`{error}` has the wrong remedy");
+    }
+
+    fn tool_invocation() -> ToolInvocation {
+        ToolInvocation::new("FFmpeg", ToolOperation::M4aEncode, Path::new("lesson.m4a"))
+    }
+
+    #[test]
+    fn t1_e0_tool_invocation_preserves_typed_operation_context() {
+        for (operation, expected_label) in [
+            (ToolOperation::VersionProbe, "version probe"),
+            (ToolOperation::M4aEncode, "M4A encode"),
+            (ToolOperation::M4aValidation, "M4A validation"),
+        ] {
+            let invocation = ToolInvocation::new("tool", operation, Path::new("subject"));
+
+            assert_eq!(invocation.tool(), "tool");
+            assert_eq!(invocation.operation(), operation);
+            assert_eq!(invocation.subject(), Path::new("subject"));
+            assert_eq!(
+                invocation.to_string(),
+                format!("tool {expected_label} for `subject`")
+            );
+        }
     }
 
     #[test]
@@ -577,6 +623,49 @@ mod tests {
                 required_codec: "aac",
                 required_channels: 1,
             },
+            ToolError::ToolTerminationSignalFailed {
+                invocation: tool_invocation(),
+                source: io::Error::other("termination failure"),
+            },
+            ToolError::ToolChildInspectionFailed {
+                invocation: tool_invocation(),
+                source: io::Error::other("child inspection failure"),
+            },
+            ToolError::ToolContainmentInspectionFailed {
+                invocation: tool_invocation(),
+                source: io::Error::other("containment inspection failure"),
+            },
+            ToolError::ToolContainmentSignalFailed {
+                invocation: tool_invocation(),
+                pid: 7,
+                source: io::Error::other("containment signal failure"),
+            },
+            ToolError::ToolChildReapFailed {
+                invocation: tool_invocation(),
+                source: io::Error::other("child reap failure"),
+            },
+            ToolError::ToolTerminationTimedOut {
+                invocation: tool_invocation(),
+                timeout_ms: 1,
+            },
+            ToolError::ToolReaperStartFailed {
+                invocation: tool_invocation(),
+                source: io::Error::other("child reaper failure"),
+            },
+            ToolError::ToolCaptureReaperStartFailed {
+                invocation: tool_invocation(),
+                source: io::Error::other("capture reaper failure"),
+            },
+            ToolError::ToolCleanupFailed {
+                primary: Box::new(ToolError::ToolTimedOut {
+                    invocation: tool_invocation(),
+                    timeout_ms: 1,
+                }),
+                cleanup: Box::new(ToolError::ToolTerminationTimedOut {
+                    invocation: tool_invocation(),
+                    timeout_ms: 1,
+                }),
+            },
         ] {
             let expected = expected_tool_remedy(&error);
             assert_expected_remedy(error.into(), expected);
@@ -615,6 +704,9 @@ mod tests {
                 path: PathBuf::from("lesson.json"),
                 source: io::Error::other("read failure"),
             }),
+            BuildError::from(IoError::LessonNotRegularFile {
+                path: PathBuf::from("lesson.json"),
+            }),
             BuildError::from(LessonError::MissingLessonId),
             BuildError::from(VoiceError::UnsupportedSchema("future".to_owned())),
             BuildError::from(PublicationError::UnsupportedProductionManifest {
@@ -631,6 +723,20 @@ mod tests {
             BuildError::from(ToolError::MissingTool {
                 tool: "FFmpeg".to_owned(),
                 requested: PathBuf::from("ffmpeg"),
+            }),
+            BuildError::from(ToolError::ToolTimedOut {
+                invocation: tool_invocation(),
+                timeout_ms: 1,
+            }),
+            BuildError::from(ToolError::ToolOutputOverflow {
+                invocation: tool_invocation(),
+                stream: ToolOutputStream::Stderr,
+                limit_bytes: 1,
+            }),
+            BuildError::from(ToolError::ToolCaptureReadFailed {
+                invocation: tool_invocation(),
+                stream: ToolOutputStream::Stderr,
+                source: io::Error::other("capture failure"),
             }),
             BuildError::from(ManagedPathError::UnrootedDestination {
                 path: PathBuf::new(),

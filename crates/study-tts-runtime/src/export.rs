@@ -17,7 +17,11 @@ use serde::Deserialize;
 use study_tts_core::CANONICAL_CHANNELS;
 use tempfile::Builder;
 
-use crate::{BuildError, ManagedPathError, ToolError, io_error, tools::ToolIdentity};
+use crate::{
+    BuildError, ManagedPathError, ToolError, ToolInvocation, ToolOperation, io_error,
+    process::{self, CommandRunError, FFMPEG_ENCODE_POLICY, FFPROBE_POLICY},
+    tools::ToolIdentity,
+};
 
 /// The audio codec every encoded output carries.
 ///
@@ -116,6 +120,26 @@ pub(crate) struct ToolExecution {
 ///
 /// [`ManagedPathError::UnrootedDestination`] when `destination` has no parent;
 /// [`ToolError::StartFfmpeg`] when the binary cannot be launched;
+/// [`ToolError::ToolTimedOut`] when the encode deadline expires;
+/// [`ToolError::ToolOutputOverflow`] when either output stream exceeds its
+/// ceiling; [`ToolError::ToolPipeUnavailable`],
+/// [`ToolError::ToolCaptureConfigurationFailed`],
+/// [`ToolError::ToolCaptureStartFailed`],
+/// [`ToolError::ToolCaptureReadFailed`],
+/// [`ToolError::ToolCaptureChannelClosed`],
+/// [`ToolError::ToolCaptureThreadPanicked`],
+/// [`ToolError::ToolCaptureShutdownTimedOut`],
+/// [`ToolError::ToolCaptureIncomplete`],
+/// [`ToolError::ToolCleanupFailed`],
+/// [`ToolError::ToolChildInspectionFailed`],
+/// [`ToolError::ToolTerminationSignalFailed`],
+/// [`ToolError::ToolContainmentInspectionFailed`],
+/// [`ToolError::ToolContainmentSignalFailed`],
+/// [`ToolError::ToolChildReapFailed`],
+/// [`ToolError::ToolTerminationTimedOut`],
+/// [`ToolError::ToolReaperStartFailed`], or
+/// [`ToolError::ToolCaptureReaperStartFailed`] when the named supervision
+/// invariant fails;
 /// [`ToolError::Ffmpeg`] carrying the status and stderr when it runs and fails;
 /// otherwise [`crate::IoError::FileSystem`].
 pub(crate) fn export_m4a(
@@ -139,12 +163,16 @@ pub(crate) fn export_m4a(
         .into_temp_path();
 
     let arguments = ffmpeg_arguments(master_wav, &staged);
-    let output = Command::new(&ffmpeg.resolved_executable)
-        .args(&arguments)
-        .output()
-        .map_err(|source| ToolError::StartFfmpeg {
-            executable: ffmpeg.resolved_executable.clone(),
-            source,
+    let mut command = Command::new(&ffmpeg.resolved_executable);
+    command.args(&arguments);
+    let invocation = ToolInvocation::new("FFmpeg", ToolOperation::M4aEncode, destination);
+    let output =
+        process::run(invocation, command, FFMPEG_ENCODE_POLICY).map_err(|error| match error {
+            CommandRunError::Start(source) => ToolError::StartFfmpeg {
+                executable: ffmpeg.resolved_executable.clone(),
+                source,
+            },
+            CommandRunError::Supervision(error) => error,
         })?;
     if !output.status.success() {
         return Err(ToolError::Ffmpeg {
@@ -170,6 +198,26 @@ pub(crate) fn export_m4a(
 /// # Errors
 ///
 /// [`ToolError::InspectTool`] when ffprobe cannot be launched;
+/// [`ToolError::ToolTimedOut`] when its deadline expires;
+/// [`ToolError::ToolOutputOverflow`] when either output stream exceeds its
+/// ceiling; [`ToolError::ToolPipeUnavailable`],
+/// [`ToolError::ToolCaptureConfigurationFailed`],
+/// [`ToolError::ToolCaptureStartFailed`],
+/// [`ToolError::ToolCaptureReadFailed`],
+/// [`ToolError::ToolCaptureChannelClosed`],
+/// [`ToolError::ToolCaptureThreadPanicked`],
+/// [`ToolError::ToolCaptureShutdownTimedOut`],
+/// [`ToolError::ToolCaptureIncomplete`],
+/// [`ToolError::ToolCleanupFailed`],
+/// [`ToolError::ToolChildInspectionFailed`],
+/// [`ToolError::ToolTerminationSignalFailed`],
+/// [`ToolError::ToolContainmentInspectionFailed`],
+/// [`ToolError::ToolContainmentSignalFailed`],
+/// [`ToolError::ToolChildReapFailed`],
+/// [`ToolError::ToolTerminationTimedOut`],
+/// [`ToolError::ToolReaperStartFailed`], or
+/// [`ToolError::ToolCaptureReaperStartFailed`] when the named supervision
+/// invariant fails;
 /// [`ToolError::Ffprobe`] when it runs and fails;
 /// [`ToolError::UnreadableProbeResponse`] when its output cannot be parsed;
 /// [`ToolError::UnexpectedEncodedStreamCount`] when the stream count differs;
@@ -177,13 +225,17 @@ pub(crate) fn export_m4a(
 /// not the one this build encodes to.
 pub(crate) fn probe_m4a(ffprobe: &ToolIdentity, m4a: &Path) -> Result<ToolExecution, BuildError> {
     let arguments = ffprobe_arguments(m4a);
-    let output = Command::new(&ffprobe.resolved_executable)
-        .args(&arguments)
-        .output()
-        .map_err(|source| ToolError::InspectTool {
-            tool: "ffprobe".to_owned(),
-            executable: ffprobe.resolved_executable.clone(),
-            source,
+    let mut command = Command::new(&ffprobe.resolved_executable);
+    command.args(&arguments);
+    let invocation = ToolInvocation::new("ffprobe", ToolOperation::M4aValidation, m4a);
+    let output =
+        process::run(invocation, command, FFPROBE_POLICY).map_err(|error| match error {
+            CommandRunError::Start(source) => ToolError::InspectTool {
+                tool: "ffprobe".to_owned(),
+                executable: ffprobe.resolved_executable.clone(),
+                source,
+            },
+            CommandRunError::Supervision(error) => error,
         })?;
     if !output.status.success() {
         return Err(ToolError::Ffprobe {

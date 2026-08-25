@@ -16,6 +16,13 @@ pub enum IoError {
         source: io::Error,
     },
 
+    /// A lesson path resolved to something other than a regular file.
+    #[error("lesson input `{path}` is not a regular file")]
+    LessonNotRegularFile {
+        /// The refused lesson path.
+        path: PathBuf,
+    },
+
     /// A filesystem operation the build performs itself failed.
     #[error("filesystem operation failed for `{path}`: {source}")]
     FileSystem {

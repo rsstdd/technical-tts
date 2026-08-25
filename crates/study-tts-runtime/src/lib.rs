@@ -12,13 +12,15 @@ mod export;
 mod managed;
 mod manifest;
 mod pipeline;
+mod process;
 mod synthesis;
 mod tools;
 mod voice_gate;
 
 pub use error::{
     AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, IoError, ManagedPathError,
-    PublicationError, RemedyAdvice, RemedyOwner, RightsError, ToolError, VoiceProfileError,
+    PublicationError, RemedyAdvice, RemedyOwner, RightsError, ToolError, ToolInvocation,
+    ToolOperation, ToolOutputStream, VoiceProfileError,
 };
 pub use pipeline::{
     BuildRequest, BuildResult, build_preview, publish, validate_encoded_output,
