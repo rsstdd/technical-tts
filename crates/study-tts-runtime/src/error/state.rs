@@ -263,9 +263,9 @@ pub enum DurableStateError {
 
     /// A package manifest segment declares no audio frames.
     #[error(
-        "package manifest `{}` records zero frames for segment `{segment_id}`; \
-         preserve the package for runtime reconciliation",
-        path.display()
+        "package manifest `{}` records zero frames for segment `{segment_id}`; {remedy}",
+        path.display(),
+        remedy = "preserve the package for runtime reconciliation",
     )]
     EmptyPackageSegmentAudio {
         /// Manifest carrying the empty segment.
@@ -494,8 +494,10 @@ impl DurableStateError {
             | Self::InvalidJobDirectoryName { .. }
             | Self::PublicationConflict { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::Runtime,
-                "preserve the artifacts and run runtime reconciliation without overwrite or \
-                 deletion",
+                concat!(
+                    "preserve the artifacts and run runtime reconciliation without overwrite ",
+                    "or deletion",
+                ),
                 Some("State or checksum corruption"),
             )),
         }

@@ -46,7 +46,7 @@ flowchart LR
 
 | Boundary | Current owner | Stabilization point |
 |---|---|---|
-| Lesson parsing and validation | `study-tts-core::Lesson` | E1-S1 and E1-S2 schemas |
+| Lesson parsing and validation | `study-tts-core::{AuthoredLesson, ValidatedLesson}` | E1-S1 and E1-S2 schemas |
 | Render planning and synthesis identity | `study-tts-core::RenderPlan` | E1-S1 identity contracts |
 | Synthesis port | `study-tts-runtime::SegmentSynthesizer` | Replaced by the E0-S4 asynchronous contract |
 | Deterministic tone implementation | `study-tts-testkit::DeterministicToneWorker` | Extended by E0-S4 shared fakes |
@@ -149,6 +149,8 @@ test harness; the tests still exercise real filesystem and `/bin/sh` process
 boundaries and retain their T4 names and budget.
 
 The word provisional is material. The fixture uses `schema_version: 0.1-skeleton`; lock, journal, and selection records use distinct internal `0.1-skeleton-*` versions with unknown-field rejection. None can be mistaken for the complete lesson, job, manifest, or publication schemas accepted in ADR-0001. Later stories may version or replace these contracts, but they must preserve this test path or update it in the same change so the end-to-end integration order remains executable.
+
+New minimal preview manifests use `0.2-skeleton`, which requires normalized tool argument-profile identities. Reconciliation still accepts strict legacy `0.1-skeleton` manifests without those fields, but cannot reuse them as a matching tool-profile generation.
 
 Before G1, the provisional flat `BuildError` was intentionally replaced by
 transparent category variants with exact leaf refusals beneath them. This was a

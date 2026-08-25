@@ -252,7 +252,7 @@ fn t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest() {
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(&result.manifest).expect("read minimal manifest"))
             .expect("parse minimal manifest");
-    assert_eq!(manifest["schema_version"], "0.1-skeleton");
+    assert_eq!(manifest["schema_version"], "0.2-skeleton");
     assert_eq!(manifest["release_status"], "private_preview");
     assert_eq!(manifest["lesson_id"], "e0-s0-walking-skeleton");
     assert_eq!(manifest["segments"].as_array().map(Vec::len), Some(2));
@@ -1183,7 +1183,7 @@ fn t4_e0_private_preview_cannot_enter_production_publication() {
         Err(BuildError::Publication(
             PublicationError::UnsupportedProductionManifest { ref version }
         ))
-            if version == "0.1-skeleton"
+            if version == "0.2-skeleton"
     ));
 }
 

@@ -39,7 +39,7 @@ use crate::{BuildError, ManagedPathError, io_error};
 pub(crate) fn subdirectory(root: &Path, component: &str) -> Result<PathBuf, BuildError> {
     let candidate = directory_candidate(root, component)?;
     if candidate.is_dir() {
-        return fs::canonicalize(&candidate).map_err(|error| io_error(&candidate, error));
+        return canonicalize_contained_directory(root, &candidate);
     }
     match fs::create_dir(&candidate) {
         Ok(()) => {}
@@ -54,7 +54,11 @@ pub(crate) fn subdirectory(root: &Path, component: &str) -> Result<PathBuf, Buil
 
     // Defence in depth: catches a link planted between the inspection and the
     // creation.
-    let resolved = fs::canonicalize(&candidate).map_err(|error| io_error(&candidate, error))?;
+    canonicalize_contained_directory(root, &candidate)
+}
+
+fn canonicalize_contained_directory(root: &Path, candidate: &Path) -> Result<PathBuf, BuildError> {
+    let resolved = fs::canonicalize(candidate).map_err(|error| io_error(candidate, error))?;
     if !resolved.starts_with(root) {
         return Err(escape(resolved, root));
     }
@@ -179,6 +183,11 @@ fn escape(path: PathBuf, root: &Path) -> BuildError {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+
+    use tempfile::TempDir;
+
     use super::*;
 
     // Both helpers promise containment and both begin by refusing a name that
@@ -230,5 +239,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn t4_e0_existing_managed_directory_must_resolve_beneath_root() {
+        let workspace = TempDir::new().expect("create managed-path workspace");
+        let outside = TempDir::new().expect("create outside directory");
+        let linked_root = workspace.path().join("linked-root");
+        symlink(outside.path(), &linked_root).expect("link managed root outside");
+        fs::create_dir(outside.path().join("existing")).expect("create existing directory");
+
+        let error = subdirectory(&linked_root, "existing")
+            .expect_err("resolved directory outside the supplied root must be rejected");
+
+        assert!(matches!(
+            error,
+            BuildError::ManagedPath(ManagedPathError::ManagedPathEscape { .. })
+        ));
     }
 }

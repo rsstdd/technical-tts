@@ -11,6 +11,9 @@ use std::{
     path::Path,
 };
 
+#[cfg(test)]
+use std::sync::Mutex;
+
 use serde::Serialize;
 use tempfile::Builder;
 
@@ -96,6 +99,54 @@ impl DurableFileSystem for OsDurableFileSystem {
     }
 }
 
+/// Filesystem test seam that records durability operations before delegation.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct TracingFileSystem {
+    inner: OsDurableFileSystem,
+    /// Recorded operations in call order.
+    pub(crate) events: Mutex<Vec<String>>,
+}
+
+#[cfg(test)]
+impl DurableFileSystem for TracingFileSystem {
+    fn sync_file(&self, path: &Path) -> Result<(), BuildError> {
+        self.events
+            .lock()
+            .expect("trace lock")
+            .push(format!("file:{}", path.display()));
+        self.inner.sync_file(path)
+    }
+
+    fn sync_directory(&self, path: &Path) -> Result<(), BuildError> {
+        self.events
+            .lock()
+            .expect("trace lock")
+            .push(format!("directory:{}", path.display()));
+        self.inner.sync_directory(path)
+    }
+
+    fn rename_noreplace(
+        &self,
+        staged: &Path,
+        destination: &Path,
+    ) -> Result<RenameOutcome, BuildError> {
+        self.events
+            .lock()
+            .expect("trace lock")
+            .push(format!("rename:{}", destination.display()));
+        self.inner.rename_noreplace(staged, destination)
+    }
+
+    fn replace_file(&self, staged: &Path, destination: &Path) -> Result<(), BuildError> {
+        self.events
+            .lock()
+            .expect("trace lock")
+            .push(format!("replace:{}", destination.display()));
+        self.inner.replace_file(staged, destination)
+    }
+}
+
 /// Writes strict JSON through file sync, atomic replacement, and directory
 /// sync.
 ///
@@ -177,56 +228,10 @@ fn parent_of(path: &Path) -> Result<&Path, BuildError> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use serde::Serialize;
     use tempfile::TempDir;
 
     use super::*;
-
-    #[derive(Debug, Default)]
-    struct TracingFileSystem {
-        inner: OsDurableFileSystem,
-        events: Mutex<Vec<String>>,
-    }
-
-    impl DurableFileSystem for TracingFileSystem {
-        fn sync_file(&self, path: &Path) -> Result<(), BuildError> {
-            self.events
-                .lock()
-                .expect("trace lock")
-                .push(format!("file:{}", path.display()));
-            self.inner.sync_file(path)
-        }
-
-        fn sync_directory(&self, path: &Path) -> Result<(), BuildError> {
-            self.events
-                .lock()
-                .expect("trace lock")
-                .push(format!("directory:{}", path.display()));
-            self.inner.sync_directory(path)
-        }
-
-        fn rename_noreplace(
-            &self,
-            staged: &Path,
-            destination: &Path,
-        ) -> Result<RenameOutcome, BuildError> {
-            self.events
-                .lock()
-                .expect("trace lock")
-                .push(format!("rename:{}", destination.display()));
-            self.inner.rename_noreplace(staged, destination)
-        }
-
-        fn replace_file(&self, staged: &Path, destination: &Path) -> Result<(), BuildError> {
-            self.events
-                .lock()
-                .expect("trace lock")
-                .push(format!("replace:{}", destination.display()));
-            self.inner.replace_file(staged, destination)
-        }
-    }
 
     #[derive(Serialize)]
     struct Record {

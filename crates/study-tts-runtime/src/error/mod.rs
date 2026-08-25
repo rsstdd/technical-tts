@@ -425,6 +425,11 @@ mod tests {
         assert_eq!(error.remedy(), expected, "`{error}` has the wrong remedy");
     }
 
+    fn assert_durable_state_remedy(error: DurableStateError, expected: Option<RemedyAdvice>) {
+        assert_eq!(expected_durable_state_remedy(&error), expected);
+        assert_expected_remedy(error.into(), expected);
+    }
+
     fn tool_invocation() -> ToolInvocation {
         ToolInvocation::new("FFmpeg", ToolOperation::M4aEncode, Path::new("lesson.m4a"))
     }
@@ -764,11 +769,67 @@ mod tests {
             assert_expected_remedy(error.into(), expected);
         }
 
-        let error = DurableStateError::PublicationConflict {
-            path: PathBuf::from("package"),
+        let live_lock = DurableStateError::LiveJobLock {
+            path: PathBuf::from("build.lock"),
+            pid: 7,
+            process_start: 11,
         };
-        let expected = expected_durable_state_remedy(&error);
-        assert_expected_remedy(error.into(), expected);
+        assert_durable_state_remedy(live_lock, None);
+
+        let cache_lock = DurableStateError::CacheLockTimeout {
+            path: PathBuf::from("cache.lock"),
+            cache_key: "a"
+                .repeat(study_tts_core::CacheKey::LENGTH)
+                .parse()
+                .expect("valid cache key"),
+            timeout_ms: 1,
+        };
+        assert_durable_state_remedy(
+            cache_lock,
+            Some(RemedyAdvice::new(
+                RemedyOwner::Runtime,
+                "preserve attempts and inspect the cache-key owner before retrying",
+                None,
+            )),
+        );
+
+        let quarantine = DurableStateError::QuarantineFailed {
+            staging_path: PathBuf::from("staging"),
+            primary: Box::new(BuildError::from(SynthesisError::new("worker failed"))),
+            cleanup: Box::new(BuildError::from(IoError::FileSystem {
+                path: PathBuf::from("quarantine"),
+                source: io::Error::other("quarantine failure"),
+            })),
+        };
+        assert_durable_state_remedy(
+            quarantine,
+            Some(RemedyAdvice::new(
+                RemedyOwner::Runtime,
+                "preserve the staging attempt and repair quarantine before retrying",
+                None,
+            )),
+        );
+
+        for shared in [
+            DurableStateError::PublicationConflict {
+                path: PathBuf::from("package"),
+            },
+            DurableStateError::MissingCurrentPreview {
+                path: PathBuf::from("current.json"),
+            },
+        ] {
+            assert_durable_state_remedy(
+                shared,
+                Some(RemedyAdvice::new(
+                    RemedyOwner::Runtime,
+                    concat!(
+                        "preserve the artifacts and run runtime reconciliation without overwrite ",
+                        "or deletion",
+                    ),
+                    Some("State or checksum corruption"),
+                )),
+            );
+        }
     }
 
     #[test]

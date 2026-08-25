@@ -6,9 +6,9 @@
 //! that could disagree with the build it describes is worse than no manifest,
 //! because `validate_production_manifest` gates on what it says.
 
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use study_tts_core::{CacheKey, PlanHash, ReleaseStatus, is_blake3_hex};
 
 use crate::{
@@ -21,10 +21,11 @@ use crate::{
 
 /// Layout version of `manifest.json`.
 ///
-/// Independent of `CACHE_SCHEMA_VERSION` and the lesson schema despite sharing
-/// a value today: each versions a different document and moves separately.
-/// E1-S1 replaces all three with versioned JSON Schemas.
-const MANIFEST_SCHEMA_VERSION: &str = "0.1-skeleton";
+/// Independent of `CACHE_SCHEMA_VERSION` and the lesson schema: each versions
+/// a different document and moves separately. E1-S1 replaces all three with
+/// versioned JSON Schemas.
+const LEGACY_MANIFEST_SCHEMA_VERSION: &str = "0.1-skeleton";
+const MANIFEST_SCHEMA_VERSION: &str = "0.2-skeleton";
 
 /// Name of the assembled master inside a preview directory.
 ///
@@ -216,14 +217,14 @@ pub(crate) fn write(
 /// Strict owned shape used when an immutable package is reconciled or reused.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
-struct StoredManifest {
+struct StoredManifest<T> {
     schema_version: String,
     release_status: ReleaseStatus,
     lesson_id: String,
     plan_hash: String,
     segments: Vec<StoredManifestSegment>,
     artifacts: StoredArtifacts,
-    tools: StoredTools,
+    tools: T,
 }
 
 #[derive(Debug, Deserialize)]
@@ -252,18 +253,96 @@ struct StoredArtifact {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
-struct StoredTools {
-    ffmpeg: StoredToolUse,
-    ffprobe: StoredToolUse,
+struct StoredTools<T> {
+    ffmpeg: T,
+    ffprobe: T,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "snake_case")]
+#[derive(Debug)]
 struct StoredToolUse {
     resolved_executable: String,
     version: String,
     arguments: Vec<String>,
+    argument_profile_blake3: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+struct CurrentStoredToolUse {
+    resolved_executable: String,
+    version: String,
+    arguments: Vec<String>,
     argument_profile_blake3: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+struct LegacyStoredToolUse {
+    resolved_executable: String,
+    version: String,
+    arguments: Vec<String>,
+    argument_profile_blake3: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredManifestVersion {
+    schema_version: String,
+    // This pass only selects the strict decoder. The selected decoder reparses
+    // the same bytes with unknown-field rejection.
+    #[serde(flatten)]
+    _remaining: BTreeMap<String, serde::de::IgnoredAny>,
+}
+
+impl<T> StoredManifest<T> {
+    fn map_tools<U>(self, map: impl FnOnce(T) -> U) -> StoredManifest<U> {
+        StoredManifest {
+            schema_version: self.schema_version,
+            release_status: self.release_status,
+            lesson_id: self.lesson_id,
+            plan_hash: self.plan_hash,
+            segments: self.segments,
+            artifacts: self.artifacts,
+            tools: map(self.tools),
+        }
+    }
+}
+
+impl From<StoredTools<CurrentStoredToolUse>> for StoredTools<StoredToolUse> {
+    fn from(tools: StoredTools<CurrentStoredToolUse>) -> Self {
+        Self {
+            ffmpeg: StoredToolUse {
+                resolved_executable: tools.ffmpeg.resolved_executable,
+                version: tools.ffmpeg.version,
+                arguments: tools.ffmpeg.arguments,
+                argument_profile_blake3: Some(tools.ffmpeg.argument_profile_blake3),
+            },
+            ffprobe: StoredToolUse {
+                resolved_executable: tools.ffprobe.resolved_executable,
+                version: tools.ffprobe.version,
+                arguments: tools.ffprobe.arguments,
+                argument_profile_blake3: Some(tools.ffprobe.argument_profile_blake3),
+            },
+        }
+    }
+}
+
+impl From<StoredTools<LegacyStoredToolUse>> for StoredTools<StoredToolUse> {
+    fn from(tools: StoredTools<LegacyStoredToolUse>) -> Self {
+        Self {
+            ffmpeg: StoredToolUse {
+                resolved_executable: tools.ffmpeg.resolved_executable,
+                version: tools.ffmpeg.version,
+                arguments: tools.ffmpeg.arguments,
+                argument_profile_blake3: tools.ffmpeg.argument_profile_blake3,
+            },
+            ffprobe: StoredToolUse {
+                resolved_executable: tools.ffprobe.resolved_executable,
+                version: tools.ffprobe.version,
+                arguments: tools.ffprobe.arguments,
+                argument_profile_blake3: tools.ffprobe.argument_profile_blake3,
+            },
+        }
+    }
 }
 
 /// Validates the files and strict manifest inside an immutable package.
@@ -285,20 +364,25 @@ pub(crate) fn validate_package(
     let manifest_path = package_dir.join(MANIFEST_NAME);
     let bytes =
         std::fs::read(&manifest_path).map_err(|error| crate::io_error(&manifest_path, error))?;
-    let manifest: StoredManifest = serde_json::from_slice(&bytes).map_err(|source| {
-        DurableStateError::MalformedPackageManifest {
-            path: manifest_path.clone(),
-            source,
+    let version: StoredManifestVersion = parse_manifest(&bytes, &manifest_path)?;
+    let manifest = match version.schema_version.as_str() {
+        LEGACY_MANIFEST_SCHEMA_VERSION => parse_manifest::<
+            StoredManifest<StoredTools<LegacyStoredToolUse>>,
+        >(&bytes, &manifest_path)?
+        .map_tools(StoredTools::from),
+        MANIFEST_SCHEMA_VERSION => parse_manifest::<
+            StoredManifest<StoredTools<CurrentStoredToolUse>>,
+        >(&bytes, &manifest_path)?
+        .map_tools(StoredTools::from),
+        _ => {
+            return Err(DurableStateError::UnsupportedPackageManifest {
+                path: manifest_path,
+                found: version.schema_version,
+                required: MANIFEST_SCHEMA_VERSION,
+            }
+            .into());
         }
-    })?;
-    if manifest.schema_version != MANIFEST_SCHEMA_VERSION {
-        return Err(DurableStateError::UnsupportedPackageManifest {
-            path: manifest_path,
-            found: manifest.schema_version,
-            required: MANIFEST_SCHEMA_VERSION,
-        }
-        .into());
-    }
+    };
     if manifest.release_status != ReleaseStatus::PrivatePreview {
         return Err(DurableStateError::PackageReleaseStatusMismatch {
             path: manifest_path,
@@ -374,6 +458,19 @@ pub(crate) fn validate_package(
     Ok(plan_matches && tools_match)
 }
 
+fn parse_manifest<T: DeserializeOwned>(
+    bytes: &[u8],
+    manifest_path: &Path,
+) -> Result<T, BuildError> {
+    serde_json::from_slice(bytes).map_err(|source| {
+        DurableStateError::MalformedPackageManifest {
+            path: manifest_path.to_path_buf(),
+            source,
+        }
+        .into()
+    })
+}
+
 fn validate_artifact(
     package_dir: &Path,
     manifest_path: &Path,
@@ -421,11 +518,13 @@ fn validate_tool_record(
         }
         .into());
     }
-    if !is_blake3_hex(&recorded.argument_profile_blake3) {
+    if let Some(profile) = &recorded.argument_profile_blake3
+        && !is_blake3_hex(profile)
+    {
         return Err(DurableStateError::MalformedPackageToolProfile {
             path: path.to_path_buf(),
             tool,
-            value: recorded.argument_profile_blake3.clone(),
+            value: profile.clone(),
         }
         .into());
     }
@@ -435,13 +534,14 @@ fn validate_tool_record(
 fn tool_matches(recorded: &StoredToolUse, expected: &ToolIdentity, profile: &ToolProfile) -> bool {
     recorded.resolved_executable == expected.resolved_executable.display().to_string()
         && recorded.version == expected.version
-        && recorded.argument_profile_blake3 == profile.identity()
+        && recorded.argument_profile_blake3.as_deref() == Some(profile.identity())
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
+    use serde_json::Value;
     use tempfile::TempDir;
 
     use super::*;
@@ -460,6 +560,154 @@ mod tests {
             frames: 1,
             pause_after_ms: 0,
         }
+    }
+
+    fn test_tool_identities() -> (ToolIdentity, ToolIdentity) {
+        (
+            ToolIdentity {
+                resolved_executable: PathBuf::from("/tools/ffmpeg"),
+                version: "ffmpeg version 1".to_owned(),
+            },
+            ToolIdentity {
+                resolved_executable: PathBuf::from("/tools/ffprobe"),
+                version: "ffprobe version 1".to_owned(),
+            },
+        )
+    }
+
+    fn write_test_package(package: &Path) {
+        std::fs::create_dir(package).expect("create test package");
+        std::fs::write(package.join(MASTER_WAV_NAME), b"master").expect("write master");
+        std::fs::write(package.join(M4A_NAME), b"encoded").expect("write export");
+        let segment = cached_segment(blake3::hash(b"segment").to_hex().to_string());
+        let plan_hash = PlanHash::from(blake3::hash(b"plan"));
+        let (ffmpeg, ffprobe) = test_tool_identities();
+        let profiles = export::export_profiles();
+        let ffmpeg_execution = ToolExecution {
+            arguments: vec!["encode".to_owned()],
+            argument_profile_blake3: profiles.ffmpeg.identity().to_owned(),
+        };
+        let ffprobe_execution = ToolExecution {
+            arguments: vec!["probe".to_owned()],
+            argument_profile_blake3: profiles.ffprobe.identity().to_owned(),
+        };
+        write(
+            &OsDurableFileSystem,
+            &package.join(MANIFEST_NAME),
+            ManifestRecords {
+                lesson_id: "lesson",
+                plan_hash: &plan_hash,
+                segments: std::slice::from_ref(&segment),
+                master_wav: &package.join(MASTER_WAV_NAME),
+                m4a: &package.join(M4A_NAME),
+                tools: ToolRecords {
+                    ffmpeg: &ffmpeg,
+                    ffmpeg_execution: &ffmpeg_execution,
+                    ffprobe: &ffprobe,
+                    ffprobe_execution: &ffprobe_execution,
+                },
+            },
+        )
+        .expect("write test manifest");
+    }
+
+    fn rewrite_test_manifest(package: &Path, update: impl FnOnce(&mut Value)) {
+        let manifest_path = package.join(MANIFEST_NAME);
+        let mut manifest: Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).expect("read test manifest"))
+                .expect("parse test manifest");
+        update(&mut manifest);
+        std::fs::write(
+            manifest_path,
+            serde_json::to_vec_pretty(&manifest).expect("serialize test manifest"),
+        )
+        .expect("write changed test manifest");
+    }
+
+    fn remove_tool_profiles(package: &Path, schema_version: &str) {
+        rewrite_test_manifest(package, |manifest| {
+            manifest["schema_version"] = Value::String(schema_version.to_owned());
+            for tool in ["ffmpeg", "ffprobe"] {
+                manifest["tools"][tool]
+                    .as_object_mut()
+                    .expect("tool record is an object")
+                    .remove("argument_profile_blake3");
+            }
+        });
+    }
+
+    #[test]
+    fn t4_e0_legacy_package_manifest_without_tool_profiles_remains_valid() {
+        let workspace = TempDir::new().expect("create manifest workspace");
+        let package = workspace.path().join("package");
+        write_test_package(&package);
+        remove_tool_profiles(&package, LEGACY_MANIFEST_SCHEMA_VERSION);
+
+        assert!(
+            validate_package(&package, "lesson", None, None)
+                .expect("legacy package remains structurally valid")
+        );
+
+        let (ffmpeg, ffprobe) = test_tool_identities();
+        let profiles = export::export_profiles();
+        assert!(
+            !validate_package(
+                &package,
+                "lesson",
+                None,
+                Some(ToolExpectations {
+                    ffmpeg: &ffmpeg,
+                    ffmpeg_profile: &profiles.ffmpeg,
+                    ffprobe: &ffprobe,
+                    ffprobe_profile: &profiles.ffprobe,
+                }),
+            )
+            .expect("legacy package remains valid but cannot prove its tool profiles")
+        );
+    }
+
+    #[test]
+    fn t4_e0_legacy_package_manifest_with_tool_profiles_remains_reusable() {
+        let workspace = TempDir::new().expect("create manifest workspace");
+        let package = workspace.path().join("package");
+        write_test_package(&package);
+        rewrite_test_manifest(&package, |manifest| {
+            manifest["schema_version"] = Value::String(LEGACY_MANIFEST_SCHEMA_VERSION.to_owned());
+        });
+        let (ffmpeg, ffprobe) = test_tool_identities();
+        let profiles = export::export_profiles();
+
+        assert!(
+            validate_package(
+                &package,
+                "lesson",
+                None,
+                Some(ToolExpectations {
+                    ffmpeg: &ffmpeg,
+                    ffmpeg_profile: &profiles.ffmpeg,
+                    ffprobe: &ffprobe,
+                    ffprobe_profile: &profiles.ffprobe,
+                }),
+            )
+            .expect("legacy package with profiles remains reusable")
+        );
+    }
+
+    #[test]
+    fn t4_e0_current_package_manifest_requires_tool_profiles() {
+        let workspace = TempDir::new().expect("create manifest workspace");
+        let package = workspace.path().join("package");
+        write_test_package(&package);
+        remove_tool_profiles(&package, MANIFEST_SCHEMA_VERSION);
+
+        let error = validate_package(&package, "lesson", None, None)
+            .expect_err("current package must require tool profiles");
+
+        assert!(matches!(
+            error,
+            BuildError::DurableState(error)
+                if matches!(*error, DurableStateError::MalformedPackageManifest { .. })
+        ));
     }
 
     #[test]

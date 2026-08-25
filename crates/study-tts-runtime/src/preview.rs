@@ -677,60 +677,14 @@ fn published_paths(package_dir: PathBuf, publication_record: PathBuf) -> Publish
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use tempfile::TempDir;
 
     use super::*;
     use crate::{
         cache::CachedSegment,
-        durable::OsDurableFileSystem,
+        durable::{OsDurableFileSystem, TracingFileSystem},
         export::{ToolExecution, ToolProfile},
     };
-
-    #[derive(Debug, Default)]
-    struct TracingFileSystem {
-        inner: OsDurableFileSystem,
-        events: Mutex<Vec<String>>,
-    }
-
-    impl DurableFileSystem for TracingFileSystem {
-        fn sync_file(&self, path: &Path) -> Result<(), BuildError> {
-            self.events
-                .lock()
-                .expect("trace lock")
-                .push(format!("file:{}", path.display()));
-            self.inner.sync_file(path)
-        }
-
-        fn sync_directory(&self, path: &Path) -> Result<(), BuildError> {
-            self.events
-                .lock()
-                .expect("trace lock")
-                .push(format!("directory:{}", path.display()));
-            self.inner.sync_directory(path)
-        }
-
-        fn rename_noreplace(
-            &self,
-            staged: &Path,
-            destination: &Path,
-        ) -> Result<RenameOutcome, BuildError> {
-            self.events
-                .lock()
-                .expect("trace lock")
-                .push(format!("rename:{}", destination.display()));
-            self.inner.rename_noreplace(staged, destination)
-        }
-
-        fn replace_file(&self, staged: &Path, destination: &Path) -> Result<(), BuildError> {
-            self.events
-                .lock()
-                .expect("trace lock")
-                .push(format!("replace:{}", destination.display()));
-            self.inner.replace_file(staged, destination)
-        }
-    }
 
     #[test]
     fn t4_e0_package_publication_flushes_files_before_the_directory_rename() {
