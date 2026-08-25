@@ -260,7 +260,7 @@ The arrows define prerequisites, not a requirement to serialize independent trac
 
 **Tests and evidence**
 
-- `evidence_e0_model_and_voice_rights_records_complete`
+- `evidence_e0_model_and_voice_rights_records_complete_v2`
 - `evidence_e0_source_provenance_use_and_distribution_classification_complete`
 - `t4_e0_missing_voice_consent_blocks_profile_load`
 - `t4_e0_unapproved_voice_profile_cannot_enter_preview_or_production`
