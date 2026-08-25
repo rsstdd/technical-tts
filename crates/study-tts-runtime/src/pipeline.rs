@@ -451,6 +451,7 @@ const PRODUCTION_MANIFEST_VERSION: &str = "1.0";
 /// Deliberately not strict: the version is what says which fields are legal, so
 /// a document cannot be held to a shape before it has been read.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 struct ManifestVersion {
     schema_version: Option<String>,
 }
@@ -468,6 +469,7 @@ struct ManifestVersion {
 /// operator that something failed to parse without saying where.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 struct ProductionManifest {
     schema_version: String,
     /// Typed, so a status this build does not know is a parse error here rather
@@ -484,6 +486,7 @@ struct ProductionManifest {
 /// `content_rights` below.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 struct DeclaredVoiceProfile {
     profile_id: String,
     approval: RightsDecision,

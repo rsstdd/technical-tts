@@ -130,6 +130,7 @@ impl VoiceUse {
 /// and consent status.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub struct VoiceConsent {
     /// Version of the consent record layout; must be `0.1-voice`.
     pub schema_version: String,
@@ -156,6 +157,7 @@ pub struct VoiceConsent {
 /// the synthesis identity; the reference hash is provenance.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub struct VoiceProfile {
     /// Version of the profile record layout; must be `0.1-voice`.
     pub schema_version: String,

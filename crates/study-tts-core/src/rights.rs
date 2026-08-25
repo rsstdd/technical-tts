@@ -92,6 +92,7 @@ impl SourceClassification {
 /// One classified source named by a production manifest.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub struct SourceRightsDeclaration {
     /// Identifier of the classified source.
     pub source_id: String,
