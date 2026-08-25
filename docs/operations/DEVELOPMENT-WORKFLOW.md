@@ -18,6 +18,7 @@ Run development under Ubuntu 24.04 in WSL2. Keep the repository, Rust target, Py
 
 ```bash
 cargo fmt --all -- --check
+python3 scripts/check-rust-conventions.py
 cargo check --workspace --all-targets --locked
 cargo test --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings

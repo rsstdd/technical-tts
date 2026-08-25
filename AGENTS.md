@@ -137,6 +137,7 @@ Current tree: E0-S0 library skeleton + non-product status executable. Product co
 | One test            | `cargo test --workspace <test_name>`                                                           |
 | Tests               | `cargo test --workspace --all-targets --locked`                                                |
 | Lint                | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`                |
+| Rust conventions    | `python3 scripts/check-rust-conventions.py`                                                    |
 | Fmt check           | `cargo fmt --all -- --check`                                                                   |
 | Fmt apply           | `cargo fmt --all`                                                                              |
 | CLI help            | `cargo run -p study-tts-cli -- --help`                                                         |

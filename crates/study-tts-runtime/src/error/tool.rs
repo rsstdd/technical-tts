@@ -230,7 +230,8 @@ pub enum ToolError {
         source: io::Error,
     },
 
-    /// An escaped process proven to descend from the child could not be signalled.
+    /// An escaped process proven to descend from the child could not be
+    /// signalled.
     #[error("could not signal escaped process {pid} from {invocation}: {source}")]
     ToolContainmentSignalFailed {
         /// Exact operation whose escaped process could not be signalled.
@@ -250,7 +251,8 @@ pub enum ToolError {
         source: io::Error,
     },
 
-    /// Cleanup did not observe the process group and tracked descendants disappear.
+    /// Cleanup did not observe the process group and tracked descendants
+    /// disappear.
     #[error("{invocation} cleanup did not finish within {timeout_ms} ms")]
     ToolTerminationTimedOut {
         /// Exact operation whose cleanup timed out.
