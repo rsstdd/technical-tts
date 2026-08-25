@@ -29,6 +29,7 @@ mod io_error;
 mod managed_path;
 mod publication;
 mod rights;
+mod state;
 mod tool;
 mod voice_profile;
 
@@ -38,6 +39,7 @@ pub use io_error::IoError;
 pub use managed_path::ManagedPathError;
 pub use publication::PublicationError;
 pub use rights::RightsError;
+pub use state::DurableStateError;
 pub use tool::{ToolError, ToolInvocation, ToolOperation, ToolOutputStream};
 pub use voice_profile::VoiceProfileError;
 
@@ -74,6 +76,9 @@ pub enum BuildError {
     /// A managed name, path, or destination was unsafe or unusable.
     #[error(transparent)]
     ManagedPath(#[from] ManagedPathError),
+    /// Durable ownership, journal, or selected-package state was unsafe.
+    #[error(transparent)]
+    DurableState(Box<DurableStateError>),
     /// The synthesizer refused or failed.
     #[error(transparent)]
     Synthesis(#[from] SynthesisError),
@@ -92,6 +97,7 @@ impl BuildError {
             Self::Audio(error) => error.remedy(),
             Self::Tool(error) => error.remedy(),
             Self::ManagedPath(error) => error.remedy(),
+            Self::DurableState(error) => error.remedy(),
         }
     }
 }
@@ -101,6 +107,12 @@ impl BuildError {
 impl From<ReleaseError> for BuildError {
     fn from(error: ReleaseError) -> Self {
         Self::Publication(PublicationError::Release(error))
+    }
+}
+
+impl From<DurableStateError> for BuildError {
+    fn from(error: DurableStateError) -> Self {
+        Self::DurableState(Box::new(error))
     }
 }
 
@@ -239,7 +251,7 @@ mod tests {
         match error {
             CacheError::UnusableCacheEntry { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::Runtime,
-                "delete the unusable cache entry to regenerate the segment",
+                "preserve the unusable cache entry and run runtime reconciliation",
                 Some("State or checksum corruption"),
             )),
         }
@@ -357,6 +369,58 @@ mod tests {
         }
     }
 
+    fn expected_durable_state_remedy(error: &DurableStateError) -> Option<RemedyAdvice> {
+        match error {
+            DurableStateError::LiveJobLock { .. } => None,
+            DurableStateError::CacheLockTimeout { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::Runtime,
+                "preserve attempts and inspect the cache-key owner before retrying",
+                None,
+            )),
+            DurableStateError::QuarantineFailed { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::Runtime,
+                "preserve the staging attempt and repair quarantine before retrying",
+                None,
+            )),
+            DurableStateError::MalformedJobLock { .. }
+            | DurableStateError::IncompatibleJobLock { .. }
+            | DurableStateError::MalformedPublicationJournal { .. }
+            | DurableStateError::MalformedCurrentPreview { .. }
+            | DurableStateError::UnsupportedDurableRecord { .. }
+            | DurableStateError::CurrentLessonMismatch { .. }
+            | DurableStateError::PublicationJournalLessonMismatch { .. }
+            | DurableStateError::InvalidCurrentPackageReference { .. }
+            | DurableStateError::MissingPackageDirectory { .. }
+            | DurableStateError::MalformedPackageManifest { .. }
+            | DurableStateError::UnsupportedPackageManifest { .. }
+            | DurableStateError::PackageReleaseStatusMismatch { .. }
+            | DurableStateError::PackageLessonMismatch { .. }
+            | DurableStateError::MalformedPackagePlanHash { .. }
+            | DurableStateError::EmptyPackageSegmentId { .. }
+            | DurableStateError::MalformedPackageSegmentChecksum { .. }
+            | DurableStateError::EmptyPackageSegmentAudio { .. }
+            | DurableStateError::UnexpectedPackageArtifactPath { .. }
+            | DurableStateError::MalformedPackageArtifactChecksum { .. }
+            | DurableStateError::PackageArtifactChecksumMismatch { .. }
+            | DurableStateError::MissingPackageToolArguments { .. }
+            | DurableStateError::MalformedPackageToolProfile { .. }
+            | DurableStateError::PackageManifestChecksumMismatch { .. }
+            | DurableStateError::MalformedDurableDigest { .. }
+            | DurableStateError::MissingCurrentPreview { .. }
+            | DurableStateError::JournalSelectionMismatch { .. }
+            | DurableStateError::PackagePlanMismatch { .. }
+            | DurableStateError::InvalidJobDirectoryName { .. }
+            | DurableStateError::PublicationConflict { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::Runtime,
+                concat!(
+                    "preserve the artifacts and run runtime reconciliation without overwrite ",
+                    "or deletion",
+                ),
+                Some("State or checksum corruption"),
+            )),
+        }
+    }
+
     fn assert_expected_remedy(error: BuildError, expected: Option<RemedyAdvice>) {
         assert_eq!(error.remedy(), expected, "`{error}` has the wrong remedy");
     }
@@ -413,6 +477,9 @@ mod tests {
                 name: "../escape".to_owned(),
                 root: PathBuf::from("workspace"),
             }),
+            BuildError::from(DurableStateError::PublicationConflict {
+                path: PathBuf::from("package"),
+            }),
         ];
 
         assert!(matches!(
@@ -447,6 +514,7 @@ mod tests {
             cases[7],
             BuildError::ManagedPath(ManagedPathError::InvalidManagedName { .. })
         ));
+        assert!(matches!(cases[8], BuildError::DurableState(_)));
     }
 
     #[test]
@@ -695,6 +763,12 @@ mod tests {
             let expected = expected_managed_path_remedy(&error);
             assert_expected_remedy(error.into(), expected);
         }
+
+        let error = DurableStateError::PublicationConflict {
+            path: PathBuf::from("package"),
+        };
+        let expected = expected_durable_state_remedy(&error);
+        assert_expected_remedy(error.into(), expected);
     }
 
     #[test]
@@ -778,10 +852,14 @@ mod tests {
             fault: AudioFault::Empty,
         });
 
-        assert!(cache.to_string().contains("delete `cache-entry`"));
+        assert!(
+            cache
+                .to_string()
+                .contains("preserve it for runtime reconciliation")
+        );
         assert_eq!(
             cache.remedy().map(RemedyAdvice::action),
-            Some("delete the unusable cache entry to regenerate the segment")
+            Some("preserve the unusable cache entry and run runtime reconciliation")
         );
         assert!(!fresh.to_string().contains("delete"));
         assert_eq!(

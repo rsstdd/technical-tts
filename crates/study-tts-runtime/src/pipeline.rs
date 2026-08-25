@@ -22,14 +22,17 @@ use study_tts_core::{
 
 use crate::{
     BuildError, IoError, PublicationError, RightsError, SegmentSynthesizer, assembly, cache,
-    export, io_error, managed, manifest, tools, voice_gate,
+    durable::OsDurableFileSystem, export, io_error, locking, managed, manifest, preview, tools,
+    voice_gate,
 };
 
 /// Everything one preview build needs, named explicitly rather than read from
 /// ambient state.
 #[derive(Clone, Debug)]
 pub struct BuildRequest {
-    /// The lesson document to build.
+    /// The lesson document to build; its validated `lesson_id` is the
+    /// provisional E0 lock and publication identity until versioned job IDs
+    /// land in E2.
     pub lesson_path: PathBuf,
     /// Root the build owns; outputs, cache, and staging all resolve beneath it.
     pub workspace: PathBuf,
@@ -48,6 +51,10 @@ pub struct BuildRequest {
 /// What a successful preview build wrote.
 #[derive(Clone, Debug)]
 pub struct BuildResult {
+    /// Immutable directory holding the selected preview generation.
+    pub package_dir: PathBuf,
+    /// Atomic record selecting `package_dir` for preview consumers.
+    pub publication_record: PathBuf,
     /// The assembled canonical-format master.
     pub master_wav: PathBuf,
     /// The encoded distribution copy.
@@ -147,6 +154,42 @@ pub struct BuildResult {
 /// name this function offers a managed helper is either a literal or an
 /// identifier the lesson gate already refused, so an unusable spelling is
 /// reported as the authoring mistake it is.
+///
+/// Durable ownership and publication may return
+/// [`crate::DurableStateError::LiveJobLock`],
+/// [`crate::DurableStateError::MalformedJobLock`],
+/// [`crate::DurableStateError::IncompatibleJobLock`],
+/// [`crate::DurableStateError::CacheLockTimeout`],
+/// [`crate::DurableStateError::MalformedPublicationJournal`],
+/// [`crate::DurableStateError::MalformedCurrentPreview`],
+/// [`crate::DurableStateError::UnsupportedDurableRecord`],
+/// [`crate::DurableStateError::CurrentLessonMismatch`],
+/// [`crate::DurableStateError::PublicationJournalLessonMismatch`],
+/// [`crate::DurableStateError::InvalidCurrentPackageReference`],
+/// [`crate::DurableStateError::MissingPackageDirectory`],
+/// [`crate::DurableStateError::MalformedPackageManifest`],
+/// [`crate::DurableStateError::UnsupportedPackageManifest`],
+/// [`crate::DurableStateError::PackageReleaseStatusMismatch`],
+/// [`crate::DurableStateError::PackageLessonMismatch`],
+/// [`crate::DurableStateError::MalformedPackagePlanHash`],
+/// [`crate::DurableStateError::EmptyPackageSegmentId`],
+/// [`crate::DurableStateError::MalformedPackageSegmentChecksum`],
+/// [`crate::DurableStateError::EmptyPackageSegmentAudio`],
+/// [`crate::DurableStateError::UnexpectedPackageArtifactPath`],
+/// [`crate::DurableStateError::MalformedPackageArtifactChecksum`],
+/// [`crate::DurableStateError::PackageArtifactChecksumMismatch`],
+/// [`crate::DurableStateError::MissingPackageToolArguments`],
+/// [`crate::DurableStateError::MalformedPackageToolProfile`],
+/// [`crate::DurableStateError::PackageManifestChecksumMismatch`],
+/// [`crate::DurableStateError::MalformedDurableDigest`],
+/// [`crate::DurableStateError::MissingCurrentPreview`],
+/// [`crate::DurableStateError::JournalSelectionMismatch`],
+/// [`crate::DurableStateError::PackagePlanMismatch`],
+/// [`crate::DurableStateError::InvalidJobDirectoryName`],
+/// [`crate::DurableStateError::PublicationConflict`], or
+/// [`crate::DurableStateError::QuarantineFailed`]. A live job lock directs the
+/// caller to wait; integrity failures preserve their records for the runtime
+/// owner rather than deleting or overwriting them.
 pub fn build_preview(
     request: BuildRequest,
     synthesizer: &dyn SegmentSynthesizer,
@@ -165,49 +208,90 @@ pub fn build_preview(
 
     let ffmpeg = tools::inspect("FFmpeg", &request.ffmpeg_executable)?;
     let ffprobe = tools::inspect("ffprobe", &request.ffprobe_executable)?;
+    let export_profiles = export::export_profiles();
 
     fs::create_dir_all(&request.workspace).map_err(|error| io_error(&request.workspace, error))?;
     let workspace = fs::canonicalize(&request.workspace)
         .map_err(|error| io_error(&request.workspace, error))?;
+    let filesystem = OsDurableFileSystem;
     let cache_root = managed::subdirectory(&workspace, "cache")?;
-    let previews_root = managed::subdirectory(&workspace, "previews")?;
-    let output_root = managed::subdirectory(&previews_root, lesson.lesson_id())?;
+    let roots = preview::roots(&workspace, lesson.lesson_id())?;
+    let _job_lock = locking::acquire_job_lock(&filesystem, &roots.job_dir, lesson.lesson_id())?;
+    preview::reconcile(&filesystem, &roots, lesson.lesson_id())?;
 
     let cached_segments = plan
         .segments
         .iter()
-        .map(|segment| cache::resolve(&cache_root, segment, synthesizer))
+        .map(|segment| {
+            cache::resolve(
+                &filesystem,
+                &cache_root,
+                &roots.quarantine_root,
+                lesson.lesson_id(),
+                segment,
+                synthesizer,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // Each output is staged and renamed into place, so a link occupying one of
-    // these names would be replaced rather than followed. It is still refused:
-    // silently destroying something the operator put there is not this build's
-    // decision to make, and the refusal names what it found.
-    let master_wav = managed::leaf(&output_root, manifest::MASTER_WAV_NAME)?;
-    assembly::assemble(&cached_segments, &master_wav)?;
-    let m4a = managed::leaf(&output_root, manifest::M4A_NAME)?;
-    let ffmpeg_execution = export::export_m4a(&ffmpeg, &master_wav, &m4a)?;
-    let ffprobe_execution = export::probe_m4a(&ffprobe, &m4a)?;
-    let manifest_path = managed::leaf(&output_root, manifest::MANIFEST_NAME)?;
-    manifest::write(
-        &manifest_path,
+    if let Some(package) = preview::current_for_build(
+        &roots,
         lesson.lesson_id(),
         &plan.plan_hash,
-        &cached_segments,
-        &master_wav,
-        &m4a,
-        manifest::ToolRecords {
-            ffmpeg: &ffmpeg,
-            ffmpeg_execution: &ffmpeg_execution,
-            ffprobe: &ffprobe,
-            ffprobe_execution: &ffprobe_execution,
-        },
+        &ffmpeg,
+        &ffprobe,
+        &export_profiles,
+    )? {
+        return Ok(BuildResult {
+            package_dir: package.package_dir,
+            publication_record: package.publication_record,
+            master_wav: package.master_wav,
+            m4a: package.m4a,
+            manifest: package.manifest,
+        });
+    }
+
+    let transaction = preview::start_transaction(
+        &filesystem,
+        &roots,
+        lesson.lesson_id(),
+        &plan.plan_hash,
+        &ffmpeg,
+        &ffprobe,
+        &export_profiles,
     )?;
 
+    let master_wav = managed::leaf(&transaction.stage_dir, manifest::MASTER_WAV_NAME)?;
+    assembly::assemble(&cached_segments, &master_wav)?;
+    let m4a = managed::leaf(&transaction.stage_dir, manifest::M4A_NAME)?;
+    let ffmpeg_execution = export::export_m4a(&ffmpeg, &export_profiles.ffmpeg, &master_wav, &m4a)?;
+    let ffprobe_execution = export::probe_m4a(&ffprobe, &export_profiles.ffprobe, &m4a)?;
+    let manifest_path = managed::leaf(&transaction.stage_dir, manifest::MANIFEST_NAME)?;
+    manifest::write(
+        &filesystem,
+        &manifest_path,
+        manifest::ManifestRecords {
+            lesson_id: lesson.lesson_id(),
+            plan_hash: &plan.plan_hash,
+            segments: &cached_segments,
+            master_wav: &master_wav,
+            m4a: &m4a,
+            tools: manifest::ToolRecords {
+                ffmpeg: &ffmpeg,
+                ffmpeg_execution: &ffmpeg_execution,
+                ffprobe: &ffprobe,
+                ffprobe_execution: &ffprobe_execution,
+            },
+        },
+    )?;
+    let package = preview::publish_transaction(&filesystem, &roots, &transaction)?;
+
     Ok(BuildResult {
-        master_wav,
-        m4a,
-        manifest: manifest_path,
+        package_dir: package.package_dir,
+        publication_record: package.publication_record,
+        master_wav: package.master_wav,
+        m4a: package.m4a,
+        manifest: package.manifest,
     })
 }
 
@@ -338,7 +422,8 @@ pub fn validate_encoded_output(
     encoded: &Path,
 ) -> Result<(), BuildError> {
     let ffprobe = tools::inspect("ffprobe", ffprobe_executable)?;
-    export::probe_m4a(&ffprobe, encoded).map(|_| ())
+    let profiles = export::export_profiles();
+    export::probe_m4a(&ffprobe, &profiles.ffprobe, encoded).map(|_| ())
 }
 
 /// Refuses publication for the E0-S0 skeleton.

@@ -37,6 +37,42 @@ use crate::{BuildError, ManagedPathError, io_error};
 /// Otherwise [`crate::IoError::FileSystem`] carries what the filesystem
 /// reported.
 pub(crate) fn subdirectory(root: &Path, component: &str) -> Result<PathBuf, BuildError> {
+    let candidate = directory_candidate(root, component)?;
+    if candidate.is_dir() {
+        return fs::canonicalize(&candidate).map_err(|error| io_error(&candidate, error));
+    }
+    match fs::create_dir(&candidate) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            // Another valid local producer may win this exact creation race.
+            // Revalidate its occupant so a link or file cannot borrow that
+            // benign race handling.
+            let _ = directory_candidate(root, component)?;
+        }
+        Err(error) => return Err(io_error(&candidate, error)),
+    }
+
+    // Defence in depth: catches a link planted between the inspection and the
+    // creation.
+    let resolved = fs::canonicalize(&candidate).map_err(|error| io_error(&candidate, error))?;
+    if !resolved.starts_with(root) {
+        return Err(escape(resolved, root));
+    }
+    Ok(resolved)
+}
+
+/// Resolves a managed child-directory name without creating it.
+///
+/// An existing directory is accepted; a missing one is returned lexically so
+/// a caller can use it as an atomic rename destination. Links and non-directory
+/// occupants are refused before publication.
+///
+/// # Errors
+///
+/// [`ManagedPathError::InvalidManagedName`] when `component` is not one path
+/// element, [`ManagedPathError::ManagedPathEscape`] when an existing occupant
+/// is not a real directory, otherwise [`crate::IoError::FileSystem`].
+pub(crate) fn directory_candidate(root: &Path, component: &str) -> Result<PathBuf, BuildError> {
     validate_managed_name(root, component)?;
 
     let candidate = root.join(component);
@@ -53,16 +89,7 @@ pub(crate) fn subdirectory(root: &Path, component: &str) -> Result<PathBuf, Buil
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(io_error(&candidate, error)),
     }
-
-    fs::create_dir_all(&candidate).map_err(|error| io_error(&candidate, error))?;
-
-    // Defence in depth: catches a link planted between the inspection and the
-    // creation.
-    let resolved = fs::canonicalize(&candidate).map_err(|error| io_error(&candidate, error))?;
-    if !resolved.starts_with(root) {
-        return Err(escape(resolved, root));
-    }
-    Ok(resolved)
+    Ok(candidate)
 }
 
 /// Resolves one file inside an already-resolved managed directory.

@@ -3,9 +3,10 @@
 //!
 //! An entry is reused only after its recorded metadata has been validated
 //! against this build's canonical audio format and its audio re-hashed to the
-//! digest the artifact records. A partial or unreadable entry is a miss, and a
-//! corrupt one is a refusal naming the entry and its remedy — never a silent
-//! repair, which would let a tampered file pass as a hit.
+//! digest the artifact records. Partial sibling transactions are quarantined;
+//! an unreadable or corrupt published entry is a refusal naming the entry and
+//! its runtime-reconciliation remedy, never a silent repair that could hide
+//! tampering.
 //!
 //! The sharding layout is stated once, in [`entry_path_elements`], and is
 //! private to this crate.
@@ -24,8 +25,12 @@ use study_tts_core::{
 use tempfile::Builder;
 
 use crate::{
-    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, IoError, ManagedPathError,
-    SegmentSynthesizer, io_error, managed,
+    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, SegmentSynthesizer,
+    durable::{
+        DurableFileSystem, RenameOutcome, publish_directory_noreplace, sync_directory_transaction,
+        write_json_atomically,
+    },
+    io_error, locking, managed,
 };
 
 /// Layout version this module accepts for a cache artifact.
@@ -64,6 +69,9 @@ const AUDIO_RECORD: &str = "audio.wav";
 /// The metadata describing that audio.
 const ARTIFACT_RECORD: &str = "artifact.json";
 
+/// Prefix marking sibling cache-directory transactions not yet authoritative.
+const CACHE_STAGE_PREFIX: &str = ".cache-stage-";
+
 /// One segment's audio as the cache holds it, validated and ready to assemble.
 ///
 /// Produced only by [`resolve`], so nothing downstream can name a cache entry
@@ -74,7 +82,7 @@ pub(crate) struct CachedSegment {
     pub segment_id: String,
     /// The synthesis identity that named this entry.
     pub cache_key: CacheKey,
-    /// The entry directory, which a refusal names as the thing to delete.
+    /// The entry directory, which a refusal routes to runtime reconciliation.
     pub entry_dir: PathBuf,
     /// The validated audio inside that entry.
     pub audio_path: PathBuf,
@@ -95,7 +103,7 @@ pub(crate) struct CachedSegment {
 /// a differently configured build is a refusal instead of a silent format
 /// change part way through a master.
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
 struct CacheArtifact {
     schema_version: String,
     cache_key: CacheKey,
@@ -121,27 +129,28 @@ fn entry_path_elements(cache_key: &CacheKey) -> [&str; 3] {
     [SEGMENTS_DIRECTORY, &key[..CACHE_SHARD_WIDTH], key]
 }
 
-/// Resolves the entry directory, validating every element it creates.
+/// Resolves one entry's shard and no-replace destination.
 ///
 /// [`entry_path_elements`] states the layout; this walks it one level at a
 /// time. A *lexical* escape is already impossible because `CacheKey`
 /// guarantees hex, so no element can carry a separator or `..` — but a symlink
-/// planted at `segments`, at the shard, or at the entry itself is followed by
-/// `create_dir_all` and by every later read. Each level therefore goes through
-/// `managed::subdirectory`, which refuses a link and confirms the result is
-/// still beneath its parent.
+/// planted at `segments`, at the shard, or at the entry itself could redirect
+/// later reads or publication. Managed resolution refuses each one before use.
 ///
 /// # Errors
 ///
 /// Whatever `managed::subdirectory` reports for the first element that fails:
 /// [`ManagedPathError::ManagedPathEscape`] for a planted link or a result
 /// outside its parent, otherwise [`IoError::FileSystem`].
-fn resolve_entry_dir(cache_root: &Path, cache_key: &CacheKey) -> Result<PathBuf, BuildError> {
-    entry_path_elements(cache_key)
-        .iter()
-        .try_fold(cache_root.to_path_buf(), |parent, element| {
-            managed::subdirectory(&parent, element)
-        })
+fn resolve_entry_location(
+    cache_root: &Path,
+    cache_key: &CacheKey,
+) -> Result<(PathBuf, PathBuf), BuildError> {
+    let elements = entry_path_elements(cache_key);
+    let segments = managed::subdirectory(cache_root, elements[0])?;
+    let shard = managed::subdirectory(&segments, elements[1])?;
+    let entry = managed::directory_candidate(&shard, elements[2])?;
+    Ok((shard, entry))
 }
 
 /// Names the entry a fault was found in.
@@ -158,13 +167,13 @@ pub(crate) fn rejected(entry_dir: &Path, segment_id: &str, fault: CacheEntryFaul
     .into()
 }
 
-/// Returns the segment's audio from the cache, synthesizing it first if the
-/// entry is absent or incomplete.
+/// Returns the segment's audio from the cache, publishing a complete directory
+/// transaction when the immutable entry is absent.
 ///
 /// A hit is only a hit once the entry's recorded metadata matches this build's
 /// canonical format and its audio re-hashes to the recorded digest. A partial
-/// entry is treated as a miss and re-synthesized; a corrupt one is refused
-/// rather than repaired, because a repair would let a tampered file pass.
+/// staging transaction is quarantined and re-synthesized; a corrupt published
+/// entry is refused rather than repaired, because repair would hide tampering.
 ///
 /// # Errors
 ///
@@ -172,49 +181,122 @@ pub(crate) fn rejected(entry_dir: &Path, segment_id: &str, fault: CacheEntryFaul
 /// published entry cannot be trusted, [`AudioError::UnusableAudio`] when fresh
 /// synthesis produces audio this build cannot use,
 /// [`ManagedPathError::ManagedPathEscape`] when a link occupies an entry path,
-/// and [`BuildError::Synthesis`] when the worker itself refuses.
+/// [`crate::DurableStateError::QuarantineFailed`] when a failed attempt cannot
+/// be retained, and [`BuildError::Synthesis`] when the worker itself refuses.
 pub(crate) fn resolve(
+    filesystem: &dyn DurableFileSystem,
     cache_root: &Path,
+    quarantine_root: &Path,
+    job_id: &str,
     segment: &PlannedSegment,
     synthesizer: &dyn SegmentSynthesizer,
 ) -> Result<CachedSegment, BuildError> {
-    let entry_dir = resolve_entry_dir(cache_root, &segment.cache_key)?;
-    let audio_path = managed::leaf(&entry_dir, AUDIO_RECORD)?;
-    let artifact_path = managed::leaf(&entry_dir, ARTIFACT_RECORD)?;
-
-    // A partial entry is treated as a miss and re-synthesized. E2-S1 replaces
-    // this with explicit reconciliation between job state, cache artifacts, and
-    // outputs.
-    if audio_path.is_file() && artifact_path.is_file() {
-        return load_validated(segment, &entry_dir, &audio_path, &artifact_path);
+    let (_shard, entry_dir) = resolve_entry_location(cache_root, &segment.cache_key)?;
+    if entry_dir.is_dir() {
+        return load_entry(segment, &entry_dir);
     }
 
-    // The temporary file reserves a unique path inside the entry directory; the
-    // synthesizer replaces it with a new file at that path rather than writing
-    // through the handle. E1-S3 hardens this with an explicit staging root and
-    // containment checks.
-    let staged = Builder::new()
-        .prefix("audio-")
-        .suffix(".wav")
-        .tempfile_in(&entry_dir)
-        .map_err(|error| io_error(&entry_dir, error))?;
-    let staged_path = staged.path().to_path_buf();
-    let report = synthesizer.synthesize(segment, &staged_path)?;
+    let _key_lock = locking::acquire_cache_key_lock(cache_root, &segment.cache_key)?;
+    let (shard, entry_dir) = resolve_entry_location(cache_root, &segment.cache_key)?;
+    if entry_dir.is_dir() {
+        return load_entry(segment, &entry_dir);
+    }
 
-    // Freshly synthesized output carries no remedy: the staged file is
-    // discarded on drop and there is no published entry for the user to delete.
-    let frames = validate_wav(&staged_path).map_err(|fault| AudioError::UnusableAudio {
-        path: staged_path.clone(),
-        fault,
-    })?;
+    reconcile_stages(
+        filesystem,
+        &shard,
+        &entry_dir,
+        quarantine_root,
+        job_id,
+        segment,
+    )?;
+    if entry_dir.is_dir() {
+        return load_entry(segment, &entry_dir);
+    }
+
+    synthesize_transaction(
+        filesystem,
+        &shard,
+        &entry_dir,
+        quarantine_root,
+        job_id,
+        segment,
+        synthesizer,
+    )
+}
+
+fn load_entry(segment: &PlannedSegment, entry_dir: &Path) -> Result<CachedSegment, BuildError> {
+    let audio_path = managed::leaf(entry_dir, AUDIO_RECORD)?;
+    let artifact_path = managed::leaf(entry_dir, ARTIFACT_RECORD)?;
+    load_validated(segment, entry_dir, &audio_path, &artifact_path)
+}
+
+fn synthesize_transaction(
+    filesystem: &dyn DurableFileSystem,
+    shard: &Path,
+    entry_dir: &Path,
+    quarantine_root: &Path,
+    job_id: &str,
+    segment: &PlannedSegment,
+    synthesizer: &dyn SegmentSynthesizer,
+) -> Result<CachedSegment, BuildError> {
+    let stage = Builder::new()
+        .prefix(&format!(
+            "{CACHE_STAGE_PREFIX}{}-",
+            segment.cache_key.as_str()
+        ))
+        .tempdir_in(shard)
+        .map_err(|error| io_error(shard, error))?
+        .keep();
+    let audio_path = managed::leaf(&stage, AUDIO_RECORD)?;
+    let artifact_path = managed::leaf(&stage, ARTIFACT_RECORD)?;
+
+    let report = match synthesizer.synthesize(segment, &audio_path) {
+        Ok(report) => report,
+        Err(error) => {
+            let primary = BuildError::from(error);
+            return Err(quarantine_failed_attempt(
+                filesystem,
+                quarantine_root,
+                job_id,
+                segment,
+                &stage,
+                primary,
+            ));
+        }
+    };
+    if let Err(error) = managed::leaf(&stage, AUDIO_RECORD) {
+        return Err(quarantine_failed_attempt(
+            filesystem,
+            quarantine_root,
+            job_id,
+            segment,
+            &stage,
+            error,
+        ));
+    }
+    let frames = match validate_wav(&audio_path) {
+        Ok(frames) => frames,
+        Err(fault) => {
+            let error = AudioError::UnusableAudio {
+                path: audio_path.clone(),
+                fault,
+            };
+            return Err(quarantine_failed_attempt(
+                filesystem,
+                quarantine_root,
+                job_id,
+                segment,
+                &stage,
+                error.into(),
+            ));
+        }
+    };
     if report.sample_rate != CANONICAL_SAMPLE_RATE
         || report.channels != CANONICAL_CHANNELS
         || report.frames != frames
     {
-        // The WAV itself passed validation, so its shape is canonical by
-        // construction; what disagrees is the worker's account of what it
-        // wrote.
-        return Err(AudioError::SynthesizerReportMismatch {
+        let error = AudioError::SynthesizerReportMismatch {
             segment_id: segment.id.clone(),
             reported_sample_rate: report.sample_rate,
             reported_channels: report.channels,
@@ -222,34 +304,151 @@ pub(crate) fn resolve(
             written_sample_rate: CANONICAL_SAMPLE_RATE,
             written_channels: CANONICAL_CHANNELS,
             written_frames: frames,
-        }
-        .into());
+        };
+        return Err(quarantine_failed_attempt(
+            filesystem,
+            quarantine_root,
+            job_id,
+            segment,
+            &stage,
+            error.into(),
+        ));
     }
-    let audio_blake3 = hash_file(&staged_path)?;
-    staged
-        .persist(&audio_path)
-        .map_err(|error| io_error(&audio_path, error.error))?;
 
+    let audio_blake3 = hash_file(&audio_path)?;
     let artifact = CacheArtifact {
         schema_version: CACHE_SCHEMA_VERSION.to_owned(),
         cache_key: segment.cache_key.clone(),
-        audio_blake3: audio_blake3.clone(),
+        audio_blake3,
         sample_rate: CANONICAL_SAMPLE_RATE,
         channels: CANONICAL_CHANNELS,
         sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
         frames,
     };
-    write_json_atomically(&artifact_path, &artifact)?;
+    write_json_atomically(filesystem, &artifact_path, &artifact)?;
+    sync_directory_transaction(filesystem, &stage, &[&audio_path, &artifact_path])?;
 
-    Ok(CachedSegment {
-        segment_id: segment.id.clone(),
-        cache_key: segment.cache_key.clone(),
-        entry_dir,
-        audio_path,
-        audio_blake3,
-        frames,
-        pause_after_ms: segment.pause_after_ms,
-    })
+    match publish_directory_noreplace(filesystem, &stage, entry_dir)? {
+        RenameOutcome::Published => load_entry(segment, entry_dir),
+        RenameOutcome::DestinationExists => {
+            let winner = load_entry(segment, entry_dir)?;
+            quarantine_transaction(filesystem, quarantine_root, job_id, segment, &stage)?;
+            Ok(winner)
+        }
+    }
+}
+
+fn reconcile_stages(
+    filesystem: &dyn DurableFileSystem,
+    shard: &Path,
+    entry_dir: &Path,
+    quarantine_root: &Path,
+    job_id: &str,
+    segment: &PlannedSegment,
+) -> Result<(), BuildError> {
+    let prefix = format!("{CACHE_STAGE_PREFIX}{}-", segment.cache_key.as_str());
+    let mut stages = Vec::new();
+    for entry in fs::read_dir(shard).map_err(|error| io_error(shard, error))? {
+        let entry = entry.map_err(|error| io_error(shard, error))?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.starts_with(&prefix) {
+            stages.push(name.to_owned());
+        }
+    }
+    stages.sort();
+
+    for stage_name in stages {
+        let stage = managed::directory_candidate(shard, &stage_name)?;
+        if entry_dir.is_dir() {
+            quarantine_transaction(filesystem, quarantine_root, job_id, segment, &stage)?;
+            continue;
+        }
+        let audio = match managed::leaf(&stage, AUDIO_RECORD) {
+            Ok(path) => path,
+            Err(_) => {
+                quarantine_transaction(filesystem, quarantine_root, job_id, segment, &stage)?;
+                continue;
+            }
+        };
+        let artifact = match managed::leaf(&stage, ARTIFACT_RECORD) {
+            Ok(path) => path,
+            Err(_) => {
+                quarantine_transaction(filesystem, quarantine_root, job_id, segment, &stage)?;
+                continue;
+            }
+        };
+        if audio.is_file()
+            && artifact.is_file()
+            && load_validated(segment, &stage, &audio, &artifact).is_ok()
+        {
+            sync_directory_transaction(filesystem, &stage, &[&audio, &artifact])?;
+            if publish_directory_noreplace(filesystem, &stage, entry_dir)?
+                == RenameOutcome::Published
+            {
+                continue;
+            }
+        }
+        if stage.exists() {
+            quarantine_transaction(filesystem, quarantine_root, job_id, segment, &stage)?;
+        }
+    }
+    Ok(())
+}
+
+fn quarantine_transaction(
+    filesystem: &dyn DurableFileSystem,
+    quarantine_root: &Path,
+    job_id: &str,
+    segment: &PlannedSegment,
+    stage: &Path,
+) -> Result<PathBuf, BuildError> {
+    let job = managed::subdirectory(quarantine_root, job_id)?;
+    let cache = managed::subdirectory(&job, "cache")?;
+    let segment_dir = managed::subdirectory(&cache, &segment.id)?;
+    let attempt = Builder::new()
+        .prefix("attempt-")
+        .tempdir_in(&segment_dir)
+        .map_err(|error| io_error(&segment_dir, error))?
+        .keep();
+    let destination = attempt.join("cache-entry");
+    if publish_directory_noreplace(filesystem, stage, &destination)? != RenameOutcome::Published {
+        return Err(crate::DurableStateError::PublicationConflict { path: destination }.into());
+    }
+    filesystem.sync_directory(&segment_dir)?;
+    Ok(destination)
+}
+
+fn quarantine_failed_attempt(
+    filesystem: &dyn DurableFileSystem,
+    quarantine_root: &Path,
+    job_id: &str,
+    segment: &PlannedSegment,
+    stage: &Path,
+    primary: BuildError,
+) -> BuildError {
+    match quarantine_transaction(filesystem, quarantine_root, job_id, segment, stage) {
+        Ok(destination) => error_at_quarantine_destination(primary, &destination),
+        Err(cleanup) => crate::DurableStateError::QuarantineFailed {
+            staging_path: stage.to_path_buf(),
+            primary: Box::new(primary),
+            cleanup: Box::new(cleanup),
+        }
+        .into(),
+    }
+}
+
+fn error_at_quarantine_destination(error: BuildError, destination: &Path) -> BuildError {
+    match error {
+        BuildError::Audio(AudioError::UnusableAudio { fault, .. }) => AudioError::UnusableAudio {
+            path: destination.join(AUDIO_RECORD),
+            fault,
+        }
+        .into(),
+        error => error,
+    }
 }
 
 /// Accepts a published entry as a hit only once every claim it makes holds.
@@ -464,54 +663,15 @@ fn validate_wav(path: &Path) -> Result<u32, AudioFault> {
     Ok(frames)
 }
 
-/// Writes `value` as pretty JSON, replacing `path` only once the bytes are on
-/// disk.
-///
-/// Staged beside the destination and renamed, so a reader never sees a
-/// half-written record: every JSON this build produces is read back and
-/// trusted, and a truncated one would be a cache entry or a manifest that
-/// describes a build that does not exist.
-///
-/// # Errors
-///
-/// [`ManagedPathError::UnrootedDestination`] when `path` has no parent to stage
-/// beside, [`IoError::WriteJson`] when serialization fails, otherwise
-/// [`IoError::FileSystem`].
-pub(crate) fn write_json_atomically<T: Serialize>(
-    path: &Path,
-    value: &T,
-) -> Result<(), BuildError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| ManagedPathError::UnrootedDestination {
-            path: path.to_path_buf(),
-        })?;
-    let mut staged = Builder::new()
-        .prefix("json-")
-        .suffix(".tmp")
-        .tempfile_in(parent)
-        .map_err(|error| io_error(parent, error))?;
-    serde_json::to_writer_pretty(staged.as_file_mut(), value).map_err(|error| {
-        IoError::WriteJson {
-            path: path.to_path_buf(),
-            source: error,
-        }
-    })?;
-    staged
-        .as_file_mut()
-        .sync_all()
-        .map_err(|error| io_error(staged.path(), error))?;
-    staged
-        .persist(path)
-        .map_err(|error| io_error(path, error.error))?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
     use super::*;
     use serde_json::json;
     use tempfile::TempDir;
+
+    use crate::{SynthesisError, SynthesisReport, durable::OsDurableFileSystem};
 
     /// One rejection path: its label, the error it produced, the entry
     /// directory it must name, and a predicate for the fault it must report.
@@ -577,7 +737,8 @@ mod tests {
             sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
             frames: 2_400,
         };
-        write_json_atomically(&artifact, &record).expect("write test artifact");
+        write_json_atomically(&OsDurableFileSystem, &artifact, &record)
+            .expect("write test artifact");
         (dir, audio, artifact)
     }
 
@@ -605,6 +766,160 @@ mod tests {
         chunk: usize,
         interrupt_next: bool,
         interruptions: usize,
+    }
+
+    #[derive(Debug, Default)]
+    struct CountingSynthesizer {
+        count: AtomicUsize,
+    }
+
+    impl SegmentSynthesizer for CountingSynthesizer {
+        fn identity(&self) -> &str {
+            "cache-crash-test-v1"
+        }
+
+        fn synthesize(
+            &self,
+            _segment: &PlannedSegment,
+            destination: &Path,
+        ) -> Result<SynthesisReport, SynthesisError> {
+            write_tone(destination, 2_400, CANONICAL_SAMPLE_RATE);
+            self.count.fetch_add(1, Ordering::SeqCst);
+            Ok(SynthesisReport {
+                sample_rate: CANONICAL_SAMPLE_RATE,
+                channels: CANONICAL_CHANNELS,
+                frames: 2_400,
+            })
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum RenameFault {
+        Before,
+        After,
+    }
+
+    #[derive(Debug)]
+    struct FaultingRenameFileSystem {
+        inner: OsDurableFileSystem,
+        fault: RenameFault,
+        triggered: AtomicBool,
+    }
+
+    impl FaultingRenameFileSystem {
+        fn new(fault: RenameFault) -> Self {
+            Self {
+                inner: OsDurableFileSystem,
+                fault,
+                triggered: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl DurableFileSystem for FaultingRenameFileSystem {
+        fn sync_file(&self, path: &Path) -> Result<(), BuildError> {
+            self.inner.sync_file(path)
+        }
+
+        fn sync_directory(&self, path: &Path) -> Result<(), BuildError> {
+            self.inner.sync_directory(path)
+        }
+
+        fn rename_noreplace(
+            &self,
+            staged: &Path,
+            destination: &Path,
+        ) -> Result<RenameOutcome, BuildError> {
+            if self.triggered.swap(true, Ordering::SeqCst) {
+                return self.inner.rename_noreplace(staged, destination);
+            }
+            match self.fault {
+                RenameFault::Before => Err(io_error(
+                    destination,
+                    io::Error::other("injected interruption before cache rename"),
+                )),
+                RenameFault::After => {
+                    self.inner.rename_noreplace(staged, destination)?;
+                    Err(io_error(
+                        destination,
+                        io::Error::other("injected interruption after cache rename"),
+                    ))
+                }
+            }
+        }
+
+        fn replace_file(&self, staged: &Path, destination: &Path) -> Result<(), BuildError> {
+            self.inner.replace_file(staged, destination)
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct NonCanonicalSynthesizer;
+
+    impl SegmentSynthesizer for NonCanonicalSynthesizer {
+        fn identity(&self) -> &str {
+            "non-canonical-test-v1"
+        }
+
+        fn synthesize(
+            &self,
+            _segment: &PlannedSegment,
+            destination: &Path,
+        ) -> Result<SynthesisReport, SynthesisError> {
+            write_tone(destination, 2_400, 48_000);
+            Ok(SynthesisReport {
+                sample_rate: 48_000,
+                channels: CANONICAL_CHANNELS,
+                frames: 2_400,
+            })
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct FailingQuarantineFileSystem {
+        inner: OsDurableFileSystem,
+    }
+
+    impl DurableFileSystem for FailingQuarantineFileSystem {
+        fn sync_file(&self, path: &Path) -> Result<(), BuildError> {
+            self.inner.sync_file(path)
+        }
+
+        fn sync_directory(&self, path: &Path) -> Result<(), BuildError> {
+            self.inner.sync_directory(path)
+        }
+
+        fn rename_noreplace(
+            &self,
+            staged: &Path,
+            destination: &Path,
+        ) -> Result<RenameOutcome, BuildError> {
+            if destination
+                .file_name()
+                .is_some_and(|name| name == "cache-entry")
+            {
+                return Err(io_error(
+                    destination,
+                    io::Error::other("injected quarantine failure"),
+                ));
+            }
+            self.inner.rename_noreplace(staged, destination)
+        }
+
+        fn replace_file(&self, staged: &Path, destination: &Path) -> Result<(), BuildError> {
+            self.inner.replace_file(staged, destination)
+        }
+    }
+
+    fn crash_test_roots(root: &Path) -> (PathBuf, PathBuf) {
+        let cache = root.join("cache");
+        let quarantine = root.join("quarantine");
+        fs::create_dir(&cache).expect("create cache root");
+        fs::create_dir(&quarantine).expect("create quarantine root");
+        (
+            fs::canonicalize(cache).expect("canonical cache root"),
+            fs::canonicalize(quarantine).expect("canonical quarantine root"),
+        )
     }
 
     impl Read for InterruptingReader<'_> {
@@ -709,6 +1024,118 @@ mod tests {
     }
 
     #[test]
+    fn t4_e0_interruption_before_cache_rename_exposes_no_entry() {
+        let workspace = TempDir::new().expect("create cache workspace");
+        let (cache_root, quarantine_root) = crash_test_roots(workspace.path());
+        let segment = planned("abcdef");
+        let synthesizer = CountingSynthesizer::default();
+
+        resolve(
+            &FaultingRenameFileSystem::new(RenameFault::Before),
+            &cache_root,
+            &quarantine_root,
+            "job",
+            &segment,
+            &synthesizer,
+        )
+        .expect_err("interruption before rename must fail publication");
+
+        let (_, entry) = resolve_entry_location(&cache_root, &segment.cache_key)
+            .expect("resolve cache destination");
+        assert!(!entry.exists());
+        assert_eq!(synthesizer.count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn t4_e0_interruption_after_cache_rename_reconciles_without_resynthesis() {
+        let workspace = TempDir::new().expect("create cache workspace");
+        let (cache_root, quarantine_root) = crash_test_roots(workspace.path());
+        let segment = planned("abcdef");
+        let synthesizer = CountingSynthesizer::default();
+
+        resolve(
+            &FaultingRenameFileSystem::new(RenameFault::After),
+            &cache_root,
+            &quarantine_root,
+            "job",
+            &segment,
+            &synthesizer,
+        )
+        .expect_err("interruption after rename must surface");
+
+        let recovered = resolve(
+            &OsDurableFileSystem,
+            &cache_root,
+            &quarantine_root,
+            "job",
+            &segment,
+            &synthesizer,
+        )
+        .expect("published entry must reconcile as a hit");
+        assert!(recovered.audio_path.is_file());
+        assert_eq!(synthesizer.count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn t4_e0_invalid_audio_error_names_its_quarantine_artifact() {
+        let workspace = TempDir::new().expect("create cache workspace");
+        let (cache_root, quarantine_root) = crash_test_roots(workspace.path());
+
+        let error = resolve(
+            &OsDurableFileSystem,
+            &cache_root,
+            &quarantine_root,
+            "job",
+            &planned("abcdef"),
+            &NonCanonicalSynthesizer,
+        )
+        .expect_err("non-canonical audio must be quarantined");
+
+        let BuildError::Audio(AudioError::UnusableAudio { path, .. }) = error else {
+            panic!("invalid audio produced the wrong error: {error}");
+        };
+        assert!(path.starts_with(&quarantine_root));
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(AUDIO_RECORD)
+        );
+        assert!(path.is_file());
+    }
+
+    #[test]
+    fn t4_e0_quarantine_failure_preserves_primary_and_cleanup_errors() {
+        let workspace = TempDir::new().expect("create cache workspace");
+        let (cache_root, quarantine_root) = crash_test_roots(workspace.path());
+
+        let error = resolve(
+            &FailingQuarantineFileSystem::default(),
+            &cache_root,
+            &quarantine_root,
+            "job",
+            &planned("abcdef"),
+            &NonCanonicalSynthesizer,
+        )
+        .expect_err("quarantine failure must preserve both errors");
+
+        let BuildError::DurableState(state) = &error else {
+            panic!("quarantine failure produced the wrong error: {error}");
+        };
+        let crate::DurableStateError::QuarantineFailed {
+            primary, cleanup, ..
+        } = &**state
+        else {
+            panic!("quarantine failure produced the wrong state error: {state}");
+        };
+        assert!(matches!(
+            **primary,
+            BuildError::Audio(AudioError::UnusableAudio { .. })
+        ));
+        assert!(cleanup.to_string().contains("injected quarantine failure"));
+        assert!(error.to_string().contains("not usable lesson audio"));
+        assert!(error.to_string().contains("injected quarantine failure"));
+    }
+
+    #[test]
     fn t1_e0_valid_entry_loads() {
         let workspace = TempDir::new().expect("create cache workspace");
         let (dir, audio, artifact) = published_entry(workspace.path(), "abcdef");
@@ -807,7 +1234,7 @@ mod tests {
                 "{label} did not name the entry directory: `{message}`"
             );
             assert!(
-                message.contains("delete"),
+                message.contains("runtime reconciliation"),
                 "{label} did not state the remedy: `{message}`"
             );
         }

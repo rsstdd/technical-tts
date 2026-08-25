@@ -178,6 +178,10 @@ The arrows define prerequisites, not a requirement to serialize independent trac
 4. Run the skeleton in CI with no model or network requirement.
 5. Record the integration order and keep the skeleton green through every later story.
 6. Reject unsafe lesson and segment IDs and verify canonical managed-directory containment before output writes.
+7. Pull forward the ADR-0001 §12.3 durability foundation without claiming the E2 job system: sibling staging, file and directory synchronization, atomic no-replace directory publication, atomic JSON replacement, provisional lesson locks, and bounded cache-key locks.
+8. Publish cache entries as complete directory transactions and preserve abandoned or invalid attempts in collision-free quarantine.
+9. Build previews under `jobs/<lesson-id>/staging/<transaction>/`, move complete packages to immutable `previews/<lesson-id>/packages/<manifest-blake3>/`, and select one generation only through atomically replaced `previews/<lesson-id>/current.json`.
+10. Reconcile the strict internal provisional publication journal after interruption, preserve legacy flat E0 previews, and refuse corrupt authoritative records rather than overwrite them.
 
 **Tests**
 
@@ -214,6 +218,24 @@ The arrows define prerequisites, not a requirement to serialize independent trac
 - `t4_e0_unapproved_content_fails_before_tools_and_synthesis`
 - `t4_e0_cache_metadata_mismatch_is_rejected`
 - `t4_e0_private_preview_cannot_enter_production_publication`
+- `t4_e0_durable_json_replacement_flushes_file_then_rename_then_parent`
+- `t4_e0_directory_publication_flushes_files_before_rename_and_parent`
+- `t4_e0_package_publication_flushes_files_before_the_directory_rename`
+- `t4_e0_interrupted_json_replacement_preserves_prior_authoritative_record`
+- `t4_e0_interruption_before_cache_rename_exposes_no_entry`
+- `t4_e0_interruption_after_cache_rename_reconciles_without_resynthesis`
+- `t4_e0_live_job_lock_is_refused_and_released_owner_is_recoverable`
+- `t4_e0_malformed_released_job_lock_is_not_overwritten`
+- `t4_e0_concurrent_jobs_share_one_internally_consistent_cache_winner`
+- `t4_e0_live_lesson_job_lock_refuses_a_second_build`
+- `t4_e0_corrupt_current_preview_is_refused_without_overwrite`
+- `t4_e0_corrupt_publication_journal_is_refused_without_overwrite`
+- `t4_e0_corrupt_selected_manifest_is_refused_without_replacement`
+- `t4_e0_durable_unselected_package_is_selected_during_reconciliation`
+- `t4_e0_current_readers_observe_only_complete_generations`
+- `t4_e0_legacy_flat_preview_artifacts_are_preserved`
+- `t4_e0_ffmpeg_failure_leaves_previous_current_preview_unchanged`
+- `t4_e0_ffprobe_failure_leaves_previous_current_preview_unchanged`
 - CI check `Run T4 suite without runtime egress`, which executes prebuilt test binaries as the normal runner user in an egress-denied network namespace under a 60-second deadline
 
 **Acceptance:** the real process boundaries execute end to end with fakes. MP3, chapters, captions, full provenance, and hardened conditioning remain G1 work rather than day-two scope.
@@ -448,6 +470,8 @@ The arrows define prerequisites, not a requirement to serialize independent trac
 **Depends on:** E1.
 
 **Tasks**
+
+The E0-S0 skeleton already supplies the shared durable-filesystem primitives, provisional lesson-scoped lock, cache-key locks, atomic cache-directory transactions, immutable preview generations, `current.json`, and an internal publication journal. E2-S1 retains ownership of the approved job identity and schema, complete state machine, event ordering, CLI resume behavior, and reconciliation across job, cache, verification, takes, approval, and output state; the pulled-forward foundation does not satisfy those remaining tasks.
 
 1. Implement per-job locks with process identity and verified stale-owner handling.
 2. Implement canonical temporary write, file synchronization, atomic rename, and directory synchronization.

@@ -2,9 +2,9 @@
 
 ## Status and purpose
 
-The walking skeleton is the first executable integration contract. It proves that reviewed canonical lesson JSON can cross the provisional Rust boundaries, produce deterministic cached segment WAVs through a fake synthesizer, assemble exact PCM in Rust, invoke real FFmpeg without a shell, validate the encoded result with ffprobe, and write a minimal private-preview manifest beneath `previews/<lesson-id>/`.
+The walking skeleton is the first executable integration contract. It proves that reviewed canonical lesson JSON can cross the provisional Rust boundaries, publish deterministic cached segment WAVs as atomic directory transactions, assemble exact PCM in Rust, invoke real FFmpeg without a shell, validate the encoded result with ffprobe, and atomically select an immutable private-preview package beneath `previews/<lesson-id>/packages/<manifest-blake3>/` through `previews/<lesson-id>/current.json`.
 
-This path is deliberately smaller than G1. It does not claim a production lesson schema, worker protocol, hardened cache publication, audio conditioning, full provenance, or a complete output package.
+This path is deliberately smaller than G1. It pulls forward the ADR-0001 §12.3 durability primitives, provisional lesson-scoped ownership, cache-key serialization, and package publication journal needed to keep E0 artifacts transaction-safe. It does not claim the complete E2 job state machine, resume CLI, production schemas, approval records, audio conditioning, full provenance, or a complete output package. The validated `lesson_id` is the provisional E0 job and publication identity until the approved versioned job ID lands.
 
 ## Integration order
 
@@ -13,13 +13,16 @@ The required order is fixed because each stage consumes a validated artifact fro
 1. Load and validate the provisional two-segment lesson fixture before any subprocess starts.
 2. Derive a deterministic render plan and provisional synthesis cache keys.
 3. Resolve and preflight FFmpeg and ffprobe, recording each resolved executable and version.
-4. Canonicalize the workspace, create managed cache and preview directories, and verify containment.
-5. Resolve each key from the cache or invoke the deterministic tone synthesizer.
-6. Validate each canonical 24 kHz mono float WAV before cache publication or reuse.
-7. Concatenate cached PCM and declared silence in Rust into `lesson.wav`.
-8. Invoke FFmpeg with a pinned discrete argument vector to encode `lesson.m4a` from the master WAV.
-9. Invoke ffprobe with discrete arguments and require one mono AAC stream.
-10. Checksum both outputs and atomically write `manifest.json` with tool provenance and `release_status: private_preview`.
+4. Canonicalize the workspace, create managed cache, job, quarantine, and preview roots, and verify containment.
+5. Acquire `jobs/<lesson-id>/build.lock`, whose strict provisional record carries PID, Linux process-start identity, and creation metadata; refuse a live owner before reconciliation or output work.
+6. Reconcile the strict provisional `jobs/<lesson-id>/publication.json` journal and validate any authoritative `current.json` without overwriting corrupt state.
+7. Resolve each cache key under its bounded cross-process key lock. A miss writes and validates `audio.wav` plus `artifact.json` in one sibling staging directory, flushes both files and the directory, renames the directory without replacement, and flushes the shard directory. Abandoned attempts move to collision-free quarantine.
+8. Recheck an immutable current package for the same plan, tool identities, and path-normalized FFmpeg and ffprobe argument-profile identities; a no-op rebuild returns it without assembly or encoding.
+9. Concatenate cached PCM and declared silence in Rust into a transaction-local `lesson.wav` beneath `jobs/<lesson-id>/staging/<transaction>/`.
+10. Invoke FFmpeg with a pinned discrete argument vector to encode transaction-local `lesson.m4a` from the master WAV.
+11. Invoke ffprobe with discrete arguments and require one mono AAC stream.
+12. Checksum both outputs and atomically write the transaction-local `manifest.json` with executable, version, executed-argument, normalized argument-profile provenance, and `release_status: private_preview`.
+13. Flush every package file and the package directory, rename the complete directory to `previews/<lesson-id>/packages/<manifest-blake3>/` without replacement, then atomically replace and directory-sync `current.json`. The journal makes a crash after package durability but before selection finishable by the next build.
 
 ```mermaid
 flowchart LR
@@ -35,6 +38,8 @@ flowchart LR
     M4A --> Probe["Real ffprobe validation"]
     WAV --> Manifest["Minimal manifest"]
     Probe --> Manifest
+    Manifest --> Package["Immutable package generation"]
+    Package --> Current["Atomic current.json selection"]
 ```
 
 ## Provisional boundary ownership
@@ -45,9 +50,12 @@ flowchart LR
 | Render planning and synthesis identity | `study-tts-core::RenderPlan` | E1-S1 identity contracts |
 | Synthesis port | `study-tts-runtime::SegmentSynthesizer` | Replaced by the E0-S4 asynchronous contract |
 | Deterministic tone implementation | `study-tts-testkit::DeterministicToneWorker` | Extended by E0-S4 shared fakes |
-| Cache validation and publication | `study-tts-runtime` | Hardened in E1-S3 and E2-S1 |
+| Durable filesystem primitives | `study-tts-runtime::durable` | Extended, not replaced, by E2-S1 job state and E5 containment |
+| Provisional lesson and cache-key locks | `study-tts-runtime::locking` | Replaced by approved job identity and integrated executor ownership in E2-S1/E5 |
+| Cache validation and atomic directory publication | `study-tts-runtime` | Extended with production worker artifacts and verification in E1-S3/E2-S1 |
 | PCM concatenation and silence | `study-tts-runtime` | Extended in E1-S4 and E2-S3 |
 | FFmpeg and ffprobe invocation | `study-tts-runtime` | Extended in E1-S4 without changing pinned arguments, preflight, provenance, or the no-shell rule |
+| Immutable preview generations and `current.json` | `study-tts-runtime::preview` | Extended into the complete package and approval flow in E1-S4/E2 |
 | Minimal manifest | `study-tts-runtime` | Replaced by the E1-S1 versioned manifest schema |
 | Build refusal API | `study-tts-runtime::BuildError` and public category enums | Frozen with the other public Rust interfaces at G1 |
 
@@ -140,7 +148,7 @@ them to `study-tts-testkit` would widen production visibility solely for the
 test harness; the tests still exercise real filesystem and `/bin/sh` process
 boundaries and retain their T4 names and budget.
 
-The word provisional is material. The fixture uses `schema_version: 0.1-skeleton` so it cannot be mistaken for the complete lesson `1.0` contract accepted in ADR-0001. Later stories may version or replace these contracts, but they must preserve this test path or update it in the same change so the end-to-end integration order remains executable.
+The word provisional is material. The fixture uses `schema_version: 0.1-skeleton`; lock, journal, and selection records use distinct internal `0.1-skeleton-*` versions with unknown-field rejection. None can be mistaken for the complete lesson, job, manifest, or publication schemas accepted in ADR-0001. Later stories may version or replace these contracts, but they must preserve this test path or update it in the same change so the end-to-end integration order remains executable.
 
 Before G1, the provisional flat `BuildError` was intentionally replaced by
 transparent category variants with exact leaf refusals beneath them. This was a
@@ -172,4 +180,4 @@ The `walking-skeleton` CI job is required to remain green through every later st
 
 ## Deferred from E0-S0
 
-MP3, chapters, transcripts, captions, authoritative non-UTF-8 path representation and full provenance beyond the executed FFmpeg and ffprobe identities, job recovery, take selection, post-render ASR, loudness normalization, edge conditioning, quarantine, and the production Chatterbox worker remain in their assigned G1 or later stories. The minimal manifest is mechanically marked as a private preview, the production manifest loader rejects its schema version, and the publication entry point returns a typed refusal.
+MP3, chapters, transcripts, captions, authoritative non-UTF-8 path representation and full provenance beyond the executed FFmpeg and ffprobe identities and normalized argument profiles, the complete job state machine and resume CLI, take selection, post-render ASR, loudness normalization, edge conditioning, cache pruning, and the production Chatterbox worker remain in their assigned G1 or later stories. E0 quarantine retains abandoned cache and package attempts but exposes no deletion workflow. Existing flat E0 preview files are legacy artifacts: new builds leave them intact and select only immutable packages through `current.json`. The minimal manifest is mechanically marked as a private preview, the production manifest loader rejects its schema version, and the publication entry point returns a typed refusal.
