@@ -16,7 +16,10 @@ mod synthesis;
 mod tools;
 mod voice_gate;
 
-pub use error::{AudioFault, BuildError, CacheEntryFault};
+pub use error::{
+    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, IoError, ManagedPathError,
+    PublicationError, RemedyAdvice, RemedyOwner, RightsError, ToolError, VoiceProfileError,
+};
 pub use pipeline::{
     BuildRequest, BuildResult, build_preview, publish, validate_encoded_output,
     validate_production_manifest,

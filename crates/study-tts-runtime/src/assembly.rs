@@ -12,7 +12,7 @@ use study_tts_core::{CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SA
 use tempfile::Builder;
 
 use crate::{
-    BuildError, CacheEntryFault, audio_error,
+    AudioError, BuildError, CacheEntryFault, ManagedPathError, audio_error,
     cache::{CachedSegment, hash_file, rejected},
     io_error,
 };
@@ -35,7 +35,7 @@ const MILLISECONDS_PER_SECOND: u64 = 1_000;
 fn pause_frames(segment: &CachedSegment) -> Result<u64, BuildError> {
     Ok(u64::from(segment.pause_after_ms)
         .checked_mul(u64::from(CANONICAL_SAMPLE_RATE))
-        .ok_or_else(|| BuildError::PauseFrameOverflow {
+        .ok_or_else(|| AudioError::PauseFrameOverflow {
             segment_id: segment.segment_id.clone(),
             pause_after_ms: segment.pause_after_ms,
         })?
@@ -65,7 +65,7 @@ fn expected_frames(segments: &[CachedSegment]) -> Result<u64, BuildError> {
         expected = expected
             .checked_add(u64::from(segment.frames))
             .and_then(|running| running.checked_add(pause))
-            .ok_or(BuildError::PlannedLengthOverflow)?;
+            .ok_or(AudioError::PlannedLengthOverflow)?;
     }
     Ok(expected)
 }
@@ -107,18 +107,18 @@ fn verify_recorded_audio(segment: &CachedSegment) -> Result<(), BuildError> {
 ///
 /// # Errors
 ///
-/// [`BuildError::UnrootedDestination`] when `destination` has no parent;
-/// [`BuildError::UnusableCacheEntry`] naming the entry whose digest or frame
-/// count disagrees with its record; [`BuildError::PauseFrameOverflow`] or
-/// [`BuildError::AssembledLengthOverflow`] when the frame arithmetic would
-/// wrap, neither of which any input this build accepts reaches;
-/// [`BuildError::AssembledLengthMismatch`] when the total disagrees with
-/// what the plan required; otherwise [`BuildError::AudioAt`] or
-/// [`BuildError::FileSystem`].
+/// [`ManagedPathError::UnrootedDestination`] when `destination` has no parent;
+/// [`crate::CacheError::UnusableCacheEntry`] when an entry's digest or frame
+/// count disagrees with its record; [`AudioError::PauseFrameOverflow`],
+/// [`AudioError::PlannedLengthOverflow`], or
+/// [`AudioError::AssembledLengthOverflow`] when arithmetic would wrap;
+/// [`AudioError::AssembledLengthMismatch`] when the total disagrees with the
+/// plan; otherwise [`crate::IoError::AudioAt`] or
+/// [`crate::IoError::FileSystem`].
 pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result<u64, BuildError> {
     let parent = destination
         .parent()
-        .ok_or_else(|| BuildError::UnrootedDestination {
+        .ok_or_else(|| ManagedPathError::UnrootedDestination {
             path: destination.to_path_buf(),
         })?;
     let expected = expected_frames(segments)?;
@@ -159,7 +159,7 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
             // the counter is in danger. Checked so the write loop does not
             // depend on the container's field width for its arithmetic.
             segment_frames = segment_frames.checked_add(1).ok_or_else(|| {
-                BuildError::AssembledLengthOverflow {
+                AudioError::AssembledLengthOverflow {
                     destination: destination.to_path_buf(),
                 }
             })?;
@@ -193,7 +193,7 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
         total_frames = total_frames
             .checked_add(segment_frames)
             .and_then(|running| running.checked_add(pause))
-            .ok_or_else(|| BuildError::AssembledLengthOverflow {
+            .ok_or_else(|| AudioError::AssembledLengthOverflow {
                 destination: destination.to_path_buf(),
             })?;
     }
@@ -202,11 +202,12 @@ pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result
     // and it is retained because it is the invariant the manifest and every
     // downstream duration derive from.
     if total_frames != expected {
-        return Err(BuildError::AssembledLengthMismatch {
+        return Err(AudioError::AssembledLengthMismatch {
             destination: destination.to_path_buf(),
             assembled: total_frames,
             expected,
-        });
+        }
+        .into());
     }
 
     writer
@@ -338,7 +339,7 @@ mod tests {
         // A truncated entry found while assembling is the same violated
         // invariant `cache` reports when loading one, so it must arrive as the
         // same fault with the same remedy.
-        let BuildError::UnusableCacheEntry { fault, .. } = &error else {
+        let BuildError::Cache(crate::CacheError::UnusableCacheEntry { fault, .. }) = &error else {
             panic!("error was `{error}`");
         };
         assert!(
@@ -386,7 +387,7 @@ mod tests {
         let master = workspace.path().join("lesson.wav");
         let error = assemble(&[segment], &master).expect_err("altered audio must be refused");
 
-        let BuildError::UnusableCacheEntry { fault, .. } = &error else {
+        let BuildError::Cache(crate::CacheError::UnusableCacheEntry { fault, .. }) = &error else {
             panic!("altered audio produced `{error}`");
         };
         assert!(
@@ -415,7 +416,7 @@ mod tests {
         // which file — and that is asserted below rather than implied by the
         // variant.
         assert!(
-            matches!(error, BuildError::FileSystem { .. }),
+            matches!(error, BuildError::Io(crate::IoError::FileSystem { .. })),
             "missing segment audio produced `{error}`"
         );
         assert!(

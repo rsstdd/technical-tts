@@ -16,7 +16,7 @@ use std::{
 
 use study_tts_core::{VoiceConsent, VoiceProfile, VoiceUse, validate_profile_for_use};
 
-use crate::{BuildError, cache};
+use crate::{BuildError, IoError, VoiceProfileError, cache};
 
 /// Loads a voice profile directory fail-closed for `requested` use.
 ///
@@ -70,26 +70,27 @@ pub(crate) fn load_profile(dir: &Path, requested: VoiceUse) -> Result<VoiceProfi
 ///
 /// # Errors
 ///
-/// [`BuildError::VoiceRecordNotRegularFile`] when the name holds a symlink, a
-/// directory, or anything else that is not a regular file. An absent record
-/// resolves successfully, because reporting it is the caller's job:
-/// [`BuildError::MissingVoiceRecord`] belongs to whichever of the two readers
-/// discovers it. Otherwise [`BuildError::ReadFile`] carrying what the
-/// filesystem reported.
+/// [`VoiceProfileError::VoiceRecordNotRegularFile`] when the name holds a
+/// symlink, a directory, or anything else that is not a regular file. An
+/// absent record resolves successfully, because reporting it is the caller's
+/// job: [`VoiceProfileError::MissingVoiceRecord`] belongs to whichever reader
+/// discovers it. Otherwise [`IoError::ReadFile`] carries what the filesystem
+/// reported.
 fn record_path(dir: &Path, record: &'static str) -> Result<PathBuf, BuildError> {
     let path = dir.join(record);
     match fs::symlink_metadata(&path) {
         // `symlink_metadata` reports the link's own type rather than its
         // target's, which is what lets a planted link be seen at all.
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            Err(BuildError::VoiceRecordNotRegularFile {
+            Err(VoiceProfileError::VoiceRecordNotRegularFile {
                 profile_dir: dir.to_path_buf(),
                 record,
-            })
+            }
+            .into())
         }
         Ok(_) => Ok(path),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(path),
-        Err(source) => Err(BuildError::ReadFile { path, source }),
+        Err(source) => Err(IoError::ReadFile { path, source }.into()),
     }
 }
 
@@ -101,12 +102,13 @@ fn read_record(dir: &Path, record: &'static str) -> Result<Vec<u8>, BuildError> 
     match fs::read(&path) {
         Ok(bytes) => Ok(bytes),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Err(BuildError::MissingVoiceRecord {
+            Err(VoiceProfileError::MissingVoiceRecord {
                 profile_dir: dir.to_path_buf(),
                 record,
-            })
+            }
+            .into())
         }
-        Err(source) => Err(BuildError::ReadFile { path, source }),
+        Err(source) => Err(IoError::ReadFile { path, source }.into()),
     }
 }
 
@@ -124,19 +126,23 @@ fn verify_checksum(dir: &Path, record: &'static str, recorded: &str) -> Result<(
     // separate existence check would leave a window for the artifact to vanish
     // between the two and be reported as the wrong failure.
     let computed = cache::hash_file(&path).map_err(|error| match &error {
-        BuildError::FileSystem { source, .. } if source.kind() == io::ErrorKind::NotFound => {
-            BuildError::MissingVoiceRecord {
+        BuildError::Io(IoError::FileSystem { source, .. })
+            if source.kind() == io::ErrorKind::NotFound =>
+        {
+            VoiceProfileError::MissingVoiceRecord {
                 profile_dir: dir.to_path_buf(),
                 record,
             }
+            .into()
         }
         _ => error,
     })?;
     if computed != recorded {
-        return Err(BuildError::VoiceChecksumMismatch {
+        return Err(VoiceProfileError::VoiceChecksumMismatch {
             profile_dir: dir.to_path_buf(),
             path,
-        });
+        }
+        .into());
     }
     Ok(())
 }

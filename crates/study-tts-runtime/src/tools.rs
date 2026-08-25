@@ -11,7 +11,7 @@ use std::{
     process::Command,
 };
 
-use crate::BuildError;
+use crate::{BuildError, ToolError};
 
 /// Which external binary a build actually used, for the manifest to record.
 #[derive(Clone, Debug)]
@@ -33,31 +33,32 @@ pub(crate) struct ToolIdentity {
 ///
 /// # Errors
 ///
-/// [`BuildError::MissingTool`] when the request resolves to nothing executable,
-/// [`BuildError::InspectTool`] when the binary exists but cannot be launched,
-/// and [`BuildError::ToolProbeFailed`] when it runs but reports no version this
+/// [`ToolError::MissingTool`] when the request resolves to nothing executable,
+/// [`ToolError::InspectTool`] when the binary exists but cannot be launched,
+/// and [`ToolError::ToolProbeFailed`] when it runs but reports no version this
 /// build can record — an unsuccessful exit or empty output alike, since a
 /// manifest that names no version cannot say what produced the build.
 pub(crate) fn inspect(tool: &str, requested: &Path) -> Result<ToolIdentity, BuildError> {
     let resolved_executable =
-        resolve_executable(requested).ok_or_else(|| BuildError::MissingTool {
+        resolve_executable(requested).ok_or_else(|| ToolError::MissingTool {
             tool: tool.to_owned(),
             requested: requested.to_path_buf(),
         })?;
     let output = Command::new(&resolved_executable)
         .arg("-version")
         .output()
-        .map_err(|source| BuildError::InspectTool {
+        .map_err(|source| ToolError::InspectTool {
             tool: tool.to_owned(),
             executable: resolved_executable.clone(),
             source,
         })?;
     if !output.status.success() {
-        return Err(BuildError::ToolProbeFailed {
+        return Err(ToolError::ToolProbeFailed {
             tool: tool.to_owned(),
             status: output.status.to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
+        }
+        .into());
     }
     let version = String::from_utf8_lossy(&output.stdout)
         .lines()
@@ -66,11 +67,12 @@ pub(crate) fn inspect(tool: &str, requested: &Path) -> Result<ToolIdentity, Buil
         .trim()
         .to_owned();
     if version.is_empty() {
-        return Err(BuildError::ToolProbeFailed {
+        return Err(ToolError::ToolProbeFailed {
             tool: tool.to_owned(),
             status: output.status.to_string(),
             stderr: "version output was empty".to_owned(),
-        });
+        }
+        .into());
     }
 
     Ok(ToolIdentity {

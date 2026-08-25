@@ -1,10 +1,14 @@
-# Evidence Report: evidence_e0_model_and_voice_rights_records_complete
+# Evidence Report: evidence_e0_model_and_voice_rights_records_complete_v2
 
 - Governing story/gate: E0-S2 / G0
 - Hypothesis or decision: A lawful voice configuration is available for the intended use — via the pre-authorized owner-recorded fallback — and every model, voice, and corpus artifact has a rights record with a recorded decision before any real voice rendering.
 - Owner: Ross Todd (project owner)
-- Date/time and timezone: 2026-08-23, America/Boise
+- Date/time and timezone: 2026-08-25, Europe/Berlin
 - Environment ID: Not applicable (documentation and records review)
+- Supersedes: `evidence_e0_model_and_voice_rights_records_complete`
+
+This record supersedes `evidence_e0_model_and_voice_rights_records_complete`. The predecessor is
+retained unchanged at its original URI and identified by checksum in Provenance.
 
 ## Acceptance criterion
 
@@ -24,6 +28,7 @@ owner verification at E0-S3.
 
 | Input | Identity/revision | URI | Checksum |
 |---|---|---|---|
+| Superseded evidence report | `evidence_e0_model_and_voice_rights_records_complete` | `evidence/gates/g0/e0-s2/evidence_e0_model_and_voice_rights_records_complete.md` | `e257334e2cfa26bc73224b64b1ab361c7d6181ccd003b08faa4ce21a0554d7c4` |
 | Chatterbox code rights record | branch `e0-s2/voice-content-model-legal` | `evidence/rights/rights-chatterbox-code-v1/record.md` | `f14a83ae2aea65cb9100c29fddaeccf28c28274db85165cfc3d9f2fb6a43a2d7` |
 | Chatterbox weights rights record | branch `e0-s2/voice-content-model-legal` | `evidence/rights/rights-chatterbox-weights-v1/record.md` | `f45cddee75b40f7ba443974acfde2654042b2b47f2bd2dffc7a08dcef862db30` |
 | Fallback owner voice rights record | branch `e0-s2/voice-content-model-legal` | `evidence/rights/rights-voice-owner-fallback-v1/record.md` | `7453f28b1f14a24912bb472e801f09023a3afaad52db4c3a171dd1a0453dff38` |
@@ -44,6 +49,13 @@ ADR-0002 identity table names the fallback and pending voice records, and the AD
 table rows are filled from these records while the ADR remains Proposed (a Proposed ADR does not
 authorize scope; these records feed its later acceptance). Confirmed the not-covered-use
 approver is recorded. Reproduction: `ls evidence/rights/` and `sha256sum` of each record above.
+
+Confirmed that `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Enforcement names
+`t4_e0_voice_records_that_are_not_regular_files_are_refused` for the rule that a required voice
+record which is not a regular file refuses profile load. Confirmed that
+`docs/governance/ROUTING-TABLES.md` §Failure routing names `BuildError::remedy`, its category
+mappings, and `t1_e0_governed_remedy_mappings_are_exhaustive` as the executable mirror without
+changing a routing decision.
 
 ## Results
 
@@ -69,25 +81,13 @@ a recorded decision with a blocking rule, not a gap. Project owner, rightsholder
 rights-review roles are held by the same person during solo development; each approval names its
 role separately per `docs/governance/PROJECT-EXECUTION-CHARTER.md`.
 
+The acceptance criterion is unchanged from the superseded report, and no threshold was lowered.
+The consent-gating measurement increased from three named tests to four after the regular-file
+gate became executable. Provenance now identifies the current policy and routing documents.
+
 ## Review
 
 | Role | Name | Decision | Date |
 |---|---|---|---|
-| Project owner (approver) | Ross Todd | Approved | 2026-08-23 |
+| Project owner (approver) | Ross Todd | Approved; supersedes `evidence_e0_model_and_voice_rights_records_complete` | 2026-08-25 |
 | Rightsholder (fallback voice) | Ross Todd | Approved | 2026-08-23 |
-
-## Amendments
-
-| Date | Change | Authority |
-|---|---|---|
-| 2026-08-24 | `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Enforcement gained one row, naming `t4_e0_voice_records_that_are_not_regular_files_are_refused` for the newly mechanized rule that a required voice record which is not a regular file refuses profile load. The Provenance checksum for that document moves from `f23e8f065d61d590a280b39e718dc73478d29b8e20e13d9c85cb99f15719471c` to `f7a3fa1635242f0650e088293b0e6a7f490043cf359b0b7912356329453fa7dc`. | Project owner, amending in place under the approval recorded above |
-| 2026-08-24 | The "Consent-gating enforcement tests" measurement rises from three named tests to four, adding `t4_e0_voice_records_that_are_not_regular_files_are_refused`, so the Results table matches the amended §Enforcement table it is read against. `DELIVERY-PLAN.md` §E0-S2 carries the same name in its test roster. | Project owner, re-attesting the measurement on a run of 2026-08-24 |
-| 2026-08-25 | `docs/governance/ROUTING-TABLES.md` §Failure routing now names `BuildError::remedy`, its category mappings, and `t1_e0_governed_remedy_mappings_are_exhaustive` as the executable mirror. No routing decision changed. The Provenance checksum for that document moves from `d7bbfb6d4f289f1fab5b1b0ea6a153f61fea26faa8db66d8d120c4a2e5a26bb8` to `177c2f81a4e034ccbe25c41790d202e38bbe37654858fdfa27533607dc89c1b8`. | Project owner, amending in place under the approval recorded above |
-
-Recorded rather than applied silently, because `evidence/README.md` holds accepted reports
-immutable and prescribes a superseding record instead. The project owner judged these changes to
-fall within the scope already approved and directed the in-place amendment.
-
-The Acceptance criterion and Procedure are unchanged, and no threshold was lowered: the
-consent-gating measurement rose from three named tests to four. All four ran on 2026-08-24 in
-`crates/study-tts-testkit/tests/voice_rights.rs` and pass.

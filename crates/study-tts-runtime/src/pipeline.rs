@@ -20,8 +20,8 @@ use study_tts_core::{
 };
 
 use crate::{
-    BuildError, SegmentSynthesizer, assembly, cache, export, io_error, managed, manifest, tools,
-    voice_gate,
+    BuildError, IoError, PublicationError, RightsError, SegmentSynthesizer, assembly, cache,
+    export, io_error, managed, manifest, tools, voice_gate,
 };
 
 /// Everything one preview build needs, named explicitly rather than read from
@@ -63,23 +63,67 @@ pub struct BuildResult {
 ///
 /// # Errors
 ///
-/// The first gate to refuse, as itself: [`BuildError::ReadFile`] or
-/// [`BuildError::Lesson`] for the document, [`BuildError::Voice`] and the
-/// voice-record variants for the profile, [`BuildError::MissingTool`] for
-/// preflight, [`BuildError::UnusableCacheEntry`] for a cache entry that cannot
-/// be trusted, and [`BuildError::ManagedPathEscape`] for a link planted on a
-/// path this build owns. Later stages report the assembly, encode, probe, and
-/// manifest variants named on those functions.
+/// [`IoError::ReadFile`] when the lesson cannot be read. Lesson parsing and
+/// validation return [`study_tts_core::LessonError::InvalidJson`],
+/// [`study_tts_core::LessonError::UnsupportedSchema`],
+/// [`study_tts_core::LessonError::MissingLessonId`],
+/// [`study_tts_core::LessonError::InvalidLessonId`],
+/// [`study_tts_core::LessonError::MissingSegments`],
+/// [`study_tts_core::LessonError::MissingSegmentId`],
+/// [`study_tts_core::LessonError::InvalidSegmentId`],
+/// [`study_tts_core::LessonError::DuplicateSegmentId`],
+/// [`study_tts_core::LessonError::MissingSpokenText`],
+/// [`study_tts_core::LessonError::MissingDisplayText`],
+/// [`study_tts_core::LessonError::MissingRole`],
+/// [`study_tts_core::LessonError::MissingSourceRefs`],
+/// [`study_tts_core::LessonError::EmptySourceRef`],
+/// [`study_tts_core::LessonError::UnapprovedSegment`],
+/// [`study_tts_core::LessonError::MissingSpeaker`],
+/// [`study_tts_core::LessonError::MissingStyle`], or
+/// [`study_tts_core::LessonError::PauseOutOfRange`].
 ///
-/// [`BuildError::InvalidManagedName`] is not among them: every name this
-/// function offers a managed helper is either a literal or an identifier the
-/// lesson gate already refused, so an unusable spelling is reported as the
-/// authoring mistake it is.
+/// Voice gating returns [`crate::VoiceProfileError::MissingVoiceRecord`],
+/// [`crate::VoiceProfileError::VoiceRecordNotRegularFile`],
+/// [`crate::VoiceProfileError::VoiceChecksumMismatch`],
+/// [`study_tts_core::VoiceError::InvalidJson`],
+/// [`study_tts_core::VoiceError::UnsupportedSchema`],
+/// [`study_tts_core::VoiceError::MissingField`],
+/// [`study_tts_core::VoiceError::MalformedChecksum`],
+/// [`study_tts_core::VoiceError::ConsentNotGranted`],
+/// [`study_tts_core::VoiceError::ProfileNotApproved`],
+/// [`study_tts_core::VoiceError::ConsentScopeExcluded`], or
+/// [`study_tts_core::VoiceError::ConsentChecksumDisagreement`].
+///
+/// Tool work returns [`crate::ToolError::MissingTool`],
+/// [`crate::ToolError::InspectTool`], [`crate::ToolError::ToolProbeFailed`],
+/// [`crate::ToolError::StartFfmpeg`], [`crate::ToolError::Ffmpeg`],
+/// [`crate::ToolError::Ffprobe`],
+/// [`crate::ToolError::UnreadableProbeResponse`],
+/// [`crate::ToolError::UnexpectedEncodedStreamCount`], or
+/// [`crate::ToolError::UnexpectedEncodedStream`].
+///
+/// Managed state and audio return
+/// [`crate::ManagedPathError::ManagedPathEscape`],
+/// [`crate::ManagedPathError::UnrootedDestination`],
+/// [`crate::CacheError::UnusableCacheEntry`],
+/// [`crate::AudioError::UnusableAudio`],
+/// [`crate::AudioError::SynthesizerReportMismatch`],
+/// [`crate::AudioError::PauseFrameOverflow`],
+/// [`crate::AudioError::PlannedLengthOverflow`],
+/// [`crate::AudioError::AssembledLengthOverflow`],
+/// [`crate::AudioError::AssembledLengthMismatch`], [`IoError::FileSystem`],
+/// [`IoError::AudioAt`], [`IoError::WriteJson`], or
+/// [`BuildError::Synthesis`].
+///
+/// [`crate::ManagedPathError::InvalidManagedName`] is not among them: every
+/// name this function offers a managed helper is either a literal or an
+/// identifier the lesson gate already refused, so an unusable spelling is
+/// reported as the authoring mistake it is.
 pub fn build_preview(
     request: BuildRequest,
     synthesizer: &dyn SegmentSynthesizer,
 ) -> Result<BuildResult, BuildError> {
-    let lesson_bytes = fs::read(&request.lesson_path).map_err(|source| BuildError::ReadFile {
+    let lesson_bytes = fs::read(&request.lesson_path).map_err(|source| IoError::ReadFile {
         path: request.lesson_path.clone(),
         source,
     })?;
@@ -151,10 +195,13 @@ pub fn build_preview(
 ///
 /// # Errors
 ///
-/// [`BuildError::MissingTool`] or [`BuildError::InspectTool`] when ffprobe
-/// cannot be resolved or launched, [`BuildError::Ffprobe`] when it fails,
-/// [`BuildError::UnreadableProbeResponse`] when its output cannot be parsed,
-/// and [`BuildError::UnexpectedEncodedStream`] when the artifact is not a
+/// [`crate::ToolError::MissingTool`] or [`crate::ToolError::InspectTool`] when
+/// ffprobe cannot be resolved or launched,
+/// [`crate::ToolError::ToolProbeFailed`] when its version probe fails,
+/// [`crate::ToolError::Ffprobe`] when output inspection fails,
+/// [`crate::ToolError::UnreadableProbeResponse`] when its output cannot be
+/// parsed, and [`crate::ToolError::UnexpectedEncodedStreamCount`] or
+/// [`crate::ToolError::UnexpectedEncodedStream`] when the artifact is not a
 /// single mono AAC stream.
 pub fn validate_encoded_output(
     ffprobe_executable: &Path,
@@ -175,7 +222,8 @@ pub fn validate_encoded_output(
 ///
 /// # Errors
 ///
-/// Always [`BuildError::Release`], carrying the profile rule that refused.
+/// Always [`PublicationError::Release`] carrying
+/// [`study_tts_core::ReleaseError::PrivateProfileCannotClaimProduction`].
 pub fn publish(_preview: &BuildResult) -> Result<(), BuildError> {
     Ok(ReleaseClaim::private_preview().validate_as_production()?)
 }
@@ -234,7 +282,7 @@ fn require_identifier(
     value: &str,
 ) -> Result<(), BuildError> {
     if value.trim().is_empty() {
-        return Err(BuildError::EmptyManifestIdentifier { section, field });
+        return Err(RightsError::EmptyManifestIdentifier { section, field }.into());
     }
     Ok(())
 }
@@ -255,7 +303,7 @@ fn require_identifier(
 ///
 /// # Errors
 ///
-/// [`BuildError::InvalidRightsDeclaration`] when the section is present and
+/// [`RightsError::InvalidRightsDeclaration`] when the section is present and
 /// does not parse; otherwise `undeclared` when it declares nothing.
 fn require_declarations<'de, T: Deserialize<'de>>(
     section: &'static str,
@@ -265,7 +313,7 @@ fn require_declarations<'de, T: Deserialize<'de>>(
     let declarations = value
         .map(|section_value| {
             Vec::<T>::deserialize(section_value)
-                .map_err(|source| BuildError::InvalidRightsDeclaration { section, source })
+                .map_err(|source| RightsError::InvalidRightsDeclaration { section, source })
         })
         .transpose()?
         .unwrap_or_default();
@@ -289,42 +337,46 @@ fn require_declarations<'de, T: Deserialize<'de>>(
 ///
 /// # Errors
 ///
-/// [`BuildError::MalformedProductionManifest`] or
-/// [`BuildError::UnsupportedProductionManifest`] for what the document is;
-/// [`BuildError::ManifestNotProductionRelease`] for what it claims;
-/// [`BuildError::Lesson`] for an identifier a lesson could not name;
-/// [`BuildError::InvalidRightsDeclaration`],
-/// [`BuildError::MissingContentRightsDeclaration`],
-/// [`BuildError::UnresolvedContentRights`],
-/// [`BuildError::MissingVoiceProfileDeclaration`], or [`BuildError::Voice`] for
-/// what it claims about its sources and its voices. A manifest that clears
-/// every one of those is still refused with
-/// [`BuildError::ProductionGatesUnavailable`], because the gates it would have
-/// to satisfy do not exist yet.
+/// [`PublicationError::MalformedProductionManifest`] or
+/// [`PublicationError::UnsupportedProductionManifest`] for what the document
+/// is; [`PublicationError::ManifestNotProductionRelease`] for what it claims;
+/// [`study_tts_core::LessonError::MissingLessonId`] or
+/// [`study_tts_core::LessonError::InvalidLessonId`] for an identifier a lesson
+/// could not name;
+/// [`RightsError::InvalidRightsDeclaration`],
+/// [`RightsError::MissingContentRightsDeclaration`],
+/// [`RightsError::UnresolvedContentRights`],
+/// [`RightsError::MissingVoiceProfileDeclaration`],
+/// [`RightsError::EmptyManifestIdentifier`], or
+/// [`study_tts_core::VoiceError::ProfileNotApproved`] for what it claims about
+/// its sources and voices. A manifest that clears all of those is refused with
+/// [`PublicationError::ProductionGatesUnavailable`], because the gates it
+/// would have to satisfy do not exist yet.
 pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
     // Two stages, because the version is what says which shape is legal: a
     // document of an unknown version must be reported as an unknown version,
     // not as a violation of a shape it never claimed.
     let declared_version: ManifestVersion = serde_json::from_slice(bytes)
-        .map_err(|source| BuildError::MalformedProductionManifest { source })?;
+        .map_err(|source| PublicationError::MalformedProductionManifest { source })?;
     let version = declared_version
         .schema_version
         .unwrap_or_else(|| "missing".to_owned());
     if version != PRODUCTION_MANIFEST_VERSION {
-        return Err(BuildError::UnsupportedProductionManifest { version });
+        return Err(PublicationError::UnsupportedProductionManifest { version }.into());
     }
 
     let manifest: ProductionManifest = serde_json::from_slice(bytes)
-        .map_err(|source| BuildError::MalformedProductionManifest { source })?;
+        .map_err(|source| PublicationError::MalformedProductionManifest { source })?;
     debug_assert_eq!(manifest.schema_version, PRODUCTION_MANIFEST_VERSION);
 
     // What the document claims to be, before what it claims about its sources.
     // Adjudicating the rights of a manifest that never asked to be published
     // would hand its author corrections for a release they did not request.
     if manifest.release_status != ReleaseStatus::ProductionRelease {
-        return Err(BuildError::ManifestNotProductionRelease {
+        return Err(PublicationError::ManifestNotProductionRelease {
             declared: manifest.release_status,
-        });
+        }
+        .into());
     }
 
     // Through the lesson rule rather than a blank check: this identifier names
@@ -340,7 +392,7 @@ pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
     let sources: Vec<SourceRightsDeclaration> = require_declarations(
         "content_rights",
         manifest.content_rights.as_ref(),
-        BuildError::MissingContentRightsDeclaration,
+        RightsError::MissingContentRightsDeclaration.into(),
     )?;
     for source in &sources {
         require_identifier("content_rights", "source_id", &source.source_id)?;
@@ -350,17 +402,18 @@ pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
             &source.rights_record_id,
         )?;
         if !source.classification.permits_production_release() {
-            return Err(BuildError::UnresolvedContentRights {
+            return Err(RightsError::UnresolvedContentRights {
                 source_id: source.source_id.clone(),
                 classification: source.classification.as_str().to_owned(),
-            });
+            }
+            .into());
         }
     }
 
     let profiles: Vec<DeclaredVoiceProfile> = require_declarations(
         "voice_profiles",
         manifest.voice_profiles.as_ref(),
-        BuildError::MissingVoiceProfileDeclaration,
+        RightsError::MissingVoiceProfileDeclaration.into(),
     )?;
     for profile in profiles {
         require_identifier("voice_profiles", "profile_id", &profile.profile_id)?;
@@ -377,5 +430,5 @@ pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
         }
     }
 
-    Err(BuildError::ProductionGatesUnavailable)
+    Err(PublicationError::ProductionGatesUnavailable.into())
 }

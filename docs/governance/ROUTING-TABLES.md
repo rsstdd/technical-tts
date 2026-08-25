@@ -32,6 +32,12 @@
 
 ## Failure routing
 
+For failures with structured runtime advice, this table is mirrored by
+`crates/study-tts-runtime/src/error/mod.rs::BuildError::remedy` and the category `remedy`
+methods under `crates/study-tts-runtime/src/error/`. The test
+`error::tests::t1_e0_governed_remedy_mappings_are_exhaustive` pins owner, action, and routing-row
+names with exhaustive matches so a new refusal cannot inherit advice without review.
+
 | Failure | Immediate action | Owner | Publication effect |
 |---|---|---|---|
 | Invalid lesson or schema | Reject before worker startup | Core | Blocked |
@@ -60,4 +66,3 @@
 | Production bundle | Configured publish root | No binaries by default | Signed release manifest |
 
 Never place source text, raw voice paths, voice recordings, model weights, secrets, or production audio in GitHub issues, pull requests, CI logs, or diagnostic bundles.
-
