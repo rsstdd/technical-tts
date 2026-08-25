@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    Lesson,
+    ValidatedLesson,
     digest::{BLAKE3_HEX_LENGTH, is_blake3_hex},
 };
 
@@ -260,6 +260,22 @@ impl RenderPlan {
     /// the same plan hash and the same cache keys, which is what makes a
     /// rebuild reuse its cache.
     ///
+    /// # Examples
+    ///
+    /// Authored data cannot be planned before validation:
+    ///
+    /// ```compile_fail
+    /// use study_tts_core::{AuthoredLesson, RenderPlan};
+    ///
+    /// let authored = AuthoredLesson {
+    ///     schema_version: "0.1-skeleton".to_owned(),
+    ///     lesson_id: "unvalidated".to_owned(),
+    ///     title: "Unvalidated".to_owned(),
+    ///     segments: vec![],
+    /// };
+    /// RenderPlan::for_lesson(&authored, "fake-tone-v1");
+    /// ```
+    ///
     /// # Panics
     ///
     /// If serializing a synthesis identity or the segment list fails, which
@@ -281,9 +297,9 @@ impl RenderPlan {
     /// this project is least able to detect later. A typed variant would
     /// also oblige every caller to handle a case no input can produce and no
     /// test could assert.
-    pub fn for_lesson(lesson: &Lesson, synthesizer_identity: &str) -> Self {
+    pub fn for_lesson(lesson: &ValidatedLesson, synthesizer_identity: &str) -> Self {
         let segments = lesson
-            .segments
+            .segments()
             .iter()
             .map(|segment| {
                 let identity = SynthesisIdentity {
@@ -316,7 +332,7 @@ impl RenderPlan {
         .into();
 
         Self {
-            lesson_id: lesson.lesson_id.clone(),
+            lesson_id: lesson.lesson_id().to_owned(),
             plan_hash,
             segments,
         }
@@ -365,7 +381,7 @@ mod tests {
 
     #[test]
     fn t1_e0_a_planned_cache_key_is_recorded_as_a_plain_string() {
-        let lesson = Lesson::from_json(include_bytes!(
+        let lesson = ValidatedLesson::from_json(include_bytes!(
             "../../../fixtures/lessons/e0-s0-two-segment.json"
         ))
         .expect("fixture should be valid");
@@ -385,7 +401,7 @@ mod tests {
 
     #[test]
     fn t1_e0_a_plan_hash_is_a_digest_recorded_as_a_plain_string() {
-        let lesson = Lesson::from_json(include_bytes!(
+        let lesson = ValidatedLesson::from_json(include_bytes!(
             "../../../fixtures/lessons/e0-s0-two-segment.json"
         ))
         .expect("fixture should be valid");
@@ -409,7 +425,7 @@ mod tests {
 
     #[test]
     fn t1_e0_plan_is_stable_for_identical_inputs() {
-        let lesson = Lesson::from_json(include_bytes!(
+        let lesson = ValidatedLesson::from_json(include_bytes!(
             "../../../fixtures/lessons/e0-s0-two-segment.json"
         ))
         .expect("fixture should be valid");
@@ -417,13 +433,26 @@ mod tests {
         let first = RenderPlan::for_lesson(&lesson, "fake-tone-v1");
         let second = RenderPlan::for_lesson(&lesson, "fake-tone-v1");
 
+        assert_eq!(
+            first.plan_hash.as_str(),
+            "d3c7ca8938293d0e07bced0bb05ace32413ac084a2e156f7cdc91ca34db756ff"
+        );
+        assert_eq!(
+            first.segments[0].cache_key.as_str(),
+            "e39181e902fc3de24aa6bc6fb4be39c616f7976dcd422b792e7d4164abfb8562"
+        );
+        assert_eq!(
+            first.segments[1].cache_key.as_str(),
+            "6a122ef2b0f9b890d14dedc9fd9fc915da10723ea30617e3146ddd4aa422933f"
+        );
+
         assert_eq!(first.plan_hash, second.plan_hash);
         assert_eq!(first.segments[0].cache_key, second.segments[0].cache_key);
     }
 
     #[test]
     fn t1_e0_synthesizer_identity_participates_in_the_cache_key() {
-        let lesson = Lesson::from_json(include_bytes!(
+        let lesson = ValidatedLesson::from_json(include_bytes!(
             "../../../fixtures/lessons/e0-s0-two-segment.json"
         ))
         .expect("fixture should be valid");

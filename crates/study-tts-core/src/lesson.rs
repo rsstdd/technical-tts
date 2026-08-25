@@ -30,11 +30,11 @@ const MAX_PAUSE_AFTER_MS: u32 = 10_000;
 /// value today: each versions a different document and moves separately.
 const LESSON_SCHEMA_VERSION: &str = "0.1-skeleton";
 
-/// One authored lesson, as it is written on disk and before any planning has
-/// happened.
+/// One authored lesson, as it is written on disk and before validation.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Lesson {
+#[serde(rename_all = "snake_case")]
+pub struct AuthoredLesson {
     /// Schema this document claims; an unrecognized version is refused rather
     /// than guessed at.
     pub schema_version: String,
@@ -47,10 +47,20 @@ pub struct Lesson {
     pub segments: Vec<LessonSegment>,
 }
 
+/// A lesson whose complete set of authoring invariants has passed validation.
+///
+/// The authored fields remain private through this wrapper so downstream code
+/// cannot construct or mutate a value that planning treats as validated.
+#[derive(Clone, Debug)]
+pub struct ValidatedLesson {
+    authored: AuthoredLesson,
+}
+
 /// One continuously spoken passage, the unit that is synthesized, cached, and
 /// retaken.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub struct LessonSegment {
     /// Identity of the segment within its lesson, unique and portable as a path
     /// component.
@@ -167,30 +177,26 @@ pub enum LessonError {
     PauseOutOfRange(String),
 }
 
-impl Lesson {
-    /// Parses and validates a lesson document, refusing anything synthesis
-    /// could not use.
+impl AuthoredLesson {
+    /// Validates authored data before making it available to render planning.
     ///
     /// # Errors
     ///
-    /// [`LessonError::InvalidJson`] when the bytes are not this document's
-    /// shape, otherwise whichever variant [`Lesson::validate`] returns.
-    pub fn from_json(bytes: &[u8]) -> Result<Self, LessonError> {
-        let lesson: Self = serde_json::from_slice(bytes)?;
-        lesson.validate()?;
-        Ok(lesson)
-    }
-
-    /// Checks every lesson invariant, returning the first violation as its own
-    /// error.
-    ///
-    /// # Errors
-    ///
-    /// One [`LessonError`] variant per violated invariant — the schema
-    /// version, the lesson identifier, then each segment in order — so a
-    /// caller can tell an author exactly which rule they broke rather than
-    /// that something was wrong.
-    pub fn validate(&self) -> Result<(), LessonError> {
+    /// [`LessonError::UnsupportedSchema`],
+    /// [`LessonError::MissingLessonId`],
+    /// [`LessonError::InvalidLessonId`], or [`LessonError::MissingSegments`]
+    /// for a lesson-level violation. Segment validation returns
+    /// [`LessonError::MissingSegmentId`],
+    /// [`LessonError::InvalidSegmentId`],
+    /// [`LessonError::DuplicateSegmentId`],
+    /// [`LessonError::MissingSpokenText`],
+    /// [`LessonError::MissingDisplayText`], [`LessonError::MissingRole`],
+    /// [`LessonError::MissingSourceRefs`], [`LessonError::EmptySourceRef`],
+    /// [`LessonError::UnapprovedSegment`], [`LessonError::MissingSpeaker`],
+    /// [`LessonError::MissingStyle`], or [`LessonError::PauseOutOfRange`].
+    /// Validation preserves that order so the first reported violation is
+    /// deterministic.
+    pub fn validate(self) -> Result<ValidatedLesson, LessonError> {
         if self.schema_version != LESSON_SCHEMA_VERSION {
             return Err(LessonError::UnsupportedSchema(self.schema_version.clone()));
         }
@@ -247,12 +253,47 @@ impl Lesson {
             }
         }
 
-        Ok(())
+        Ok(ValidatedLesson { authored: self })
     }
 }
 
-/// Applies the lesson-identifier rules to a value that did not arrive inside a
-/// `Lesson`.
+impl ValidatedLesson {
+    /// Parses and validates a lesson document, refusing anything synthesis
+    /// could not use.
+    ///
+    /// # Errors
+    ///
+    /// [`LessonError::InvalidJson`] when the bytes are not this document's
+    /// shape. Parsed authoring data can return every lesson-level or
+    /// segment-level variant documented by [`AuthoredLesson::validate`].
+    pub fn from_json(bytes: &[u8]) -> Result<Self, LessonError> {
+        let lesson: AuthoredLesson = serde_json::from_slice(bytes)?;
+        lesson.validate()
+    }
+
+    /// The accepted schema version recorded by the authored lesson.
+    pub fn schema_version(&self) -> &str {
+        &self.authored.schema_version
+    }
+
+    /// The stable identity of this lesson.
+    pub fn lesson_id(&self) -> &str {
+        &self.authored.lesson_id
+    }
+
+    /// The human-readable lesson title.
+    pub fn title(&self) -> &str {
+        &self.authored.title
+    }
+
+    /// The validated segments in speaking order.
+    pub fn segments(&self) -> &[LessonSegment] {
+        &self.authored.segments
+    }
+}
+
+/// Applies the lesson-identifier rules to a value that did not arrive inside an
+/// [`AuthoredLesson`].
 ///
 /// A production manifest names the lesson it describes, and that identifier
 /// names the same output directory the lesson's own does. One implementation
@@ -316,15 +357,56 @@ mod tests {
         .expect("fixture JSON should parse")
     }
 
-    fn parse(value: &Value) -> Result<Lesson, LessonError> {
-        Lesson::from_json(&serde_json::to_vec(value).expect("test lesson should serialize"))
+    fn parse(value: &Value) -> Result<ValidatedLesson, LessonError> {
+        ValidatedLesson::from_json(
+            &serde_json::to_vec(value).expect("test lesson should serialize"),
+        )
     }
 
     #[test]
     fn t1_e0_valid_lesson_parses() {
         let lesson = parse(&fixture()).expect("reviewed fixture should validate");
-        assert_eq!(lesson.lesson_id, "e0-s0-walking-skeleton");
-        assert_eq!(lesson.segments.len(), 2);
+        assert_eq!(lesson.schema_version(), LESSON_SCHEMA_VERSION);
+        assert_eq!(lesson.lesson_id(), "e0-s0-walking-skeleton");
+        assert_eq!(lesson.title(), "Walking Skeleton");
+        assert_eq!(lesson.segments().len(), 2);
+    }
+
+    #[test]
+    fn t3_e0_authored_lesson_serialization_preserves_the_fixture_shape() {
+        let expected = fixture();
+        let authored: AuthoredLesson =
+            serde_json::from_value(expected.clone()).expect("fixture shape should deserialize");
+
+        assert_eq!(
+            serde_json::to_value(authored).expect("authored lesson should serialize"),
+            expected
+        );
+    }
+
+    #[test]
+    fn t1_e0_programmatically_authored_unapproved_lesson_is_rejected() {
+        let authored = AuthoredLesson {
+            schema_version: LESSON_SCHEMA_VERSION.to_owned(),
+            lesson_id: "unapproved".to_owned(),
+            title: "Unapproved".to_owned(),
+            segments: vec![LessonSegment {
+                id: "seg-0001".to_owned(),
+                speaker: "nadia".to_owned(),
+                role: "explanation".to_owned(),
+                source_refs: vec!["block-001".to_owned()],
+                display_text: "Review this first.".to_owned(),
+                spoken_text: "Review this first.".to_owned(),
+                style: "calm".to_owned(),
+                pause_after_ms: 0,
+                review_status: ReviewStatus::NeedsReview,
+            }],
+        };
+
+        assert!(matches!(
+            authored.validate(),
+            Err(LessonError::UnapprovedSegment(id)) if id == "seg-0001"
+        ));
     }
 
     #[test]
@@ -348,7 +430,7 @@ mod tests {
         }"#;
 
         assert!(matches!(
-            Lesson::from_json(bytes),
+            ValidatedLesson::from_json(bytes),
             Err(LessonError::DuplicateSegmentId(id)) if id == "seg-1"
         ));
     }

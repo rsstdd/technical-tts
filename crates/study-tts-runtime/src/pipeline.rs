@@ -15,8 +15,8 @@ use std::{
 use serde::Deserialize;
 use serde_json::Value;
 use study_tts_core::{
-    Lesson, ReleaseClaim, ReleaseStatus, RenderPlan, RightsDecision, SourceRightsDeclaration,
-    VoiceError, VoiceUse, validate_lesson_id,
+    ReleaseClaim, ReleaseStatus, RenderPlan, RightsDecision, SourceRightsDeclaration,
+    ValidatedLesson, VoiceError, VoiceUse, validate_lesson_id,
 };
 
 use crate::{
@@ -127,7 +127,7 @@ pub fn build_preview(
         path: request.lesson_path.clone(),
         source,
     })?;
-    let lesson = Lesson::from_json(&lesson_bytes)?;
+    let lesson = ValidatedLesson::from_json(&lesson_bytes)?;
     let plan = RenderPlan::for_lesson(&lesson, synthesizer.identity());
 
     // Rights precede work: the profile gate runs before tool preflight and
@@ -146,7 +146,7 @@ pub fn build_preview(
         .map_err(|error| io_error(&request.workspace, error))?;
     let cache_root = managed::subdirectory(&workspace, "cache")?;
     let previews_root = managed::subdirectory(&workspace, "previews")?;
-    let output_root = managed::subdirectory(&previews_root, &lesson.lesson_id)?;
+    let output_root = managed::subdirectory(&previews_root, lesson.lesson_id())?;
 
     let cached_segments = plan
         .segments
@@ -166,7 +166,7 @@ pub fn build_preview(
     let manifest_path = managed::leaf(&output_root, manifest::MANIFEST_NAME)?;
     manifest::write(
         &manifest_path,
-        &lesson.lesson_id,
+        lesson.lesson_id(),
         &plan.plan_hash,
         &cached_segments,
         &master_wav,
