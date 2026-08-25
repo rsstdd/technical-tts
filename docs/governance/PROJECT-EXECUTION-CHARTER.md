@@ -1,7 +1,7 @@
 # Project Execution Charter
 
 - **Project:** `study-tts`
-- **Architecture authority:** ADR-0001, accepted
+- **Architecture authority:** ADR-0001 and its approved deviations
 - **Delivery authority:** Delivery Plan Version 3
 - **System of work:** [GitHub Project 1](https://github.com/users/rsstdd/projects/1)
 - **Repository:** [rsstdd/technical-tts](https://github.com/rsstdd/technical-tts)
@@ -9,7 +9,10 @@
 
 ## Objective
 
-Deliver a private, human-approved five-minute technical study-guide package at M2, then qualify production version 1 without weakening ADR-0001. Speed comes from the walking skeleton, fakes, explicit seams, and narrow work in progress. It does not come from skipping tests, validation, rights checks, or recovery behavior.
+Deliver a private, human-approved five-minute technical study-guide package at M2, then qualify
+production version 1 under ADR-0001 and its approved deviations. Speed comes from the walking
+skeleton, fakes, explicit seams, and narrow work in progress. It does not come from skipping
+tests, validation, rights checks, or recovery behavior.
 
 ## Release profiles
 
@@ -97,4 +100,3 @@ A story is done only when:
 ## Deviation rule
 
 No schedule pressure authorizes an architectural deviation. A proposed deviation uses the ADR-deviation template, identifies affected stories and tests, states rollback, and receives approval before implementation. Emergency containment may stop work or disable publication; it may not silently change durable behavior.
-

@@ -1,6 +1,6 @@
 # ADR-0004: Voice, Content, and Retention Policy
 
-- **Status:** Proposed; rights records incomplete
+- **Status:** Proposed; E0-S2 rights and fallback acquisition complete, later policy gates pending
 - **Owner/approver:** Project owner/rightsholder
 - **Engineering reviewer:** Engineering owner
 - **Depends on:** ADR-0001, E0-S2, E6-S2
@@ -22,12 +22,11 @@ Approve voice profiles, consent scopes, watermark requirements, source-content c
 
 | Record | Owner/rightsholder | Scope | Retention | Watermark | Status |
 |---|---|---|---|---|---|
-| Primary voice profile | TBD (`rights-voice-nadia-v1`, `rights-voice-tom-v1`) | TBD; no lawful source acquired | TBD | TBD | Review required; fallback owner voice is the authorized substitute |
-| Fallback owner voice | Ross Todd (`rights-voice-owner-fallback-v1`) | Private synthesis, internal owner use only | Per consent scope; raw reference outside Git under the restricted voice root | Deferred to OQ-09 (before G3) | Pre-authorized per E0-S2 task 3 |
+| Primary voice profile | TBD (`rights-voice-nadia-v1`, `rights-voice-tom-v1`) | TBD; no lawful source acquired | TBD | TBD | Review required; acquired fallback owner voice is selected instead |
+| Fallback owner voice | Ross Todd (`rights-voice-owner-fallback-v2`) | Owner-only private synthesis and voice qualification; no publication, distribution, commercial use, or second-speaker relabeling | Per consent scope; selected reference, conditionals, and rejected takes outside Git under the restricted voice root | Deferred to OQ-09 (before G3) | Acquired, consent granted, checksummed, and runtime-gated; ready for E0-S3 qualification |
 | Qualification source corpus | Ross Todd (`rights-qualification-sources-v1`) | owner-authored; private qualification use | Repository lifetime for committed fixtures; ADR-0005 for external corpora (`rights-asr-corpora-v1`) | N/A | Approved for recorded scope |
 | External distribution | Project owner | Internal, owner use only per `docs/governance/RELEASE-PROFILES.md` §4 | Release artifacts per this policy's retention defaults | TBD (OQ-09) | Recorded; reopening conditions in RELEASE-PROFILES §4 |
 
 ## Acceptance
 
 Accept before real voice use beyond a lawful test profile and before any production publication. Each underlying record must be independently verifiable and referenced by checksum or governed identifier.
-

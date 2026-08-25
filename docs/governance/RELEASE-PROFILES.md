@@ -3,7 +3,8 @@
 - **Status:** Ratified
 - **Owner and approver:** Ross Todd
 - **Ratified:** 2026-08-23
-- **Authority:** ADR-0001 §1, §17.18, §18; `DELIVERY-PLAN.md` §1
+- **Authority:** ADR-0001 §1, §17.18, §18; ADR-0001-D001; ADR-0001-D002;
+  `DELIVERY-PLAN.md` §1
 
 Every artifact this project produces declares exactly one release profile. A profile is a claim
 about what an artifact *is*, not a stage it has reached. The distinction is mechanical: code
@@ -52,7 +53,7 @@ agree. Changing either requires an ADR amendment, not an edit.
 | `worker_unloaded_before_verification` | The Chatterbox pool is unloaded before verification and is not invoked by ASR-only invalidation or recalibration |
 | `explicit_take_selection` | Production selection is explicit in a current takes file, and the plan and manifest record each selected take, cache key, and audio checksum |
 | `frozen_loudness_references` | Each production voice/style pair uses a calibrated frozen loudness reference |
-| `voice_identity_and_format` | Nadia and Tom remain recognizable throughout the lesson; the selected two-speaker format passes the Phase 0 dialogue gate, or the build uses the approved single-instructor fallback |
+| `voice_identity_and_format` | The selected owner voice remains recognizable and consistent throughout the lesson; the build truthfully uses the approved single-instructor format and never relabels the profile as Nadia, Tom, or multiple speakers |
 | `automated_audio_checks` | Automated audio checks pass for every segment and every export |
 | `package_provenance` | Output packages contain valid manifests and checksums |
 | `offline_render_verified` | Offline rendering is verified with network egress denied |
@@ -66,6 +67,14 @@ condition: triage must run and record evidence. Failure of ADR-0005's numerical 
 gates blocks the claim of automated text-integrity coverage and keeps human review authoritative
 under ADR-0001 §10.5, but does not block release. Recorded in
 `docs/adr/deviations/ADR-0001-D001-asr-release-condition.md`, and §17.18 is amended to match.
+
+### Version 1 uses the single-instructor format
+
+ADR-0001-D002 selects `owner-fallback-v1` before E0-S3. The Nadia/Tom recognizability and
+two-speaker dialogue criteria are not applicable to version 1. Voice consistency, rights,
+offline rendering, loudness, audio quality, human listening, and long-form qualification remain
+required. A future two-speaker release needs a superseding accepted decision and two separately
+approved profiles.
 
 ## 4. Distribution scope, and the condition that reopens it
 
