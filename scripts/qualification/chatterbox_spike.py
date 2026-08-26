@@ -318,13 +318,21 @@ def decode_json_object(raw: bytes, label: str) -> dict[str, Any]:
     return value
 
 
-def load_trusted_json(path: Path, label: str, expected_sha256: str) -> dict[str, Any]:
+def load_trusted_json(
+    path: Path,
+    label: str,
+    expected_sha256: str,
+) -> tuple[dict[str, Any], str]:
     """Authenticate one governed JSON record before accepting any of its fields."""
 
-    raw = path.read_bytes()
-    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise QualificationError(f"{label} is not valid UTF-8 JSON") from error
+    actual_sha256 = hashlib.sha256(raw).hexdigest()
+    if actual_sha256 != expected_sha256:
         raise QualificationError(f"{label} does not match its trusted approval record")
-    return decode_json_object(raw, label)
+    return decode_json_object(raw, label), actual_sha256
 
 
 def validate_network_isolation() -> dict[str, Any]:
@@ -412,12 +420,12 @@ def verify_acquired_bundle(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Verify the acquired code revision and every recorded model artifact."""
 
-    acquisition_record = load_trusted_json(
+    acquisition_record, _ = load_trusted_json(
         configuration.bundle_manifest.parent / "acquisition-approval.json",
         "acquisition approval",
         approval.acquisition_record_sha256,
     )
-    manifest = load_trusted_json(
+    manifest, _ = load_trusted_json(
         configuration.bundle_manifest,
         "bundle manifest",
         approval.manifest_sha256,
@@ -498,12 +506,12 @@ def verify_voice_profile(
     conditionals_path = validate_regular_file(
         voice_root / "conditionals.pt", voice_root, "voice conditionals"
     )
-    profile = load_trusted_json(
+    profile, profile_sha256 = load_trusted_json(
         profile_path,
         "voice profile",
         approval.profile_sha256,
     )
-    consent = load_trusted_json(
+    consent, consent_sha256 = load_trusted_json(
         consent_path,
         "voice consent",
         approval.consent_sha256,
@@ -539,21 +547,23 @@ def verify_voice_profile(
         raise QualificationError(
             "voice conditionals do not match their approved BLAKE3 identity"
         )
-    if sha256_file(reference_path) != approval.reference_sha256:
+    reference_sha256 = sha256_file(reference_path)
+    conditionals_sha256 = sha256_file(conditionals_path)
+    if reference_sha256 != approval.reference_sha256:
         raise QualificationError(
             "voice reference does not match its approved SHA-256 identity"
         )
-    if sha256_file(conditionals_path) != approval.conditionals_sha256:
+    if conditionals_sha256 != approval.conditionals_sha256:
         raise QualificationError(
             "voice conditionals do not match their approved SHA-256 identity"
         )
     return {
         "profile_id": profile.get("profile_id"),
-        "profile_sha256": sha256_file(profile_path),
-        "consent_sha256": sha256_file(consent_path),
-        "reference_wav_sha256": sha256_file(reference_path),
+        "profile_sha256": profile_sha256,
+        "consent_sha256": consent_sha256,
+        "reference_wav_sha256": reference_sha256,
         "reference_wav_blake3": reference_blake3,
-        "conditionals_sha256": sha256_file(conditionals_path),
+        "conditionals_sha256": conditionals_sha256,
         "conditionals_blake3": conditionals_blake3,
         "extractor_identity": profile.get("extractor_identity"),
         "rights_record_id": consent.get("rights_record_id"),

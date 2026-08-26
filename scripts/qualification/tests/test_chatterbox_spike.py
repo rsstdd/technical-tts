@@ -173,6 +173,20 @@ class VoiceProfilePreflightTests(unittest.TestCase):
 
 
 class BundleApprovalPreflightTests(unittest.TestCase):
+    def test_t4_e0_unreadable_trusted_json_uses_the_redacted_error_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            missing = Path(temporary_directory) / "missing.json"
+
+            with self.assertRaisesRegex(
+                HARNESS.QualificationError,
+                "trusted record is not valid UTF-8 JSON",
+            ):
+                HARNESS.load_trusted_json(
+                    missing,
+                    "trusted record",
+                    "0" * 64,
+                )
+
     def test_t5_e0_mutable_bundle_manifest_cannot_replace_approval(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

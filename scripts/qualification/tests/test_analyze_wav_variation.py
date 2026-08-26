@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -49,7 +50,58 @@ class RejectingSoundFile:
         raise AssertionError("rejected qualification WAV must not be decoded")
 
 
+class Samples:
+    shape = (1, 1)
+
+    def astype(self, dtype: str, *, copy: bool):
+        return self
+
+    def tobytes(self, *, order: str) -> bytes:
+        return b"\x00\x00\x00\x00"
+
+
+class FiniteSamples:
+    def all(self) -> bool:
+        return True
+
+
+class Numpy:
+    @staticmethod
+    def isfinite(samples: Samples) -> FiniteSamples:
+        return FiniteSamples()
+
+
+class AcceptingSoundFile:
+    def __init__(self) -> None:
+        self.inputs: list[bytes] = []
+
+    def info(self, source) -> SoundFileInfo:
+        self.inputs.append(source.read())
+        return SoundFileInfo()
+
+    def read(self, source, *, dtype: str, always_2d: bool):
+        self.inputs.append(source.read())
+        return Samples(), ANALYZER.SAMPLE_RATE_HZ
+
+
 class WavInputBoundaryTests(unittest.TestCase):
+    def test_t4_e0_analysis_uses_one_bounded_wav_state(self) -> None:
+        raw = b"RIFF\x10\x00\x00\x00WAVEdata\x04\x00\x00\x00\x00\x00\x00\x00"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "run-01.wav"
+            path.write_bytes(raw)
+            soundfile = AcceptingSoundFile()
+
+            with patch.object(
+                ANALYZER,
+                "read_bounded_wav",
+                wraps=ANALYZER.read_bounded_wav,
+            ) as read_bounded_wav:
+                ANALYZER.analyze_wav(path, soundfile, Numpy())
+
+        read_bounded_wav.assert_called_once_with(path)
+        self.assertEqual(soundfile.inputs, [raw, raw])
+
     def test_t4_e0_oversized_wav_is_rejected_before_media_inspection(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "run-01.wav"

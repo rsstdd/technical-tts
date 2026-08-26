@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import struct
@@ -55,10 +56,9 @@ def read_bounded_wav(path: Path) -> bytes:
     return raw
 
 
-def read_riff_chunks(path: Path) -> list[dict[str, Any]]:
-    """Read and hash every RIFF chunk in one qualification WAV."""
+def parse_riff_chunks(raw: bytes) -> list[dict[str, Any]]:
+    """Parse and hash every RIFF chunk in one bounded WAV value."""
 
-    raw = read_bounded_wav(path)
     if len(raw) < 12 or raw[:4] != b"RIFF" or raw[8:12] != b"WAVE":
         raise AnalysisError("qualification audio is not a RIFF/WAVE file")
     declared_size = struct.unpack_from("<I", raw, 4)[0] + 8
@@ -87,14 +87,19 @@ def read_riff_chunks(path: Path) -> list[dict[str, Any]]:
     return chunks
 
 
+def read_riff_chunks(path: Path) -> list[dict[str, Any]]:
+    """Read and hash every RIFF chunk in one qualification WAV."""
+
+    return parse_riff_chunks(read_bounded_wav(path))
+
+
 def analyze_wav(path: Path, soundfile_module: Any, numpy_module: Any) -> dict[str, Any]:
     """Hash the container, RIFF chunks, and decoded little-endian float samples."""
 
     if path.is_symlink() or not path.is_file():
         raise AnalysisError("qualification WAV must be a regular file")
-    if path.stat().st_size > MAX_WAV_BYTES:
-        raise AnalysisError("qualification WAV exceeds the configured input limits")
-    info = soundfile_module.info(path)
+    raw = read_bounded_wav(path)
+    info = soundfile_module.info(io.BytesIO(raw))
     if info.format != "WAV" or info.subtype != "FLOAT":
         raise AnalysisError("qualification WAV has an unexpected media format")
     if (
@@ -102,9 +107,9 @@ def analyze_wav(path: Path, soundfile_module: Any, numpy_module: Any) -> dict[st
         or info.duration > MAX_WAV_DURATION_SECONDS
     ):
         raise AnalysisError("qualification WAV exceeds the configured input limits")
-    chunks = read_riff_chunks(path)
+    chunks = parse_riff_chunks(raw)
     samples, sample_rate = soundfile_module.read(
-        path, dtype="float32", always_2d=True
+        io.BytesIO(raw), dtype="float32", always_2d=True
     )
     if sample_rate != SAMPLE_RATE_HZ or samples.shape[1] != 1:
         raise AnalysisError("qualification WAV has an unexpected media format")
@@ -115,7 +120,7 @@ def analyze_wav(path: Path, soundfile_module: Any, numpy_module: Any) -> dict[st
     sample_bytes = samples.astype("<f4", copy=False).tobytes(order="C")
     return {
         "name": path.name,
-        "container_sha256": sha256_bytes(read_bounded_wav(path)),
+        "container_sha256": sha256_bytes(raw),
         "decoded_pcm_sha256": sha256_bytes(sample_bytes),
         "frames": int(samples.shape[0]),
         "chunks": chunks,
