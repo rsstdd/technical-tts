@@ -1,6 +1,8 @@
 # Documentation Index
 
-This index routes work to the controlling document. ADR-0001 controls architecture. The Delivery Plan controls scope, sequence, gates, named tests, and evidence. Documents below explain execution without superseding either authority.
+This index routes work to the controlling document. ADR-0001 and explicit accepted amendments
+control architecture. The Delivery Plan controls scope, sequence, gates, named tests, and
+evidence. Documents below explain execution without superseding either authority.
 
 ## Start here
 
@@ -24,6 +26,7 @@ This index routes work to the controlling document. ADR-0001 controls architectu
 | Code review standard and severity scale | [`../.claude/skills/rust-review/SKILL.md`](../.claude/skills/rust-review/SKILL.md) |
 | Executable E0-S0 integration order and provisional seams | [`architecture/WALKING-SKELETON.md`](architecture/WALKING-SKELETON.md) |
 | Reference-machine qualification record | [`operations/REFERENCE-ENVIRONMENT.md`](operations/REFERENCE-ENVIRONMENT.md) |
+| E0-S3 G0 feasibility decision | [`../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v2.md`](../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v2.md) |
 | Upgrade and compatibility procedure | [`operations/UPGRADE-RUNBOOK.md`](operations/UPGRADE-RUNBOOK.md) |
 | Release, recovery, and rollback | [`operations/RELEASE-AND-ROLLBACK.md`](operations/RELEASE-AND-ROLLBACK.md) |
 | Threat model | [`security/THREAT-MODEL.md`](security/THREAT-MODEL.md) |
@@ -33,10 +36,14 @@ This index routes work to the controlling document. ADR-0001 controls architectu
 | ADR | Status | Acceptance condition |
 |---|---|---|
 | ADR-0001 | Accepted | Architectural authority |
-| [`ADR-0002`](adr/ADR-0002-model-hardware-voice-format-qualification.md) | Proposed evidence record | G0 measurements and owner approval |
+| [`ADR-0002`](adr/ADR-0002-model-hardware-voice-format-qualification.md) | Accepted with scoped waiver | Full-box performance qualification before G3 |
 | [`ADR-0003`](adr/ADR-0003-production-audio-quality-profile.md) | Proposed evidence record | Audio calibration and listener approval |
 | [`ADR-0004`](adr/ADR-0004-voice-content-and-retention-policy.md) | Proposed evidence record | Rights, consent, and retention approval |
 | [`ADR-0005`](adr/ADR-0005-asr-calibration-and-release-control.md) | Proposed evidence record | Measured ASR gates or explicit amendment |
+
+Accepted deviations are linked by their controlling ADR. ADR-0002 approves
+[`ADR-0001-D002`](adr/deviations/ADR-0001-D002-constrained-development-performance-gate.md),
+which expires before G3 review.
 
 ## Templates
 

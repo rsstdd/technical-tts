@@ -7,7 +7,7 @@ This matrix assigns delivery and approval responsibility. Capability timing rema
 | Fake end-to-end pipeline | G0a | Engineering owner | Project owner | E0-S0 T4 skeleton suite |
 | Release profiles and fail-closed publication | G0 | Core owner | Project owner | E0-S1 schema/state tests and gate record |
 | Voice, model, and source rights records | G0 | Project owner | Rightsholder/project owner | E0-S2 evidence and enforcement tests |
-| Reference environment and real Chatterbox viability | G0 | Engineering owner | Project owner | E0-S3 qualification report |
+| Reference environment and real Chatterbox viability | G0 | Engineering owner | Project owner | E0-S3 v1 measurement report, v2 progression decision, and ADR-0002 |
 | Provisional seams and fakes | G0 | Engineering owner | Affected-track owners | E0-S4 contract suite |
 | Reviewed canonical lesson JSON | G1 | Core owner | Engineering owner | E1-S2 tests |
 | Published schema, scaffold, validation, example | G1 | CLI/core owners | Engineering owner | E1-S1/E1-S5 tests |
@@ -36,4 +36,3 @@ This matrix assigns delivery and approval responsibility. Capability timing rema
 | Production authorization and publish enablement | M3 | Project owner | Required role signatories | E6-S4 release record |
 
 Roles map to Ross Todd during solo development unless another named person accepts the role. Independent-listener and rightsholder decisions remain separate even when the project owner coordinates them.
-

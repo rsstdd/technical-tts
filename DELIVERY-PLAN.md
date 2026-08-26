@@ -74,6 +74,15 @@ External work does not consume the engineering work-in-progress slot. Missing ex
 
 Calendar targets are planning ranges, not promises. Reforecast after G0 using measured model performance, environment findings, and resolved voice availability.
 
+**2026-08-26 G0 reforecast:** E0-S3 measured a worst single-worker CPU RTF of `14.9804`
+and a 53,947.516-second 60-minute projection on the constrained WSL2 allocation. Both remain
+failed measurements. Accepted ADR-0002 waives those failures only as blockers to development
+progression, so E0-S3 closes through an approved deviation and E0-S4 may begin. Overall G0 remains
+open until E0-S4 supplies the required provisional contract baseline. M2 remains conditionally
+three weeks and M3 eleven weeks after overall G0 closure; these durations are planning ranges,
+not active calendar promises. Full-box performance must pass the unchanged targets before G3
+acceptance.
+
 ### 2.4 Capability matrix
 
 | Capability | G0a | G1 | M2 | G3 | M3 |
@@ -137,7 +146,8 @@ A story is complete only when:
 
 - its definition of ready was satisfied before implementation;
 - every required task and acceptance criterion is complete;
-- its named tests or evidence checks pass at the declared tier;
+- its named tests or evidence checks pass at the declared tier, or an accepted ADR explicitly
+  replaces a failed control for a stated scope and expiry;
 - no test is disabled, ignored, or weakened without an approved deviation;
 - golden expectations were changed only through an explicit review operation;
 - schemas and fixtures remain synchronized;
@@ -318,7 +328,12 @@ The arrows define prerequisites, not a requirement to serialize independent trac
 - `t4_e0_pipeline_wav_variants_round_trip`
 - `t5_e0_reference_environment_report_complete`
 
-**Exit gate:** stop and reopen hardware or backend decisions if no lawful voice path exists, Chatterbox cannot render offline, the supported WAV path fails, or the single-worker RTF exceeds the ADR gate without an approved hardware solution.
+**Exit gate:** stop and reopen hardware or backend decisions if no lawful voice path exists,
+Chatterbox cannot render offline, the supported WAV path fails, or the single-worker RTF exceeds
+the ADR gate without an approved hardware solution or accepted ADR waiver. ADR-0002 accepts the
+2026-08-25 constrained-environment performance result only for development progression, so E0-S3
+closes through an approved deviation and E0-S4 may begin. The failed measurements remain evidence;
+the waiver expires before G3 acceptance.
 
 ### Story E0-S4 — Provisional seams and contract baseline
 
@@ -1076,7 +1091,7 @@ lawful voice/content use and viable Chatterbox
 |---|---|---|---|
 | Voice rights unresolved | No lawful source at G0 | Select pre-authorized owner-recorded single-instructor fallback | Project owner |
 | Source classification unresolved | Intended content use cannot be justified | Use owner-authored content and block unresolved material from the affected gate | Project owner |
-| CPU gate fails | Single-worker `RTF > 6.0` | Reopen hardware/backend decision before expanding integration | Engineering owner |
+| CPU gate fails | Single-worker `RTF > 6.0` | Apply accepted ADR-0002 waiver only to development progression; qualify the full-box deployment configuration before G3 | Engineering owner |
 | Model output varies | Fixed-seed characterization is not byte-identical | Preserve first-valid-artifact cache semantics and require retained artifacts for byte reconstruction | Engineering owner |
 | Real worker contract differs from assumptions | G0/G1 contract failure | Amend the versioned boundary before downstream expansion | Engineering owner |
 | Solo schedule overload | M2 candidate misses week 3 | Use week 4 correction buffer and apply only ratified milestone-local cuts | Project owner |
