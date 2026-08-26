@@ -59,6 +59,47 @@ pub enum DurableStateError {
         required_lesson_id: String,
     },
 
+    /// A provisional job snapshot is not valid strict JSON.
+    #[error(
+        "job snapshot `{}` is malformed ({source}); preserve it and route the job to runtime \
+         reconciliation",
+        path.display()
+    )]
+    MalformedJobSnapshot {
+        /// The malformed snapshot.
+        path: PathBuf,
+        /// What strict JSON parsing reported.
+        source: serde_json::Error,
+    },
+
+    /// A job snapshot names a different job than its managed directory.
+    #[error(
+        "job snapshot `{}` names job `{recorded}` but its directory requires `{required}`; it \
+         will not be overwritten",
+        path.display()
+    )]
+    JobSnapshotIdentityMismatch {
+        /// The authoritative job snapshot.
+        path: PathBuf,
+        /// Job identity the snapshot records.
+        recorded: String,
+        /// Job identity required by its directory.
+        required: String,
+    },
+
+    /// A job stage and selected-package field disagree.
+    #[error(
+        "job snapshot `{}` has an incompatible selected-package value for stage `{stage}`; \
+         preserve it for runtime reconciliation",
+        path.display()
+    )]
+    JobSnapshotSelectionMismatch {
+        /// The incompatible snapshot.
+        path: PathBuf,
+        /// Diagnostic stage value that disagrees with selection state.
+        stage: String,
+    },
+
     /// A cache-key owner did not release its lock within the bounded wait.
     #[error(
         "cache key `{cache_key}` remained locked at `{}` for {timeout_ms} ms; preserve all \
@@ -466,6 +507,9 @@ impl DurableStateError {
             )),
             Self::MalformedJobLock { .. }
             | Self::IncompatibleJobLock { .. }
+            | Self::MalformedJobSnapshot { .. }
+            | Self::JobSnapshotIdentityMismatch { .. }
+            | Self::JobSnapshotSelectionMismatch { .. }
             | Self::MalformedPublicationJournal { .. }
             | Self::MalformedCurrentPreview { .. }
             | Self::UnsupportedDurableRecord { .. }

@@ -21,7 +21,7 @@ use std::{io, path::PathBuf};
 use study_tts_core::{LessonError, ReleaseError, VoiceError};
 use thiserror::Error;
 
-use crate::SynthesisError;
+use crate::BackendError;
 
 mod audio;
 mod cache;
@@ -34,7 +34,7 @@ mod tool;
 mod voice_profile;
 
 pub use audio::{AudioError, AudioFault};
-pub use cache::{CacheEntryFault, CacheError};
+pub use cache::{CacheEntryFault, CacheError, PackageArtifactMismatch};
 pub use io_error::IoError;
 pub use managed_path::ManagedPathError;
 pub use publication::PublicationError;
@@ -79,9 +79,9 @@ pub enum BuildError {
     /// Durable ownership, journal, or selected-package state was unsafe.
     #[error(transparent)]
     DurableState(Box<DurableStateError>),
-    /// The synthesizer refused or failed.
+    /// TTS execution or its protocol boundary refused or failed.
     #[error(transparent)]
-    Synthesis(#[from] SynthesisError),
+    Synthesis(Box<BackendError>),
 }
 
 impl BuildError {
@@ -113,6 +113,12 @@ impl From<ReleaseError> for BuildError {
 impl From<DurableStateError> for BuildError {
     fn from(error: DurableStateError) -> Self {
         Self::DurableState(Box::new(error))
+    }
+}
+
+impl From<BackendError> for BuildError {
+    fn from(error: BackendError) -> Self {
+        Self::Synthesis(Box::new(error))
     }
 }
 
@@ -221,6 +227,14 @@ mod tests {
             .expect_err("the fixture must be malformed JSON")
     }
 
+    fn backend_error() -> BackendError {
+        BackendError::Execution {
+            request_id: "request".to_owned(),
+            code: "injected_failure".to_owned(),
+            message: "worker failed".to_owned(),
+        }
+    }
+
     fn expected_voice_profile_remedy(error: &VoiceProfileError) -> Option<RemedyAdvice> {
         match error {
             VoiceProfileError::MissingVoiceRecord { .. }
@@ -252,6 +266,12 @@ mod tests {
             CacheError::UnusableCacheEntry { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::Runtime,
                 "preserve the unusable cache entry and run runtime reconciliation",
+                Some("State or checksum corruption"),
+            )),
+            CacheError::PackageArtifactCountMismatch { .. }
+            | CacheError::PackageArtifactPlanMismatch { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::Runtime,
+                "preserve the cache and run runtime reconciliation",
                 Some("State or checksum corruption"),
             )),
         }
@@ -384,6 +404,9 @@ mod tests {
             )),
             DurableStateError::MalformedJobLock { .. }
             | DurableStateError::IncompatibleJobLock { .. }
+            | DurableStateError::MalformedJobSnapshot { .. }
+            | DurableStateError::JobSnapshotIdentityMismatch { .. }
+            | DurableStateError::JobSnapshotSelectionMismatch { .. }
             | DurableStateError::MalformedPublicationJournal { .. }
             | DurableStateError::MalformedCurrentPreview { .. }
             | DurableStateError::UnsupportedDurableRecord { .. }
@@ -539,7 +562,7 @@ mod tests {
             ))
         ));
         assert!(matches!(
-            BuildError::from(SynthesisError::new("worker failed")),
+            BuildError::from(backend_error()),
             BuildError::Synthesis(_)
         ));
     }
@@ -795,7 +818,7 @@ mod tests {
 
         let quarantine = DurableStateError::QuarantineFailed {
             staging_path: PathBuf::from("staging"),
-            primary: Box::new(BuildError::from(SynthesisError::new("worker failed"))),
+            primary: Box::new(BuildError::from(backend_error())),
             cleanup: Box::new(BuildError::from(IoError::FileSystem {
                 path: PathBuf::from("quarantine"),
                 source: io::Error::other("quarantine failure"),
@@ -876,7 +899,7 @@ mod tests {
             BuildError::from(ManagedPathError::UnrootedDestination {
                 path: PathBuf::new(),
             }),
-            BuildError::from(SynthesisError::new("worker failed")),
+            BuildError::from(backend_error()),
         ];
 
         for error in cases {

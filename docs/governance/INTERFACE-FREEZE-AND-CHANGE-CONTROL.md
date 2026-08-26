@@ -13,6 +13,14 @@ E0-S4 publishes versioned fakes and shared contract suites for:
 
 These seams permit independent work, but they remain provisional until the real Chatterbox worker and real package path pass the same contracts at G1.
 
+The concrete IDs, versions, public representations, consumers, fakes,
+fixtures, identity effects, stabilization stories, and affected-test mapping
+are recorded in
+[`../architecture/PROVISIONAL-CONTRACT-BASELINE.md`](../architecture/PROVISIONAL-CONTRACT-BASELINE.md).
+The change classes below are mechanized by
+`crates/study-tts-core/src/contract.rs::ContractDescriptor::assess_successor`;
+that module names this document in return.
+
 ## G1 freeze
 
 The G1 freeze record must contain:
@@ -33,7 +41,7 @@ The G1 freeze record must contain:
 
 | Class | Example | Required action |
 |---|---|---|
-| Compatible patch | Diagnostic clarification with no durable-byte change | Tests and documentation |
+| Compatible patch | Diagnostic clarification with no durable-byte or behavioral change | Retain version; tests and documentation |
 | Compatible extension | Optional field with defined default and unknown-field policy | Minor version, fixtures, compatibility tests |
 | Breaking contract | Required field, semantic change, frame change | Major version, migration, impact report, owner approval |
 | Architectural | Backend collection, database, remote rendering, changed authority boundary | New or amended ADR before implementation |
@@ -41,7 +49,8 @@ The G1 freeze record must contain:
 
 ## Change procedure
 
-1. Create an interface-change record.
+1. Create an interface-change record from
+   [`../templates/INTERFACE-CHANGE-TEMPLATE.md`](../templates/INTERFACE-CHANGE-TEMPLATE.md).
 2. Name affected contracts, identities, stories, fixtures, tests, and cached artifacts.
 3. Prove compatibility or define migration and rollback.
 4. Update fakes and shared contract tests first.
@@ -51,3 +60,8 @@ The G1 freeze record must contain:
 
 No merged code may cause an old take, verification result, or package to appear valid under a changed identity.
 
+Before G1, every amendment updates its fake, fixtures, and shared suite before
+its consumers. Executor and worker changes map to E1-S1/E1-S3 and the
+worker/security suites; cache changes map to E1-S3/E2-S1/E2-S2/E4; package
+changes map to E1-S4/E2-S3; job changes map to E2-S1/E4-S4/E5 recovery. Every
+class reruns the walking skeleton.

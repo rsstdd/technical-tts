@@ -1,0 +1,7 @@
+{
+  "contract_id": "worker_frames",
+  "version": { "major": 0, "minor": 2, "patch": 0 },
+  "change": "compatible_extension",
+  "extension_default": "trace_context is absent",
+  "rejects_unknown_fields": true
+}

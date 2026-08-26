@@ -1,0 +1,7 @@
+{
+  "contract_id": "worker_frames",
+  "version": { "major": 1, "minor": 0, "patch": 0 },
+  "change": "breaking",
+  "extension_default": null,
+  "rejects_unknown_fields": true
+}

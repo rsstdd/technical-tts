@@ -13,7 +13,7 @@ use tempfile::Builder;
 
 use crate::{
     AudioError, BuildError, CacheEntryFault, ManagedPathError, audio_error,
-    cache::{CachedSegment, hash_file, rejected},
+    cache::{ValidatedCachedArtifact, hash_file, rejected},
     io_error,
 };
 
@@ -32,7 +32,7 @@ const MILLISECONDS_PER_SECOND: u64 = 1_000;
 /// downstream duration inherits.
 /// `t1_e0_the_widest_pause_a_segment_can_declare_does_not_overflow` pins the
 /// frame count that headroom rests on.
-fn pause_frames(segment: &CachedSegment) -> Result<u64, BuildError> {
+fn pause_frames(segment: &ValidatedCachedArtifact) -> Result<u64, BuildError> {
     Ok(u64::from(segment.pause_after_ms)
         .checked_mul(u64::from(CANONICAL_SAMPLE_RATE))
         .ok_or_else(|| AudioError::PauseFrameOverflow {
@@ -58,7 +58,7 @@ fn pause_frames(segment: &CachedSegment) -> Result<u64, BuildError> {
 /// `t1_e0_the_widest_plan_the_types_allow_leaves_frame_headroom` pins both
 /// figures, so widening a field fails a test rather than eroding the margin
 /// quietly.
-fn expected_frames(segments: &[CachedSegment]) -> Result<u64, BuildError> {
+fn expected_frames(segments: &[ValidatedCachedArtifact]) -> Result<u64, BuildError> {
     let mut expected = 0_u64;
     for segment in segments {
         let pause = pause_frames(segment)?;
@@ -82,7 +82,7 @@ fn expected_frames(segments: &[CachedSegment]) -> Result<u64, BuildError> {
 /// Narrows the window rather than closing it: the file is hashed and then
 /// reopened to decode. Closing it needs a single handle read twice, which
 /// belongs with the directory-relative containment work deferred to E5-S4.
-fn verify_recorded_audio(segment: &CachedSegment) -> Result<(), BuildError> {
+fn verify_recorded_audio(segment: &ValidatedCachedArtifact) -> Result<(), BuildError> {
     let computed = hash_file(&segment.audio_path)?;
     if computed != segment.audio_blake3 {
         return Err(rejected(
@@ -115,7 +115,10 @@ fn verify_recorded_audio(segment: &CachedSegment) -> Result<(), BuildError> {
 /// [`AudioError::AssembledLengthMismatch`] when the total disagrees with the
 /// plan; otherwise [`crate::IoError::AudioAt`] or
 /// [`crate::IoError::FileSystem`].
-pub(crate) fn assemble(segments: &[CachedSegment], destination: &Path) -> Result<u64, BuildError> {
+pub(crate) fn assemble(
+    segments: &[ValidatedCachedArtifact],
+    destination: &Path,
+) -> Result<u64, BuildError> {
     let parent = destination
         .parent()
         .ok_or_else(|| ManagedPathError::UnrootedDestination {
@@ -240,8 +243,12 @@ mod tests {
         writer.finalize().expect("finalize test WAV");
     }
 
-    fn segment(audio_path: PathBuf, declared_frames: u32, pause_after_ms: u32) -> CachedSegment {
-        CachedSegment {
+    fn segment(
+        audio_path: PathBuf,
+        declared_frames: u32,
+        pause_after_ms: u32,
+    ) -> ValidatedCachedArtifact {
+        ValidatedCachedArtifact {
             segment_id: "seg-0001".to_owned(),
             entry_dir: audio_path
                 .parent()
