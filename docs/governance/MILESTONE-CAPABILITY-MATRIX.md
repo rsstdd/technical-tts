@@ -6,8 +6,8 @@ This matrix assigns delivery and approval responsibility. Capability timing rema
 |---|---|---|---|---|
 | Fake end-to-end pipeline | G0a | Engineering owner | Project owner | E0-S0 T4 skeleton suite |
 | Release profiles and fail-closed publication | G0 | Core owner | Project owner | E0-S1 schema/state tests and gate record |
-| Voice, model, and source rights records and selected version 1 voice configuration | G0 | Project owner | Rightsholder/project owner | E0-S2 evidence, ADR-0001-D002, and enforcement tests |
-| Reference environment and real Chatterbox viability | G0 | Engineering owner | Project owner | E0-S3 qualification report |
+| Voice, model, and source rights records and selected version 1 voice configuration | G0 | Project owner | Rightsholder/project owner | E0-S2 evidence, ADR-0001-D003, and enforcement tests |
+| Reference environment and real Chatterbox viability | G0 | Engineering owner | Project owner | E0-S3 v1 measurement report, v2 progression decision, and ADR-0002 |
 | Provisional seams and fakes | G0 | Engineering owner | Affected-track owners | E0-S4 contract suite |
 | Reviewed canonical lesson JSON | G1 | Core owner | Engineering owner | E1-S2 tests |
 | Published schema, scaffold, validation, example | G1 | CLI/core owners | Engineering owner | E1-S1/E1-S5 tests |

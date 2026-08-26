@@ -1,7 +1,7 @@
 # Project Execution Charter
 
 - **Project:** `study-tts`
-- **Architecture authority:** ADR-0001 and its approved deviations
+- **Architecture authority:** ADR-0001 and its accepted amendments
 - **Delivery authority:** Delivery Plan Version 3
 - **System of work:** [GitHub Project 1](https://github.com/users/rsstdd/projects/1)
 - **Repository:** [rsstdd/technical-tts](https://github.com/rsstdd/technical-tts)
@@ -10,9 +10,9 @@
 ## Objective
 
 Deliver a private, human-approved five-minute technical study-guide package at M2, then qualify
-production version 1 under ADR-0001 and its approved deviations. Speed comes from the walking
-skeleton, fakes, explicit seams, and narrow work in progress. It does not come from skipping
-tests, validation, rights checks, or recovery behavior.
+production version 1 under ADR-0001 and its explicit accepted amendments. Speed comes from the
+walking skeleton, fakes, explicit seams, and narrow work in progress. It does not come from
+skipping tests, validation, rights checks, or recovery behavior.
 
 ## Release profiles
 
@@ -30,7 +30,7 @@ Unknown release statuses are invalid. The production path must fail closed when 
 | Gate | Accountable owner | Engineering evidence owner | Approval | Exit artifact |
 |---|---|---|---|---|
 | G0a Skeleton | Engineering owner | Engineering owner | Project owner | Passing CI run and skeleton manifest |
-| G0 Feasibility | Project owner | Engineering owner | Project owner | Completed ADR-0002 draft and G0 gate record |
+| G0 Feasibility | Project owner | Engineering owner | Project owner | Accepted ADR-0002, E0-S3 progression decision, and E0-S4 provisional contract baseline |
 | G1 Vertical slice | Engineering owner | Engineering owner | Project owner and human reviewer | Three-segment package, contract report, interface-freeze charter |
 | M2 Private MVP | Project owner | Engineering owner | Project owner and human reviewer | Five-minute package and immutable approval record |
 | G3 Production candidate | Engineering owner | Engineering owner | Project owner | Candidate evidence index and unresolved-gate report |
@@ -73,7 +73,9 @@ A story is done only when:
 
 - every task and acceptance criterion is complete;
 - deterministic behavior was developed red-green-refactor;
-- required tests pass at their declared tier;
+- required tests run at their declared tier and remain recorded; a failure blocks completion
+  unless an accepted ADR waives only its blocking effect for an explicitly stated scope and
+  expiry;
 - evidence uses the written protocol and records provenance;
 - no test is disabled, weakened, or silently reclassified;
 - schemas, fixtures, documentation, and examples agree;

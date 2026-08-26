@@ -7,8 +7,9 @@ The Delivery Plan and GitHub stories contain the exhaustive named-test lists. Th
 | End-to-end boundary order | E0-S0 | `t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest` | G0a |
 | Release profiles fail closed | E0-S1, E2-S6, E6-S4 | `t3_e0_private_profile_cannot_report_production_release`; gate review | G0/M2/M3 |
 | Voice and source rights | E0-S2, E6-S2 | rights records; unapproved-profile and unresolved-content tests | G0/M3 |
-| Single-instructor version 1 voice selection | E0-S2, E0-S3, E6-S1 | ADR-0001-D002; exact-profile smoke render; voice-consistency and long-form listening evidence | G0/M3 |
-| Real Chatterbox viability and offline use | E0-S3, E1-S3 | smoke render, RTF gate, offline qualification | G0/G1 |
+| Single-instructor version 1 voice selection | E0-S2, E0-S3, E6-S1 | ADR-0001-D003; exact-profile smoke render; voice-consistency and long-form listening evidence | G0/M3 |
+| Real Chatterbox viability and offline use | E0-S3, E1-S3 | smoke render, offline qualification, measured constrained-environment RTF plus ADR-0002 waiver | G0/G1 |
+| Full-box Chatterbox performance | E0-S3, E5-S2, E6-S4 | single-worker RTF and 60-minute projection on the named deployment configuration | G3/M3 |
 | Synthesis determinism characterization | E0-S3 | `evidence_e0_fixed_seed_synthesis_determinism_is_characterized` | G0 |
 | Replaceable versioned worker seam | E0-S4, E1-S1, E1-S3 | shared fake/real contract suite | G0/G1 |
 | Canonical reviewed lesson only | E1-S2, E3-S3 | review-state rejection; display/spoken audit | G1/G3 |

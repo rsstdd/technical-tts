@@ -7,7 +7,7 @@ not a rights record, consent grant, backend decision, or qualification result. A
 enter synthesis only after it has its own approved rights or consent record, immutable source
 identity and checksums, governed reference profile, and every applicable qualification result.
 
-ADR-0001-D002 selects `owner-fallback-v1` as the only version 1 voice configuration. Nothing in
+ADR-0001-D003 selects `owner-fallback-v1` as the only version 1 voice configuration. Nothing in
 this register binds a source to the fictional Nadia or Tom role, adds a second production
 speaker, authorizes a non-Chatterbox backend, or changes E0-S3.
 
@@ -57,7 +57,7 @@ that output as a cloning reference.
 - Store any subsequently approved raw reference outside Git under the restricted managed voice
   root; record only governed identifiers, checksums, consent, and approval in the repository.
 - Any second speaker reopens the two-speaker architecture and qualification gates through a
-  superseding accepted decision as required by ADR-0001-D002.
+  superseding accepted decision as required by ADR-0001-D003.
 
 No candidate in this register is admitted to `docs/testing/TEST-DATA-MANIFEST.md`. No candidate
 artifact was downloaded, generated, or copied into the repository during this review.

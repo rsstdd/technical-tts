@@ -1,4 +1,4 @@
-# ADR-0001-D002 — Select the single-instructor voice configuration
+# ADR-0001-D003 — Select the single-instructor voice configuration
 
 - **Status:** Approved
 - **Date:** 2026-08-25

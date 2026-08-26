@@ -1,14 +1,14 @@
 # Documentation Index
 
-This index routes work to the controlling document. ADR-0001, as amended by its approved
-deviations, controls architecture. The Delivery Plan controls scope, sequence, gates, named
-tests, and evidence. Documents below explain execution without superseding either authority.
+This index routes work to the controlling document. ADR-0001 and explicit accepted amendments
+control architecture. The Delivery Plan controls scope, sequence, gates, named tests, and
+evidence. Documents below explain execution without superseding either authority.
 
 ## Start here
 
 | Need | Document |
 |---|---|
-| Architecture and production invariants | [`adr/ADR-0001-production-rust-study-guide-tts.md`](adr/ADR-0001-production-rust-study-guide-tts.md) and its approved deviations |
+| Architecture and production invariants | [`adr/ADR-0001-production-rust-study-guide-tts.md`](adr/ADR-0001-production-rust-study-guide-tts.md) and its accepted amendments |
 | Approved epics, stories, tasks, tests, gates, and schedule | [`../DELIVERY-PLAN.md`](../DELIVERY-PLAN.md) |
 | How work is governed and accepted | [`governance/PROJECT-EXECUTION-CHARTER.md`](governance/PROJECT-EXECUTION-CHARTER.md) |
 | Capability ownership and approval | [`governance/MILESTONE-CAPABILITY-MATRIX.md`](governance/MILESTONE-CAPABILITY-MATRIX.md) |
@@ -27,6 +27,7 @@ tests, and evidence. Documents below explain execution without superseding eithe
 | Code review standard and severity scale | [`../.claude/skills/rust-review/SKILL.md`](../.claude/skills/rust-review/SKILL.md) |
 | Executable E0-S0 integration order and provisional seams | [`architecture/WALKING-SKELETON.md`](architecture/WALKING-SKELETON.md) |
 | Reference-machine qualification record | [`operations/REFERENCE-ENVIRONMENT.md`](operations/REFERENCE-ENVIRONMENT.md) |
+| E0-S3 G0 feasibility decision | [`../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v3.md`](../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v3.md) |
 | Upgrade and compatibility procedure | [`operations/UPGRADE-RUNBOOK.md`](operations/UPGRADE-RUNBOOK.md) |
 | Release, recovery, and rollback | [`operations/RELEASE-AND-ROLLBACK.md`](operations/RELEASE-AND-ROLLBACK.md) |
 | Threat model | [`security/THREAT-MODEL.md`](security/THREAT-MODEL.md) |
@@ -37,11 +38,14 @@ tests, and evidence. Documents below explain execution without superseding eithe
 |---|---|---|
 | ADR-0001 | Accepted | Architectural authority |
 | [`ADR-0001-D001`](adr/deviations/ADR-0001-D001-asr-release-condition.md) | Approved amendment | ASR triage is required; failed calibration keeps ASR advisory rather than blocking release |
-| [`ADR-0001-D002`](adr/deviations/ADR-0001-D002-single-instructor-fallback.md) | Approved amendment | Version 1 selects the approved owner-recorded single-instructor configuration |
-| [`ADR-0002`](adr/ADR-0002-model-hardware-voice-format-qualification.md) | Proposed evidence record | G0 measurements and owner approval |
+| [`ADR-0001-D002`](adr/deviations/ADR-0001-D002-constrained-development-performance-gate.md) | Approved amendment | Constrained-development performance waiver expires before G3 |
+| [`ADR-0001-D003`](adr/deviations/ADR-0001-D003-single-instructor-fallback.md) | Approved amendment | Version 1 selects the approved owner-recorded single-instructor configuration |
+| [`ADR-0002`](adr/ADR-0002-model-hardware-voice-format-qualification.md) | Accepted with scoped waiver | Full-box performance qualification before G3 |
 | [`ADR-0003`](adr/ADR-0003-production-audio-quality-profile.md) | Proposed evidence record | Audio calibration and listener approval |
 | [`ADR-0004`](adr/ADR-0004-voice-content-and-retention-policy.md) | Proposed evidence record | Rights, consent, and retention approval |
 | [`ADR-0005`](adr/ADR-0005-asr-calibration-and-release-control.md) | Proposed evidence record | Measured ASR gates or explicit amendment |
+
+ADR-0002 approves ADR-0001-D002's constrained-development performance waiver.
 
 ## Templates
 

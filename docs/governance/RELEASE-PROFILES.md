@@ -4,6 +4,7 @@
 - **Owner and approver:** Ross Todd
 - **Ratified:** 2026-08-23
 - **Authority:** ADR-0001 §1, §17.18, §18; ADR-0001-D001; ADR-0001-D002;
+  ADR-0001-D003;
   `DELIVERY-PLAN.md` §1
 
 Every artifact this project produces declares exactly one release profile. A profile is a claim
@@ -70,7 +71,7 @@ under ADR-0001 §10.5, but does not block release. Recorded in
 
 ### Version 1 uses the single-instructor format
 
-ADR-0001-D002 selects `owner-fallback-v1` before E0-S3. The Nadia/Tom recognizability and
+ADR-0001-D003 selects `owner-fallback-v1` before E0-S3. The Nadia/Tom recognizability and
 two-speaker dialogue criteria are not applicable to version 1. Voice consistency, rights,
 offline rendering, loudness, audio quality, human listening, and long-form qualification remain
 required. A future two-speaker release needs a superseding accepted decision and two separately

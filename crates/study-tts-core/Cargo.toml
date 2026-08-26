@@ -8,6 +8,10 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[[example]]
+name = "qualification_blake3_file"
+test = true
+
 # Candidates in ADR-0001 §7.2 are declared when the story that needs
 # them lands, not in advance: an unused dependency is still audited,
 # licensed, and carried in Cargo.lock.

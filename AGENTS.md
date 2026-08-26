@@ -4,7 +4,7 @@ A Rust workspace for a local-first WSL2 CLI that converts reviewed technical les
 
 These instructions apply to the whole repository. A nested `AGENTS.md` in a subdirectory overrides only for that tree.
 
-**State.** E0-S0 walking skeleton is complete: two-segment fixture load/validate, provisional render plan, deterministic fake-tone synthesizer, cached-WAV reuse, Rust PCM+silence assembly, real FFmpeg M4A, minimal private-preview manifest. Product CLI commands, production schemas, Chatterbox, hardened recovery, and the complete output package are **not** implemented. Do not describe planned commands, schemas, workers, or audio behavior as present until they exist and are verified.
+**State.** E0-S0 walking skeleton is complete: two-segment fixture load/validate, provisional render plan, deterministic fake-tone synthesizer, cached-WAV reuse, Rust PCM+silence assembly, real FFmpeg M4A, minimal private-preview manifest. E0-S3 qualification is complete under accepted ADR-0002's constrained-development performance waiver; the disposable Chatterbox spike is evidence, not a product worker. Product CLI commands, production schemas, Chatterbox integration, hardened recovery, and the complete output package are **not** implemented. Do not describe planned commands, schemas, workers, or audio behavior as present until they exist and are verified.
 
 **Sources of truth (conflict order).** Newest accepted ADR that explicitly supersedes → `docs/adr/ADR-0001-production-rust-study-guide-tts.md` (architecture, scope, production invariants) → `DELIVERY-PLAN.md` (milestones, backlog, tests, evidence, sign-off) → this file → nested `AGENTS.md`. Proposed ADRs do not authorize scope.
 
@@ -103,7 +103,7 @@ Approved target. Create incrementally. Absent paths are planned, not missing wor
 | Rights / data / artifacts       | `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`                          | Approved rights records + ADR-0004                                                      |
 | Interface freeze                | `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md`                  | G1 freeze + approved versioned changes                                                  |
 | GitHub backlog                  | `docs/governance/GITHUB-PROJECT-PLAYBOOK.md`                              | Project status + repo acceptance evidence                                               |
-| Chatterbox qualification        | `docs/adr/ADR-0002-model-hardware-voice-format-qualification.md`          | Proposed until pinned revisions + G0 measurements approved                              |
+| Chatterbox qualification        | `docs/adr/ADR-0002-model-hardware-voice-format-qualification.md`          | Accepted development baseline + scoped waiver; full-box performance required before G3  |
 | Audio formats / loudness        | `docs/adr/ADR-0003-production-audio-quality-profile.md`                   | Proposed until thresholds, codecs, frozen refs approved                                 |
 | Voice consent / watermark       | `docs/adr/ADR-0004-voice-content-and-retention-policy.md`                 | Proposed until rights records + retention approved                                      |
 | ASR verification                | `docs/adr/ADR-0005-asr-calibration-and-release-control.md`                | Proposed until identities, corpus, decoder, patterns, gates measured                    |
