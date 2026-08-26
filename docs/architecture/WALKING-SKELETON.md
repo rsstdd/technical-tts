@@ -1,8 +1,8 @@
-# E0-S0 Walking Skeleton
+# E0-S0 Walking Skeleton through the E0-S4 Contracts
 
 ## Status and purpose
 
-The walking skeleton is the first executable integration contract. It proves that reviewed canonical lesson JSON can cross the provisional Rust boundaries, publish deterministic cached segment WAVs as atomic directory transactions, assemble exact PCM in Rust, invoke real FFmpeg without a shell, validate the encoded result with ffprobe, and atomically select an immutable private-preview package beneath `previews/<lesson-id>/packages/<manifest-blake3>/` through `previews/<lesson-id>/current.json`.
+The walking skeleton is the first executable integration contract. E0-S4 now routes it exclusively through the public `TtsExecutor`, cache-publication, package-writer, and job-repository seams recorded in [`PROVISIONAL-CONTRACT-BASELINE.md`](PROVISIONAL-CONTRACT-BASELINE.md). It proves that reviewed canonical lesson JSON can cross those provisional Rust boundaries, publish deterministic cached segment WAVs as atomic directory transactions, assemble exact PCM in Rust, invoke real FFmpeg without a shell, validate the encoded result with ffprobe, and atomically select an immutable private-preview package beneath `previews/<lesson-id>/packages/<manifest-blake3>/` through `previews/<lesson-id>/current.json`.
 
 This path is deliberately smaller than G1. It pulls forward the ADR-0001 §12.3 durability primitives, provisional lesson-scoped ownership, cache-key serialization, and package publication journal needed to keep E0 artifacts transaction-safe. It does not claim the complete E2 job state machine, resume CLI, production schemas, approval records, audio conditioning, full provenance, or a complete output package. The validated `lesson_id` is the provisional E0 job and publication identity until the approved versioned job ID lands.
 
@@ -12,23 +12,25 @@ The required order is fixed because each stage consumes a validated artifact fro
 
 1. Load and validate the provisional two-segment lesson fixture before any subprocess starts.
 2. Derive a deterministic render plan and provisional synthesis cache keys.
-3. Resolve and preflight FFmpeg and ffprobe, recording each resolved executable and version.
-4. Canonicalize the workspace, create managed cache, job, quarantine, and preview roots, and verify containment.
-5. Acquire `jobs/<lesson-id>/build.lock`, whose strict provisional record carries PID, Linux process-start identity, and creation metadata; refuse a live owner before reconciliation or output work.
-6. Reconcile the strict provisional `jobs/<lesson-id>/publication.json` journal and validate any authoritative `current.json` without overwriting corrupt state.
-7. Resolve each cache key under its bounded cross-process key lock. A miss writes and validates `audio.wav` plus `artifact.json` in one sibling staging directory, flushes both files and the directory, renames the directory without replacement, and flushes the shard directory. Abandoned attempts move to collision-free quarantine.
-8. Recheck an immutable current package for the same plan, tool identities, and path-normalized FFmpeg and ffprobe argument-profile identities; a no-op rebuild returns it without assembly or encoding.
-9. Concatenate cached PCM and declared silence in Rust into a transaction-local `lesson.wav` beneath `jobs/<lesson-id>/staging/<transaction>/`.
-10. Invoke FFmpeg with a pinned discrete argument vector to encode transaction-local `lesson.m4a` from the master WAV.
-11. Invoke ffprobe with discrete arguments and require one mono AAC stream.
-12. Checksum both outputs and atomically write the transaction-local `manifest.json` with executable, version, executed-argument, normalized argument-profile provenance, and `release_status: private_preview`.
-13. Flush every package file and the package directory, rename the complete directory to `previews/<lesson-id>/packages/<manifest-blake3>/` without replacement, then atomically replace and directory-sync `current.json`. The journal makes a crash after package durability but before selection finishable by the next build.
+3. Construct and validate every backend request, including contract version and capacity, before any tool or durable work.
+4. Resolve and preflight FFmpeg and ffprobe through the package adapter, recording each resolved executable and version in a prepared package writer.
+5. Canonicalize the workspace, create managed cache, job, quarantine, and preview roots, and verify containment.
+6. Acquire `jobs/<lesson-id>/build.lock`, whose strict provisional record carries PID, Linux process-start identity, and creation metadata; refuse a live owner before reconciliation or output work.
+7. Atomically write the minimal strict `jobs/<lesson-id>/job.json`, then reconcile the strict provisional `publication.json` journal and validate any authoritative `current.json` without overwriting corrupt state.
+8. Resolve each cache key under its bounded cross-process key lock. A miss writes and validates `audio.wav` plus `artifact.json` in one sibling staging directory, flushes both files and the directory, renames the directory without replacement, and flushes the shard directory. Abandoned attempts move to collision-free quarantine.
+9. Recheck an immutable current package for the same plan, tool identities, and path-normalized FFmpeg and ffprobe argument-profile identities; a no-op rebuild returns it without assembly or encoding.
+10. Refuse cached artifacts that do not match the plan order or resolve beneath the managed cache, then concatenate cached PCM and declared silence in Rust into a transaction-local `lesson.wav` beneath `jobs/<lesson-id>/staging/<transaction>/`.
+11. Invoke FFmpeg with a pinned discrete argument vector to encode transaction-local `lesson.m4a` from the master WAV.
+12. Invoke ffprobe with discrete arguments and require one mono AAC stream.
+13. Checksum both outputs and atomically write the transaction-local `manifest.json` with executable, version, executed-argument, normalized argument-profile provenance, and `release_status: private_preview`.
+14. Flush every package file and the package directory, rename the complete directory to `previews/<lesson-id>/packages/<manifest-blake3>/` without replacement, then atomically replace and directory-sync `current.json`. The journal makes a crash after package durability but before selection finishable by the next build.
 
 ```mermaid
 flowchart LR
     Lesson["Two-segment lesson JSON"] --> Validate["Validate reviewed input"]
     Validate --> Plan["Deterministic plan"]
-    Plan --> Preflight["Preflight tools and managed paths"]
+    Plan --> ExecutorGate["Validate executor requests"]
+    ExecutorGate --> Preflight["Preflight package tools"]
     Preflight --> Fake["Fake tone synthesis"]
     Fake --> Cache["Validated WAV cache"]
     Cache --> PCM["Rust PCM assembly"]
@@ -48,11 +50,13 @@ flowchart LR
 |---|---|---|
 | Lesson parsing and validation | `study-tts-core::{AuthoredLesson, ValidatedLesson}` | E1-S1 and E1-S2 schemas |
 | Render planning and synthesis identity | `study-tts-core::RenderPlan` | E1-S1 identity contracts |
-| Synthesis port | `study-tts-runtime::SegmentSynthesizer` | Replaced by the E0-S4 asynchronous contract |
-| Deterministic tone implementation | `study-tts-testkit::DeterministicToneWorker` | Extended by E0-S4 shared fakes |
+| Synthesis port | `study-tts-runtime::TtsExecutor` | E1-S3 real worker parity, then G1 freeze |
+| Deterministic tone implementation | `study-tts-testkit::FakeTtsExecutor` (`DeterministicToneWorker` test alias) | Shared with the real-worker contract suite at E1-S3 |
 | Durable filesystem primitives | `study-tts-runtime::durable` | Extended, not replaced, by E2-S1 job state and E5 containment |
 | Provisional lesson and cache-key locks | `study-tts-runtime::locking` | Replaced by approved job identity and integrated executor ownership in E2-S1/E5 |
 | Cache validation and atomic directory publication | `study-tts-runtime` | Extended with production worker artifacts and verification in E1-S3/E2-S1 |
+| Minimal job snapshot and repository | `study-tts-core::ProvisionalJobSnapshot`; `study-tts-runtime::JobRepository` | Replaced by the complete E2-S1 state machine and recovery semantics |
+| Package writing and immutable selection | `study-tts-runtime::PackageWriter` | Extended in E1-S4/E2-S3; real-path parity required before G1 |
 | PCM concatenation and silence | `study-tts-runtime` | Extended in E1-S4 and E2-S3 |
 | FFmpeg and ffprobe invocation | `study-tts-runtime` | Extended in E1-S4 without changing pinned arguments, preflight, provenance, or the no-shell rule |
 | Immutable preview generations and `current.json` | `study-tts-runtime::preview` | Extended into the complete package and approval flow in E1-S4/E2 |
@@ -159,8 +163,9 @@ still migrated together: it preserved each failure distinction, message,
 source chain, and operator remedy while making the category boundary explicit
 before interface freeze. On the supported `x86_64-unknown-linux-gnu` target,
 `size_of::<BuildError>()` measured 80 bytes before and 80 bytes after the
-refactor, so the existing boxed cache fault remained the only boxed payload. The
-baseline is enforced by
+refactor. E0-S4 keeps that bound by boxing the richer typed `BackendError` only
+at the `BuildError::Synthesis` category boundary; the exact backend variant and
+source chain remain available. The baseline is enforced by
 `error::tests::t1_e0_build_error_does_not_grow_during_category_refactor` in
 `crates/study-tts-runtime/src/error/mod.rs`, using
 `PRE_REFACTOR_BUILD_ERROR_SIZE_BYTES`; update this record and that constant

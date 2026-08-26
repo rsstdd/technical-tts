@@ -681,7 +681,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        cache::CachedSegment,
+        cache::ValidatedCachedArtifact,
         durable::{OsDurableFileSystem, TracingFileSystem},
         export::{ToolExecution, ToolProfile},
     };
@@ -715,7 +715,7 @@ mod tests {
         let manifest_path = transaction.stage_dir.join(manifest::MANIFEST_NAME);
         fs::write(&master, b"master").expect("write master");
         fs::write(&m4a, b"encoded").expect("write encoded output");
-        let segment = CachedSegment {
+        let segment = ValidatedCachedArtifact {
             segment_id: "segment".to_owned(),
             cache_key: "a"
                 .repeat(study_tts_core::CacheKey::LENGTH)

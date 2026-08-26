@@ -1,0 +1,1 @@
+{"method":"synthesize","protocol_version":"e0.worker.0.2","request_id":"request-extension","parameters":{"text":"Synthetic extension fixture.","voice":"synthetic-test-voice-v1","style":"calm","seed":42,"take":0,"output":"staging/segment.wav","trace_context":{"trace_id":"local-trace-1"}}}

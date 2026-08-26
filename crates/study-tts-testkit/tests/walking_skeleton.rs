@@ -2,7 +2,9 @@
 //! worker, real FFmpeg.
 
 use std::{
+    future::Future,
     path::Path,
+    pin::Pin,
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -13,11 +15,12 @@ use std::{
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use study_tts_core::{CacheKey, LessonError, MAX_LESSON_JSON_BYTES, PlannedSegment, ReleaseError};
+use study_tts_core::{CacheKey, LessonError, MAX_LESSON_JSON_BYTES, ReleaseError};
 use study_tts_runtime::{
-    BuildError, BuildRequest, CacheEntryFault, CacheError, DurableStateError, IoError,
-    ManagedPathError, PublicationError, SegmentSynthesizer, SynthesisError, SynthesisReport,
-    ToolError, build_preview, publish, validate_encoded_output, validate_production_manifest,
+    BackendDescriptor, BackendError, BuildError, BuildRequest, CacheEntryFault, CacheError,
+    DurableStateError, IoError, ManagedPathError, PublicationError, SynthesisReport,
+    SynthesisRequest, ToolError, TtsExecutor, build_preview, publish, validate_encoded_output,
+    validate_production_manifest,
 };
 use study_tts_testkit::{
     DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture,
@@ -165,33 +168,43 @@ impl PausingWorker {
     }
 }
 
-impl SegmentSynthesizer for PausingWorker {
-    fn identity(&self) -> &str {
-        "pausing-tone-worker-v1"
+impl TtsExecutor for PausingWorker {
+    fn descriptor(&self) -> BackendDescriptor {
+        self.inner.descriptor()
     }
 
-    fn synthesize(
-        &self,
-        segment: &PlannedSegment,
-        destination: &Path,
-    ) -> Result<SynthesisReport, SynthesisError> {
-        if self.first_request.swap(false, Ordering::SeqCst) {
-            let (started_lock, started_ready) = &self.started;
-            *started_lock.lock().expect("started lock") = true;
-            started_ready.notify_all();
+    fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
 
-            let (release_lock, release_ready) = &self.released;
-            let released = release_lock.lock().expect("release lock");
-            let (released, timeout) = release_ready
-                .wait_timeout_while(released, CONCURRENCY_TEST_TIMEOUT, |released| !*released)
-                .expect("release wait");
-            assert!(
-                !timeout.timed_out(),
-                "worker was not released before deadline"
-            );
-            drop(released);
-        }
-        self.inner.synthesize(segment, destination)
+    fn validate(&self, request: &SynthesisRequest) -> Result<(), BackendError> {
+        self.inner.validate(request)
+    }
+
+    fn synthesize<'a>(
+        &'a self,
+        request: SynthesisRequest,
+        destination: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<SynthesisReport, BackendError>> + Send + 'a>> {
+        Box::pin(async move {
+            if self.first_request.swap(false, Ordering::SeqCst) {
+                let (started_lock, started_ready) = &self.started;
+                *started_lock.lock().expect("started lock") = true;
+                started_ready.notify_all();
+
+                let (release_lock, release_ready) = &self.released;
+                let released = release_lock.lock().expect("release lock");
+                let (released, timeout) = release_ready
+                    .wait_timeout_while(released, CONCURRENCY_TEST_TIMEOUT, |released| !*released)
+                    .expect("release wait");
+                assert!(
+                    !timeout.timed_out(),
+                    "worker was not released before deadline"
+                );
+                drop(released);
+            }
+            self.inner.synthesize(request, destination).await
+        })
     }
 }
 
@@ -316,7 +329,7 @@ fn t4_e0_cache_hit_avoids_synthesis_and_is_byte_identical() {
         2,
         "cache hits must avoid synthesis"
     );
-    // This byte comparison applies only to the deterministic fake synthesizer
+    // This byte comparison applies only to the deterministic fake executor
     // and exact Rust assembly. It does not claim byte-identical Chatterbox
     // output from repeated synthesis.
     assert_eq!(
@@ -459,6 +472,32 @@ fn t4_e0_corrupt_publication_journal_is_refused_without_overwrite() {
         std::fs::read(result.publication_record).expect("current remains"),
         current
     );
+}
+
+#[test]
+fn t4_e0_corrupt_job_snapshot_is_refused_without_overwrite() {
+    let (workspace, _result, worker) = run_skeleton();
+    let snapshot = workspace
+        .path()
+        .join("jobs/e0-s0-walking-skeleton/job.json");
+    std::fs::write(&snapshot, b"{corrupt").expect("corrupt job snapshot");
+
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect_err("corrupt authoritative job state must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::DurableState(ref state)
+            if matches!(**state, DurableStateError::MalformedJobSnapshot { .. })
+    ));
+    assert_eq!(
+        std::fs::read(snapshot).expect("job snapshot remains"),
+        b"{corrupt"
+    );
+    assert_eq!(worker.synthesis_count(), 2);
 }
 
 #[test]
@@ -1193,39 +1232,43 @@ fn t3_e0_registered_fixture_checksums_match_test_data_manifest() {
     let manifest =
         std::fs::read_to_string(repository_root.join("docs/testing/TEST-DATA-MANIFEST.md"))
             .expect("read test-data manifest");
-    let lessons = repository_root.join("fixtures/lessons");
+    let fixture_directories = ["fixtures/lessons", "fixtures/contracts"];
 
-    // Every committed fixture is discovered rather than listed, so a new
-    // fixture cannot be added without a manifest row.
+    // Every committed lesson and contract fixture is discovered rather than
+    // listed, so a new fixture cannot be added without a manifest row.
     let mut checked = 0_usize;
-    for entry in std::fs::read_dir(&lessons).expect("read lesson fixtures") {
-        let entry = entry.expect("read lesson fixture entry");
-        let file_name = entry.file_name().to_string_lossy().into_owned();
-        let relative = format!("fixtures/lessons/{file_name}");
-        let bytes = std::fs::read(entry.path()).expect("read registered fixture");
-        let checksum = format!("{:x}", Sha256::digest(bytes));
+    for directory in fixture_directories {
+        for entry in std::fs::read_dir(repository_root.join(directory))
+            .expect("read registered fixture directory")
+        {
+            let entry = entry.expect("read registered fixture entry");
+            let file_name = entry.file_name().to_string_lossy().into_owned();
+            let relative = format!("{directory}/{file_name}");
+            let bytes = std::fs::read(entry.path()).expect("read registered fixture");
+            let checksum = format!("{:x}", Sha256::digest(bytes));
 
-        let rows: Vec<&str> = manifest
-            .lines()
-            .filter(|line| line.contains(&relative))
-            .collect();
-        assert_eq!(
-            rows.len(),
-            1,
-            "`{relative}` must have exactly one test-data row, found {}",
-            rows.len()
-        );
-        assert!(
-            rows[0].contains(&format!("SHA-256 `{checksum}`")),
-            "test-data checksum is stale for {relative}; update its row to SHA-256 `{checksum}`"
-        );
-        checked += 1;
+            let rows: Vec<&str> = manifest
+                .lines()
+                .filter(|line| line.contains(&relative))
+                .collect();
+            assert_eq!(
+                rows.len(),
+                1,
+                "`{relative}` must have exactly one test-data row, found {}",
+                rows.len()
+            );
+            assert!(
+                rows[0].contains(&format!("SHA-256 `{checksum}`")),
+                "test-data checksum is stale for {relative}; update its row to SHA-256 `{checksum}`"
+            );
+            checked += 1;
+        }
     }
 
     // Guards against a misresolved path making the loop vacuous.
     assert!(
-        checked >= 2,
-        "expected at least two committed lesson fixtures, checked {checked}"
+        checked >= 12,
+        "expected at least twelve committed lesson and contract fixtures, checked {checked}"
     );
 }
 

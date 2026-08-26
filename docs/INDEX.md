@@ -26,8 +26,11 @@ evidence. Documents below explain execution without superseding either authority
 | Code style rules applied to all code | [`../.claude/skills/clean-code/SKILL.md`](../.claude/skills/clean-code/SKILL.md) |
 | Code review standard and severity scale | [`../.claude/skills/rust-review/SKILL.md`](../.claude/skills/rust-review/SKILL.md) |
 | Executable E0-S0 integration order and provisional seams | [`architecture/WALKING-SKELETON.md`](architecture/WALKING-SKELETON.md) |
+| E0-S4 provisional contract IDs, fakes, suites, and stabilization | [`architecture/PROVISIONAL-CONTRACT-BASELINE.md`](architecture/PROVISIONAL-CONTRACT-BASELINE.md) |
+| E0-S4 cache/package audit amendment | [`architecture/E0-S4-INTERFACE-CHANGE-001.md`](architecture/E0-S4-INTERFACE-CHANGE-001.md) |
 | Reference-machine qualification record | [`operations/REFERENCE-ENVIRONMENT.md`](operations/REFERENCE-ENVIRONMENT.md) |
 | E0-S3 G0 feasibility decision | [`../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v3.md`](../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v3.md) |
+| E0-S4 provisional contract evidence | [`../evidence/gates/g0/e0-s4/e0-s4-provisional-contract-baseline-v2.md`](../evidence/gates/g0/e0-s4/e0-s4-provisional-contract-baseline-v2.md) (v1 retained as historical provenance) |
 | Upgrade and compatibility procedure | [`operations/UPGRADE-RUNBOOK.md`](operations/UPGRADE-RUNBOOK.md) |
 | Release, recovery, and rollback | [`operations/RELEASE-AND-ROLLBACK.md`](operations/RELEASE-AND-ROLLBACK.md) |
 | Threat model | [`security/THREAT-MODEL.md`](security/THREAT-MODEL.md) |
@@ -50,3 +53,7 @@ ADR-0002 approves ADR-0001-D002's constrained-development performance waiver.
 ## Templates
 
 Use the templates in [`templates/`](templates/) for gate reviews, evidence, listening review, rights records, ADR deviations, and releases. A blank template is not approval. Completed records belong under `evidence/` or the governed external artifact location defined by the relevant policy.
+
+Interface amendments use
+[`templates/INTERFACE-CHANGE-TEMPLATE.md`](templates/INTERFACE-CHANGE-TEMPLATE.md)
+and remain provisional until the G1 freeze record is approved.
