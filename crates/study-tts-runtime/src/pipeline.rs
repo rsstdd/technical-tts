@@ -344,7 +344,7 @@ fn synthesis_requests(plan: &RenderPlan) -> Vec<SynthesisRequest> {
     plan.segments
         .iter()
         .map(|segment| SynthesisRequest {
-            request_id: format!("e0-{}", segment.cache_key),
+            request_id: format!("e0-{}-{}", segment.cache_key, segment.id),
             segment_id: segment.id.clone(),
             spoken_text: segment.spoken_text.clone(),
             voice: segment.speaker.clone(),
@@ -748,14 +748,37 @@ pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use std::{
+        future::Future,
         io::{self, Read},
         path::Path,
+        pin::Pin,
+        sync::mpsc,
+        task::{Context, Poll, Waker},
+        thread,
     };
 
-    use study_tts_core::{LessonError, MAX_LESSON_JSON_BYTES};
+    use study_tts_core::{LessonError, MAX_LESSON_JSON_BYTES, RenderPlan, ValidatedLesson};
 
-    use super::read_lesson_from_reader;
+    use super::{block_on, read_lesson_from_reader, synthesis_requests};
     use crate::BuildError;
+
+    struct PendingThenReady {
+        waker_sender: Option<mpsc::Sender<Waker>>,
+    }
+
+    impl Future for PendingThenReady {
+        type Output = &'static str;
+
+        fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+            if let Some(sender) = self.waker_sender.take() {
+                sender
+                    .send(context.waker().clone())
+                    .expect("send the local block_on waker to the waking thread");
+                return Poll::Pending;
+            }
+            Poll::Ready("resumed")
+        }
+    }
 
     #[test]
     fn t1_e0_bounded_lesson_reader_refuses_growth_after_metadata_preflight() {
@@ -769,5 +792,73 @@ mod tests {
             BuildError::Lesson(LessonError::LessonJsonTooLarge { max_bytes })
                 if max_bytes == MAX_LESSON_JSON_BYTES
         ));
+    }
+
+    #[test]
+    fn t1_e0_synthesis_request_ids_include_segment_identity() {
+        let lesson = ValidatedLesson::from_json(
+            br#"{
+                "schema_version":"0.1-skeleton",
+                "lesson_id":"request-id-test",
+                "title":"Request IDs",
+                "segments":[
+                    {
+                        "id":"segment-a",
+                        "speaker":"voice-a",
+                        "role":"explanation",
+                        "source_refs":["source-a"],
+                        "display_text":"Same speech.",
+                        "spoken_text":"Same speech.",
+                        "style":"calm",
+                        "pause_after_ms":0,
+                        "review_status":"approved"
+                    },
+                    {
+                        "id":"segment-b",
+                        "speaker":"voice-a",
+                        "role":"recap",
+                        "source_refs":["source-b"],
+                        "display_text":"Same speech.",
+                        "spoken_text":"Same speech.",
+                        "style":"calm",
+                        "pause_after_ms":10,
+                        "review_status":"approved"
+                    }
+                ]
+            }"#,
+        )
+        .expect("validate the request-ID lesson");
+        let plan = RenderPlan::for_lesson(&lesson, "request-id-backend");
+
+        let requests = synthesis_requests(&plan);
+
+        assert_eq!(plan.segments[0].cache_key, plan.segments[1].cache_key);
+        assert_eq!(
+            requests[0].request_id,
+            format!("e0-{}-segment-a", plan.segments[0].cache_key)
+        );
+        assert_eq!(
+            requests[1].request_id,
+            format!("e0-{}-segment-b", plan.segments[1].cache_key)
+        );
+        assert_ne!(requests[0].request_id, requests[1].request_id);
+    }
+
+    #[test]
+    fn t1_e0_block_on_resumes_after_cross_thread_wake() {
+        let (waker_sender, waker_receiver) = mpsc::channel::<Waker>();
+        let waking_thread = thread::spawn(move || {
+            waker_receiver
+                .recv()
+                .expect("receive the local block_on waker")
+                .wake();
+        });
+
+        let output = block_on(PendingThenReady {
+            waker_sender: Some(waker_sender),
+        });
+        waking_thread.join().expect("join the waking thread");
+
+        assert_eq!(output, "resumed");
     }
 }

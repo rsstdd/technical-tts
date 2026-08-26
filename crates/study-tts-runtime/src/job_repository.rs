@@ -180,3 +180,180 @@ fn validate_snapshot(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use study_tts_core::{
+        PROVISIONAL_JOB_SCHEMA_VERSION, ProvisionalJobSnapshot, ProvisionalJobStage,
+        SelectedPackageIdentity,
+    };
+
+    use super::validate_snapshot;
+    use crate::{BuildError, DurableStateError};
+
+    const JOB_ID: &str = "job-1";
+    const SNAPSHOT_PATH: &str = "jobs/job-1/job.json";
+
+    fn snapshot(stage: ProvisionalJobStage) -> ProvisionalJobSnapshot {
+        ProvisionalJobSnapshot {
+            schema_version: PROVISIONAL_JOB_SCHEMA_VERSION.to_owned(),
+            job_id: JOB_ID.to_owned(),
+            plan_hash: "a".repeat(64),
+            stage,
+            selected_package: None,
+        }
+    }
+
+    fn selected_package() -> SelectedPackageIdentity {
+        SelectedPackageIdentity {
+            package_id: "b".repeat(64),
+            manifest_blake3: "c".repeat(64),
+        }
+    }
+
+    fn validation_error(snapshot: &ProvisionalJobSnapshot, job_id: &str) -> BuildError {
+        validate_snapshot(Path::new(SNAPSHOT_PATH), job_id, snapshot)
+            .expect_err("the malformed snapshot must be refused")
+    }
+
+    #[test]
+    fn t1_e0_job_snapshot_refuses_unsupported_schema_version() {
+        let mut snapshot = snapshot(ProvisionalJobStage::Planned);
+        snapshot.schema_version = "e0.job-state.9.0".to_owned();
+
+        let error = validation_error(&snapshot, JOB_ID);
+
+        assert!(matches!(
+            error,
+            BuildError::DurableState(error)
+                if matches!(
+                    error.as_ref(),
+                    DurableStateError::UnsupportedDurableRecord {
+                        path,
+                        schema_version,
+                    } if path == &PathBuf::from(SNAPSHOT_PATH)
+                        && schema_version == "e0.job-state.9.0"
+                )
+        ));
+    }
+
+    #[test]
+    fn t1_e0_job_snapshot_refuses_job_identity_mismatch() {
+        let snapshot = snapshot(ProvisionalJobStage::Planned);
+
+        let error = validation_error(&snapshot, "job-2");
+
+        assert!(matches!(
+            error,
+            BuildError::DurableState(error)
+                if matches!(
+                    error.as_ref(),
+                    DurableStateError::JobSnapshotIdentityMismatch {
+                        path,
+                        recorded,
+                        required,
+                    } if path == &PathBuf::from(SNAPSHOT_PATH)
+                        && recorded == JOB_ID
+                        && required == "job-2"
+                )
+        ));
+    }
+
+    #[test]
+    fn t1_e0_job_snapshot_refuses_malformed_plan_hash() {
+        let mut snapshot = snapshot(ProvisionalJobStage::Planned);
+        snapshot.plan_hash = "not-a-plan-hash".to_owned();
+
+        let error = validation_error(&snapshot, JOB_ID);
+
+        assert!(matches!(
+            error,
+            BuildError::DurableState(error)
+                if matches!(
+                    error.as_ref(),
+                    DurableStateError::MalformedDurableDigest { path, value }
+                        if path == &PathBuf::from(SNAPSHOT_PATH)
+                            && value == "not-a-plan-hash"
+                )
+        ));
+    }
+
+    #[test]
+    fn t1_e0_job_snapshot_refuses_selection_before_package_selected_stage() {
+        let mut snapshot = snapshot(ProvisionalJobStage::Packaging);
+        snapshot.selected_package = Some(selected_package());
+
+        let error = validation_error(&snapshot, JOB_ID);
+
+        assert!(matches!(
+            error,
+            BuildError::DurableState(error)
+                if matches!(
+                    error.as_ref(),
+                    DurableStateError::JobSnapshotSelectionMismatch { path, stage }
+                        if path == &PathBuf::from(SNAPSHOT_PATH) && stage == "Packaging"
+                )
+        ));
+    }
+
+    #[test]
+    fn t1_e0_job_snapshot_refuses_package_selected_without_selection() {
+        let snapshot = snapshot(ProvisionalJobStage::PackageSelected);
+
+        let error = validation_error(&snapshot, JOB_ID);
+
+        assert!(matches!(
+            error,
+            BuildError::DurableState(error)
+                if matches!(
+                    error.as_ref(),
+                    DurableStateError::JobSnapshotSelectionMismatch { path, stage }
+                        if path == &PathBuf::from(SNAPSHOT_PATH) && stage == "PackageSelected"
+                )
+        ));
+    }
+
+    #[test]
+    fn t1_e0_job_snapshot_refuses_malformed_selected_package_id() {
+        let mut snapshot = snapshot(ProvisionalJobStage::PackageSelected);
+        let mut package = selected_package();
+        package.package_id = "not-a-package-id".to_owned();
+        snapshot.selected_package = Some(package);
+
+        let error = validation_error(&snapshot, JOB_ID);
+
+        assert!(matches!(
+            error,
+            BuildError::DurableState(error)
+                if matches!(
+                    error.as_ref(),
+                    DurableStateError::MalformedDurableDigest { path, value }
+                        if path == &PathBuf::from(SNAPSHOT_PATH)
+                            && value == "not-a-package-id"
+                )
+        ));
+    }
+
+    #[test]
+    fn t1_e0_job_snapshot_refuses_malformed_selected_manifest_digest() {
+        let mut snapshot = snapshot(ProvisionalJobStage::PackageSelected);
+        let mut package = selected_package();
+        package.manifest_blake3 = "not-a-manifest-digest".to_owned();
+        snapshot.selected_package = Some(package);
+
+        let error = validation_error(&snapshot, JOB_ID);
+
+        assert!(matches!(
+            error,
+            BuildError::DurableState(error)
+                if matches!(
+                    error.as_ref(),
+                    DurableStateError::MalformedDurableDigest { path, value }
+                        if path == &PathBuf::from(SNAPSHOT_PATH)
+                            && value == "not-a-manifest-digest"
+                )
+        ));
+    }
+}

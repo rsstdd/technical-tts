@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 
 /// Mirrors the baseline wire version in the E0-S4 provisional contract record.
@@ -374,13 +375,22 @@ pub fn parse_worker_request(bytes: &[u8]) -> Result<WorkerRequestFrame, WorkerFr
     let frame: WorkerRequestFrame =
         serde_json::from_slice(bytes).map_err(WorkerFrameError::Malformed)?;
     validate_frame_identity(frame.protocol_version(), frame.request_id())?;
-    if frame.uses_trace_extension() && frame.protocol_version() != WORKER_PROTOCOL_EXTENSION_VERSION
+    if (frame.uses_trace_extension() || trace_context_is_present(bytes)?)
+        && frame.protocol_version() != WORKER_PROTOCOL_EXTENSION_VERSION
     {
         return Err(WorkerFrameError::ExtensionRequiresVersion {
             required: WORKER_PROTOCOL_EXTENSION_VERSION,
         });
     }
     Ok(frame)
+}
+
+fn trace_context_is_present(bytes: &[u8]) -> Result<bool, WorkerFrameError> {
+    let value: Value = serde_json::from_slice(bytes).map_err(WorkerFrameError::Malformed)?;
+    Ok(value
+        .get("parameters")
+        .and_then(Value::as_object)
+        .is_some_and(|parameters| parameters.contains_key("trace_context")))
 }
 
 /// Parses and validates exactly one response frame without a trailing newline.
@@ -436,4 +446,29 @@ fn validate_version(version: &str) -> Result<(), WorkerFrameError> {
     Err(WorkerFrameError::UnsupportedVersion {
         found: version.to_owned(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WORKER_PROTOCOL_EXTENSION_VERSION, WorkerFrameError, parse_worker_request};
+
+    #[test]
+    fn t1_e0_worker_protocol_0_1_refuses_explicit_null_trace_context() {
+        let error = parse_worker_request(
+            concat!(
+                r#"{"method":"synthesize","protocol_version":"e0.worker.0.1","#,
+                r#""request_id":"request-1","parameters":{"text":"reviewed","#,
+                r#""voice":"voice-1","style":"calm","seed":7,"take":0,"#,
+                r#""output":"request-1.wav","trace_context":null}}"#,
+            )
+            .as_bytes(),
+        )
+        .expect_err("an explicitly present 0.2 extension must be refused by protocol 0.1");
+
+        assert!(matches!(
+            error,
+            WorkerFrameError::ExtensionRequiresVersion { required }
+                if required == WORKER_PROTOCOL_EXTENSION_VERSION
+        ));
+    }
 }
