@@ -1,7 +1,7 @@
 # Project Execution Charter
 
 - **Project:** `study-tts`
-- **Architecture authority:** ADR-0001, accepted
+- **Architecture authority:** ADR-0001 and its accepted amendments
 - **Delivery authority:** Delivery Plan Version 3
 - **System of work:** [GitHub Project 1](https://github.com/users/rsstdd/projects/1)
 - **Repository:** [rsstdd/technical-tts](https://github.com/rsstdd/technical-tts)

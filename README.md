@@ -23,9 +23,10 @@ The priority order is technical correctness, comfortable listening, retention va
 
 | Area | Status |
 |---|---|
-| Architecture | Accepted in [ADR-0001](docs/adr/ADR-0001-production-rust-study-guide-tts.md) |
+| Architecture | Accepted in [ADR-0001](docs/adr/ADR-0001-production-rust-study-guide-tts.md), as amended by [ADR-0001-D001](docs/adr/deviations/ADR-0001-D001-asr-release-condition.md), [ADR-0001-D002](docs/adr/deviations/ADR-0001-D002-constrained-development-performance-gate.md), and [ADR-0001-D003](docs/adr/deviations/ADR-0001-D003-single-instructor-fallback.md) |
 | Delivery backlog | Approved in [DELIVERY-PLAN.md](DELIVERY-PLAN.md) |
 | Rust workspace | Four-crate workspace with a tested end-to-end skeleton |
+| Model and voice qualification | E0-S2 rights prerequisites and E0-S3 qualification complete; full-box performance qualification remains required before G3 |
 | Chatterbox worker | Not started |
 | ASR verifier | Not started |
 | CLI | Product commands not implemented |
@@ -101,12 +102,17 @@ The planned lesson format separates readable text from exact synthesis input:
 - protected terms prevent unsafe segmentation and define approved ASR alternatives.
 - stable segment IDs make cache reuse, review, and retakes precise.
 
-The default teaching format supports two stable roles:
+The lesson domain retains two pedagogical roles:
 
 - **Nadia:** instructor, explanation, example, correction, pseudocode, synthesis, and recap.
 - **Tom:** learner, question, challenge, plausible mistake, clarification, and recall cue.
 
-The two-speaker format must pass the listening gate. A documented single-instructor fallback is used if separate turns sound like intercut monologues rather than credible instruction.
+Version 1 uses the approved owner-recorded single-instructor configuration selected by
+[ADR-0001-D003](docs/adr/deviations/ADR-0001-D003-single-instructor-fallback.md). Learner
+questions become instructor-voiced rhetorical prompts. Nadia and Tom remain conceptual authoring
+roles, not approved voice identities, and the owner profile must not be relabeled as either role
+or as multiple speakers. A future two-speaker format requires a new accepted decision and two
+separately approved profiles.
 
 ## Planned output package
 

@@ -9,7 +9,7 @@ Unresolved answers remain explicit. `TBD` does not authorize a default that expa
 | OQ-01 | What exact filesystem location does `publish` write, and who consumes it? | Project owner | Before G0 | Blocks external-publication definition and M3 | TBD; private previews only |
 | OQ-02 | Is version 1 single-machine, single-user, and local-filesystem only? | Project owner | Before G0 | Changes threat model and architecture | Proposed: yes |
 | OQ-03 | Is version 1 English only? | Project owner | Before G0 | Changes normalizer, ASR, and corpus | Proposed: yes |
-| OQ-04 | Which voice configuration has valid consent and permitted use? | Project owner/rightsholder | Before real voice use | Blocks G0 real-voice path | Owner-recorded fallback permitted only after record completion |
+| OQ-04 | Which voice configuration has valid consent and permitted use? | Project owner/rightsholder | Before real voice use | Blocks G0 real-voice path | Resolved: `owner-fallback-v1`, acquired and approved under `rights-voice-owner-fallback-v2`; selected for version 1 by ADR-0001-D003 |
 | OQ-05 | Which source content may be narrated or distributed? | Project owner/rightsholder | Before qualification corpus use | Blocks affected use and external publication | Classify each source |
 | OQ-06 | What is the named reference machine and backup/recovery plan? | Engineering owner | Full-box machine before G3; backup before M3 | Blocks G3 performance qualification | Constrained development environment `reference-wsl2-d9d550f06b783405` measured; full-box deployment configuration not yet named; no qualified backup exists; accept single-machine risk with an eight-working-hour target to rebuild and rerun critical qualification before M3 |
 | OQ-07 | Does failed ASR calibration block 1.0? | Project owner | Before corpus investment | Changes M3 scope | Proposed: no, if ADR amendment mandates complete human review |
@@ -50,6 +50,10 @@ Apply the first sufficient step. Never descope safety, correctness, rights, inte
 | 7 | Delay external publication and ship private-only 1.0 | M3 | Rights and release-status honesty remain |
 
 **Ratification:** Ratified 2026-08-23 by the project owner. Scope removal is authorized only by applying the first sufficient step in ladder order.
+
+Descope step 2 was applied on 2026-08-25 through approved ADR-0001-D003. Version 1 uses the one
+approved owner-recorded voice. Nadia and Tom remain `Review required` and outside the version 1
+critical path; no rights, identity, or two-speaker capability is implied.
 
 | Role | Name | Decision | Date | Notes |
 |---|---|---|---|---|

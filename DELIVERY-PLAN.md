@@ -282,8 +282,10 @@ The arrows define prerequisites, not a requirement to serialize independent trac
 **Tasks**
 
 1. Record the Chatterbox code and model-weight licenses and confirm permitted use.
-2. Acquire Nadia and Tom voice references with consent or license records.
-3. Pre-authorize an owner-recorded single-instructor fallback if either voice is unavailable by the G0 deadline.
+2. Record Nadia and Tom as unavailable and `Review required`; select the acquired owner-recorded
+   single-instructor fallback instead, without relabeling it as either unavailable voice.
+3. Acquire the owner-recorded single-instructor fallback with explicit consent, immutable
+   reference and conditional identities, and approval for the recorded scope.
 4. Record model, tokenizer, codec, voice, conditional, and license identities.
 5. Define access, retention, deletion, and backup rules for voices and ASR corpora.
 6. Identify the approver for any use not explicitly covered by the recorded terms.
@@ -292,25 +294,31 @@ The arrows define prerequisites, not a requirement to serialize independent trac
 
 **Tests and evidence**
 
-- `evidence_e0_model_and_voice_rights_records_complete_v2`
-- `evidence_e0_source_provenance_use_and_distribution_classification_complete`
+- `evidence_e0_model_and_voice_rights_records_complete_v3`
+- `evidence_e0_source_provenance_use_and_distribution_classification_complete_v3`
 - `t4_e0_missing_voice_consent_blocks_profile_load`
 - `t4_e0_unapproved_voice_profile_cannot_enter_preview_or_production`
 - `t4_e0_voice_checksum_mismatch_blocks_use`
 - `t4_e0_voice_records_that_are_not_regular_files_are_refused`
 - `t4_e0_production_release_rejects_unresolved_content_rights_classification`
 
-**Acceptance:** a lawful voice configuration and content source are available for the intended use, or an approved fallback is selected before real lesson rendering. The product records classification and scope; it does not encode a universal legal conclusion about all third-party material.
+**Acceptance:** a lawful voice configuration and content source are available for the intended
+use. ADR-0001-D003 selects the approved owner-recorded single-instructor fallback; Nadia and Tom
+remain `Review required` and are not E0-S2 or E0-S3 prerequisites. The product records
+classification and scope; it does not encode a universal legal conclusion about all third-party
+material.
 
 ### Story E0-S3 — Reference environment and real-model spike
 
-**Definition of ready:** reference machine access and a lawful test voice are available.
+**Definition of ready:** reference machine access and the lawful selected test voice are
+available.
 
 **Tasks**
 
 1. Record WSL2 version, Ubuntu version, CPU topology, RAM, storage, Python, FFmpeg, ffprobe, GCC, and CMake.
 2. Confirm the repository, model, environment, cache, and job roots are on the WSL2 Linux filesystem.
-3. Perform a real Chatterbox render through a disposable adapter.
+3. Perform a real Chatterbox render through a disposable adapter using the exact selected
+   `owner-fallback-v1` profile; do not claim Nadia, Tom, or two-speaker qualification.
 4. Measure model load time, peak RAM, single-worker RTF, output media format, and offline behavior.
 5. Render identical fixed-seed input ten times and record byte hashes, duration variance, acoustic-similarity measurements, and listener findings.
 6. Record that cache reuse is first-valid-artifact-wins and that byte-identical reconstruction requires the retained artifact or archived segment bundle regardless of measured determinism.
@@ -1089,7 +1097,7 @@ lawful voice/content use and viable Chatterbox
 
 | Risk | Trigger | Response | Owner |
 |---|---|---|---|
-| Voice rights unresolved | No lawful source at G0 | Select pre-authorized owner-recorded single-instructor fallback | Project owner |
+| Voice rights unresolved | No lawful Nadia or Tom source at G0 | Use the acquired and approved owner-recorded single-instructor configuration selected by ADR-0001-D003 | Project owner |
 | Source classification unresolved | Intended content use cannot be justified | Use owner-authored content and block unresolved material from the affected gate | Project owner |
 | CPU gate fails | Single-worker `RTF > 6.0` | Apply accepted ADR-0002 waiver only to development progression; qualify the full-box deployment configuration before G3 | Engineering owner |
 | Model output varies | Fixed-seed characterization is not byte-identical | Preserve first-valid-artifact cache semantics and require retained artifacts for byte reconstruction | Engineering owner |
@@ -1116,7 +1124,9 @@ lawful voice/content use and viable Chatterbox
 - Shipping version 1.0 after failed ASR calibration requires complete segment review and an accepted ADR amendment.
 - Chatterbox and model weights are pinned. Upstream changes enter only through an explicit upgrade-impact review.
 - Expected lesson volume is tens rather than thousands; throughput work beyond bounded pooling requires evidence.
-- An owner-recorded fallback voice is a contingency subject to a recorded quality gate, not an assumed capability.
+- Version 1 uses the acquired owner-recorded single-instructor configuration selected by
+  ADR-0001-D003; its synthesis and audio quality remain subject to the recorded E0-S3 and later
+  qualification gates.
 - M2 candidate timing is three weeks and committed acceptance is four weeks. Version 1.0 remains ten to twelve weeks, reforecast after G0.
 - Any failed CPU, voice-rights, content-classification, model-compatibility, determinism, or media-compatibility gate can change the schedule or reopen the backend decision.
 - A takes file reproduces selection. Byte-identical reconstruction additionally requires the referenced cache artifacts or an archived segment bundle.
