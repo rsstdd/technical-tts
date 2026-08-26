@@ -158,8 +158,14 @@ fn t4_e0_pipeline_wav_variants_round_trip() {
             "pcm_f32le",
         ])
         .arg(&converted)
-        .output()
-        .expect("execute FFmpeg float-WAV conversion");
+        .output();
+    let output = match output {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            panic!("FFmpeg is required for the T4 WAV-variant gate: {error}")
+        }
+        Err(error) => panic!("execute FFmpeg float-WAV conversion: {error}"),
+    };
     assert!(
         output.status.success(),
         "FFmpeg conversion failed: {}",

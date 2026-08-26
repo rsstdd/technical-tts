@@ -21,7 +21,7 @@ Unresolved answers remain explicit. `TBD` does not authorize a default that expa
 
 | ID | Risk | Probability | Status | Impact | Mitigation | Trigger/owner |
 |---|---|---:|---|---:|---|---|
-| R-01 | CPU-only Chatterbox misses RTF gate | High | Accepted through G2 | High | ADR-0002 permits development progression on the constrained WSL2 allocation; retain measured estimates and qualify the full-box configuration before G3 | Full-box result missing or `RTF > 6.0`; engineering owner |
+| R-01 | CPU-only Chatterbox misses a performance gate | High | Accepted through G2 | High | ADR-0002 permits development progression on the constrained WSL2 allocation; retain measured estimates and qualify the full-box configuration before G3 | Full-box result missing, `RTF > 6.0`, or cold 60-minute projection `> 21,600` seconds; engineering owner |
 | R-02 | Model or voice rights block intended use | Medium | Open | Critical | Rights records and owner-recorded fallback | Missing or incompatible permission; project owner |
 | R-03 | Chatterbox output WAV is unsupported or inconsistent | Low | Open | High | Variant round-trip test and bounded decoder fallback | G0 compatibility failure; engineering owner |
 | R-04 | Model output is not byte deterministic | High | Open | Medium | First-valid-artifact-wins cache and retained artifact reconstruction | Determinism evidence; engineering owner |

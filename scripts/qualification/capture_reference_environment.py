@@ -28,7 +28,7 @@ REQUIRED_ROOT_LABELS = {
 }
 
 
-class EnvironmentError(Exception):
+class EnvironmentCaptureError(Exception):
     """Report a failed reference-environment requirement."""
 
 
@@ -72,7 +72,7 @@ def run_bytes(arguments: list[str]) -> bytes:
     )
     if result.returncode != 0:
         executable = Path(arguments[0]).name
-        raise EnvironmentError(f"{executable} failed during environment capture")
+        raise EnvironmentCaptureError(f"{executable} failed during environment capture")
     return result.stdout
 
 
@@ -106,7 +106,7 @@ def reject_symlink_components(path: Path, label: str) -> None:
     for part in path.parts[1:]:
         current /= part
         if current.is_symlink():
-            raise EnvironmentError(f"{label} contains a symbolic-link component")
+            raise EnvironmentCaptureError(f"{label} contains a symbolic-link component")
 
 
 def inspect_root(label: str, path: Path) -> dict[str, Any]:
@@ -117,11 +117,11 @@ def inspect_root(label: str, path: Path) -> dict[str, Any]:
     try:
         resolved = absolute.resolve(strict=True)
     except OSError as error:
-        raise EnvironmentError(f"{label} root is unavailable") from error
+        raise EnvironmentCaptureError(f"{label} root is unavailable") from error
     if not resolved.is_dir():
-        raise EnvironmentError(f"{label} root is not a directory")
+        raise EnvironmentCaptureError(f"{label} root is not a directory")
     if resolved == Path("/mnt/c") or Path("/mnt/c") in resolved.parents:
-        raise EnvironmentError(f"{label} root resolves through /mnt/c")
+        raise EnvironmentCaptureError(f"{label} root resolves through /mnt/c")
     mount = run_text(
         [
             "findmnt",
@@ -137,9 +137,13 @@ def inspect_root(label: str, path: Path) -> dict[str, Any]:
         filesystems = parsed["filesystems"]
         filesystem = filesystems[0]
     except (json.JSONDecodeError, KeyError, IndexError, TypeError) as error:
-        raise EnvironmentError(f"findmnt returned an invalid record for {label}") from error
+        raise EnvironmentCaptureError(
+            f"findmnt returned an invalid record for {label}"
+        ) from error
     if filesystem.get("fstype") != "ext4":
-        raise EnvironmentError(f"{label} root is not on the qualified ext4 filesystem")
+        raise EnvironmentCaptureError(
+            f"{label} root is not on the qualified ext4 filesystem"
+        )
     usage = os.statvfs(resolved)
     return {
         "resolved_path": str(resolved),
@@ -157,7 +161,7 @@ def parse_lscpu_json(raw: str) -> dict[str, str]:
     try:
         rows = json.loads(raw)["lscpu"]
     except (json.JSONDecodeError, KeyError, TypeError) as error:
-        raise EnvironmentError("lscpu returned malformed JSON") from error
+        raise EnvironmentCaptureError("lscpu returned malformed JSON") from error
     parsed = {}
     for row in rows:
         field = row.get("field", "").rstrip(":")
@@ -178,7 +182,9 @@ def physical_core_derivation() -> dict[str, Any]:
     }
     logical = os.cpu_count()
     if logical is None or not pairs:
-        raise EnvironmentError("CPU topology did not expose logical and physical cores")
+        raise EnvironmentCaptureError(
+            "CPU topology did not expose logical and physical cores"
+        )
     return {
         "logical_cores": logical,
         "physical_cores": len(pairs),
@@ -202,7 +208,9 @@ def memory_inventory() -> dict[str, int]:
         fields[name] = int(value) * multiplier
     required = ("MemTotal", "MemAvailable", "SwapTotal", "SwapFree")
     if any(name not in fields for name in required):
-        raise EnvironmentError("procfs did not expose the required memory fields")
+        raise EnvironmentCaptureError(
+            "procfs did not expose the required memory fields"
+        )
     return {
         "ram_total_bytes": fields["MemTotal"],
         "ram_available_bytes": fields["MemAvailable"],
@@ -222,7 +230,9 @@ def atomic_write_json(path: Path, value: Any) -> None:
 
     absolute = path.absolute()
     if absolute.exists() or absolute.is_symlink():
-        raise EnvironmentError("output file already exists; environment evidence is immutable")
+        raise EnvironmentCaptureError(
+            "output file already exists; environment evidence is immutable"
+        )
     parent = absolute.parent.resolve(strict=True)
     reject_symlink_components(parent, "environment evidence parent")
     encoded = json.dumps(value, indent=2, sort_keys=True).encode("utf-8") + b"\n"
@@ -310,7 +320,7 @@ def main() -> int:
         arguments = parse_arguments()
         record = capture_environment(arguments)
         atomic_write_json(arguments.output_file, record)
-    except (EnvironmentError, OSError, ValueError) as error:
+    except (EnvironmentCaptureError, OSError, ValueError) as error:
         print(f"environment capture failed: {error}", file=sys.stderr)
         return 1
     print(f"environment capture complete: {arguments.output_file.name}")

@@ -120,12 +120,27 @@ def atomic_write_json(path: Path, value: Any) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def reject_symlink_components(path: Path) -> None:
+    """Refuse any existing symbolic-link component in the input root."""
+
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            raise AnalysisError("input root must be a non-symlink directory")
+
+
 def analyze(arguments: argparse.Namespace) -> dict[str, Any]:
     """Analyze the complete expected run set against run one."""
 
-    input_root = arguments.input_root.resolve(strict=True)
-    if not input_root.is_dir() or input_root.is_symlink():
+    supplied_input_root = arguments.input_root.absolute()
+    reject_symlink_components(supplied_input_root)
+    if not supplied_input_root.is_dir():
         raise AnalysisError("input root must be a non-symlink directory")
+    try:
+        input_root = supplied_input_root.resolve(strict=True)
+    except OSError as error:
+        raise AnalysisError("input root must be a non-symlink directory") from error
     paths = sorted(input_root.glob("run-*.wav"))
     if len(paths) != arguments.expected_count:
         raise AnalysisError("fixed-seed WAV count does not match the expected run count")

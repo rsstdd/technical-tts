@@ -28,6 +28,10 @@ def load_harness():
 
 
 HARNESS = load_harness()
+if not BLAKE3_EXECUTABLE.exists():
+    raise HARNESS.QualificationError(
+        "BLAKE3 helper is missing; build the qualification_blake3_file example"
+    )
 
 
 class VoiceProfilePreflightTests(unittest.TestCase):
@@ -138,6 +142,9 @@ class ExperimentIdentityTests(unittest.TestCase):
         )
 
         self.assertNotEqual(first["sha256"], second["sha256"])
+
+    def test_t1_e0_empty_similarity_distribution_has_no_characterization(self) -> None:
+        self.assertIsNone(HARNESS.describe_distribution([]))
 
 
 class Blake3HelperTests(unittest.TestCase):

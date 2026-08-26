@@ -6,7 +6,7 @@ schema, or cache behavior.
 
 `chatterbox_spike.py` requires an already restored, frozen Python environment and already
 acquired local artifacts. It refuses to run unless its roots are non-symlinked ext4 paths and
-the process has only the loopback network interface. Run it through the required namespace:
+the process has only the loopback network interface. First build the BLAKE3 helper:
 
 ```text
 cargo build --locked -p study-tts-core --example qualification_blake3_file
@@ -17,8 +17,11 @@ The harness requires the resulting
 uses the workspace-pinned `blake3` crate so voice artifacts are verified without adding a
 second hashing implementation to the frozen Python environment.
 
+Then run the harness through the required namespace. Set `PYTHONHASHSEED` to the same value as
+`--seed` before the Python interpreter starts; the E0-S3 fixed-seed run uses `42`:
+
 ```text
-/usr/bin/time -v -o <private-time-report> \
+PYTHONHASHSEED=42 /usr/bin/time -v -o <private-time-report> \
   unshare --user --map-root-user --net \
   <qualification-python> scripts/qualification/chatterbox_spike.py <arguments>
 ```

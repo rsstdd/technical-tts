@@ -73,8 +73,9 @@ A story is done only when:
 
 - every task and acceptance criterion is complete;
 - deterministic behavior was developed red-green-refactor;
-- required tests pass at their declared tier, or an accepted ADR explicitly replaces a failed
-  control for a stated scope and expiry;
+- required tests run at their declared tier and remain recorded; a failure blocks completion
+  unless an accepted ADR waives only its blocking effect for an explicitly stated scope and
+  expiry;
 - evidence uses the written protocol and records provenance;
 - no test is disabled, weakened, or silently reclassified;
 - schemas, fixtures, documentation, and examples agree;

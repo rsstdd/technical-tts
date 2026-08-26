@@ -27,7 +27,7 @@ evidence. Documents below explain execution without superseding either authority
 | Code review standard and severity scale | [`../.claude/skills/rust-review/SKILL.md`](../.claude/skills/rust-review/SKILL.md) |
 | Executable E0-S0 integration order and provisional seams | [`architecture/WALKING-SKELETON.md`](architecture/WALKING-SKELETON.md) |
 | Reference-machine qualification record | [`operations/REFERENCE-ENVIRONMENT.md`](operations/REFERENCE-ENVIRONMENT.md) |
-| E0-S3 G0 feasibility decision | [`../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v2.md`](../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v2.md) |
+| E0-S3 G0 feasibility decision | [`../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v3.md`](../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v3.md) |
 | Upgrade and compatibility procedure | [`operations/UPGRADE-RUNBOOK.md`](operations/UPGRADE-RUNBOOK.md) |
 | Release, recovery, and rollback | [`operations/RELEASE-AND-ROLLBACK.md`](operations/RELEASE-AND-ROLLBACK.md) |
 | Threat model | [`security/THREAT-MODEL.md`](security/THREAT-MODEL.md) |

@@ -291,7 +291,6 @@ def configure_process_environment(configuration: Configuration, output_root: Pat
     thread_value = str(configuration.torch_threads)
     for name in THREAD_ENVIRONMENT_NAMES:
         os.environ[name] = thread_value
-    os.environ["PYTHONHASHSEED"] = str(configuration.seed)
     cache_root = output_root / "runtime-cache"
     cache_root.mkdir(mode=0o700)
     os.environ["HF_HOME"] = str(cache_root)
@@ -779,9 +778,11 @@ def tool_identity(executable: Path) -> dict[str, Any]:
     }
 
 
-def describe_distribution(values: list[float]) -> dict[str, float]:
-    """Report the required minimum, median, and maximum characterization."""
+def describe_distribution(values: list[float]) -> dict[str, float] | None:
+    """Report a cross-run characterization when at least one comparison exists."""
 
+    if not values:
+        return None
     return {
         "minimum": min(values),
         "median": statistics.median(values),
@@ -898,8 +899,9 @@ def run_qualification(configuration: Configuration) -> Path:
         )
         if reference_samples is None:
             reference_samples = samples.copy()
-        waveform_correlations.append(similarity["waveform_correlation"])
-        log_mel_similarities.append(similarity["log_mel_cosine_similarity"])
+        else:
+            waveform_correlations.append(similarity["waveform_correlation"])
+            log_mel_similarities.append(similarity["log_mel_cosine_similarity"])
         duration_seconds = media["duration_seconds"]
         runs.append(
             {
