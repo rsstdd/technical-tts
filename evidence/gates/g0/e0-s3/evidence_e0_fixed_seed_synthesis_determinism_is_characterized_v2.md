@@ -3,7 +3,9 @@
 - Governing story/gate: E0-S3 / G0
 - Owner: Engineering owner
 - Date/time and timezone: 2026-08-26, Europe/Berlin
-- Status: Complete
+- Status: Accepted
+- Retention: While this correction is cited by a G0 decision or a superseding record; the raw
+  artifacts keep the retention recorded in the predecessor
 - Supersedes: `evidence_e0_fixed_seed_synthesis_determinism_is_characterized`, SHA-256
   `8f98b97531994109965ce5bf54712a63e1d6f2b380341b756dab4a71fb64b060`
 
@@ -41,4 +43,13 @@ The predecessor hash matches the value above, and the corrected wording independ
 both worktree conditions without a compound-modifier ambiguity. **Correction: PASS.**
 
 No model, voice, source text, raw result, or audio artifact changed. The completed ten-file
-listening review cited by the predecessor remains the applicable listening evidence.
+listening review cited by the predecessor remains the applicable listening evidence. This
+correction produced no new raw artifact, so the predecessor's raw-artifact table and its
+recorded retention remain in force unchanged.
+
+## Review
+
+| Role | Name | Decision | Date |
+|---|---|---|---|
+| Engineering owner (approver) | Ross Todd | Approved; predecessor SHA-256 reverified and the correction confirmed limited to procedure wording | 2026-08-26 |
+| Human reviewer | Ross Todd | No audio changed; the completed ten-file listening review recorded in the predecessor remains the applicable listening evidence | 2026-08-26 |

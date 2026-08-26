@@ -3,8 +3,11 @@
 - Date/time and timezone: 2026-08-26, Europe/Berlin
 - Candidate revision: Git base `07be527c54c8373f74050d63d06e87a43ce4ed69` plus the
   accepted E0-S3/ADR-0002 worktree and follow-up review corrections
+- Candidate artifact checksum: failed measurement report SHA-256
+  `4ee5820fd0434c88a8b69c42a6f42b1b61756e7bc1d8ced2e7923c87c35b0ec2`
 - Accountable owner: Project owner
-- Status: Complete
+- Approvers: Engineering owner and project owner
+- Status: Accepted
 - Supersedes: `e0-s3-g0-qualification-decision-v2`, SHA-256
   `bb1828ceca17be2e37a5c9071f618cdce18f2bbcf848f25f808cb0bc2ac10a6e`
 
@@ -51,8 +54,8 @@ requires full-box qualification before G3 can pass.
 | `docs/operations/REFERENCE-ENVIRONMENT.md` | `a673a4b1570df39d2458493a6ec3b033b0545ebe9aa9adcaca4ad51021cdfd50` |
 | `docs/perf/BUDGETS.md` | `9e160ed3d6311cbb5390fc43e4da02121143988f3ad15d656fa6203cd1090b31` |
 | `e0-s3-g0-qualification-report-v1.md` | `4ee5820fd0434c88a8b69c42a6f42b1b61756e7bc1d8ced2e7923c87c35b0ec2` |
-| `evidence_e0_fixed_seed_synthesis_determinism_is_characterized_v2.md` | `fa0e41b2e0ea86ecb4fb727b6cac2977ee25738be2160ab06297457bc7e85ffa` |
-| `e0-s3-audit-remediation-v2.md` | `834ee7884f479581a5d09431a94684aa9f53afcc93d51f4c016d8a01e9377bb7` |
+| `evidence_e0_fixed_seed_synthesis_determinism_is_characterized_v2.md` | `59817e71054d73735382715c10671ab74b7275a929f7c997a16cba155c0b201b` |
+| `e0-s3-audit-remediation-v2.md` | `bcda43efddca6908d9848cbfafbf9b2c8d15fc511a2acdc62c8c1b387a9569d4` |
 
 ## Open findings
 
@@ -73,5 +76,12 @@ remains open until E0-S4 supplies the provisional contract baseline. This record
 authorize a production-performance claim or G3 acceptance without the required full-box
 measurement.
 
-The engineering-owner and project-owner decisions recorded in v2 are carried forward unchanged;
-this supersession corrects evidence provenance and adds no new human approval claim.
+The v2 engineering-owner and project-owner decisions on the measured failures, the waiver, and
+its compensating controls are carried forward unchanged. This supersession corrects evidence
+provenance only, and the approvals below accept that corrected provenance; they do not
+re-decide the measurements, waiver scope, expiry, rollback, or the full-box G3 obligation.
+
+| Role | Name | Decision | Date |
+|---|---|---|---|
+| Engineering owner | Ross Todd | Approved the corrected evidence provenance; the v2 decision on measured failure and compensating controls is carried forward unchanged | 2026-08-26 |
+| Project owner | Ross Todd | Approved v3 as the routed E0-S3 G0 decision of record, superseding v2 without altering it | 2026-08-26 |

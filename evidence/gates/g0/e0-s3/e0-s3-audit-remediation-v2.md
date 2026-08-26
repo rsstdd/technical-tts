@@ -4,7 +4,9 @@
 - Finding source: completion audit of GitHub issue #5 and follow-up review
 - Owner: Engineering owner
 - Date/time and timezone: 2026-08-26, Europe/Berlin
-- Status: Complete
+- Status: Accepted
+- Retention: While the E0-S3 G0 decision or a superseding record cites it;
+  predecessor `e0-s3-audit-remediation-v1` is retained unchanged alongside it
 - Supersedes: `e0-s3-audit-remediation-v1`, SHA-256
   `75278c0deba3d80fc8ca97e863c3583d483c8e0533d713369b2dbe75ee8c8bea`
 
@@ -62,4 +64,12 @@ Current provenance must identify the exact reviewed files and their SHA-256 valu
 - `python3 -m unittest discover -s scripts/qualification/tests -v`: ten tests passed.
 
 No speech or audio artifact changed, so the completed ten-file listening review remains the
-applicable human-listening evidence.
+applicable human-listening evidence. This remediation produced no new raw artifact; the
+governed raw results cited by the E0-S3 evidence keep their recorded retention.
+
+## Review
+
+| Role | Name | Decision | Date |
+|---|---|---|---|
+| Engineering owner (approver) | Ross Todd | Approved; every control listed above was verified and the three accepted predecessors matched their committed SHA-256 values | 2026-08-26 |
+| Project owner | Ross Todd | Accepted as the follow-up qualification-integrity audit cited by the E0-S3 G0 decision | 2026-08-26 |
