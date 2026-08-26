@@ -1,28 +1,36 @@
 //! The order a preview build happens in, and the gates that precede it.
 //!
-//! Every gate — lesson validity, rights classification, voice consent,
-//! external-tool preflight — runs before any synthesis or tool work. That
-//! ordering is the point of this module: a refusal must name the policy that
-//! refused rather than the first thing that happened to break, and the tests
-//! prove it by pointing a build at a missing tool and asserting the gate's own
-//! error.
+//! Lesson and voice gates precede executor validation and tool preflight; all
+//! of them precede durable build writes and synthesis. That ordering is the
+//! point of this module: a refusal must name the policy that refused rather
+//! than the first thing that happened to break. Tests pin the order with
+//! observable fakes and missing tools.
 
 use std::{
     fs::{self, File},
+    future::Future,
     io::Read,
     path::{Path, PathBuf},
+    pin::pin,
+    sync::Arc,
+    task::{Context, Poll, Wake, Waker},
+    thread,
 };
 
 use serde::Deserialize;
 use serde_json::Value;
 use study_tts_core::{
-    MAX_LESSON_JSON_BYTES, ReleaseClaim, ReleaseStatus, RenderPlan, RightsDecision,
-    SourceRightsDeclaration, ValidatedLesson, VoiceError, VoiceUse, validate_lesson_id,
+    CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, MAX_LESSON_JSON_BYTES,
+    ProvisionalJobSnapshot, ProvisionalJobStage, ReleaseClaim, ReleaseStatus, RenderPlan,
+    RightsDecision, SourceRightsDeclaration, ValidatedLesson, VoiceError, VoiceUse,
+    validate_lesson_id,
 };
 
 use crate::{
-    BuildError, IoError, PublicationError, RightsError, SegmentSynthesizer, assembly, cache,
-    durable::OsDurableFileSystem, export, io_error, locking, managed, manifest, preview, tools,
+    BackendError, BuildError, CachePublisher, CacheResolveRequest, FileSystemCachePublisher,
+    FileSystemJobRepository, FileSystemPackageWriter, IoError, JobRepository,
+    PackagePreflightRequest, PackagePrepareRequest, PackageWriteRequest, PackageWriter,
+    PublicationError, RightsError, SynthesisRequest, TtsExecutor, export, io_error, tools,
     voice_gate,
 };
 
@@ -63,11 +71,36 @@ pub struct BuildResult {
     pub manifest: PathBuf,
 }
 
+/// Published provisional services used by one preview orchestration.
+#[derive(Clone, Copy)]
+pub struct PreviewServiceBundle<'a> {
+    /// Asynchronous backend executor.
+    pub executor: &'a dyn TtsExecutor,
+    /// Validated cache publication port.
+    pub cache: &'a dyn CachePublisher,
+    /// Master-first package writer.
+    pub packages: &'a dyn PackageWriter,
+    /// Durable job ownership and snapshot repository.
+    pub jobs: &'a dyn JobRepository,
+}
+
+impl std::fmt::Debug for PreviewServiceBundle<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreviewServiceBundle")
+            .field("executor", &"dyn TtsExecutor")
+            .field("cache", &"dyn CachePublisher")
+            .field("packages", &"dyn PackageWriter")
+            .field("jobs", &"dyn JobRepository")
+            .finish()
+    }
+}
+
 /// Builds one lesson into a private preview.
 ///
-/// Every gate runs before any tool or synthesis work, so a refusal names the
-/// gate rather than a missing binary. The result is always a private preview;
-/// only `publish` can claim more.
+/// Lesson and voice gates run before executor and tool preflight, and every
+/// gate completes before durable build writes or synthesis. The result is
+/// always a private preview; only [`publish`] can claim more.
 ///
 /// # Errors
 ///
@@ -141,6 +174,8 @@ pub struct BuildResult {
 /// [`crate::ManagedPathError::ManagedPathEscape`],
 /// [`crate::ManagedPathError::UnrootedDestination`],
 /// [`crate::CacheError::UnusableCacheEntry`],
+/// [`crate::CacheError::PackageArtifactCountMismatch`],
+/// [`crate::CacheError::PackageArtifactPlanMismatch`],
 /// [`crate::AudioError::UnusableAudio`],
 /// [`crate::AudioError::SynthesizerReportMismatch`],
 /// [`crate::AudioError::PauseFrameOverflow`],
@@ -159,6 +194,9 @@ pub struct BuildResult {
 /// [`crate::DurableStateError::LiveJobLock`],
 /// [`crate::DurableStateError::MalformedJobLock`],
 /// [`crate::DurableStateError::IncompatibleJobLock`],
+/// [`crate::DurableStateError::MalformedJobSnapshot`],
+/// [`crate::DurableStateError::JobSnapshotIdentityMismatch`],
+/// [`crate::DurableStateError::JobSnapshotSelectionMismatch`],
 /// [`crate::DurableStateError::CacheLockTimeout`],
 /// [`crate::DurableStateError::MalformedPublicationJournal`],
 /// [`crate::DurableStateError::MalformedCurrentPreview`],
@@ -192,11 +230,36 @@ pub struct BuildResult {
 /// owner rather than deleting or overwriting them.
 pub fn build_preview(
     request: BuildRequest,
-    synthesizer: &dyn SegmentSynthesizer,
+    executor: &dyn TtsExecutor,
+) -> Result<BuildResult, BuildError> {
+    let cache = FileSystemCachePublisher;
+    let packages = FileSystemPackageWriter;
+    let jobs = FileSystemJobRepository;
+    build_preview_with_services(
+        request,
+        PreviewServiceBundle {
+            executor,
+            cache: &cache,
+            packages: &packages,
+            jobs: &jobs,
+        },
+    )
+}
+
+/// Builds one lesson exclusively through the published E0-S4 service seams.
+///
+/// # Errors
+///
+/// Returns exactly the [`BuildError`] variants documented by [`build_preview`];
+/// injected ports retain ownership of their validation and durability errors.
+pub fn build_preview_with_services(
+    request: BuildRequest,
+    services: PreviewServiceBundle<'_>,
 ) -> Result<BuildResult, BuildError> {
     let lesson_bytes = read_lesson(&request.lesson_path)?;
     let lesson = ValidatedLesson::from_json(&lesson_bytes)?;
-    let plan = RenderPlan::for_lesson(&lesson, synthesizer.identity());
+    let descriptor = services.executor.descriptor();
+    let plan = RenderPlan::for_lesson(&lesson, &descriptor.synthesis_identity);
 
     // Rights precede work: the profile gate runs before tool preflight and
     // synthesis, so a refused voice performs no observable work. The loaded
@@ -206,85 +269,67 @@ pub fn build_preview(
         let _profile = voice_gate::load_profile(dir, VoiceUse::PrivateSynthesis)?;
     }
 
-    let ffmpeg = tools::inspect("FFmpeg", &request.ffmpeg_executable)?;
-    let ffprobe = tools::inspect("ffprobe", &request.ffprobe_executable)?;
-    let export_profiles = export::export_profiles();
+    let synthesis_requests = synthesis_requests(&plan);
+    for synthesis_request in &synthesis_requests {
+        services.executor.validate(synthesis_request)?;
+    }
+
+    let packages = services.packages.preflight(&PackagePreflightRequest {
+        ffmpeg_executable: &request.ffmpeg_executable,
+        ffprobe_executable: &request.ffprobe_executable,
+    })?;
 
     fs::create_dir_all(&request.workspace).map_err(|error| io_error(&request.workspace, error))?;
     let workspace = fs::canonicalize(&request.workspace)
         .map_err(|error| io_error(&request.workspace, error))?;
-    let filesystem = OsDurableFileSystem;
-    let cache_root = managed::subdirectory(&workspace, "cache")?;
-    let roots = preview::roots(&workspace, lesson.lesson_id())?;
-    let _job_lock = locking::acquire_job_lock(&filesystem, &roots.job_dir, lesson.lesson_id())?;
-    preview::reconcile(&filesystem, &roots, lesson.lesson_id())?;
+    let _job_ownership = services.jobs.claim(&workspace, lesson.lesson_id())?;
+    let planned = ProvisionalJobSnapshot::planned(lesson.lesson_id(), plan.plan_hash.as_str());
+    services.jobs.replace(&workspace, &planned)?;
+    packages.prepare(&PackagePrepareRequest {
+        workspace: &workspace,
+        job_id: lesson.lesson_id(),
+        plan: &plan,
+    })?;
 
-    let cached_segments = plan
-        .segments
-        .iter()
-        .map(|segment| {
-            cache::resolve(
-                &filesystem,
-                &cache_root,
-                &roots.quarantine_root,
-                lesson.lesson_id(),
-                segment,
-                synthesizer,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    if let Some(package) = preview::current_for_build(
-        &roots,
-        lesson.lesson_id(),
-        &plan.plan_hash,
-        &ffmpeg,
-        &ffprobe,
-        &export_profiles,
-    )? {
-        return Ok(BuildResult {
-            package_dir: package.package_dir,
-            publication_record: package.publication_record,
-            master_wav: package.master_wav,
-            m4a: package.m4a,
-            manifest: package.manifest,
-        });
+    services
+        .jobs
+        .replace(&workspace, &planned.advancing(ProvisionalJobStage::Caching))?;
+    let mut cached_segments = Vec::with_capacity(plan.segments.len());
+    for (segment, synthesis_request) in plan.segments.iter().zip(synthesis_requests) {
+        let mut pending_request = Some(synthesis_request);
+        let mut producer = |destination: &Path| {
+            let request = pending_request
+                .take()
+                .ok_or_else(|| BackendError::Protocol {
+                    request_id: segment.id.clone(),
+                    message: "cache requested staged synthesis more than once".to_owned(),
+                })?;
+            block_on(services.executor.synthesize(request, destination))
+        };
+        let cached = services.cache.resolve(
+            &CacheResolveRequest {
+                workspace: workspace.clone(),
+                job_id: lesson.lesson_id().to_owned(),
+                segment: segment.clone(),
+            },
+            &mut producer,
+        )?;
+        cached_segments.push(cached);
     }
 
-    let transaction = preview::start_transaction(
-        &filesystem,
-        &roots,
-        lesson.lesson_id(),
-        &plan.plan_hash,
-        &ffmpeg,
-        &ffprobe,
-        &export_profiles,
+    services.jobs.replace(
+        &workspace,
+        &planned.advancing(ProvisionalJobStage::Packaging),
     )?;
-
-    let master_wav = managed::leaf(&transaction.stage_dir, manifest::MASTER_WAV_NAME)?;
-    assembly::assemble(&cached_segments, &master_wav)?;
-    let m4a = managed::leaf(&transaction.stage_dir, manifest::M4A_NAME)?;
-    let ffmpeg_execution = export::export_m4a(&ffmpeg, &export_profiles.ffmpeg, &master_wav, &m4a)?;
-    let ffprobe_execution = export::probe_m4a(&ffprobe, &export_profiles.ffprobe, &m4a)?;
-    let manifest_path = managed::leaf(&transaction.stage_dir, manifest::MANIFEST_NAME)?;
-    manifest::write(
-        &filesystem,
-        &manifest_path,
-        manifest::ManifestRecords {
-            lesson_id: lesson.lesson_id(),
-            plan_hash: &plan.plan_hash,
-            segments: &cached_segments,
-            master_wav: &master_wav,
-            m4a: &m4a,
-            tools: manifest::ToolRecords {
-                ffmpeg: &ffmpeg,
-                ffmpeg_execution: &ffmpeg_execution,
-                ffprobe: &ffprobe,
-                ffprobe_execution: &ffprobe_execution,
-            },
-        },
-    )?;
-    let package = preview::publish_transaction(&filesystem, &roots, &transaction)?;
+    let package = packages.write(&PackageWriteRequest {
+        workspace: &workspace,
+        job_id: lesson.lesson_id(),
+        plan: &plan,
+        cached_artifacts: &cached_segments,
+    })?;
+    services
+        .jobs
+        .replace(&workspace, &planned.selecting(package.identity.clone()))?;
 
     Ok(BuildResult {
         package_dir: package.package_dir,
@@ -293,6 +338,55 @@ pub fn build_preview(
         m4a: package.m4a,
         manifest: package.manifest,
     })
+}
+
+fn synthesis_requests(plan: &RenderPlan) -> Vec<SynthesisRequest> {
+    plan.segments
+        .iter()
+        .map(|segment| SynthesisRequest {
+            request_id: format!("e0-{}-{}", segment.cache_key, segment.id),
+            segment_id: segment.id.clone(),
+            spoken_text: segment.spoken_text.clone(),
+            voice: segment.speaker.clone(),
+            style: segment.style.clone(),
+            cache_key: segment.cache_key.clone(),
+            sample_rate: CANONICAL_SAMPLE_RATE,
+            channels: CANONICAL_CHANNELS,
+            sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
+        })
+        .collect()
+}
+
+// E0 keeps `build_preview` synchronous while the published executor stays
+// compatible with concurrent async dispatch planned for E1.
+fn block_on<F: Future>(future: F) -> F::Output {
+    let parker = Arc::new(ThreadParker {
+        thread: thread::current(),
+    });
+    let waker = Waker::from(parker);
+    let mut context = Context::from_waker(&waker);
+    let mut future = pin!(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => thread::park(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ThreadParker {
+    thread: thread::Thread,
+}
+
+impl Wake for ThreadParker {
+    fn wake(self: Arc<Self>) {
+        self.thread.unpark();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.thread.unpark();
+    }
 }
 
 /// Reads at most one byte beyond the core lesson envelope.
@@ -654,14 +748,37 @@ pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use std::{
+        future::Future,
         io::{self, Read},
         path::Path,
+        pin::Pin,
+        sync::mpsc,
+        task::{Context, Poll, Waker},
+        thread,
     };
 
-    use study_tts_core::{LessonError, MAX_LESSON_JSON_BYTES};
+    use study_tts_core::{LessonError, MAX_LESSON_JSON_BYTES, RenderPlan, ValidatedLesson};
 
-    use super::read_lesson_from_reader;
+    use super::{block_on, read_lesson_from_reader, synthesis_requests};
     use crate::BuildError;
+
+    struct PendingThenReady {
+        waker_sender: Option<mpsc::Sender<Waker>>,
+    }
+
+    impl Future for PendingThenReady {
+        type Output = &'static str;
+
+        fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+            if let Some(sender) = self.waker_sender.take() {
+                sender
+                    .send(context.waker().clone())
+                    .expect("send the local block_on waker to the waking thread");
+                return Poll::Pending;
+            }
+            Poll::Ready("resumed")
+        }
+    }
 
     #[test]
     fn t1_e0_bounded_lesson_reader_refuses_growth_after_metadata_preflight() {
@@ -675,5 +792,73 @@ mod tests {
             BuildError::Lesson(LessonError::LessonJsonTooLarge { max_bytes })
                 if max_bytes == MAX_LESSON_JSON_BYTES
         ));
+    }
+
+    #[test]
+    fn t1_e0_synthesis_request_ids_include_segment_identity() {
+        let lesson = ValidatedLesson::from_json(
+            br#"{
+                "schema_version":"0.1-skeleton",
+                "lesson_id":"request-id-test",
+                "title":"Request IDs",
+                "segments":[
+                    {
+                        "id":"segment-a",
+                        "speaker":"voice-a",
+                        "role":"explanation",
+                        "source_refs":["source-a"],
+                        "display_text":"Same speech.",
+                        "spoken_text":"Same speech.",
+                        "style":"calm",
+                        "pause_after_ms":0,
+                        "review_status":"approved"
+                    },
+                    {
+                        "id":"segment-b",
+                        "speaker":"voice-a",
+                        "role":"recap",
+                        "source_refs":["source-b"],
+                        "display_text":"Same speech.",
+                        "spoken_text":"Same speech.",
+                        "style":"calm",
+                        "pause_after_ms":10,
+                        "review_status":"approved"
+                    }
+                ]
+            }"#,
+        )
+        .expect("validate the request-ID lesson");
+        let plan = RenderPlan::for_lesson(&lesson, "request-id-backend");
+
+        let requests = synthesis_requests(&plan);
+
+        assert_eq!(plan.segments[0].cache_key, plan.segments[1].cache_key);
+        assert_eq!(
+            requests[0].request_id,
+            format!("e0-{}-segment-a", plan.segments[0].cache_key)
+        );
+        assert_eq!(
+            requests[1].request_id,
+            format!("e0-{}-segment-b", plan.segments[1].cache_key)
+        );
+        assert_ne!(requests[0].request_id, requests[1].request_id);
+    }
+
+    #[test]
+    fn t1_e0_block_on_resumes_after_cross_thread_wake() {
+        let (waker_sender, waker_receiver) = mpsc::channel::<Waker>();
+        let waking_thread = thread::spawn(move || {
+            waker_receiver
+                .recv()
+                .expect("receive the local block_on waker")
+                .wake();
+        });
+
+        let output = block_on(PendingThenReady {
+            waker_sender: Some(waker_sender),
+        });
+        waking_thread.join().expect("join the waking thread");
+
+        assert_eq!(output, "resumed");
     }
 }

@@ -1,22 +1,34 @@
 //! Test doubles and fixture paths shared by the workspace's integration tests.
 //!
-//! Nothing here reaches a lesson: the worker synthesizes tones, and the
-//! fixtures are the committed synthetic lessons registered in
-//! `docs/testing/TEST-DATA-MANIFEST.md`.
+//! All generated audio is synthetic, and fixtures are the rights-clean records
+//! registered in `docs/testing/TEST-DATA-MANIFEST.md`. Production crates may
+//! depend on this crate only from tests.
+
+mod contracts;
+
+pub use contracts::{
+    FakeCachePublisher, FakeJobCall, FakePackageCall, FakePackageWriter, InMemoryJobRepository,
+    RecordingCachePublisher, RecordingJobRepository, RecordingPackageWriter, RecordingTtsExecutor,
+    SeamEventLog, run_cache_contract_scenario, run_job_repository_contract_scenario,
+    run_package_writer_contract_scenario, run_tts_executor_contract_scenario,
+};
 
 use std::{
     f32::consts::TAU,
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
     },
 };
 
-use study_tts_core::{
-    CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_RATE, PlannedSegment,
+use study_tts_core::{CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_RATE};
+use study_tts_runtime::{
+    BackendDescriptor, BackendError, SynthesisReport, SynthesisRequest,
+    TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, validate_executor_request,
 };
-use study_tts_runtime::{SegmentSynthesizer, SynthesisError, SynthesisReport};
 
 /// Frames in every synthetic tone this crate writes: one tenth of a second.
 ///
@@ -24,20 +36,20 @@ use study_tts_runtime::{SegmentSynthesizer, SynthesisError, SynthesisReport};
 /// same inputs produce the same bytes.
 const TONE_FRAMES: u32 = CANONICAL_SAMPLE_RATE / 10;
 
-/// A synthesizer that writes a tone derived from the segment's cache key.
+/// An observable executor that writes a tone derived from each synthesis key.
 ///
-/// Deterministic so a cache hit is byte-identical, and counting so a test can
-/// prove that a gate refused before any synthesis happened rather than merely
-/// that the build failed.
+/// Deterministic bytes prove cache reuse, while call history and one-shot
+/// failures let contract tests observe refusal ordering and error propagation.
 #[derive(Debug, Default)]
-pub struct DeterministicToneWorker {
+pub struct FakeTtsExecutor {
     synthesis_count: AtomicUsize,
     synthesized_texts: Mutex<Vec<String>>,
+    requests: Mutex<Vec<SynthesisRequest>>,
+    next_failure: Mutex<Option<BackendError>>,
 }
 
-impl DeterministicToneWorker {
-    /// How many segments this worker has synthesized, for asserting that a gate
-    /// ran first.
+impl FakeTtsExecutor {
+    /// Returns completed synthesis calls so tests can prove a gate ran first.
     pub fn synthesis_count(&self) -> usize {
         self.synthesis_count.load(Ordering::SeqCst)
     }
@@ -53,21 +65,74 @@ impl DeterministicToneWorker {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
-}
 
-impl SegmentSynthesizer for DeterministicToneWorker {
-    fn identity(&self) -> &str {
-        "deterministic-tone-worker-v1"
+    /// Returns successfully synthesized requests in call order.
+    pub fn requests(&self) -> Vec<SynthesisRequest> {
+        self.requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
-    fn synthesize(
+    /// Injects one typed failure into the next validated synthesis call.
+    pub fn fail_next(&self, error: BackendError) {
+        *self
+            .next_failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error);
+    }
+}
+
+impl TtsExecutor for FakeTtsExecutor {
+    fn descriptor(&self) -> BackendDescriptor {
+        BackendDescriptor {
+            contract_version: TTS_EXECUTOR_CONTRACT_VERSION.to_owned(),
+            synthesis_identity: "deterministic-tone-worker-v1".to_owned(),
+            max_text_bytes: 64 * 1024,
+            deterministic_seed: true,
+        }
+    }
+
+    fn capacity(&self) -> usize {
+        1
+    }
+
+    fn validate(&self, request: &SynthesisRequest) -> Result<(), BackendError> {
+        validate_executor_request(&self.descriptor(), self.capacity(), request).map_err(|source| {
+            BackendError::InvalidRequest {
+                request_id: request.request_id.clone(),
+                source,
+            }
+        })
+    }
+
+    fn synthesize<'a>(
+        &'a self,
+        request: SynthesisRequest,
+        destination: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<SynthesisReport, BackendError>> + Send + 'a>> {
+        Box::pin(async move { self.synthesize_tone(request, destination) })
+    }
+}
+
+impl FakeTtsExecutor {
+    fn synthesize_tone(
         &self,
-        segment: &PlannedSegment,
+        request: SynthesisRequest,
         destination: &Path,
-    ) -> Result<SynthesisReport, SynthesisError> {
+    ) -> Result<SynthesisReport, BackendError> {
+        self.validate(&request)?;
+        if let Some(error) = self
+            .next_failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            return Err(error);
+        }
         let freq = 300.0
             + f32::from(
-                segment
+                request
                     .cache_key
                     .as_str()
                     .bytes()
@@ -79,24 +144,41 @@ impl SegmentSynthesizer for DeterministicToneWorker {
             bits_per_sample: CANONICAL_BITS_PER_SAMPLE,
             sample_format: hound::SampleFormat::Float,
         };
-        let mut writer = hound::WavWriter::create(destination, spec)
-            .map_err(|error| SynthesisError::new(error.to_string()))?;
+        let mut writer = hound::WavWriter::create(destination, spec).map_err(|error| {
+            BackendError::Destination {
+                request_id: request.request_id.clone(),
+                destination: destination.to_path_buf(),
+                message: error.to_string(),
+            }
+        })?;
 
         for frame in 0..TONE_FRAMES {
             let phase = TAU * freq * frame as f32 / CANONICAL_SAMPLE_RATE as f32;
             writer
                 .write_sample(phase.sin() * 0.2)
-                .map_err(|error| SynthesisError::new(error.to_string()))?;
+                .map_err(|error| BackendError::Destination {
+                    request_id: request.request_id.clone(),
+                    destination: destination.to_path_buf(),
+                    message: error.to_string(),
+                })?;
         }
 
         writer
             .finalize()
-            .map_err(|error| SynthesisError::new(error.to_string()))?;
+            .map_err(|error| BackendError::Destination {
+                request_id: request.request_id.clone(),
+                destination: destination.to_path_buf(),
+                message: error.to_string(),
+            })?;
 
         self.synthesized_texts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(segment.spoken_text.clone());
+            .push(request.spoken_text.clone());
+        self.requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(request);
 
         self.synthesis_count.fetch_add(1, Ordering::SeqCst);
 
@@ -104,9 +186,19 @@ impl SegmentSynthesizer for DeterministicToneWorker {
             sample_rate: CANONICAL_SAMPLE_RATE,
             channels: CANONICAL_CHANNELS,
             frames: TONE_FRAMES,
+            backend_revision: "deterministic-tone-v1".to_owned(),
+            worker_bundle_hash: blake3::hash(b"deterministic-tone-worker-v1")
+                .to_hex()
+                .to_string(),
+            voice_profile_hash: blake3::hash(b"synthetic-test-voice-v1")
+                .to_hex()
+                .to_string(),
         })
     }
 }
+
+/// Backward-compatible test name for the deterministic E0 fake executor.
+pub type DeterministicToneWorker = FakeTtsExecutor;
 
 /// Options for a synthetic, rights-clean voice-profile fixture.
 ///

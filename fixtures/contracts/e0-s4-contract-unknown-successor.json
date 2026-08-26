@@ -1,0 +1,7 @@
+{
+  "contract_id": "worker_frames",
+  "version": { "major": 9, "minor": 0, "patch": 0 },
+  "change": "diagnostic_patch",
+  "extension_default": null,
+  "rejects_unknown_fields": true
+}

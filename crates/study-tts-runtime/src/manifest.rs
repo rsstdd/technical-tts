@@ -13,7 +13,7 @@ use study_tts_core::{CacheKey, PlanHash, ReleaseStatus, is_blake3_hex};
 
 use crate::{
     BuildError, DurableStateError,
-    cache::{CachedSegment, hash_file},
+    cache::{ValidatedCachedArtifact, hash_file},
     durable::{DurableFileSystem, write_json_atomically},
     export::{ToolExecution, ToolProfile},
     tools::ToolIdentity,
@@ -131,7 +131,7 @@ pub(crate) struct ManifestRecords<'a> {
     /// Deterministic plan identity.
     pub plan_hash: &'a PlanHash,
     /// Selected validated cache segments.
-    pub segments: &'a [CachedSegment],
+    pub segments: &'a [ValidatedCachedArtifact],
     /// Canonical master inside the staged package.
     pub master_wav: &'a Path,
     /// Encoded output inside the staged package.
@@ -547,8 +547,8 @@ mod tests {
     use super::*;
     use crate::{durable::OsDurableFileSystem, export};
 
-    fn cached_segment(audio_blake3: String) -> CachedSegment {
-        CachedSegment {
+    fn cached_segment(audio_blake3: String) -> ValidatedCachedArtifact {
+        ValidatedCachedArtifact {
             segment_id: "segment".to_owned(),
             cache_key: "a"
                 .repeat(CacheKey::LENGTH)

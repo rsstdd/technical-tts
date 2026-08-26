@@ -33,6 +33,53 @@ pub enum CacheError {
         /// Which invariant the entry violated.
         fault: Box<CacheEntryFault>,
     },
+
+    /// A package request omitted or added validated cache artifacts.
+    #[error(
+        "package request supplied {found} cached artifacts for a plan with {required} segments; \
+         preserve the cache and route the request builder to runtime reconciliation"
+    )]
+    PackageArtifactCountMismatch {
+        /// Number of artifacts the package request supplied.
+        found: usize,
+        /// Number of artifacts the render plan requires.
+        required: usize,
+    },
+
+    /// A package-position artifact belongs to a different planned segment.
+    #[error(
+        "package {mismatch}; preserve the cache and route the request builder to runtime \
+         reconciliation"
+    )]
+    PackageArtifactPlanMismatch {
+        /// Compared artifact and plan fields at the mismatching position.
+        mismatch: Box<PackageArtifactMismatch>,
+    },
+}
+
+/// Compared package artifact and plan fields at one mismatching position.
+#[derive(Debug, Error)]
+#[error(
+    "artifact {position} records segment `{recorded_segment_id}`, cache key \
+     `{recorded_cache_key}`, and pause {recorded_pause_after_ms} ms but the plan requires segment \
+     `{required_segment_id}`, cache key `{required_cache_key}`, and pause \
+     {required_pause_after_ms} ms"
+)]
+pub struct PackageArtifactMismatch {
+    /// Zero-based package position whose artifact and plan disagree.
+    pub position: usize,
+    /// Segment identity carried by the artifact.
+    pub recorded_segment_id: String,
+    /// Synthesis identity carried by the artifact.
+    pub recorded_cache_key: CacheKey,
+    /// Pause carried by the artifact.
+    pub recorded_pause_after_ms: u32,
+    /// Segment identity required by the plan.
+    pub required_segment_id: String,
+    /// Synthesis identity required by the plan.
+    pub required_cache_key: CacheKey,
+    /// Pause required by the plan.
+    pub required_pause_after_ms: u32,
 }
 
 impl CacheError {
@@ -42,6 +89,12 @@ impl CacheError {
             Self::UnusableCacheEntry { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::Runtime,
                 "preserve the unusable cache entry and run runtime reconciliation",
+                Some("State or checksum corruption"),
+            )),
+            Self::PackageArtifactCountMismatch { .. }
+            | Self::PackageArtifactPlanMismatch { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::Runtime,
+                "preserve the cache and run runtime reconciliation",
                 Some("State or checksum corruption"),
             )),
         }

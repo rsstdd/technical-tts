@@ -25,7 +25,7 @@ use study_tts_core::{
 use tempfile::Builder;
 
 use crate::{
-    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, SegmentSynthesizer,
+    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, StagedAudioProducer,
     durable::{
         DurableFileSystem, RenameOutcome, publish_directory_noreplace, sync_directory_transaction,
         write_json_atomically,
@@ -74,24 +74,61 @@ const CACHE_STAGE_PREFIX: &str = ".cache-stage-";
 
 /// One segment's audio as the cache holds it, validated and ready to assemble.
 ///
-/// Produced only by [`resolve`], so nothing downstream can name a cache entry
-/// that has not passed its checks.
-#[derive(Clone, Debug)]
-pub(crate) struct CachedSegment {
+/// Produced only by [`crate::CachePublisher::resolve`], so nothing downstream
+/// can name a cache entry that has not passed its checks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedCachedArtifact {
     /// Identity of the segment within its lesson.
-    pub segment_id: String,
+    pub(crate) segment_id: String,
     /// The synthesis identity that named this entry.
-    pub cache_key: CacheKey,
+    pub(crate) cache_key: CacheKey,
     /// The entry directory, which a refusal routes to runtime reconciliation.
-    pub entry_dir: PathBuf,
+    pub(crate) entry_dir: PathBuf,
     /// The validated audio inside that entry.
-    pub audio_path: PathBuf,
+    pub(crate) audio_path: PathBuf,
     /// Digest of that audio, re-verified before assembly reads it.
-    pub audio_blake3: String,
+    pub(crate) audio_blake3: String,
     /// Frames the audio holds, agreeing with the artifact record.
-    pub frames: u32,
+    pub(crate) frames: u32,
     /// Silence to write after this segment, in milliseconds.
-    pub pause_after_ms: u32,
+    pub(crate) pause_after_ms: u32,
+}
+
+impl ValidatedCachedArtifact {
+    /// Identifies the planned segment that produced this validation token.
+    pub fn segment_id(&self) -> &str {
+        &self.segment_id
+    }
+
+    /// Carries the synthesis identity rechecked against `artifact.json`.
+    pub fn cache_key(&self) -> &CacheKey {
+        &self.cache_key
+    }
+
+    /// Locates the immutable entry retained for runtime reconciliation.
+    pub fn entry_dir(&self) -> &Path {
+        &self.entry_dir
+    }
+
+    /// Locates the WAV whose structure and artifact record were rechecked.
+    pub fn audio_path(&self) -> &Path {
+        &self.audio_path
+    }
+
+    /// Carries the digest reverified before this token was issued.
+    pub fn audio_blake3(&self) -> &str {
+        &self.audio_blake3
+    }
+
+    /// Carries the frame count agreed by the WAV and artifact record.
+    pub fn frames(&self) -> u32 {
+        self.frames
+    }
+
+    /// Preserves the plan's post-segment silence for deterministic assembly.
+    pub fn pause_after_ms(&self) -> u32 {
+        self.pause_after_ms
+    }
 }
 
 /// `artifact.json`: what one cache entry declares about the audio beside it.
@@ -182,15 +219,15 @@ pub(crate) fn rejected(entry_dir: &Path, segment_id: &str, fault: CacheEntryFaul
 /// synthesis produces audio this build cannot use,
 /// [`ManagedPathError::ManagedPathEscape`] when a link occupies an entry path,
 /// [`crate::DurableStateError::QuarantineFailed`] when a failed attempt cannot
-/// be retained, and [`BuildError::Synthesis`] when the worker itself refuses.
+/// be retained, and [`BuildError::Synthesis`] when the staged producer fails.
 pub(crate) fn resolve(
     filesystem: &dyn DurableFileSystem,
     cache_root: &Path,
     quarantine_root: &Path,
     job_id: &str,
     segment: &PlannedSegment,
-    synthesizer: &dyn SegmentSynthesizer,
-) -> Result<CachedSegment, BuildError> {
+    producer: &mut dyn StagedAudioProducer,
+) -> Result<ValidatedCachedArtifact, BuildError> {
     let (_shard, entry_dir) = resolve_entry_location(cache_root, &segment.cache_key)?;
     if entry_dir.is_dir() {
         return load_entry(segment, &entry_dir);
@@ -221,11 +258,14 @@ pub(crate) fn resolve(
         quarantine_root,
         job_id,
         segment,
-        synthesizer,
+        producer,
     )
 }
 
-fn load_entry(segment: &PlannedSegment, entry_dir: &Path) -> Result<CachedSegment, BuildError> {
+fn load_entry(
+    segment: &PlannedSegment,
+    entry_dir: &Path,
+) -> Result<ValidatedCachedArtifact, BuildError> {
     let audio_path = managed::leaf(entry_dir, AUDIO_RECORD)?;
     let artifact_path = managed::leaf(entry_dir, ARTIFACT_RECORD)?;
     load_validated(segment, entry_dir, &audio_path, &artifact_path)
@@ -238,8 +278,8 @@ fn synthesize_transaction(
     quarantine_root: &Path,
     job_id: &str,
     segment: &PlannedSegment,
-    synthesizer: &dyn SegmentSynthesizer,
-) -> Result<CachedSegment, BuildError> {
+    producer: &mut dyn StagedAudioProducer,
+) -> Result<ValidatedCachedArtifact, BuildError> {
     let stage = Builder::new()
         .prefix(&format!(
             "{CACHE_STAGE_PREFIX}{}-",
@@ -251,7 +291,7 @@ fn synthesize_transaction(
     let audio_path = managed::leaf(&stage, AUDIO_RECORD)?;
     let artifact_path = managed::leaf(&stage, ARTIFACT_RECORD)?;
 
-    let report = match synthesizer.synthesize(segment, &audio_path) {
+    let report = match producer.produce(&audio_path) {
         Ok(report) => report,
         Err(error) => {
             let primary = BuildError::from(error);
@@ -469,7 +509,7 @@ fn load_validated(
     entry_dir: &Path,
     audio_path: &Path,
     artifact_path: &Path,
-) -> Result<CachedSegment, BuildError> {
+) -> Result<ValidatedCachedArtifact, BuildError> {
     let bytes = fs::read(artifact_path).map_err(|error| io_error(artifact_path, error))?;
 
     // Path 1: the artifact does not parse.
@@ -562,7 +602,7 @@ fn load_validated(
         ));
     }
 
-    Ok(CachedSegment {
+    Ok(ValidatedCachedArtifact {
         segment_id: segment.id.clone(),
         cache_key: segment.cache_key.clone(),
         entry_dir: entry_dir.to_path_buf(),
@@ -671,7 +711,7 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    use crate::{SynthesisError, SynthesisReport, durable::OsDurableFileSystem};
+    use crate::{BackendError, SynthesisReport, durable::OsDurableFileSystem};
 
     /// One rejection path: its label, the error it produced, the entry
     /// directory it must name, and a predicate for the fault it must report.
@@ -769,26 +809,21 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct CountingSynthesizer {
+    struct CountingProducer {
         count: AtomicUsize,
     }
 
-    impl SegmentSynthesizer for CountingSynthesizer {
-        fn identity(&self) -> &str {
-            "cache-crash-test-v1"
-        }
-
-        fn synthesize(
-            &self,
-            _segment: &PlannedSegment,
-            destination: &Path,
-        ) -> Result<SynthesisReport, SynthesisError> {
+    impl StagedAudioProducer for CountingProducer {
+        fn produce(&mut self, destination: &Path) -> Result<SynthesisReport, BackendError> {
             write_tone(destination, 2_400, CANONICAL_SAMPLE_RATE);
             self.count.fetch_add(1, Ordering::SeqCst);
             Ok(SynthesisReport {
                 sample_rate: CANONICAL_SAMPLE_RATE,
                 channels: CANONICAL_CHANNELS,
                 frames: 2_400,
+                backend_revision: "test-backend-v1".to_owned(),
+                worker_bundle_hash: blake3::hash(b"worker").to_hex().to_string(),
+                voice_profile_hash: blake3::hash(b"voice").to_hex().to_string(),
             })
         }
     }
@@ -854,23 +889,18 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct NonCanonicalSynthesizer;
+    struct NonCanonicalProducer;
 
-    impl SegmentSynthesizer for NonCanonicalSynthesizer {
-        fn identity(&self) -> &str {
-            "non-canonical-test-v1"
-        }
-
-        fn synthesize(
-            &self,
-            _segment: &PlannedSegment,
-            destination: &Path,
-        ) -> Result<SynthesisReport, SynthesisError> {
+    impl StagedAudioProducer for NonCanonicalProducer {
+        fn produce(&mut self, destination: &Path) -> Result<SynthesisReport, BackendError> {
             write_tone(destination, 2_400, 48_000);
             Ok(SynthesisReport {
                 sample_rate: 48_000,
                 channels: CANONICAL_CHANNELS,
                 frames: 2_400,
+                backend_revision: "test-backend-v1".to_owned(),
+                worker_bundle_hash: blake3::hash(b"worker").to_hex().to_string(),
+                voice_profile_hash: blake3::hash(b"voice").to_hex().to_string(),
             })
         }
     }
@@ -1028,7 +1058,7 @@ mod tests {
         let workspace = TempDir::new().expect("create cache workspace");
         let (cache_root, quarantine_root) = crash_test_roots(workspace.path());
         let segment = planned("abcdef");
-        let synthesizer = CountingSynthesizer::default();
+        let mut producer = CountingProducer::default();
 
         resolve(
             &FaultingRenameFileSystem::new(RenameFault::Before),
@@ -1036,14 +1066,14 @@ mod tests {
             &quarantine_root,
             "job",
             &segment,
-            &synthesizer,
+            &mut producer,
         )
         .expect_err("interruption before rename must fail publication");
 
         let (_, entry) = resolve_entry_location(&cache_root, &segment.cache_key)
             .expect("resolve cache destination");
         assert!(!entry.exists());
-        assert_eq!(synthesizer.count.load(Ordering::SeqCst), 1);
+        assert_eq!(producer.count.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -1051,7 +1081,7 @@ mod tests {
         let workspace = TempDir::new().expect("create cache workspace");
         let (cache_root, quarantine_root) = crash_test_roots(workspace.path());
         let segment = planned("abcdef");
-        let synthesizer = CountingSynthesizer::default();
+        let mut producer = CountingProducer::default();
 
         resolve(
             &FaultingRenameFileSystem::new(RenameFault::After),
@@ -1059,7 +1089,7 @@ mod tests {
             &quarantine_root,
             "job",
             &segment,
-            &synthesizer,
+            &mut producer,
         )
         .expect_err("interruption after rename must surface");
 
@@ -1069,11 +1099,11 @@ mod tests {
             &quarantine_root,
             "job",
             &segment,
-            &synthesizer,
+            &mut producer,
         )
         .expect("published entry must reconcile as a hit");
         assert!(recovered.audio_path.is_file());
-        assert_eq!(synthesizer.count.load(Ordering::SeqCst), 1);
+        assert_eq!(producer.count.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -1081,13 +1111,14 @@ mod tests {
         let workspace = TempDir::new().expect("create cache workspace");
         let (cache_root, quarantine_root) = crash_test_roots(workspace.path());
 
+        let mut producer = NonCanonicalProducer;
         let error = resolve(
             &OsDurableFileSystem,
             &cache_root,
             &quarantine_root,
             "job",
             &planned("abcdef"),
-            &NonCanonicalSynthesizer,
+            &mut producer,
         )
         .expect_err("non-canonical audio must be quarantined");
 
@@ -1107,13 +1138,14 @@ mod tests {
         let workspace = TempDir::new().expect("create cache workspace");
         let (cache_root, quarantine_root) = crash_test_roots(workspace.path());
 
+        let mut producer = NonCanonicalProducer;
         let error = resolve(
             &FailingQuarantineFileSystem::default(),
             &cache_root,
             &quarantine_root,
             "job",
             &planned("abcdef"),
-            &NonCanonicalSynthesizer,
+            &mut producer,
         )
         .expect_err("quarantine failure must preserve both errors");
 

@@ -5,14 +5,24 @@
 //! unknown or malformed value is refused here rather than somewhere downstream
 //! that can only compare it.
 
+mod contract;
 mod digest;
+mod job;
 mod lesson;
 mod plan;
 mod release;
 mod rights;
 mod voice;
 
+pub use contract::{
+    ContractChange, ContractDescriptor, ContractId, ContractVersion, ContractVersionError,
+    SuccessorCompatibility,
+};
 pub use digest::is_blake3_hex;
+pub use job::{
+    PROVISIONAL_JOB_SCHEMA_VERSION, ProvisionalJobSnapshot, ProvisionalJobStage,
+    SelectedPackageIdentity,
+};
 pub use lesson::{
     AuthoredLesson, LessonError, LessonSegment, MAX_LESSON_JSON_BYTES, ReviewStatus,
     ValidatedLesson, validate_lesson_id,
