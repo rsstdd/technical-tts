@@ -5,6 +5,7 @@ import importlib.util
 import sys
 import tempfile
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -23,6 +24,102 @@ def load_analyzer():
 
 
 ANALYZER = load_analyzer()
+
+
+@dataclass(frozen=True)
+class SoundFileInfo:
+    format: str = "WAV"
+    subtype: str = "FLOAT"
+    frames: int = 1
+    duration: float = 1 / 24_000
+
+
+class RejectingSoundFile:
+    def __init__(self, info: SoundFileInfo) -> None:
+        self._info = info
+        self.info_called = False
+        self.read_called = False
+
+    def info(self, path: Path) -> SoundFileInfo:
+        self.info_called = True
+        return self._info
+
+    def read(self, path: Path, *, dtype: str, always_2d: bool):
+        self.read_called = True
+        raise AssertionError("rejected qualification WAV must not be decoded")
+
+
+class WavInputBoundaryTests(unittest.TestCase):
+    def test_t4_e0_oversized_wav_is_rejected_before_media_inspection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "run-01.wav"
+            with path.open("wb") as output:
+                output.truncate(ANALYZER.MAX_WAV_BYTES + 1)
+            soundfile = RejectingSoundFile(SoundFileInfo())
+
+            with self.assertRaisesRegex(
+                ANALYZER.AnalysisError,
+                "qualification WAV exceeds the configured input limits",
+            ):
+                ANALYZER.analyze_wav(path, soundfile, object())
+
+        self.assertFalse(soundfile.info_called)
+        self.assertFalse(soundfile.read_called)
+
+    def test_t4_e0_riff_reader_rejects_oversized_wav_before_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "run-01.wav"
+            with path.open("wb") as output:
+                output.truncate(ANALYZER.MAX_WAV_BYTES + 1)
+
+            with self.assertRaisesRegex(
+                ANALYZER.AnalysisError,
+                "qualification WAV exceeds the configured input limits",
+            ):
+                ANALYZER.read_riff_chunks(path)
+
+    def test_t4_e0_non_float_wav_is_rejected_before_decoding(self) -> None:
+        for info in (
+            SoundFileInfo(format="AIFF"),
+            SoundFileInfo(subtype="PCM_16"),
+        ):
+            with self.subTest(format=info.format, subtype=info.subtype):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    path = Path(temporary_directory) / "run-01.wav"
+                    path.write_bytes(b"not decoded")
+                    soundfile = RejectingSoundFile(info)
+
+                    with self.assertRaisesRegex(
+                        ANALYZER.AnalysisError,
+                        "qualification WAV has an unexpected media format",
+                    ):
+                        ANALYZER.analyze_wav(path, soundfile, object())
+
+                self.assertTrue(soundfile.info_called)
+                self.assertFalse(soundfile.read_called)
+
+    def test_t4_e0_frame_and_duration_limits_are_enforced_before_decoding(self) -> None:
+        invalid_metadata = (
+            SoundFileInfo(frames=ANALYZER.MAX_WAV_FRAMES + 1),
+            SoundFileInfo(
+                duration=ANALYZER.MAX_WAV_DURATION_SECONDS + 1 / 24_000,
+            ),
+        )
+        for info in invalid_metadata:
+            with self.subTest(frames=info.frames, duration=info.duration):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    path = Path(temporary_directory) / "run-01.wav"
+                    path.write_bytes(b"not decoded")
+                    soundfile = RejectingSoundFile(info)
+
+                    with self.assertRaisesRegex(
+                        ANALYZER.AnalysisError,
+                        "qualification WAV exceeds the configured input limits",
+                    ):
+                        ANALYZER.analyze_wav(path, soundfile, object())
+
+                self.assertTrue(soundfile.info_called)
+                self.assertFalse(soundfile.read_called)
 
 
 class InputRootTests(unittest.TestCase):

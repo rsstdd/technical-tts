@@ -233,8 +233,8 @@ def atomic_write_json(path: Path, value: Any) -> None:
         raise EnvironmentCaptureError(
             "output file already exists; environment evidence is immutable"
         )
+    reject_symlink_components(absolute.parent, "environment evidence parent")
     parent = absolute.parent.resolve(strict=True)
-    reject_symlink_components(parent, "environment evidence parent")
     encoded = json.dumps(value, indent=2, sort_keys=True).encode("utf-8") + b"\n"
     handle, temporary_name = tempfile.mkstemp(
         prefix=f".{absolute.name}.", suffix=".tmp", dir=parent

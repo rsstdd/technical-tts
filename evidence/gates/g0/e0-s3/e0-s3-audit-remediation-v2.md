@@ -37,7 +37,7 @@ Current provenance must identify the exact reviewed files and their SHA-256 valu
 | Seed and run count in future raw identity | Identity-field and seed-invalidation regression tests retained from v1 | Pass |
 | Missing FFmpeg cannot pass the named T4 gate | `PATH=/nonexistent` execution failed with an explicit FFmpeg-required diagnostic | Pass |
 | Input-root symlink containment | Direct-root and parent-component regression tests | Pass |
-| Immutable accepted evidence | All three accepted predecessors match their committed SHA-256 values; corrections are in new records | Pass |
+| Immutable accepted evidence | Both accepted predecessors match the SHA-256 values in the Superseded evidence table; corrections are in new records | Pass |
 
 ## Implementation provenance
 
@@ -71,5 +71,5 @@ governed raw results cited by the E0-S3 evidence keep their recorded retention.
 
 | Role | Name | Decision | Date |
 |---|---|---|---|
-| Engineering owner (approver) | Ross Todd | Approved; every control listed above was verified and the three accepted predecessors matched their committed SHA-256 values | 2026-08-26 |
+| Engineering owner (approver) | Ross Todd | Approved; every control listed above was verified and both accepted predecessors matched the SHA-256 values in the Superseded evidence table | 2026-08-26 |
 | Project owner | Ross Todd | Accepted as the follow-up qualification-integrity audit cited by the E0-S3 G0 decision | 2026-08-26 |

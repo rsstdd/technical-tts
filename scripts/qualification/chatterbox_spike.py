@@ -24,6 +24,10 @@ from typing import Any
 
 SAMPLE_RATE_HZ = 24_000
 MAX_INPUT_BYTES = 8_192
+MAX_GENERATED_DURATION_SECONDS = 60
+MAX_GENERATED_FRAMES = SAMPLE_RATE_HZ * MAX_GENERATED_DURATION_SECONDS
+FLOAT_BYTES_PER_FRAME = 4
+MAX_TOTAL_OUTPUT_BYTES = MAX_GENERATED_FRAMES * FLOAT_BYTES_PER_FRAME * 10
 BLAKE3_HEX_LENGTH = 64
 REQUIRED_VOICE_USE = "voice_qualification"
 GENERATION_PARAMETERS = {
@@ -70,6 +74,52 @@ class Configuration:
     run_count: int
     torch_threads: int
     torch_interop_threads: int
+
+
+@dataclass(frozen=True)
+class BundleApproval:
+    """Bind the acquisition inputs to the immutable E0-S3 approval record."""
+
+    acquisition_record_sha256: str
+    manifest_sha256: str
+
+
+@dataclass(frozen=True)
+class VoiceApproval:
+    """Bind the governed voice records and private artifacts to one approval."""
+
+    profile_sha256: str
+    consent_sha256: str
+    reference_sha256: str
+    reference_blake3: str
+    conditionals_sha256: str
+    conditionals_blake3: str
+    profile_id: str
+    rights_record_id: str
+
+
+# These identities bind the reviewed E0-S3 acquisition records and the approved v2 voice rights
+# record. Changing one requires superseding governance before this harness may accept it.
+TRUSTED_BUNDLE_APPROVAL = BundleApproval(
+    acquisition_record_sha256=(
+        "f034c52e4ace6467e993eb9d8e29efe37df14d21deca41349060cba5c7407a9d"
+    ),
+    manifest_sha256="ff1c09d66f069ff4b797d520fa22cfd9c888a43796825c1525237689ef9ed24f",
+)
+TRUSTED_VOICE_APPROVAL = VoiceApproval(
+    profile_sha256="d17e73efd281af2dbdc0adf2e772dad856e30fb3bc572f4b7ce6459994b98de1",
+    consent_sha256="a46bdfc090a955227c5674c863aecc6e75ec8dd0cfa8778a2fe79779d64dcc6d",
+    reference_sha256="1d6b2c247f9e66e23e9d27819920430993ae2296c138dd88a4b39a8f38b117e8",
+    reference_blake3="b57455db4712257ab102af210098ef8b0592d03c296178640c6e47ef129c61db",
+    conditionals_sha256=(
+        "f3dbb5c5ae882079cdfde6dbd599d78ba82347f717414b2f74920080d7785f00"
+    ),
+    conditionals_blake3=(
+        "4951f9e1fb8a665321b2a31c0eb1691e318378bbf892aef44bb9e85b23598e47"
+    ),
+    profile_id="owner-fallback-v1",
+    rights_record_id="rights-voice-owner-fallback-v2",
+)
 
 
 def positive_integer(value: str) -> int:
@@ -250,12 +300,31 @@ def load_json(path: Path, label: str) -> dict[str, Any]:
     """Load a JSON object or refuse malformed evidence input."""
 
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise QualificationError(f"{label} is not valid UTF-8 JSON") from error
+    return decode_json_object(raw, label)
+
+
+def decode_json_object(raw: bytes, label: str) -> dict[str, Any]:
+    """Decode one JSON object from previously read bytes."""
+
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
         raise QualificationError(f"{label} is not valid UTF-8 JSON") from error
     if not isinstance(value, dict):
         raise QualificationError(f"{label} must contain one JSON object")
     return value
+
+
+def load_trusted_json(path: Path, label: str, expected_sha256: str) -> dict[str, Any]:
+    """Authenticate one governed JSON record before accepting any of its fields."""
+
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise QualificationError(f"{label} does not match its trusted approval record")
+    return decode_json_object(raw, label)
 
 
 def validate_network_isolation() -> dict[str, Any]:
@@ -339,16 +408,42 @@ def verify_acquired_bundle(
     configuration: Configuration,
     code_root: Path,
     model_root: Path,
+    approval: BundleApproval = TRUSTED_BUNDLE_APPROVAL,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Verify the acquired code revision and every recorded model artifact."""
 
-    manifest = load_json(configuration.bundle_manifest, "bundle manifest")
+    acquisition_record = load_trusted_json(
+        configuration.bundle_manifest.parent / "acquisition-approval.json",
+        "acquisition approval",
+        approval.acquisition_record_sha256,
+    )
+    manifest = load_trusted_json(
+        configuration.bundle_manifest,
+        "bundle manifest",
+        approval.manifest_sha256,
+    )
+    approved_scope = acquisition_record.get("scope")
+    approved_code = acquisition_record.get("code")
+    approved_model = acquisition_record.get("model")
+    if (
+        acquisition_record.get("schema_version") != "1.0"
+        or not isinstance(approved_scope, list)
+        or "owner_only_voice_qualification" not in approved_scope
+        or not isinstance(approved_code, dict)
+        or not isinstance(approved_model, dict)
+    ):
+        raise QualificationError("acquisition approval does not authorize this bundle")
     if manifest.get("schema_version") != "1.0":
         raise QualificationError("bundle manifest schema version is unsupported")
     code = manifest.get("code")
     model = manifest.get("model")
     if not isinstance(code, dict) or not isinstance(model, dict):
         raise QualificationError("bundle manifest is missing code or model identity")
+    if (
+        code.get("commit") != approved_code.get("commit")
+        or model.get("revision") != approved_model.get("revision")
+    ):
+        raise QualificationError("bundle manifest does not match the trusted approval record")
 
     commit = command_output(["git", "-C", str(code_root), "rev-parse", "HEAD"]).strip()
     status = command_output(["git", "-C", str(code_root), "status", "--porcelain"]).strip()
@@ -388,7 +483,11 @@ def verify_acquired_bundle(
     return manifest, verified
 
 
-def verify_voice_profile(voice_root: Path, blake3_executable: Path) -> dict[str, Any]:
+def verify_voice_profile(
+    voice_root: Path,
+    blake3_executable: Path,
+    approval: VoiceApproval = TRUSTED_VOICE_APPROVAL,
+) -> dict[str, Any]:
     """Verify approved consent linkage and hash the private voice artifacts."""
 
     profile_path = validate_regular_file(voice_root / "profile.json", voice_root, "voice profile")
@@ -399,11 +498,22 @@ def verify_voice_profile(voice_root: Path, blake3_executable: Path) -> dict[str,
     conditionals_path = validate_regular_file(
         voice_root / "conditionals.pt", voice_root, "voice conditionals"
     )
-    profile = load_json(profile_path, "voice profile")
-    consent = load_json(consent_path, "voice consent")
+    profile = load_trusted_json(
+        profile_path,
+        "voice profile",
+        approval.profile_sha256,
+    )
+    consent = load_trusted_json(
+        consent_path,
+        "voice consent",
+        approval.consent_sha256,
+    )
     if profile.get("approval") != "approved" or consent.get("consent_status") != "granted":
         raise QualificationError("voice profile or consent is not approved")
-    if consent.get("rights_record_id") != "rights-voice-owner-fallback-v2":
+    if (
+        profile.get("profile_id") != approval.profile_id
+        or consent.get("rights_record_id") != approval.rights_record_id
+    ):
         raise QualificationError("voice consent does not name the superseding v2 rights record")
     permitted_use = consent.get("permitted_use")
     if not isinstance(permitted_use, list) or REQUIRED_VOICE_USE not in permitted_use:
@@ -415,7 +525,11 @@ def verify_voice_profile(voice_root: Path, blake3_executable: Path) -> dict[str,
     consent_reference_blake3 = consent.get("reference_wav_blake3")
     if not is_blake3_hex(consent_reference_blake3):
         raise QualificationError("voice consent contains a malformed BLAKE3 identity")
-    if reference_blake3 != consent_reference_blake3:
+    if (
+        reference_blake3 != approval.reference_blake3
+        or conditionals_blake3 != approval.conditionals_blake3
+        or consent_reference_blake3 != approval.reference_blake3
+    ):
         raise QualificationError("voice profile and consent disagree on the reference identity")
     if blake3_file(reference_path, blake3_executable) != reference_blake3:
         raise QualificationError(
@@ -424,6 +538,14 @@ def verify_voice_profile(voice_root: Path, blake3_executable: Path) -> dict[str,
     if blake3_file(conditionals_path, blake3_executable) != conditionals_blake3:
         raise QualificationError(
             "voice conditionals do not match their approved BLAKE3 identity"
+        )
+    if sha256_file(reference_path) != approval.reference_sha256:
+        raise QualificationError(
+            "voice reference does not match its approved SHA-256 identity"
+        )
+    if sha256_file(conditionals_path) != approval.conditionals_sha256:
+        raise QualificationError(
+            "voice conditionals do not match their approved SHA-256 identity"
         )
     return {
         "profile_id": profile.get("profile_id"),
@@ -482,6 +604,18 @@ def reset_seeds(seed: int, numpy_module: Any, torch_module: Any) -> None:
     random.seed(seed)
     numpy_module.random.seed(seed)
     torch_module.manual_seed(seed)
+
+
+def reserve_output_bytes(samples: Any, used_bytes: int) -> int:
+    """Reserve bounded output capacity before a generated sample is written."""
+
+    frame_count = int(samples.shape[0])
+    if frame_count > MAX_GENERATED_FRAMES:
+        raise QualificationError("Chatterbox output exceeds the per-run frame limit")
+    total_bytes = used_bytes + frame_count * FLOAT_BYTES_PER_FRAME
+    if total_bytes > MAX_TOTAL_OUTPUT_BYTES:
+        raise QualificationError("Chatterbox output exceeds the total output budget")
+    return total_bytes
 
 
 def write_float_wav(path: Path, samples: Any, soundfile_module: Any) -> None:
@@ -869,6 +1003,7 @@ def run_qualification(configuration: Configuration) -> Path:
     reference_samples = None
     waveform_correlations: list[float] = []
     log_mel_similarities: list[float] = []
+    used_output_bytes = 0
     for index in range(1, configuration.run_count + 1):
         reset_seeds(configuration.seed, np, torch)
         started = time.perf_counter()
@@ -877,6 +1012,7 @@ def run_qualification(configuration: Configuration) -> Path:
         samples = generated.squeeze().detach().cpu().numpy().astype(np.float32, copy=False)
         if samples.ndim != 1:
             raise QualificationError("Chatterbox returned audio with an unexpected shape")
+        used_output_bytes = reserve_output_bytes(samples, used_output_bytes)
         wav_name = f"run-{index:02d}.wav"
         wav_path = output_root / wav_name
         write_float_wav(wav_path, samples, sf)

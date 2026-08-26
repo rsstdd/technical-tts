@@ -17,6 +17,12 @@ The harness requires the resulting
 uses the workspace-pinned `blake3` crate so voice artifacts are verified without adding a
 second hashing implementation to the frozen Python environment.
 
+The E0-S3 harness authenticates the governed acquisition approval, bundle manifest, voice
+profile, and consent record against reviewed SHA-256 values embedded in the harness before it
+accepts their identity or approval fields. A different bundle or voice requires superseding
+governed approval records and an explicit harness update. Generated output is limited to 60
+seconds per run and ten minutes across one invocation.
+
 Then run the harness through the required namespace. Set `PYTHONHASHSEED` to the same value as
 `--seed` before the Python interpreter starts; the E0-S3 fixed-seed run uses `42`:
 
