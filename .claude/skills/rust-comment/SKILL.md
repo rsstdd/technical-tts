@@ -45,6 +45,16 @@ resolve one silently.
   ``[`CacheKey`]`` rather than naming them in plain prose.
 - Doc comments precede attributes (`crates/AGENTS.md` §3).
 
+## Enums and Variants
+
+Enums frequently suffer from comment bloat where a /// merely restates the variant name. Follow these rules to keep enums clean:
+
+- Document the enum type. The /// above the enum itself must carry the domain concept, the state machine logic, or the invariants of the collection as a whole.
+- Do not document self-explanatory variants. A variant named InvalidFormat or Timeout must not carry a /// saying "The format is invalid". Restating the variant name is a finding.
+- Handling missing_docs on variants. Because missing_docs = "warn" is set workspace-wide, an undocumented public variant will fail CI. If a variant is perfectly self-descriptive, attach #[allow(missing_docs)] directly to the variant rather than writing a redundant comment.
+- When to comment a variant. Add a /// to a variant only if it carries a non-obvious payload, requires specific domain context, or enforces an invariant the enum-level doc did not cover. In that case, explain why the payload exists, not what it is.
+- Do not document self-explanatory fields. Do not document struct or enum fields if the type name and field name are clear. Use #[allow(missing_docs)] on the field if needed.
+
 ## rustdoc sections
 
 Use them in this order, and only when they apply.
