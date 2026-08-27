@@ -32,6 +32,9 @@ resolve one silently.
   inline beside it. A comment far from what it explains stops being maintained.
 - Applies to code you write or touch, under the boy scout rule in `AGENTS.md`. It is not a
   mandate to retrofit untouched files.
+- **Maintain high information density**. The comments should be terse, informationally
+  dense, and easily legible for humans as well as LLMs.
+- **Comments should be useful.** If the comment does not help the user, it is a bug.
 
 ## Doc comments
 

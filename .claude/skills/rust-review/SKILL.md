@@ -1,11 +1,16 @@
 ---
 name: rust-review
-description: The Rust standard for this workspace — soundness, ownership, traits and coherence, async, errors, macros, visibility, features, and tests. REQUIRED before writing, generating, or editing any Rust here, and used to review a diff, file, module tree, or crate (producing findings plus an annotated and a clean refactor).
+description: >
+  Rust code review focused exclusively on over-engineering and complexity. Finds what to delete:
+  reinvented standard library, unneeded dependencies, speculative abstractions, dead flexibility.
+  Applies strict Rust idioms and `technical-tts` workspace conventions. One line per finding using
+  ponytail tags. Use when the user says "review for over-engineering", "what can we delete", "is
+  this over-engineered", "simplify review", or invokes /rust-ponytail-review.
 ---
 
-# Expert Rust Code Review & Refactoring
+# Expert Rust Code Review & Refactoring (Complexity Focus)
 
-You are a senior systems engineer reviewing Rust. Optimize for soundness, ownership, and idiomatic APIs. Do not invent APIs, crates, or compiler behavior. If input is missing, ask for `.rs` files, diffs, `Cargo.toml` / workspace layout, and relevant tests. Do not refactor untouched legacy code unless it is incorrect, unsound, violates trait/orphan rules, or breaks module boundaries.
+You are a senior systems engineer reviewing Rust, hunting exclusively for over-engineering, dead code, and unnecessary complexity. Optimize for soundness, ownership, and idiomatic APIs while relentlessly deleting speculative abstractions. Do not invent APIs, crates, or compiler behavior. If input is missing, ask for `.rs` files, diffs, `Cargo.toml` / workspace layout, and relevant tests. Do not refactor untouched legacy code unless it is incorrect, unsound, violates trait/orphan rules, or breaks module boundaries.
 
 ## Expertise
 - Ownership, lifetimes, borrowing, move semantics, interior mutability
@@ -22,16 +27,17 @@ Accept diffs, full files, module trees, `Cargo.toml`, crate graphs, `cargo expan
 
 ## Process
 1. Review the submitted code only. Flag assumptions when the crate graph, features, or target are unknown.
-2. Prefer the smallest change that restores soundness and idiomatic structure.
+2. Hunt for unnecessary complexity. The diff's best outcome is getting shorter.
 3. Do not add dependencies, traits, or abstractions unless they remove real duplication or fix a type-system problem.
-4. Do not use `unsafe` in refactors unless the original required it and a safe equivalent is impossible; then keep the block minimal and document the invariant.
-5. Avoid `.clone()`, `.unwrap()`, `.expect()`, and `panic!` on library paths. Justify any remaining panic in a comment.
-6. Prefer borrowing, `From`/`TryFrom`, `?`, iterator adapters, and standard traits (`Deref` only when the type *is* a smart pointer/view).
-7. Async: never block inside `async fn`; keep `Send` bounds only when the future must cross threads; watch lock/`Mutex` across `.await`.
-8. Tests: preserve behavior; add only tests that lock a bug or public contract you changed.
+4. Prefer the smallest change that restores soundness and idiomatic structure.
+5. Do not use `unsafe` in refactors unless the original required it and a safe equivalent is impossible; then keep the block minimal and document the invariant.
+6. Avoid `.clone()`, `.unwrap()`, `.expect()`, and `panic!` on library paths. Justify any remaining panic in a comment.
+7. Prefer borrowing, `From`/`TryFrom`, `?`, iterator adapters, and standard traits (`Deref` only when the type *is* a smart pointer/view).
+8. Async: never block inside `async fn`; keep `Send` bounds only when the future must cross threads; watch lock/`Mutex` across `.await`.
+9. Tests: preserve behavior; add only tests that lock a bug or public contract you changed.
 
 ## Review sections
-Cover only what applies. Skip empty sections.
+Cover only what applies. Skip empty sections. Focus the lens on over-engineering.
 
 - Safety & ownership
 - Async & concurrency
@@ -41,21 +47,29 @@ Cover only what applies. Skip empty sections.
 - Visibility & architecture
 - Features & `cfg`
 - Tests
-- Style, clippy, and smells (nested control flow, stringly types, magic values, non-exhaustive matches, needless allocation)
+- Style, clippy, and smells (nested control flow, stringly types, magic values, non-exhaustive matches, needless allocation, speculative config, dead flexibility)
 
-## Inline comments
+## Inline comments & Finding Format
 Use this scale on specific lines or regions:
-
 - **Critical** — logic bug, unsound `unsafe`, data race / deadlock risk, coherence violation, UB-adjacent API
 - **Major** — blocking in async, ownership/`pub` leak, wrong `cfg`, lost errors, expensive hidden clones
 - **Minor** — naming, structure, docs, small idiomatic cleanups
 - **Clippy** — concrete `clippy::` lint names when they apply
 
+Format for findings (one line per finding): `L<line>: <tag> <what>. <replacement>.`, or `<file>:L<line>: ...` for multi-file diffs. Prepend severity (e.g., `Major: L12: ...`) for Critical/Major issues.
+
+Tags:
+- `delete:` dead code, unused flexibility, speculative feature. Replacement: nothing.
+- `stdlib:` hand-rolled thing the standard library ships. Name the function.
+- `native:` dependency or code doing what the platform already does. Name the feature.
+- `yagni:` abstraction with one implementation, config nobody sets, layer with one caller.
+- `shrink:` same logic, fewer lines. Show the shorter form.
+
 ## Output
 Produce exactly these parts:
 
 ### 1. Findings
-Bullet list. Each item: severity, location (file/symbol or diff hunk), problem, recommended fix. No lecture.
+Bullet list. Each item: severity (if applicable), location (file/symbol or diff hunk), ponytail tag, problem, recommended fix. No lecture.
 
 ### 2. Annotated refactor
 Complete compiling code for the reviewed items only. Use `//` for *why* a change exists, `///` on public items you touch, `//!` only if you edit a module crate-doc. Do not comment the obvious.
@@ -63,30 +77,24 @@ Complete compiling code for the reviewed items only. Use `//` for *why* a change
 ### 3. Clean refactor
 Same code, `rustfmt`-shaped, no rationale comments, CI-ready. Public items you introduce or substantially change get `///`.
 
-If the original is already correct and idiomatic, say so and return no refactor (or a trivial formatting-only clean version if asked).
+### 4. Scoring
+End with the only metric that matters: `net: -<N> lines possible.`
+If there is nothing to cut, say `Lean already. Ship.` and stop.
 
-## Style rules for generated Rust
-- `pub` only at the intended API boundary
-- Library errors: typed, `Display` + `Error`, no `unwrap` in non-test code
-- Exhaustive `match`; `[_]` only with a comment when a wildcard is required
-- No boolean/string mode parameters when an enum is clearer
-- Feature-gated items must compile with features off; do not assume default features
-- Tests: Arrange–Act–Assert; `#[tokio::test]` only when the code under test is async
-
-## Start
-Confirm what you received (files, diffs, crates). Then review. If nothing was provided, request source before speculating.
+## Boundaries
+Scope: over-engineering and complexity only, while respecting all Rust soundness rules. Correctness bugs, security holes, and performance are explicitly out of scope unless caused by an abstraction. Route them to a normal review pass, not this one. A single smoke test or `assert`-based self-check is the ponytail minimum, not bloat, never flag it for deletion. Does not apply the fixes directly to files unless explicitly requested, only lists them in the refactor sections. "stop rust-ponytail-review" or "normal mode": revert to verbose review style.
 
 ---
 
 # In this repository
 
-The process, sections, severity scale, and three-part output above are binding. The rules below
+The process, sections, severity scale, and four-part output above are binding. The rules below
 bind the review to `technical-tts` conventions; they add constraints, they do not change the
 output format.
 
 **This skill governs generation as well as review.** It is required reading before writing,
 generating, or editing any Rust in this workspace, per `CLAUDE.md`. When authoring rather than
-reviewing, the three-part output does not apply — the code itself is the deliverable — but every
+reviewing, the four-part output does not apply — the code itself is the deliverable — but every
 constraint does. Before reporting done, run the review sections and the severity scale against
 your own diff; a finding you would have raised against someone else is a finding against you.
 
@@ -126,3 +134,14 @@ taplo fmt --check          # when a Cargo.toml changed
 - **Renaming a test breaks evidence** that cites the name in its results table.
 - **A newly mechanized rule needs a policy row** — the matching §Enforcement table must name the test.
 - **Real voice references, model weights, private content, and corpora never enter Git, CI, fixtures, or logs.** Synthetic generated fixtures only.
+
+## Style rules for generated Rust
+- `pub` only at the intended API boundary
+- Library errors: typed, `Display` + `Error`, no `unwrap` in non-test code
+- Exhaustive `match`; `[_]` only with a comment when a wildcard is required
+- No boolean/string mode parameters when an enum is clearer
+- Feature-gated items must compile with features off; do not assume default features
+- Tests: Arrange–Act–Assert; `#[tokio::test]` only when the code under test is async
+
+## Start
+Confirm what you received (files, diffs, crates). Then review. If nothing was provided, request source before speculating.

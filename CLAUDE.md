@@ -9,16 +9,14 @@ drift from them.
 
 | When | Load |
 |---|---|
-| Writing, generating, or editing **any Rust** in this workspace | `clean-code`, `rust-review`, **and** `rust-comment` |
-| Reviewing a diff, file, module tree, or crate | `rust-review`, with `clean-code` and `rust-comment` |
-| Writing or editing any other code | `clean-code` |
+| Writing, generating, or editing **any Rust** in this workspace | `clean-code`, `ponytail`, `rust-review`, **and** `rust-comment` |
+| Auditing or reviewing a diff, file, module tree, or crate | `rust-review` and `ponytail`, with `clean-code` and `rust-comment` |
+| Writing or editing any other code | `clean-code` **and** `ponytail` |
 
-Load them **before the first edit, not after**. `rust-review` is the standard the code will be
-judged against; writing to it costs less than refactoring to it. Before reporting done, apply
-that skill's own severity scale to your own output.
-
-`.claude/skills/react-review/SKILL.md` is held for a frontend that ADR-0001 has not authorized.
-Its presence is not permission to add one.
+Load them **before the first edit, not after**. These are binding standards for code written
+here, not advice to weigh: `rust-review` is what the code will be judged against and `ponytail`
+is what decides whether it should exist at all, so writing to them costs less than refactoring
+to them. Before reporting done, apply `rust-review`'s own severity scale to your own output.
 
 ## Conflict order
 
