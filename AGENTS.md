@@ -108,7 +108,7 @@ Approved target. Create incrementally. Absent paths are planned, not missing wor
 | Voice consent / watermark       | `docs/adr/ADR-0004-voice-content-and-retention-policy.md`                 | Proposed until rights records + retention approved                                      |
 | ASR verification                | `docs/adr/ADR-0005-asr-calibration-and-release-control.md`                | Proposed until identities, corpus, decoder, patterns, gates measured                    |
 | Domain / planning               | `crates/study-tts-core/`                                                  | Rust types + checked-in schemas                                                         |
-| Worker contract                 | `schemas/worker-protocol-v0.schema.json`, `worker/`                       | Versioned protocol + shared contract tests                                              |
+| Worker contract                 | `schemas/worker-protocol-v1.schema.json`, `worker/`                       | Versioned protocol + shared contract tests                                              |
 | Configuration                   | `crates/study-tts-cli/`                                                   | Parsed types + documented precedence                                                    |
 | Job / cache / recovery          | `crates/study-tts-runtime/`                                               | Runtime, manifest schemas, recovery tests                                               |
 | External-process safety         | `crates/study-tts-runtime/`                                               | Pool + FFmpeg adapters + containment tests; ASR in-process                              |
@@ -127,7 +127,7 @@ Approved target. Create incrementally. Absent paths are planned, not missing wor
 
 Run from the repo root on Ubuntu 24.04 / WSL2. Check `Cargo.toml`, worker lockfiles, scripts, and CI before extending this table.
 
-Current tree: E0-S0 library skeleton + non-product status executable. Product commands below are authoritative **only** when the referenced behavior, files, and targets exist. Do not invent options. If a command fails because the phase is not implemented, report the exact gap.
+Current tree: E1-S1 tested contract baseline + non-product status executable. Product commands below are authoritative **only** when the referenced behavior, files, and targets exist. Do not invent options. If a command fails because the phase is not implemented, report the exact gap.
 
 | Purpose             | Command                                                                                        |
 | ------------------- | ---------------------------------------------------------------------------------------------- |
@@ -139,6 +139,7 @@ Current tree: E0-S0 library skeleton + non-product status executable. Product co
 | Tests               | `cargo test --workspace --all-targets --locked`                                                |
 | Lint                | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`                |
 | Rust conventions    | `python3 scripts/check-rust-conventions.py`                                                    |
+| Evidence provenance | `python3 scripts/check-evidence-provenance.py`                                                 |
 | Fmt check           | `cargo fmt --all -- --check`                                                                   |
 | Fmt apply           | `cargo fmt --all`                                                                              |
 | CLI help            | `cargo run -p study-tts-cli -- --help`                                                         |

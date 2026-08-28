@@ -54,6 +54,17 @@ jobs:
         # line, comment, and doc-order rules need their own check.
         run: python3 scripts/check-rust-conventions.py
 
+      - name: Check evidence provenance
+        # Accepted records under `evidence/` pin the SHA-256 of every document
+        # their conclusion rests on. `AGENTS.md` stated as prose that editing
+        # such a document obliges recomputing them, and prose drifted twice
+        # before anything reported it — once inside a commit whose own purpose
+        # was correcting provenance. `evidence/README.md` §Provenance is the
+        # policy this step enforces.
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_check_evidence_provenance.py'
+          python3 scripts/check-evidence-provenance.py
+
       - name: Check Cargo.toml formatting
         run: |
           curl -fsSL -o "$RUNNER_TEMP/taplo.gz" \
