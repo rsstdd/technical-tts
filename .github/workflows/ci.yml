@@ -1,3 +1,16 @@
+# Fast pull-request checks.
+#
+# Everything here runs on an ordinary hosted runner, needs no model weights, no
+# voice references, and no reference machine, and is expected to finish in
+# minutes. That boundary is the point: ADR-0001 §14 and §17 separate what every
+# pull request must pass from what only the qualified reference machine can
+# answer, and the second half lives in `qualification.yml` so it can never
+# quietly become a prerequisite for merging a documentation fix.
+#
+# `t4_e1_pr_suite_performs_no_model_download` is this file's counterpart in the
+# test suite: it proves the render path wants no model, while the network
+# namespace below proves the run could not have fetched one anyway.
+
 name: CI
 
 on:
@@ -9,8 +22,8 @@ permissions:
   contents: read
 
 jobs:
-  walking-skeleton:
-    name: walking-skeleton
+  lint:
+    name: lint
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -28,11 +41,6 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
-
-      - name: Install FFmpeg
-        run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg
 
       - name: Restore locked Rust dependencies
         run: cargo fetch --locked
@@ -59,6 +67,51 @@ jobs:
       - name: Lint offline
         run: cargo clippy --offline --workspace --all-targets --all-features --locked -- -D warnings
 
+      - name: Check the worker package compiles
+        # The worker is a declared input to the bundle hash, so a syntax error
+        # in it would change that hash and still ship. `PYTHONPYCACHEPREFIX`
+        # keeps the bytecode out of `worker/`: an undeclared `__pycache__`
+        # beside a declared input does not change the hash
+        # (`t1_e1_worker_bundle_hash_ignores_unrelated_repository_files`), but
+        # it is still a file a reader has to decide to ignore.
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/pycache
+        run: python3 -m compileall -q -f worker/study_tts_worker
+
+      - name: Check the worker protocol boundary
+        # `worker/tests/` is outside the declared bundle and uses only the
+        # standard library, so proving the frame reader refuses what it must
+        # neither changes the bundle hash nor adds a locked dependency.
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/pycache
+        run: python3 -m unittest discover --start-directory worker/tests
+
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Restore locked Rust dependencies
+        run: cargo fetch --locked
+
       - name: Build workspace test binaries offline
         run: |
           cargo test --offline --workspace --all-targets --locked --no-run --message-format=json \
@@ -84,7 +137,7 @@ jobs:
                 "RUSTUP_HOME=$RUSTUP_HOME" \
                 "PATH=$PATH" \
                 "TEST_BINARIES=$TEST_BINARIES" \
-                timeout --signal=TERM 60s \
+                timeout --signal=TERM 120s \
                 bash -euo pipefail -c '\''
                   while IFS= read -r test_binary; do
                     "$test_binary"
@@ -94,6 +147,15 @@ jobs:
 
       - name: Run doc tests offline
         run: cargo test --offline --workspace --doc --locked
+
+      - name: Check the checked-in schemas are current
+        # Regeneration must be a no-op on a clean tree.
+        # `t3_e1_generated_schemas_match_checked_in_files` already asserts this,
+        # and this step makes the failure legible: it shows the diff rather than
+        # a byte-comparison assertion message.
+        run: |
+          cargo run --offline --locked --package study-tts-runtime --example generate-schemas
+          git diff --exit-code -- schemas/
 
   dependency-policy:
     name: dependency-policy

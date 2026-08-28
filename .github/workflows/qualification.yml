@@ -1,0 +1,189 @@
+# Reference-machine qualification.
+#
+# Deliberately separate from `ci.yml`, and deliberately never triggered by a
+# pull request. ADR-0001 §17 puts the tiers that need real model weights, a real
+# voice profile, and measured performance on the qualified reference machine
+# described in `docs/operations/REFERENCE-ENVIRONMENT.md`; ADR-0002 accepts that
+# machine's measurements. Three consequences follow, and each is why this file
+# exists rather than another job in `ci.yml`:
+#
+# * **It cannot gate a merge.** A hosted runner has no weights and no lawful
+#   voice reference, so a qualification job attached to `pull_request` would
+#   either fail every pull request or be skipped into meaninglessness.
+# * **It must not run automatically on somebody else's push.** The artifacts it
+#   reads are governed under `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`
+#   and never enter Git or ordinary CI. Running it is an operator's decision.
+# * **Its results are evidence.** A run produces a record under `evidence/`,
+#   which `evidence/README.md` makes immutable once accepted, so a run that
+#   started by accident would still have to be accounted for.
+#
+# The runner is self-hosted and labelled: `reference-machine` identifies the
+# qualified box, not a class of machine. If no such runner is registered the
+# workflow queues rather than silently passing, which is the correct failure —
+# an unqualified result is worse than no result.
+
+name: Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why this qualification run is being made, for the evidence record
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # One at a time. The reference machine is a single box, and two concurrent
+  # runs would measure each other's load rather than the software.
+  group: qualification
+  cancel-in-progress: false
+
+jobs:
+  # Refuses a dispatch from anywhere but the protected default branch, on a
+  # hosted runner, before the reference machine is asked for anything.
+  #
+  # `workflow_dispatch` lets whoever dispatches pick the ref, and the workflow
+  # that then runs is the one **on that ref** -- so this job is a rule the same
+  # edit can delete, and it is deliberately only the half of the control that
+  # can live in the repository. It buys one thing that matters: a wrong-ref
+  # dispatch is a red run on a hosted box rather than a checkout of arbitrary
+  # workflow code onto a persistent machine holding governed artifacts.
+  #
+  # The other half is repository settings, is not optional, and is not visible
+  # from here:
+  #
+  # * a `qualification` environment carrying required reviewers and a
+  #   deployment-branch rule limited to `main`, so a run is a named person's
+  #   decision and not the dispatcher's alone. Referencing an environment that
+  #   has no protection rules configured adds nothing, so configure it before
+  #   trusting this file;
+  # * a restricted runner group holding the `reference-machine` runner, so no
+  #   other repository or workflow can schedule onto that box;
+  # * branch protection on `main`, which is what `github.ref_protected` reads.
+  guard:
+    name: guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse a dispatch from an unprotected ref
+        if: github.ref != 'refs/heads/main' || !github.ref_protected
+        run: |
+          echo "qualification runs only from a protected refs/heads/main;" >&2
+          echo "this dispatch was for ${GITHUB_REF}" >&2
+          exit 1
+
+  qualification:
+    name: qualification
+    needs: guard
+    # Named so the environment's reviewers and deployment-branch rule apply.
+    # A self-hosted runner can be persistently compromised by whatever workflow
+    # code reaches it, so the approval has to sit outside the workflow file.
+    environment: qualification
+    runs-on: [self-hosted, reference-machine]
+    timeout-minutes: 240
+    env:
+      # The qualified Python environment, and the reason it is named here rather
+      # than built in the workspace. `actions/checkout` cleans by default with
+      # `git clean -ffdx`, and `-x` removes ignored files -- so a `worker/.venv`
+      # restored by a previous run is deleted at the start of the next one, and
+      # any step expecting it fails. Turning the clean off is the wrong repair:
+      # it would trade a reliable failure for a workspace carrying whatever the
+      # last run left behind, which is not a state a qualification result may be
+      # taken from.
+      #
+      # So the environment lives outside the checkout, on the machine, where a
+      # clean cannot reach it, and the step below attaches it at the one path
+      # `WORKER_INTERPRETER_PATH` names. Restored once per machine per
+      # docs/operations/WORKER-ENVIRONMENT.md, which names this variable in
+      # return.
+      QUALIFIED_WORKER_VENV: ${{ github.workspace }}/../study-tts-qualified-worker-venv
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Record why this run was made
+        # The reason is operator-supplied text. Interpolating `${{ inputs.reason }}`
+        # into the script would splice it into the shell this job runs as, on the
+        # box that holds the governed model and voice artifacts. Passing it through
+        # the environment keeps it data: the shell expands the variable after
+        # parsing, so quotes and metacharacters in it are never syntax.
+        env:
+          QUALIFICATION_REASON: ${{ inputs.reason }}
+        run: |
+          echo "reason: ${QUALIFICATION_REASON}"
+
+      - name: Attach the qualified worker environment
+        # `WORKER_INTERPRETER_PATH` in crates/study-tts-runtime/src/worker_bundle.rs
+        # is `worker/.venv/bin/python` and is not configurable, because an
+        # interpreter a caller may choose is one that can satisfy the runtime
+        # check without ever running the worker. The link is how a machine says
+        # which environment is its qualified one; the path stays fixed.
+        #
+        # Refuses rather than creates. A virtualenv built here would resolve
+        # against whatever an index served today, and ADR-0002 accepts
+        # measurements from the qualified environment, not from a fresh one that
+        # happens to install.
+        run: |
+          set -eu
+          if [ ! -x "${QUALIFIED_WORKER_VENV}/bin/python" ]; then
+            echo "no qualified worker environment at ${QUALIFIED_WORKER_VENV};" >&2
+            echo "restore it per docs/operations/WORKER-ENVIRONMENT.md" >&2
+            exit 1
+          fi
+          ln -sfnT "${QUALIFIED_WORKER_VENV}" worker/.venv
+          worker/.venv/bin/python -c 'import sys; print(sys.version)'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+
+      - name: Restore locked Rust dependencies
+        run: cargo fetch --locked
+
+      - name: Run the offline workspace suite on the reference machine
+        # The same suite the pull-request workflow runs, repeated here against
+        # this machine's real FFmpeg and ffprobe. A qualification record covers
+        # the whole build, not only the measurements layered on top of it.
+        run: cargo test --offline --workspace --all-targets --locked
+
+      - name: Record the worker bundle identity
+        # ADR-0001 §12.5 derives this hash from the declared worker inputs and
+        # the runtime ABI, so it belongs in the evidence record beside any
+        # measurement taken with that worker.
+        #
+        # This step is also the only place the environment check runs against a
+        # real interpreter. `verified_hash` compares every installed
+        # distribution, the PEP 610 revision recorded for the governed one, and
+        # every `.pth` file in the interpreter's site directories against
+        # `worker/requirements.lock` before printing anything, and ordinary CI
+        # has no restored `worker/.venv` to compare. A failure here is the
+        # attached environment disagreeing with the lock, which
+        # `docs/operations/WORKER-ENVIRONMENT.md` §The installed environment is
+        # checked against the lock explains and routes.
+        run: |
+          cargo run --offline --locked --package study-tts-runtime \
+            --example worker-bundle-hash
+
+      - name: Point at the operator-run measurement steps
+        if: always()
+        run: |
+          cat <<'NOTE'
+          The real-model measurements are not invoked from this workflow, and that
+          is deliberate rather than an omission.
+
+          `scripts/qualification/chatterbox_spike.py` and
+          `capture_reference_environment.py` require governed roots -- model code,
+          model weights, a lawful voice profile, and an external evidence root --
+          whose locations are recorded under docs/governance/ and never in Git or
+          in a workflow file. Naming them here would put a governed path into a
+          public file and would let a scheduled run touch artifacts that
+          docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md keeps operator-controlled.
+
+          Run them by hand from scripts/qualification/README.md on this machine and
+          record the result under evidence/gates/ per evidence/README.md.
+          NOTE
