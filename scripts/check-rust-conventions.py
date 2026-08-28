@@ -16,6 +16,10 @@ anything reported either.
 Exits non-zero and prints one line per violation, in a format editors can jump
 to. Pass paths to check a subset; the default is every `.rs` file under
 `crates/`.
+
+Finding no `.rs` file is also a non-zero exit. A mistyped path, or a `crates/`
+that has moved, would otherwise report success for a run that checked nothing —
+the drift this script exists to stop, arriving through the script itself.
 """
 
 import pathlib
@@ -57,7 +61,7 @@ def doc_order_violations(path: pathlib.Path, lines: list[str]):
 
 
 def violations(path: pathlib.Path):
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     yield from doc_order_violations(path, lines)
     for number, line in enumerate(lines, 1):
         if len(line) > LINE_LIMIT:
@@ -78,6 +82,11 @@ def main(argv: list[str]) -> int:
         for root in roots
         for path in ([root] if root.is_file() else root.rglob("*.rs"))
     )
+    if not files:
+        searched = ", ".join(f"`{root}`" for root in roots)
+        print(f"no `.rs` file found under {searched}; nothing was checked")
+        return 1
+
     found = [message for path in files for message in violations(path)]
     for message in found:
         print(message)
