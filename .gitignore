@@ -5,7 +5,7 @@
 
 # Python worker environments and caches
 /.venv/
-/worker/.venv/
+/worker/.venv
 **/__pycache__/
 *.py[cod]
 *.pyd

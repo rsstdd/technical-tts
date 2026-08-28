@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "import_roots": ["worker/study_tts_worker"],
+  "inputs": [
+    "schemas/worker-protocol-v0.schema.json",
+    "worker/bundle-manifest.json",
+    "worker/launcher.json",
+    "worker/pyproject.toml",
+    "worker/requirements.lock",
+    "worker/study_tts_worker/__init__.py",
+    "worker/study_tts_worker/protocol.py",
+    "worker/study_tts_worker/worker.py"
+  ],
+  "python": {
+    "implementation": "cpython",
+    "version": "3.12.3",
+    "abi_tag": "cp312",
+    "platform_tag": "manylinux_2_39_x86_64"
+  }
+}

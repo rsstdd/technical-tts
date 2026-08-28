@@ -1,0 +1,5 @@
+{"method":"initialize","parameters":{"threads":1,"worker_bundle_hash":"0000000000000000000000000000000000000000000000000000000000000001"},"protocol_version":"e0.worker.0.1","request_id":"session-1"}
+{"method":"capabilities","protocol_version":"e0.worker.0.1","request_id":"session-2"}
+{"method":"synthesize","parameters":{"output":"segment.wav","seed":0,"style":"calm_explanatory","take":0,"text":"A cache stores reusable work.","voice":"synthetic-test-voice-v1"},"protocol_version":"e0.worker.0.1","request_id":"session-3"}
+{"active_request_id":"session-3","method":"cancel","protocol_version":"e0.worker.0.1","request_id":"session-4"}
+{"method":"shutdown","protocol_version":"e0.worker.0.1","request_id":"session-5"}

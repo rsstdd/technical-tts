@@ -5,27 +5,110 @@
 //! here instead of in lesson or planning types, and `&self` permits the E1
 //! executor to dispatch concurrent requests without changing this boundary.
 
-use std::{future::Future, path::Path, pin::Pin};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+    path::Path,
+    pin::Pin,
+};
 
 use study_tts_core::{
-    CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, CacheKey,
+    CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, CacheKey, DeterminismClass,
+    LanguageTag, Revision, SynthesisContext, VoiceConditioningHash, VoiceProfileHash,
+    WorkerBundleHash,
 };
 use thiserror::Error;
 
 /// Mirrors the executor version in the E0-S4 provisional contract baseline.
-pub const TTS_EXECUTOR_CONTRACT_VERSION: &str = "e0.tts-executor.0.1";
+///
+/// Raised to a major version by
+/// `docs/architecture/E1-S1-INTERFACE-CHANGE-001.md`:
+/// [`BackendDescriptor`] replaced one opaque `synthesis_identity` string with
+/// the ADR-0001 §12.5 inputs, which is a required-field change and therefore
+/// breaking under `ContractDescriptor::assess_successor`.
+pub const TTS_EXECUTOR_CONTRACT_VERSION: &str = "e1.tts-executor.1.0";
 
 /// Stable identity and supported request envelope of one backend.
+///
+/// Every field but `contract_version` and `max_text_bytes` is a
+/// speech-affecting input the backend contributes to each synthesis key. They
+/// are named separately rather than folded into one identity string so that a
+/// model upgrade, a tokenizer change, and a rebuilt worker are distinguishable
+/// in a manifest instead of all reading as "the backend changed".
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackendDescriptor {
     /// Executor contract version implemented by this backend.
     pub contract_version: String,
-    /// Speech-affecting backend identity included in every synthesis key.
-    pub synthesis_identity: String,
+    /// Identity of the executable worker bundle behind this backend.
+    pub worker_bundle_hash: WorkerBundleHash,
+    /// Model repository the backend loads from.
+    pub model_repository: String,
+    /// Pinned model revision.
+    ///
+    /// A [`Revision`] rather than a `String` because it reaches every cache key
+    /// this backend's audio is stored under, and "never a moving tag" is a
+    /// promise only a type can keep.
+    pub model_revision: Revision,
+    /// Tokenizer or codec revision the backend applies.
+    pub tokenizer_revision: Revision,
+    /// Languages this backend declares it speaks.
+    ///
+    /// A set rather than a list because declaring `en` twice says nothing more
+    /// than declaring it once, and because the order a backend happens to
+    /// enumerate its languages in is not part of what it supports.
+    ///
+    /// This is the boundary that answers "can this backend say these words".
+    /// [`LanguageTag`] answers only whether the tag is well formed; a
+    /// well-formed tag for a language the backend has no weights for is exactly
+    /// the request that must be refused before synthesis, not after.
+    pub languages: BTreeSet<LanguageTag>,
+    /// Whether a fixed seed is expected to reproduce bytes for this backend.
+    pub determinism_class: DeterminismClass,
+    /// Seed the backend samples with.
+    pub seed: u64,
+    /// Backend generation parameters, by name, in their configured spelling.
+    pub generation_parameters: BTreeMap<String, String>,
     /// Maximum UTF-8 bytes accepted as spoken text in one request.
     pub max_text_bytes: usize,
-    /// Whether a fixed seed is expected to be deterministic for this backend.
-    pub deterministic_seed: bool,
+}
+
+impl BackendDescriptor {
+    /// The synthesis context this backend contributes to every cache key.
+    ///
+    /// The lesson supplies its language and the voice gate supplies the
+    /// conditioning hashes, because neither is the backend's to decide; the
+    /// backend owns the rest.
+    pub fn synthesis_context(
+        &self,
+        language: LanguageTag,
+        voice_conditioning_hashes: BTreeMap<String, VoiceConditioningHash>,
+    ) -> SynthesisContext {
+        SynthesisContext {
+            worker_bundle_hash: self.worker_bundle_hash.clone(),
+            model_repository: self.model_repository.clone(),
+            model_revision: self.model_revision.clone(),
+            tokenizer_revision: self.tokenizer_revision.clone(),
+            language,
+            determinism_class: self.determinism_class,
+            seed: self.seed,
+            generation_parameters: self.generation_parameters.clone(),
+            voice_conditioning_hashes,
+        }
+    }
+
+    /// Whether this backend declares it speaks `language`.
+    ///
+    /// A declared primary subtag covers its regional forms — a backend
+    /// declaring `en` speaks `en-US` — but not the reverse: a backend that
+    /// declared only `en-US` has not claimed `en-GB`, and treating it as though
+    /// it had would ship the wrong accent under a key that says otherwise.
+    fn speaks(&self, language: &LanguageTag) -> bool {
+        self.languages.contains(language)
+            || self
+                .languages
+                .iter()
+                .any(|declared| declared.as_str() == language.primary())
+    }
 }
 
 /// Backend-owned synthesis inputs derived from one planned segment.
@@ -41,6 +124,22 @@ pub struct SynthesisRequest {
     pub voice: String,
     /// Delivery style selected by the plan.
     pub style: String,
+    /// Language the segment is to be spoken in.
+    ///
+    /// Carried on the request rather than left implicit in the backend's
+    /// configuration because it is a synthesis-key input (ADR-0001 §12.5):
+    /// without it, two lessons in two languages would send byte-identical
+    /// requests under two different keys, and the executor could not tell that
+    /// it was being asked for something it does not speak.
+    pub language: LanguageTag,
+    /// Take of this segment the plan selects.
+    ///
+    /// Carried rather than left implicit at the worker protocol's boundary,
+    /// which requires it on every `synthesize` frame, because it is a term of
+    /// `cache_key` itself: two takes of one segment differ in
+    /// nothing else, so an executor handed the key without the take is being
+    /// asked to reproduce a distinction it cannot see.
+    pub take: u32,
     /// Synthesis identity of the requested take.
     pub cache_key: CacheKey,
     /// Required output sample rate in hertz.
@@ -52,6 +151,11 @@ pub struct SynthesisRequest {
 }
 
 /// What an executor says it wrote, checked against the staged file itself.
+///
+/// Every field is a *claim* the cache verifies before publishing: the format
+/// fields against the WAV on disk, and [`SynthesisReport::context`] against the
+/// key the plan derived. An unverified report field would be a field that can
+/// disagree with the artifact it describes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SynthesisReport {
     /// Sample rate the executor claims for the file, in hertz.
@@ -61,11 +165,49 @@ pub struct SynthesisReport {
     /// Frame count the executor claims for the file.
     pub frames: u32,
     /// Backend revision that produced the audio.
+    ///
+    /// Diagnostic rather than an identity input: it names a build of the
+    /// backend for a human reading a manifest, and ADR-0001 §12.5 keys audio on
+    /// the model, tokenizer, and bundle identities in `context` instead.
     pub backend_revision: String,
-    /// Worker-bundle identity that produced the audio.
-    pub worker_bundle_hash: String,
-    /// Voice-profile identity that produced the audio.
-    pub voice_profile_hash: String,
+    /// The speech-affecting inputs the executor actually used.
+    ///
+    /// Reported as one value rather than as loose fields so the cache can
+    /// recompute the synthesis key from it and compare that against the key the
+    /// plan derived. Comparing a whole identity catches a field that a
+    /// field-by-field check would stop covering the moment somebody adds one.
+    pub context: SynthesisContext,
+    /// Voice-profile identity the executor loaded for this segment's speaker.
+    ///
+    /// Distinct from the conditioning hash inside `context`: that one is the
+    /// artifact the key is derived from, while this names the profile record
+    /// the worker resolved it through, which a reviewer needs to trace an
+    /// unexpected voice back to a consent record.
+    pub voice_profile_hash: VoiceProfileHash,
+}
+
+/// A descriptor with every identity input populated, for tests in this crate.
+///
+/// Lives beside the definition so a new backend-owned identity input has to be
+/// given a value here, rather than defaulting into every runtime test at once.
+#[cfg(test)]
+pub(crate) fn sample_descriptor() -> BackendDescriptor {
+    BackendDescriptor {
+        contract_version: TTS_EXECUTOR_CONTRACT_VERSION.to_owned(),
+        worker_bundle_hash: "1".repeat(64).parse().expect("a digest of ones parses"),
+        model_repository: "example/standard-chatterbox".to_owned(),
+        model_revision: "0123456789abcdef0123456789abcdef01234567"
+            .parse()
+            .expect("a hex revision parses"),
+        tokenizer_revision: "tokenizer-2026-01"
+            .parse()
+            .expect("a dated tokenizer revision parses"),
+        languages: BTreeSet::from(["en".parse().expect("`en` is a well-formed language tag")]),
+        determinism_class: DeterminismClass::SeededNondeterministic,
+        seed: 42,
+        generation_parameters: BTreeMap::from([("cfg_weight".to_owned(), "0.5".to_owned())]),
+        max_text_bytes: 4096,
+    }
 }
 
 /// A request invariant the executor can reject before synthesis begins.
@@ -88,6 +230,23 @@ pub enum BackendValidationError {
     /// Segment IDs are required for diagnostics and containment.
     #[error("synthesis segment ID is empty")]
     EmptySegmentId,
+    /// The backend does not declare the requested language.
+    ///
+    /// Refused before synthesis rather than after: a backend with no weights
+    /// for a language does not fail, it produces confident nonsense, and that
+    /// nonsense would be published under a key that names the language it does
+    /// not speak.
+    #[error(
+        "executor does not speak `{requested}`; it declares {supported}, and the lesson owner \
+         must set the lesson language to one of those or select a backend that speaks the \
+         authored language"
+    )]
+    UnsupportedLanguage {
+        /// Language the request asks for.
+        requested: LanguageTag,
+        /// Languages the backend declares, rendered for the message above.
+        supported: String,
+    },
     /// Spoken text exceeded the backend-declared request envelope.
     #[error("spoken text is {found} bytes but the executor accepts at most {maximum}")]
     TextTooLarge {
@@ -200,6 +359,7 @@ pub trait TtsExecutor: Send + Sync {
 /// [`BackendValidationError::ZeroCapacity`],
 /// [`BackendValidationError::EmptyRequestId`],
 /// [`BackendValidationError::EmptySegmentId`],
+/// [`BackendValidationError::UnsupportedLanguage`],
 /// [`BackendValidationError::TextTooLarge`], or
 /// [`BackendValidationError::NonCanonicalFormat`] when the named invariant
 /// does not hold.
@@ -223,6 +383,12 @@ pub fn validate_executor_request(
     if request.segment_id.is_empty() {
         return Err(BackendValidationError::EmptySegmentId);
     }
+    if !descriptor.speaks(&request.language) {
+        return Err(BackendValidationError::UnsupportedLanguage {
+            requested: request.language.clone(),
+            supported: render_languages(&descriptor.languages),
+        });
+    }
     if request.spoken_text.len() > descriptor.max_text_bytes {
         return Err(BackendValidationError::TextTooLarge {
             found: request.spoken_text.len(),
@@ -240,4 +406,20 @@ pub fn validate_executor_request(
         });
     }
     Ok(())
+}
+
+/// Renders declared languages for a refusal message.
+///
+/// A backend that declares none is worth saying out loud: the message would
+/// otherwise read as an empty list and leave the reader guessing whether the
+/// field was omitted or the backend really speaks nothing.
+fn render_languages(languages: &BTreeSet<LanguageTag>) -> String {
+    if languages.is_empty() {
+        return "no languages at all".to_owned();
+    }
+    languages
+        .iter()
+        .map(LanguageTag::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
 }

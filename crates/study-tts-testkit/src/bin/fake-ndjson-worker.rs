@@ -100,7 +100,7 @@ fn respond(
                 ("backend_revision".to_owned(), "fake-backend-v1".to_owned()),
                 (
                     "worker_bundle_hash".to_owned(),
-                    parameters.worker_bundle_hash,
+                    parameters.worker_bundle_hash.to_string(),
                 ),
             ]),
         }),
@@ -140,10 +140,8 @@ fn respond(
                 frames: FAKE_FRAMES,
                 model_revision: "fake-model-v1".to_owned(),
                 codec_revision: "fake-codec-v1".to_owned(),
-                worker_bundle_hash: blake3::hash(b"fake-worker-bundle").to_hex().to_string(),
-                voice_profile_hash: blake3::hash(parameters.voice.as_bytes())
-                    .to_hex()
-                    .to_string(),
+                worker_bundle_hash: blake3::hash(b"fake-worker-bundle").into(),
+                voice_profile_hash: blake3::hash(parameters.voice.as_bytes()).into(),
             })
         }
         WorkerRequestFrame::Cancel {

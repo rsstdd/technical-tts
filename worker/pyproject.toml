@@ -1,0 +1,31 @@
+# Production worker package.
+#
+# ADR-0001 §7.1 places the Python worker beside the Rust workspace rather than
+# inside it: the worker is replaceable (§10.4), and a boundary that is a
+# directory is harder to erode than a boundary that is a convention.
+#
+# Dependencies are pinned exactly, never by range. ADR-0001 §12.5 makes the
+# production lockfile a synthesis-key input, so a range would let the audio a
+# key names change without the key changing. `requirements.lock` is the
+# resolved set; the procedure that produces it is
+# `docs/operations/WORKER-ENVIRONMENT.md`.
+
+[project]
+name = "study-tts-worker"
+version = "0.1.0"
+description = "Persistent NDJSON speech worker for technical-tts"
+requires-python = "==3.12.*"
+dependencies = [
+  "chatterbox-tts==0.1.2",
+  "torch==2.6.0+cpu",
+  "torchaudio==2.6.0+cpu",
+  "numpy==2.5.2",
+  "soundfile==0.14.0",
+]
+
+[build-system]
+requires = ["setuptools==78.1.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["study_tts_worker"]

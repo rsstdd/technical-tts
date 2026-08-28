@@ -66,10 +66,11 @@ flowchart LR
 ## Provisional resource ceilings
 
 E0-S0 refuses unbounded authored input and FFmpeg-family execution within the
-fixed envelope below. These values are security ceilings, not measured
-performance budgets or backend segmentation limits. They remain fixed until a
-configuration milestone owns them; this does not move or redefine the
-configurable worker supervision assigned to E5.
+fixed envelope below, and E1-S1 extended it to the inputs its own boundaries
+read. These values are security ceilings, not measured performance budgets or
+backend segmentation limits. They remain fixed until a configuration milestone
+owns them; this does not move or redefine the configurable worker supervision
+assigned to E5.
 
 | Resource | Provisional ceiling |
 | --- | ---: |
@@ -85,6 +86,12 @@ configurable worker supervision assigned to E5.
 | FFmpeg encode deadline | 30 minutes |
 | Captured stdout per tool execution | 1 MiB |
 | Captured stderr per tool execution | 1 MiB |
+| Canonical takes JSON | 8 MiB UTF-8 bytes |
+| Selections per takes document | 4,096 |
+| One language tag | 64 UTF-8 bytes |
+| One declared worker-bundle input | 8 MiB |
+| Worker frame JSON nesting | 32 levels |
+| One numeric literal in a worker frame | 32 characters |
 
 The lesson values mirror the constants in
 `crates/study-tts-core/src/lesson.rs`; its public
@@ -97,6 +104,30 @@ file that grows after preflight remains bounded. Oversized input returns
 `LessonError::LessonJsonTooLarge`; a special file returns
 `IoError::LessonNotRegularFile`. Both refusals precede planning, tool
 inspection, workspace creation, and synthesis.
+
+The two worker-frame values mirror `MAX_JSON_NESTING_DEPTH` and
+`MAX_JSON_NUMBER_DIGITS` in `worker/study_tts_worker/protocol.py`, which name
+this section in return. Both bound what one frame can do to the *Python*
+process, which the frame byte ceiling above does not: `MAX_WORKER_FRAME_BYTES`
+bounds a frame's breadth, and neither depth nor numeric length is breadth. A few
+kilobytes of `[[[[` exhausts the C stack `json` recurses on, and a five-thousand
+digit integer inside a five-kilobyte frame reaches CPython's quadratic
+decimal-to-`int` conversion. Before these ceilings each of those left the parse
+by a path the worker's refusal handler does not catch, so a bounded frame ended
+the process instead of drawing a failure frame — and took every queued request
+with it. The deepest shape the protocol defines is four levels, and every number
+in it is a thread count, a seed, or a take.
+
+The three other E1-S1 values mirror `MAX_TAKES_JSON_BYTES` in
+`crates/study-tts-core/src/takes.rs`, `MAX_LANGUAGE_TAG_BYTES` in
+`crates/study-tts-core/src/language.rs`, and `MAX_BUNDLE_INPUT_BYTES` in
+`crates/study-tts-runtime/src/worker_bundle.rs`; each constant names this
+section in return. The takes and bundle readers refuse on length before
+handing any bytes to a parser, in the shape `MAX_LESSON_JSON_BYTES` established
+above. The language ceiling is not a parser bound but a stacking bound: RFC
+5646's grammar already limits each subtag to eight characters and leaves the
+number of variant subtags open, so this is what stops an authored tag carrying
+arbitrary bytes into every cache key in the lesson.
 
 The tool values mirror `TOOL_OUTPUT_LIMIT_BYTES`, `VERSION_PROBE_POLICY`,
 `FFPROBE_POLICY`, and `FFMPEG_ENCODE_POLICY` in
@@ -144,6 +175,17 @@ names:
   `t4_e0_successful_child_terminates_and_reaps_lingering_descendants`.
 - Escaped pipe-holder containment:
   `t4_e0_timeout_terminates_escaped_descendant_retaining_capture_pipes`.
+- Takes JSON boundary and parse ordering:
+  `t1_e1_takes_json_byte_limit_accepts_the_boundary_and_precedes_parsing`.
+- Language-tag byte boundary:
+  `t1_e1_tags_outside_the_accepted_grammar_are_refused`.
+- Declared worker-bundle input boundary:
+  `t1_e1_a_declared_bundle_input_past_the_byte_ceiling_is_refused`.
+- Worker-frame nesting and numeric-literal boundaries, and that the process
+  survives both to answer the next frame:
+  `HostileFrameTests.test_the_worker_answers_the_frame_after_a_hostile_one` in
+  `worker/tests/test_worker.py`, run by `.github/workflows/ci.yml` as
+  `python3 -m unittest discover --start-directory worker/tests`.
 
 The process-executing T4 tests are intentionally colocated in
 `crates/study-tts-runtime/src/process.rs` because their injected short policy
@@ -152,9 +194,13 @@ them to `study-tts-testkit` would widen production visibility solely for the
 test harness; the tests still exercise real filesystem and `/bin/sh` process
 boundaries and retain their T4 names and budget.
 
-The word provisional is material. The fixture uses `schema_version: 0.1-skeleton`; lock, journal, and selection records use distinct internal `0.1-skeleton-*` versions with unknown-field rejection. None can be mistaken for the complete lesson, job, manifest, or publication schemas accepted in ADR-0001. Later stories may version or replace these contracts, but they must preserve this test path or update it in the same change so the end-to-end integration order remains executable.
+The word provisional is material. Lock, journal, and selection records use distinct internal `0.1-skeleton-*` versions with unknown-field rejection, and none can be mistaken for the complete job, manifest, or publication schemas accepted in ADR-0001. Later stories may version or replace these contracts, but they must preserve this test path or update it in the same change so the end-to-end integration order remains executable.
+
+The lesson fixture is no longer among them. E1-S1 published the lesson schema at `schemas/lesson-v1.schema.json` and moved the fixture to `1.1`, so `0.1-skeleton` is now refused as a malformed version rather than accepted as an old one; [`E1-S1-INTERFACE-CHANGE-001.md`](E1-S1-INTERFACE-CHANGE-001.md) records why the increment was a major followed by a minor.
 
 New minimal preview manifests use `0.2-skeleton`, which requires normalized tool argument-profile identities. Reconciliation still accepts strict legacy `0.1-skeleton` manifests without those fields, but cannot reuse them as a matching tool-profile generation.
+
+Both layouts are `LEGACY_MANIFEST_LAYOUT_VERSION` and `CURRENT_MANIFEST_LAYOUT_VERSION` in `crates/study-tts-runtime/src/manifest.rs`, which names this paragraph in return; `parse_stored_manifest` dispatches on them and refuses every other string. Only `0.2-skeleton` is published as `schemas/manifest-v0.schema.json`: that schema is generated from the current stored shape, and the legacy layout carries a different `tools` shape it would describe wrongly. The omission is deliberate rather than incidental, and `t3_e1_the_published_manifest_schema_names_every_layout_it_describes` is what keeps it so — a third accepted layout fails that test until somebody decides whether the published schema describes it.
 
 Before G1, the provisional flat `BuildError` was intentionally replaced by
 transparent category variants with exact leaf refusals beneath them. This was a

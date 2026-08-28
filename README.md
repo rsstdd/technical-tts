@@ -202,6 +202,11 @@ technical-tts/
 │   ├── study-tts-runtime/
 │   └── study-tts-testkit/
 ├── worker/
+│   ├── bundle-manifest.json
+│   ├── launcher.json
+│   ├── pyproject.toml
+│   ├── requirements.lock
+│   └── study_tts_worker/
 ├── schemas/
 ├── fixtures/
 ├── docs/
@@ -213,7 +218,11 @@ technical-tts/
 - `study-tts-core` will own lesson types, normalization, planning, and cache identities without depending on Python, FFmpeg, or a model SDK.
 - `study-tts-runtime` will own filesystem state, worker processes, ASR, PCM handling, recovery, and FFmpeg adapters.
 - `study-tts-testkit` will provide the fake worker, deterministic audio, fixtures, and fault injection.
-- `worker` will contain one production Chatterbox adapter and its locked Python environment.
+- `worker` contains the persistent NDJSON worker package, its locked Python environment, and the
+  bundle manifest that declares which of its files are synthesis-key inputs. The Chatterbox backend
+  itself lands in E1-S3; this build refuses `synthesize` rather than returning placeholder audio.
+- `schemas` contains the seven versioned JSON Schemas, generated from the Rust types that define
+  each format by `cargo run --package study-tts-runtime --example generate-schemas`.
 - `data` will contain local runtime artifacts and will not be committed.
 
 ## Delivery roadmap

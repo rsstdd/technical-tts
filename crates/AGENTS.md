@@ -37,7 +37,7 @@ The root `AGENTS.md` governs the whole repository; this file adds the rules and 
 | Canonical bytes every identity is hashed from | `study-tts-core/src/canonical.rs` |
 | Synthesis-key inputs and worker-bundle identity type | `study-tts-core/src/identity.rs` |
 | Verification-key inputs, kept separate from synthesis | `study-tts-core/src/verification.rs` |
-| Worker bundle manifest, import closure, and hashing | `docs/operations/WORKER-ENVIRONMENT.md` ↔ `study-tts-runtime/src/worker_bundle.rs` (must agree) |
+| Worker bundle manifest, import-root declaration, and hashing | `docs/operations/WORKER-ENVIRONMENT.md` ↔ `study-tts-runtime/src/worker_bundle.rs` (must agree) |
 | Published JSON Schema catalogue and generation | `study-tts-runtime/src/schemas.rs` ↔ `schemas/` |
 | Release status and gate identifiers | `study-tts-core/src/release.rs` |
 | Pipeline orchestration (build, validate, publish) | `study-tts-runtime/src/pipeline.rs` |

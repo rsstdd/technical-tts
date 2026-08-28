@@ -9,7 +9,7 @@
 use std::{collections::BTreeMap, path::Path};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use study_tts_core::{CacheKey, PlanHash, ReleaseStatus, is_blake3_hex};
+use study_tts_core::{AudioDigest, CacheKey, PlanHash, ReleaseStatus, ToolProfileHash};
 
 use crate::{
     BuildError, DurableStateError,
@@ -19,13 +19,24 @@ use crate::{
     tools::ToolIdentity,
 };
 
-/// Layout version of `manifest.json`.
+/// The `schema_version` a `manifest.json` this build writes carries.
 ///
-/// Independent of `CACHE_SCHEMA_VERSION` and the lesson schema: each versions
-/// a different document and moves separately. E1-S1 replaces all three with
-/// versioned JSON Schemas.
-const LEGACY_MANIFEST_SCHEMA_VERSION: &str = "0.1-skeleton";
-const MANIFEST_SCHEMA_VERSION: &str = "0.2-skeleton";
+/// Independent of `CACHE_SCHEMA_VERSION` and the lesson schema: each versions a
+/// different document and moves separately. `manifest-v0.schema.json` describes
+/// this layout and only this one, because that schema is generated from the one
+/// stored Rust shape.
+///
+/// `docs/architecture/WALKING-SKELETON.md` names both constants in its
+/// provisional package-manifest paragraph, and records why reconciliation still
+/// reads the legacy layout and why only the current one is published.
+const CURRENT_MANIFEST_LAYOUT_VERSION: &str = "0.2-skeleton";
+
+/// The `schema_version` of the E0 walking-skeleton layout.
+///
+/// Written before tool argument profiles were recorded. Read so an existing
+/// package can be reconciled; never written, and never reusable as a matching
+/// tool-profile generation.
+const LEGACY_MANIFEST_LAYOUT_VERSION: &str = "0.1-skeleton";
 
 /// Name of the assembled master inside a preview directory.
 ///
@@ -94,7 +105,7 @@ struct ToolUse<'a> {
     resolved_executable: String,
     version: &'a str,
     arguments: &'a [String],
-    argument_profile_blake3: &'a str,
+    argument_profile_blake3: &'a ToolProfileHash,
 }
 
 /// The two external tools a build used, as the manifest must record them.
@@ -158,7 +169,7 @@ pub(crate) fn write(
     records: ManifestRecords<'_>,
 ) -> Result<(), BuildError> {
     let manifest = Manifest {
-        schema_version: MANIFEST_SCHEMA_VERSION,
+        schema_version: CURRENT_MANIFEST_LAYOUT_VERSION,
         // The typed value, not a hand-written spelling of it. A literal here
         // would keep whatever it said if `ReleaseStatus` were ever respelled,
         // and this field is what `validate_production_manifest` gates on.
@@ -214,44 +225,76 @@ pub(crate) fn write(
     write_json_atomically(filesystem, destination, &manifest)
 }
 
+/// Publishes the one layout `manifest-v0.schema.json` describes.
+///
+/// [`validate_package`] also reads [`LEGACY_MANIFEST_LAYOUT_VERSION`], and that
+/// is deliberately not listed: the legacy layout carries a different `tools`
+/// shape, and this schema is generated from the current one. A schema admitting
+/// a version whose other fields it describes wrongly is worse than one that
+/// admits fewer, and the legacy layout is read to be migrated rather than
+/// authored against.
+///
+/// `t3_e1_the_published_manifest_schema_names_every_layout_it_describes` holds
+/// this function and [`parse_stored_manifest`] together — so a layout added to
+/// the parser cannot leave this schema quietly describing another one.
+fn schema_version_json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "const": CURRENT_MANIFEST_LAYOUT_VERSION,
+    })
+}
+
+/// The published schema of the manifest this build writes and reads back.
+///
+/// Derived from the *stored* shape rather than the borrowed writing shape,
+/// because the stored shape is the parse boundary: it is what
+/// `deny_unknown_fields` guards, and a schema that described the writer would
+/// describe what this build happens to emit rather than what it will accept.
+pub(crate) fn current_manifest_schema() -> serde_json::Value {
+    serde_json::Value::from(schemars::schema_for!(
+        StoredManifest<StoredTools<CurrentStoredToolUse>>
+    ))
+}
+
 /// Strict owned shape used when an immutable package is reconciled or reused.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 struct StoredManifest<T> {
+    #[schemars(schema_with = "schema_version_json_schema")]
     schema_version: String,
     release_status: ReleaseStatus,
     lesson_id: String,
-    plan_hash: String,
+    plan_hash: PlanHash,
     segments: Vec<StoredManifestSegment>,
     artifacts: StoredArtifacts,
     tools: T,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 struct StoredManifestSegment {
     segment_id: String,
     cache_key: CacheKey,
-    audio_blake3: String,
+    audio_blake3: AudioDigest,
     frames: u32,
     pause_after_ms: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 struct StoredArtifacts {
     master_wav: StoredArtifact,
     m4a: StoredArtifact,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 struct StoredArtifact {
     path: String,
-    blake3: String,
+    blake3: AudioDigest,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 struct StoredTools<T> {
     ffmpeg: T,
@@ -263,16 +306,16 @@ struct StoredToolUse {
     resolved_executable: String,
     version: String,
     arguments: Vec<String>,
-    argument_profile_blake3: Option<String>,
+    argument_profile_blake3: Option<ToolProfileHash>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 struct CurrentStoredToolUse {
     resolved_executable: String,
     version: String,
     arguments: Vec<String>,
-    argument_profile_blake3: String,
+    argument_profile_blake3: ToolProfileHash,
 }
 
 #[derive(Debug, Deserialize)]
@@ -281,7 +324,7 @@ struct LegacyStoredToolUse {
     resolved_executable: String,
     version: String,
     arguments: Vec<String>,
-    argument_profile_blake3: Option<String>,
+    argument_profile_blake3: Option<ToolProfileHash>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -365,24 +408,7 @@ pub(crate) fn validate_package(
     let bytes =
         std::fs::read(&manifest_path).map_err(|error| crate::io_error(&manifest_path, error))?;
     let version: StoredManifestVersion = parse_manifest(&bytes, &manifest_path)?;
-    let manifest = match version.schema_version.as_str() {
-        LEGACY_MANIFEST_SCHEMA_VERSION => parse_manifest::<
-            StoredManifest<StoredTools<LegacyStoredToolUse>>,
-        >(&bytes, &manifest_path)?
-        .map_tools(StoredTools::from),
-        MANIFEST_SCHEMA_VERSION => parse_manifest::<
-            StoredManifest<StoredTools<CurrentStoredToolUse>>,
-        >(&bytes, &manifest_path)?
-        .map_tools(StoredTools::from),
-        _ => {
-            return Err(DurableStateError::UnsupportedPackageManifest {
-                path: manifest_path,
-                found: version.schema_version,
-                required: MANIFEST_SCHEMA_VERSION,
-            }
-            .into());
-        }
-    };
+    let manifest = parse_stored_manifest(&bytes, &manifest_path, &version.schema_version)?;
     if manifest.release_status != ReleaseStatus::PrivatePreview {
         return Err(DurableStateError::PackageReleaseStatusMismatch {
             path: manifest_path,
@@ -398,24 +424,15 @@ pub(crate) fn validate_package(
         }
         .into());
     }
-    if !is_blake3_hex(&manifest.plan_hash) {
-        return Err(DurableStateError::MalformedPackagePlanHash {
-            path: manifest_path,
-            value: manifest.plan_hash,
-        }
-        .into());
-    }
+    // No digest is checked by hand below. `plan_hash`, `audio_blake3`, each
+    // artifact's `blake3`, and each tool's `argument_profile_blake3` are value
+    // objects, so a malformed one was refused by the parse above and carries
+    // that type's own remedy routing. What remains here is what a type cannot
+    // say: a field that is well formed and still wrong for this package.
     for segment in &manifest.segments {
         if segment.segment_id.is_empty() {
             return Err(DurableStateError::EmptyPackageSegmentId {
                 path: manifest_path,
-            }
-            .into());
-        }
-        if !is_blake3_hex(&segment.audio_blake3) {
-            return Err(DurableStateError::MalformedPackageSegmentChecksum {
-                path: manifest_path,
-                value: segment.audio_blake3.clone(),
             }
             .into());
         }
@@ -426,7 +443,15 @@ pub(crate) fn validate_package(
             }
             .into());
         }
-        let _ = (&segment.cache_key, segment.pause_after_ms);
+        // Read so the compiler agrees the fields are part of the shape this
+        // build accepts. `cache_key` and `audio_blake3` are value objects and
+        // `pause_after_ms` is bounded by its width, so the parse already said
+        // everything there is to say about all three.
+        let _ = (
+            &segment.cache_key,
+            &segment.audio_blake3,
+            segment.pause_after_ms,
+        );
     }
     validate_artifact(
         package_dir,
@@ -443,7 +468,7 @@ pub(crate) fn validate_package(
     validate_tool_record(&manifest_path, "FFmpeg", &manifest.tools.ffmpeg)?;
     validate_tool_record(&manifest_path, "ffprobe", &manifest.tools.ffprobe)?;
 
-    let plan_matches = plan_hash.is_none_or(|expected| manifest.plan_hash == expected);
+    let plan_matches = plan_hash.is_none_or(|expected| manifest.plan_hash.as_str() == expected);
     let tools_match = tools.is_none_or(|expected| {
         tool_matches(
             &manifest.tools.ffmpeg,
@@ -456,6 +481,34 @@ pub(crate) fn validate_package(
         )
     });
     Ok(plan_matches && tools_match)
+}
+
+/// Decodes a stored manifest under the layout its `schema_version` names.
+///
+/// Fail-closed for every other string, including a future layout: a manifest
+/// this build cannot describe is refused rather than read under the nearest
+/// shape it happens to know.
+fn parse_stored_manifest(
+    bytes: &[u8],
+    manifest_path: &Path,
+    version: &str,
+) -> Result<StoredManifest<StoredTools<StoredToolUse>>, BuildError> {
+    match version {
+        LEGACY_MANIFEST_LAYOUT_VERSION => Ok(parse_manifest::<
+            StoredManifest<StoredTools<LegacyStoredToolUse>>,
+        >(bytes, manifest_path)?
+        .map_tools(StoredTools::from)),
+        CURRENT_MANIFEST_LAYOUT_VERSION => Ok(parse_manifest::<
+            StoredManifest<StoredTools<CurrentStoredToolUse>>,
+        >(bytes, manifest_path)?
+        .map_tools(StoredTools::from)),
+        found => Err(DurableStateError::UnsupportedPackageManifest {
+            path: manifest_path.to_path_buf(),
+            found: found.to_owned(),
+            required: CURRENT_MANIFEST_LAYOUT_VERSION,
+        }
+        .into()),
+    }
 }
 
 fn parse_manifest<T: DeserializeOwned>(
@@ -485,20 +538,12 @@ fn validate_artifact(
         }
         .into());
     }
-    if !is_blake3_hex(&artifact.blake3) {
-        return Err(DurableStateError::MalformedPackageArtifactChecksum {
-            manifest: manifest_path.to_path_buf(),
-            artifact: required_name,
-            value: artifact.blake3.clone(),
-        }
-        .into());
-    }
     let path = package_dir.join(required_name);
     let found = hash_file(&path)?;
-    if found != artifact.blake3 {
+    if found != artifact.blake3.as_str() {
         return Err(DurableStateError::PackageArtifactChecksumMismatch {
             path,
-            expected: artifact.blake3.clone(),
+            expected: artifact.blake3.as_str().to_owned(),
             found,
         }
         .into());
@@ -518,23 +563,13 @@ fn validate_tool_record(
         }
         .into());
     }
-    if let Some(profile) = &recorded.argument_profile_blake3
-        && !is_blake3_hex(profile)
-    {
-        return Err(DurableStateError::MalformedPackageToolProfile {
-            path: path.to_path_buf(),
-            tool,
-            value: profile.clone(),
-        }
-        .into());
-    }
     Ok(())
 }
 
 fn tool_matches(recorded: &StoredToolUse, expected: &ToolIdentity, profile: &ToolProfile) -> bool {
     recorded.resolved_executable == expected.resolved_executable.display().to_string()
         && recorded.version == expected.version
-        && recorded.argument_profile_blake3.as_deref() == Some(profile.identity())
+        && recorded.argument_profile_blake3.as_ref() == Some(profile.identity())
 }
 
 #[cfg(test)]
@@ -636,12 +671,79 @@ mod tests {
         });
     }
 
+    /// The published schema and the parser agree on which layouts exist.
+    ///
+    /// The gap this closes is not that the legacy layout is unpublished — that
+    /// is deliberate, and `schema_version_json_schema` says why. It is that
+    /// nothing held the two facts together: `validate_package` read two
+    /// layouts while `manifest-v0.schema.json` described one, and a third
+    /// layout could have been added to the parser leaving the schema silently
+    /// describing a shrinking fraction of what this build accepts.
+    ///
+    /// An empty object is enough to tell the two refusals apart, and that is
+    /// the whole trick: a known layout reaches a decoder and is refused for its
+    /// *shape*, while an unread one is refused for its version before any byte
+    /// is decoded. What each decoder then accepts is proved by the legacy and
+    /// current package tests above, which read real packages.
+    #[test]
+    fn t3_e1_the_published_manifest_schema_names_every_layout_it_describes() {
+        let schema = current_manifest_schema();
+        let published = schema["properties"]["schema_version"]["const"]
+            .as_str()
+            .expect("the published manifest schema pins `schema_version` to one string");
+
+        assert_eq!(
+            published, CURRENT_MANIFEST_LAYOUT_VERSION,
+            "the schema must publish the layout this build writes"
+        );
+
+        let path = Path::new("manifest.json");
+        for known in [
+            LEGACY_MANIFEST_LAYOUT_VERSION,
+            CURRENT_MANIFEST_LAYOUT_VERSION,
+        ] {
+            let error = parse_stored_manifest(b"{}", path, known)
+                .expect_err("an empty object is not a manifest of any layout");
+
+            assert!(
+                matches!(
+                    error,
+                    BuildError::DurableState(ref error)
+                        if matches!(
+                            error.as_ref(),
+                            DurableStateError::MalformedPackageManifest { .. }
+                        )
+                ),
+                "`{known}` must reach a decoder rather than be refused as an unread layout: \
+                 {error:?}"
+            );
+        }
+
+        let error = parse_stored_manifest(b"{}", path, "0.3-skeleton")
+            .expect_err("an unread layout must be refused rather than decoded");
+
+        assert!(
+            matches!(
+                error,
+                BuildError::DurableState(ref error)
+                    if matches!(
+                        error.as_ref(),
+                        DurableStateError::UnsupportedPackageManifest { found, required, .. }
+                            if found == "0.3-skeleton"
+                                && *required == CURRENT_MANIFEST_LAYOUT_VERSION
+                    )
+            ),
+            "an unread layout must be refused by its version, naming the one this build \
+             writes: {error:?}"
+        );
+    }
+
     #[test]
     fn t4_e0_legacy_package_manifest_without_tool_profiles_remains_valid() {
         let workspace = TempDir::new().expect("create manifest workspace");
         let package = workspace.path().join("package");
         write_test_package(&package);
-        remove_tool_profiles(&package, LEGACY_MANIFEST_SCHEMA_VERSION);
+        remove_tool_profiles(&package, LEGACY_MANIFEST_LAYOUT_VERSION);
 
         assert!(
             validate_package(&package, "lesson", None, None)
@@ -672,7 +774,7 @@ mod tests {
         let package = workspace.path().join("package");
         write_test_package(&package);
         rewrite_test_manifest(&package, |manifest| {
-            manifest["schema_version"] = Value::String(LEGACY_MANIFEST_SCHEMA_VERSION.to_owned());
+            manifest["schema_version"] = Value::String(LEGACY_MANIFEST_LAYOUT_VERSION.to_owned());
         });
         let (ffmpeg, ffprobe) = test_tool_identities();
         let profiles = export::export_profiles();
@@ -698,7 +800,7 @@ mod tests {
         let workspace = TempDir::new().expect("create manifest workspace");
         let package = workspace.path().join("package");
         write_test_package(&package);
-        remove_tool_profiles(&package, MANIFEST_SCHEMA_VERSION);
+        remove_tool_profiles(&package, CURRENT_MANIFEST_LAYOUT_VERSION);
 
         let error = validate_package(&package, "lesson", None, None)
             .expect_err("current package must require tool profiles");

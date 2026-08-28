@@ -1,13 +1,17 @@
 {
-  "schema_version": "0.1-skeleton",
+  "$schema": "https://schemas.study-tts.example/lesson-v1.schema.json",
+  "schema_version": "1.1",
   "lesson_id": "e0-s0-cache-identity",
   "title": "Cache Identity",
+  "language": "en",
   "segments": [
     {
       "id": "seg-a",
       "speaker": "nadia",
       "role": "explanation",
-      "source_refs": ["block-001"],
+      "source_refs": [
+        "block-001"
+      ],
       "display_text": "Same speech.",
       "spoken_text": "Same speech.",
       "style": "calm",
@@ -18,7 +22,9 @@
       "id": "seg-b",
       "speaker": "nadia",
       "role": "recap",
-      "source_refs": ["block-002"],
+      "source_refs": [
+        "block-002"
+      ],
       "display_text": "Same speech.",
       "spoken_text": "Same speech.",
       "style": "calm",
@@ -29,7 +35,9 @@
       "id": "seg-c",
       "speaker": "nadia",
       "role": "explanation",
-      "source_refs": ["block-003"],
+      "source_refs": [
+        "block-003"
+      ],
       "display_text": "Same speech!",
       "spoken_text": "Same speech!",
       "style": "calm",
@@ -40,7 +48,9 @@
       "id": "seg-d",
       "speaker": "nadia",
       "role": "explanation",
-      "source_refs": ["block-004"],
+      "source_refs": [
+        "block-004"
+      ],
       "display_text": "Same speech.",
       "spoken_text": "Same speech.",
       "style": "emphatic",
@@ -51,7 +61,9 @@
       "id": "seg-e",
       "speaker": "nadia",
       "role": "example",
-      "source_refs": ["block-005"],
+      "source_refs": [
+        "block-005"
+      ],
       "display_text": "Display-only wording is different.",
       "spoken_text": "Same speech.",
       "style": "calm",
@@ -62,7 +74,9 @@
       "id": "seg-f",
       "speaker": "tom",
       "role": "explanation",
-      "source_refs": ["block-006"],
+      "source_refs": [
+        "block-006"
+      ],
       "display_text": "Same speech.",
       "spoken_text": "Same speech.",
       "style": "calm",

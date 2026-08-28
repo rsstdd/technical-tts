@@ -12,6 +12,7 @@
 //! private to this crate.
 
 use std::{
+    collections::BTreeMap,
     fs,
     io::{self, Read},
     path::{Path, PathBuf},
@@ -20,7 +21,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use study_tts_core::{
     CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE,
-    CacheKey, PlannedSegment, is_blake3_hex,
+    CacheKey, DeterminismClass, LanguageTag, PlannedSegment, Revision, SynthesisContext,
+    VoiceConditioningHash, VoiceProfileHash, WorkerBundleHash, is_blake3_hex,
 };
 use tempfile::Builder;
 
@@ -33,13 +35,15 @@ use crate::{
     io_error, locking, managed,
 };
 
-/// Layout version this module accepts for a cache artifact.
-///
-/// Independent of the lesson and manifest schema versions despite sharing a
-/// value today: each versions a different document and moves separately. An
-/// artifact declaring anything else is refused rather than read on the guess
-/// that the layout did not change.
-const CACHE_SCHEMA_VERSION: &str = "0.1-skeleton";
+// Layout version this module accepts for a cache artifact, imported rather
+// than declared because ADR-0001 §12.5 also makes it a synthesis-key input:
+// `study-tts-core/src/identity.rs` owns it so a change invalidates reuse
+// through the key as well as through the check below, and that module names
+// this file in return. Independent of the lesson and manifest schema versions
+// despite sharing a value today; each versions a different document and moves
+// separately. An artifact declaring anything else is refused rather than read
+// on the guess that the layout did not change.
+use study_tts_core::CACHE_SCHEMA_VERSION;
 
 /// Bytes held in memory at once while hashing a file.
 ///
@@ -149,6 +153,70 @@ struct CacheArtifact {
     channels: u16,
     sample_format: String,
     frames: u32,
+    provenance: ArtifactProvenance,
+}
+
+/// The identities the worker reported for the audio beside this record.
+///
+/// ADR-0001 §12.5 derives the cache key from exactly these inputs, so recording
+/// them is not a duplicate of the key: the key is a digest that can only answer
+/// "same or different", while this answers *which* input differs when a
+/// reviewer or a later build has to explain an entry. It is written only after
+/// [`synthesize_transaction`] has proved that these values recompute to the key
+/// the entry is published under, so the record cannot describe other audio.
+///
+/// `deny_unknown_fields` for the reason [`CacheArtifact`] has it: a field this
+/// build cannot check is a field it must not silently accept.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+struct ArtifactProvenance {
+    worker_bundle_hash: WorkerBundleHash,
+    model_repository: String,
+    model_revision: Revision,
+    tokenizer_revision: Revision,
+    language: LanguageTag,
+    determinism_class: DeterminismClass,
+    seed: u64,
+    generation_parameters: BTreeMap<String, String>,
+    /// Voice-conditioning artifact for this segment's speaker, absent until
+    /// E1-S2 resolves voice references.
+    voice_conditioning_hash: Option<VoiceConditioningHash>,
+    /// Voice-profile record the worker resolved that artifact through.
+    voice_profile_hash: VoiceProfileHash,
+    /// Backend build that produced the audio; diagnostic, not an identity
+    /// input.
+    backend_revision: String,
+}
+
+impl ArtifactProvenance {
+    /// Rebuilds the synthesis context this record claims was used.
+    ///
+    /// `speaker` is the segment's, because the record keeps one
+    /// voice-conditioning hash — the one for the speaker of the segment it
+    /// describes — while a [`SynthesisContext`] carries a map. Rebuilding the
+    /// map with that single entry reproduces exactly what
+    /// [`SynthesisContext::key_for`] reads, and nothing more.
+    ///
+    /// `voice_profile_hash` and `backend_revision` are deliberately absent:
+    /// ADR-0001 §12.5 does not make either a synthesis-key input, so folding
+    /// them in here would derive a key the planner never could.
+    fn context(&self, speaker: &str) -> SynthesisContext {
+        SynthesisContext {
+            worker_bundle_hash: self.worker_bundle_hash.clone(),
+            model_repository: self.model_repository.clone(),
+            model_revision: self.model_revision.clone(),
+            tokenizer_revision: self.tokenizer_revision.clone(),
+            language: self.language.clone(),
+            determinism_class: self.determinism_class,
+            seed: self.seed,
+            generation_parameters: self.generation_parameters.clone(),
+            voice_conditioning_hashes: self
+                .voice_conditioning_hash
+                .clone()
+                .map(|hash| BTreeMap::from([(speaker.to_owned(), hash)]))
+                .unwrap_or_default(),
+        }
+    }
 }
 
 /// The elements naming one cache entry beneath the cache root, in order.
@@ -355,6 +423,28 @@ fn synthesize_transaction(
         ));
     }
 
+    // The identity gate. Everything above proved the *file* is what the worker
+    // said it was; this proves the worker synthesized what the plan asked for.
+    // Recomputing the whole key from the reported inputs is deliberate: a
+    // field-by-field comparison would stop covering any input added later,
+    // whereas a key that does not match cannot name this audio at all.
+    let reported_key = report.context.key_for(segment);
+    if reported_key != segment.cache_key {
+        let error = AudioError::SynthesizerIdentityMismatch {
+            segment_id: segment.id.clone(),
+            planned: segment.cache_key.clone(),
+            reported: reported_key,
+        };
+        return Err(quarantine_failed_attempt(
+            filesystem,
+            quarantine_root,
+            job_id,
+            segment,
+            &stage,
+            error.into(),
+        ));
+    }
+
     let audio_blake3 = hash_file(&audio_path)?;
     let artifact = CacheArtifact {
         schema_version: CACHE_SCHEMA_VERSION.to_owned(),
@@ -364,6 +454,22 @@ fn synthesize_transaction(
         channels: CANONICAL_CHANNELS,
         sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
         frames,
+        provenance: ArtifactProvenance {
+            worker_bundle_hash: report.context.worker_bundle_hash.clone(),
+            model_repository: report.context.model_repository.clone(),
+            model_revision: report.context.model_revision.clone(),
+            tokenizer_revision: report.context.tokenizer_revision.clone(),
+            language: report.context.language.clone(),
+            determinism_class: report.context.determinism_class,
+            seed: report.context.seed,
+            generation_parameters: report.context.generation_parameters.clone(),
+            voice_conditioning_hash: report
+                .context
+                .voice_conditioning_for(&segment.speaker)
+                .cloned(),
+            voice_profile_hash: report.voice_profile_hash.clone(),
+            backend_revision: report.backend_revision.clone(),
+        },
     };
     write_json_atomically(filesystem, &artifact_path, &artifact)?;
     sync_directory_transaction(filesystem, &stage, &[&audio_path, &artifact_path])?;
@@ -495,9 +601,10 @@ fn error_at_quarantine_destination(error: BuildError, destination: &Path) -> Bui
 ///
 /// The checks run in a fixed order so each failure is reported as itself: the
 /// artifact parses, its recorded digest is well formed, its declared format is
-/// this build's, and only then is the audio re-hashed against the digest. A
-/// malformed digest reported as a mismatch would tell an operator their file
-/// was tampered with when it was merely written wrong.
+/// this build's, its key is the plan's, its recorded provenance derives that
+/// key, and only then is the audio re-hashed against the digest. A malformed
+/// digest reported as a mismatch would tell an operator their file was tampered
+/// with when it was merely written wrong.
 ///
 /// # Errors
 ///
@@ -576,7 +683,32 @@ fn load_validated(
         ));
     }
 
-    // Path 5: the audio itself is unreadable, non-canonical, or does not match
+    // Path 5: the recorded provenance does not derive the key it is filed
+    // under.
+    //
+    // Path 4 only proved that two copies of the key agree. The provenance
+    // beside them is the entry's audit record — which model revision, which
+    // language, which worker bundle produced this audio — and nothing so far
+    // has held it to the key. Editing `model_revision` on disk would otherwise
+    // leave the entry reusable while its record described synthesis that never
+    // happened. Cheap enough to run before the audio is re-hashed, so a
+    // dishonest record is refused without reading a megabyte of WAV.
+    let derived = artifact
+        .provenance
+        .context(&segment.speaker)
+        .key_for(segment);
+    if derived != artifact.cache_key {
+        return Err(rejected(
+            entry_dir,
+            &segment.id,
+            CacheEntryFault::ProvenanceKeyMismatch {
+                recorded: artifact.cache_key,
+                derived,
+            },
+        ));
+    }
+
+    // Path 6: the audio itself is unreadable, non-canonical, or does not match
     // the artifact.
     let frames =
         validate_wav(audio_path).map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?;
@@ -713,6 +845,9 @@ mod tests {
 
     use crate::{BackendError, SynthesisReport, durable::OsDurableFileSystem};
 
+    /// One named change to a reported synthesis input, for the identity gate.
+    type ContextDrift = (&'static str, fn(&mut SynthesisContext));
+
     /// One rejection path: its label, the error it produced, the entry
     /// directory it must name, and a predicate for the fault it must report.
     type RejectionPath = (
@@ -740,8 +875,62 @@ mod tests {
             spoken_text: "Same speech.".to_owned(),
             style: "calm".to_owned(),
             pause_after_ms: 75,
+            take: study_tts_core::BASE_TAKE,
             cache_key: key(cache_key),
         }
+    }
+
+    /// The inputs every producer in this module reports having used.
+    fn producer_context() -> SynthesisContext {
+        SynthesisContext {
+            worker_bundle_hash: "1".repeat(64).parse().expect("a digest of ones parses"),
+            model_repository: "study-tts/test-backend".to_owned(),
+            model_revision: "v1".parse().expect("`v1` is a revision"),
+            tokenizer_revision: "none".parse().expect("`none` is a revision"),
+            language: "en".parse().expect("`en` is a well-formed language tag"),
+            determinism_class: DeterminismClass::Reproducible,
+            seed: 0,
+            generation_parameters: BTreeMap::new(),
+            voice_conditioning_hashes: BTreeMap::new(),
+        }
+    }
+
+    /// What a producer that used [`producer_context`] reports.
+    fn producer_report(frames: u32, sample_rate: u32) -> SynthesisReport {
+        SynthesisReport {
+            sample_rate,
+            channels: CANONICAL_CHANNELS,
+            frames,
+            backend_revision: "test-backend-v1".to_owned(),
+            context: producer_context(),
+            voice_profile_hash: blake3::hash(b"voice").into(),
+        }
+    }
+
+    /// A planned segment whose key [`producer_context`] actually derives.
+    ///
+    /// Derived rather than labelled, because publication recomputes the key
+    /// from what the producer reports and refuses a mismatch. A hand-written
+    /// key would be refused by that gate — which is what the gate is for, and
+    /// what `t1_e1_audio_reported_under_other_identities_is_not_published`
+    /// proves separately.
+    fn synthesized_segment() -> PlannedSegment {
+        let mut segment = planned("abcdef");
+        segment.cache_key = producer_context().key_for(&segment);
+        segment
+    }
+
+    /// A segment of genuinely different speech, and therefore of a genuinely
+    /// different identity.
+    ///
+    /// Used where a test needs two keys that disagree. Deriving the key from
+    /// changed speech rather than writing a different one keeps the segment
+    /// self-consistent, so the mismatch under test is the one the test names.
+    fn other_speech_segment() -> PlannedSegment {
+        let mut segment = synthesized_segment();
+        segment.spoken_text = "Different speech.".to_owned();
+        segment.cache_key = producer_context().key_for(&segment);
+        segment
     }
 
     fn write_tone(path: &Path, frames: u32, sample_rate: u32) {
@@ -760,22 +949,41 @@ mod tests {
 
     /// Publishes a valid entry, then hands back the pieces needed to corrupt
     /// it.
-    fn published_entry(root: &Path, cache_key: &str) -> (PathBuf, PathBuf, PathBuf) {
+    ///
+    /// `label` names the directory only. The key the entry is filed under is
+    /// the one [`producer_context`] derives for [`synthesized_segment`],
+    /// because an honest entry is one whose recorded provenance recomputes the
+    /// key beside it — a hand-written key would be refused by the check this
+    /// helper exists to exercise the other paths of.
+    fn published_entry(root: &Path, label: &str) -> (PathBuf, PathBuf, PathBuf) {
         // Any unique directory will do: `load_validated` is handed its paths,
         // so nothing here depends on where the real layout puts an entry.
-        let dir = root.join(cache_key);
+        let dir = root.join(label);
         fs::create_dir_all(&dir).expect("create entry directory");
         let audio = dir.join("audio.wav");
         let artifact = dir.join("artifact.json");
         write_tone(&audio, 2_400, CANONICAL_SAMPLE_RATE);
         let record = CacheArtifact {
             schema_version: CACHE_SCHEMA_VERSION.to_owned(),
-            cache_key: key(cache_key),
+            cache_key: synthesized_segment().cache_key,
             audio_blake3: hash_file(&audio).expect("hash test audio"),
             sample_rate: CANONICAL_SAMPLE_RATE,
             channels: CANONICAL_CHANNELS,
             sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
             frames: 2_400,
+            provenance: ArtifactProvenance {
+                worker_bundle_hash: producer_context().worker_bundle_hash,
+                model_repository: producer_context().model_repository,
+                model_revision: producer_context().model_revision,
+                tokenizer_revision: producer_context().tokenizer_revision,
+                language: producer_context().language,
+                determinism_class: producer_context().determinism_class,
+                seed: producer_context().seed,
+                generation_parameters: producer_context().generation_parameters,
+                voice_conditioning_hash: None,
+                voice_profile_hash: blake3::hash(b"voice").into(),
+                backend_revision: "test-backend-v1".to_owned(),
+            },
         };
         write_json_atomically(&OsDurableFileSystem, &artifact, &record)
             .expect("write test artifact");
@@ -785,12 +993,31 @@ mod tests {
     /// Rewrites one field of a published artifact, leaving the audio it
     /// describes untouched.
     fn overwrite_field(artifact: &Path, field: &str, value: serde_json::Value) {
-        let mut record: serde_json::Value =
-            serde_json::from_slice(&fs::read(artifact).expect("read artifact")).expect("parse");
+        let mut record = read_artifact(artifact);
         record[field] = value;
+        write_artifact(artifact, &record);
+    }
+
+    /// Rewrites one recorded provenance input, leaving the key beside it and
+    /// the audio it describes untouched.
+    ///
+    /// The tampering the key alone cannot detect: both copies of the key still
+    /// agree, and only recomputing the key from what is recorded here shows
+    /// that the record no longer describes this audio.
+    fn overwrite_provenance(artifact: &Path, field: &str, value: serde_json::Value) {
+        let mut record = read_artifact(artifact);
+        record["provenance"][field] = value;
+        write_artifact(artifact, &record);
+    }
+
+    fn read_artifact(artifact: &Path) -> serde_json::Value {
+        serde_json::from_slice(&fs::read(artifact).expect("read artifact")).expect("parse")
+    }
+
+    fn write_artifact(artifact: &Path, record: &serde_json::Value) {
         fs::write(
             artifact,
-            serde_json::to_vec_pretty(&record).expect("serialize"),
+            serde_json::to_vec_pretty(record).expect("serialize"),
         )
         .expect("write artifact");
     }
@@ -817,14 +1044,7 @@ mod tests {
         fn produce(&mut self, destination: &Path) -> Result<SynthesisReport, BackendError> {
             write_tone(destination, 2_400, CANONICAL_SAMPLE_RATE);
             self.count.fetch_add(1, Ordering::SeqCst);
-            Ok(SynthesisReport {
-                sample_rate: CANONICAL_SAMPLE_RATE,
-                channels: CANONICAL_CHANNELS,
-                frames: 2_400,
-                backend_revision: "test-backend-v1".to_owned(),
-                worker_bundle_hash: blake3::hash(b"worker").to_hex().to_string(),
-                voice_profile_hash: blake3::hash(b"voice").to_hex().to_string(),
-            })
+            Ok(producer_report(2_400, CANONICAL_SAMPLE_RATE))
         }
     }
 
@@ -894,14 +1114,7 @@ mod tests {
     impl StagedAudioProducer for NonCanonicalProducer {
         fn produce(&mut self, destination: &Path) -> Result<SynthesisReport, BackendError> {
             write_tone(destination, 2_400, 48_000);
-            Ok(SynthesisReport {
-                sample_rate: 48_000,
-                channels: CANONICAL_CHANNELS,
-                frames: 2_400,
-                backend_revision: "test-backend-v1".to_owned(),
-                worker_bundle_hash: blake3::hash(b"worker").to_hex().to_string(),
-                voice_profile_hash: blake3::hash(b"voice").to_hex().to_string(),
-            })
+            Ok(producer_report(2_400, 48_000))
         }
     }
 
@@ -1057,7 +1270,7 @@ mod tests {
     fn t4_e0_interruption_before_cache_rename_exposes_no_entry() {
         let workspace = TempDir::new().expect("create cache workspace");
         let (cache_root, quarantine_root) = crash_test_roots(workspace.path());
-        let segment = planned("abcdef");
+        let segment = synthesized_segment();
         let mut producer = CountingProducer::default();
 
         resolve(
@@ -1080,7 +1293,7 @@ mod tests {
     fn t4_e0_interruption_after_cache_rename_reconciles_without_resynthesis() {
         let workspace = TempDir::new().expect("create cache workspace");
         let (cache_root, quarantine_root) = crash_test_roots(workspace.path());
-        let segment = planned("abcdef");
+        let segment = synthesized_segment();
         let mut producer = CountingProducer::default();
 
         resolve(
@@ -1168,12 +1381,95 @@ mod tests {
     }
 
     #[test]
+    fn t1_e1_audio_reported_under_other_identities_is_not_published() {
+        // The gate that makes a content-addressed cache honest: a producer that
+        // synthesized under different inputs must not have its audio filed
+        // under a key describing the inputs that were asked for, because every
+        // later reuse of that entry would be silently wrong.
+        let workspace = TempDir::new().expect("create cache workspace");
+        let (cache_root, quarantine_root) = crash_test_roots(workspace.path());
+        let segment = synthesized_segment();
+
+        // One changed input per run, so the gate is shown to depend on the
+        // whole identity rather than on whichever field happens to be checked.
+        let drifts: [ContextDrift; 4] = [
+            ("worker_bundle_hash", |context| {
+                context.worker_bundle_hash =
+                    "9".repeat(64).parse().expect("a digest of nines parses");
+            }),
+            ("model_revision", |context| {
+                context.model_revision = "v2".parse().expect("`v2` is a revision");
+            }),
+            ("language", |context| {
+                context.language = "de".parse().expect("`de` is a well-formed tag");
+            }),
+            ("voice_conditioning_hashes", |context| {
+                context.voice_conditioning_hashes.insert(
+                    "nadia".to_owned(),
+                    "7".repeat(64).parse().expect("a digest of sevens parses"),
+                );
+            }),
+        ];
+
+        for (field, drift) in drifts {
+            let mut drifted = producer_context();
+            drift(&mut drifted);
+            let mut producer = |destination: &Path| {
+                write_tone(destination, 2_400, CANONICAL_SAMPLE_RATE);
+                Ok(SynthesisReport {
+                    context: drifted.clone(),
+                    ..producer_report(2_400, CANONICAL_SAMPLE_RATE)
+                })
+            };
+
+            let error = resolve(
+                &OsDurableFileSystem,
+                &cache_root,
+                &quarantine_root,
+                "job",
+                &segment,
+                &mut producer,
+            )
+            .expect_err("a drifting report must not publish");
+
+            assert!(
+                matches!(
+                    error,
+                    BuildError::Audio(AudioError::SynthesizerIdentityMismatch { .. })
+                ),
+                "a report drifting in `{field}` must name the identity mismatch, got {error:?}"
+            );
+            // The audio the worker wrote is retained in quarantine and no entry
+            // exists, so a rerun re-synthesizes rather than reusing a lie.
+            let (_, entry) = resolve_entry_location(&cache_root, &segment.cache_key)
+                .expect("resolve cache destination");
+            assert!(
+                !entry.exists(),
+                "a report drifting in `{field}` must leave no published entry"
+            );
+        }
+
+        // The undrifted producer still publishes, so the gate refuses drift
+        // rather than refusing everything.
+        let mut honest = CountingProducer::default();
+        resolve(
+            &OsDurableFileSystem,
+            &cache_root,
+            &quarantine_root,
+            "job",
+            &segment,
+            &mut honest,
+        )
+        .expect("a report matching the plan must publish");
+    }
+
+    #[test]
     fn t1_e0_valid_entry_loads() {
         let workspace = TempDir::new().expect("create cache workspace");
         let (dir, audio, artifact) = published_entry(workspace.path(), "abcdef");
 
-        let cached =
-            load_validated(&planned("abcdef"), &dir, &audio, &artifact).expect("entry should load");
+        let cached = load_validated(&synthesized_segment(), &dir, &audio, &artifact)
+            .expect("entry should load");
 
         assert_eq!(cached.frames, 2_400);
         assert_eq!(cached.segment_id, "seg-0001");
@@ -1186,36 +1482,36 @@ mod tests {
         // Path 1: unparseable artifact.
         let (dir, audio, artifact) = published_entry(workspace.path(), "aa1111");
         fs::write(&artifact, b"{ not json").expect("corrupt artifact");
-        let unparseable = load_validated(&planned("aa1111"), &dir, &audio, &artifact)
+        let unparseable = load_validated(&synthesized_segment(), &dir, &audio, &artifact)
             .expect_err("unparseable artifact must be rejected");
 
         // Path 2: a recorded digest that is not a digest.
         let (dir6, audio6, artifact6) = published_entry(workspace.path(), "aa2222");
         overwrite_field(&artifact6, "audio_blake3", json!("not-a-digest"));
-        let malformed_digest = load_validated(&planned("aa2222"), &dir6, &audio6, &artifact6)
+        let malformed_digest = load_validated(&synthesized_segment(), &dir6, &audio6, &artifact6)
             .expect_err("a malformed recorded digest must be rejected");
 
         // Path 3: incompatible declared metadata.
         let (dir2, audio2, artifact2) = published_entry(workspace.path(), "bb2222");
         overwrite_field(&artifact2, "schema_version", json!("future"));
-        let incompatible = load_validated(&planned("bb2222"), &dir2, &audio2, &artifact2)
+        let incompatible = load_validated(&synthesized_segment(), &dir2, &audio2, &artifact2)
             .expect_err("incompatible metadata must be rejected");
 
         // Path 4: cache-key mismatch.
         let (dir3, audio3, artifact3) = published_entry(workspace.path(), "cc3333");
-        let mismatched = load_validated(&planned("dd4444"), &dir3, &audio3, &artifact3)
+        let mismatched = load_validated(&other_speech_segment(), &dir3, &audio3, &artifact3)
             .expect_err("cache-key mismatch must be rejected");
 
         // Path 5: audio that no longer matches its record.
         let (dir4, audio4, artifact4) = published_entry(workspace.path(), "ee5555");
         write_tone(&audio4, 1_200, CANONICAL_SAMPLE_RATE);
-        let audio_mismatch = load_validated(&planned("ee5555"), &dir4, &audio4, &artifact4)
+        let audio_mismatch = load_validated(&synthesized_segment(), &dir4, &audio4, &artifact4)
             .expect_err("frame mismatch must be rejected");
 
         // Path 5b: audio that is no longer readable at all.
         let (dir5, audio5, artifact5) = published_entry(workspace.path(), "ff6666");
         fs::write(&audio5, b"not a wav").expect("corrupt audio");
-        let unreadable = load_validated(&planned("ff6666"), &dir5, &audio5, &artifact5)
+        let unreadable = load_validated(&synthesized_segment(), &dir5, &audio5, &artifact5)
             .expect_err("unreadable audio must be rejected");
 
         // Each path carries the fault it is supposed to report, so a rejection
@@ -1272,6 +1568,62 @@ mod tests {
         }
     }
 
+    #[test]
+    fn t1_e1_an_entry_whose_provenance_does_not_derive_its_key_is_refused() {
+        // Comparing the recorded key with the plan's proves only that two
+        // copies of one value agree. The provenance beside them is the entry's
+        // audit record, and an operator or a tampered backup can edit it
+        // without touching either key — leaving the entry reusable while its
+        // record names a model, a language, or a worker bundle that never
+        // produced this audio.
+        //
+        // One changed input per run, driven off the ADR-0001 §12.5 input list
+        // rather than off `ArtifactProvenance`, so an input this check stopped
+        // covering would fail here rather than pass silently.
+        let workspace = TempDir::new().expect("create cache workspace");
+        let edits: [(&str, serde_json::Value); 7] = [
+            ("worker_bundle_hash", json!("9".repeat(64))),
+            ("model_repository", json!("study-tts/other-backend")),
+            ("model_revision", json!("v2")),
+            ("tokenizer_revision", json!("v9")),
+            ("language", json!("de")),
+            ("determinism_class", json!("seeded_nondeterministic")),
+            ("seed", json!(7)),
+        ];
+
+        for (input, value) in edits {
+            let (dir, audio, artifact) = published_entry(workspace.path(), input);
+            overwrite_provenance(&artifact, input, value);
+
+            let error = load_validated(&synthesized_segment(), &dir, &audio, &artifact)
+                .expect_err("an entry whose provenance was edited must not be reused");
+
+            let BuildError::Cache(CacheError::UnusableCacheEntry { fault, .. }) = &error else {
+                panic!("editing `{input}` produced the wrong variant: {error}");
+            };
+            assert!(
+                matches!(**fault, CacheEntryFault::ProvenanceKeyMismatch { .. }),
+                "editing `{input}` was not reported as a provenance mismatch: {fault}"
+            );
+        }
+
+        // Fields ADR-0001 §12.5 does not make synthesis-key inputs must not
+        // move the derived key. A check that folded them in would refuse
+        // entries a planner could never have produced a matching key for.
+        for diagnostic in ["voice_profile_hash", "backend_revision"] {
+            let (dir, audio, artifact) = published_entry(workspace.path(), diagnostic);
+            overwrite_provenance(&artifact, diagnostic, json!("0".repeat(64)));
+
+            load_validated(&synthesized_segment(), &dir, &audio, &artifact).unwrap_or_else(
+                |error| {
+                    panic!(
+                        "editing the diagnostic `{diagnostic}` must not refuse the entry: {error}"
+                    )
+                },
+            );
+        }
+    }
+
     /// The audio is left intact in every case here, so a rejection that speaks
     /// of a mismatch would be accusing the wrong file. Uppercase is the trap
     /// worth naming: it is a digest of the right audio, in the wrong spelling.
@@ -1297,7 +1649,7 @@ mod tests {
             let (dir, audio, artifact) = published_entry(workspace.path(), label);
             overwrite_field(&artifact, "audio_blake3", json!(malformed));
 
-            let error = load_validated(&planned(label), &dir, &audio, &artifact)
+            let error = load_validated(&synthesized_segment(), &dir, &audio, &artifact)
                 .expect_err("a malformed recorded digest must be rejected");
 
             let BuildError::Cache(CacheError::UnusableCacheEntry { fault, .. }) = &error else {
@@ -1310,6 +1662,37 @@ mod tests {
             assert!(
                 !matches!(**fault, CacheEntryFault::ChecksumMismatch { .. }),
                 "`{malformed}` was reported as a mismatch: {fault}"
+            );
+        }
+    }
+
+    /// The distinction the malformed-recorded-digest test draws, applied to
+    /// the other recorded field a key is derived from. Told the key does not
+    /// match, an operator goes looking at their audio; what is wrong is a
+    /// revision beside it, and the record never had to be trusted far enough
+    /// to derive a key from at all.
+    #[test]
+    fn t1_e1_a_malformed_recorded_revision_is_reported_before_any_key_is_derived() {
+        let workspace = TempDir::new().expect("create cache workspace");
+        let malformations = [("ee55", ""), ("ff66", "main"), ("aa77", "v1 ")];
+
+        for (label, malformed) in malformations {
+            let (dir, audio, artifact) = published_entry(workspace.path(), label);
+            overwrite_provenance(&artifact, "model_revision", json!(malformed));
+
+            let error = load_validated(&synthesized_segment(), &dir, &audio, &artifact)
+                .expect_err("a malformed recorded revision must be rejected");
+
+            let BuildError::Cache(CacheError::UnusableCacheEntry { fault, .. }) = &error else {
+                panic!("`{malformed}` produced the wrong variant: {error}");
+            };
+            assert!(
+                matches!(**fault, CacheEntryFault::UnparseableArtifact { .. }),
+                "`{malformed}` was not refused when the record was parsed: {fault}"
+            );
+            assert!(
+                !matches!(**fault, CacheEntryFault::ProvenanceKeyMismatch { .. }),
+                "`{malformed}` was reported as a key mismatch: {fault}"
             );
         }
     }

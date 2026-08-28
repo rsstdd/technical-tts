@@ -11,9 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use study_tts_core::{
-    PROVISIONAL_JOB_SCHEMA_VERSION, ProvisionalJobSnapshot, ProvisionalJobStage, is_blake3_hex,
-};
+use study_tts_core::{PROVISIONAL_JOB_SCHEMA_VERSION, ProvisionalJobSnapshot, ProvisionalJobStage};
 
 use crate::{
     BuildError, DurableStateError,
@@ -46,9 +44,10 @@ pub trait JobRepository: Send + Sync {
     ///
     /// # Errors
     ///
-    /// [`DurableStateError::MalformedJobSnapshot`],
+    /// [`DurableStateError::MalformedJobSnapshot`], including when `plan_hash`
+    /// or a selected-package identity is not a digest and its value object
+    /// refuses it during parsing,
     /// [`DurableStateError::UnsupportedDurableRecord`],
-    /// [`DurableStateError::MalformedDurableDigest`],
     /// [`DurableStateError::JobSnapshotIdentityMismatch`], or
     /// [`DurableStateError::JobSnapshotSelectionMismatch`] when durable state
     /// cannot be trusted; [`BuildError::ManagedPath`] or [`BuildError::Io`]
@@ -147,13 +146,10 @@ fn validate_snapshot(
         }
         .into());
     }
-    if !is_blake3_hex(&snapshot.plan_hash) {
-        return Err(DurableStateError::MalformedDurableDigest {
-            path: path.to_path_buf(),
-            value: snapshot.plan_hash.clone(),
-        }
-        .into());
-    }
+    // No digest is checked here. `plan_hash` and the selected package's two
+    // identities are value objects, so a recorded value that is not a digest
+    // was refused by the parse above and named by that type's own routed
+    // message. What is left is the state machine, which no type can express.
     let selection_matches = match snapshot.stage {
         ProvisionalJobStage::PackageSelected => snapshot.selected_package.is_some(),
         ProvisionalJobStage::Planned
@@ -167,17 +163,6 @@ fn validate_snapshot(
         }
         .into());
     }
-    if let Some(package) = &snapshot.selected_package {
-        for digest in [&package.package_id, &package.manifest_blake3] {
-            if !is_blake3_hex(digest) {
-                return Err(DurableStateError::MalformedDurableDigest {
-                    path: path.to_path_buf(),
-                    value: digest.clone(),
-                }
-                .into());
-            }
-        }
-    }
     Ok(())
 }
 
@@ -185,6 +170,7 @@ fn validate_snapshot(
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use serde_json::Value;
     use study_tts_core::{
         PROVISIONAL_JOB_SCHEMA_VERSION, ProvisionalJobSnapshot, ProvisionalJobStage,
         SelectedPackageIdentity,
@@ -200,7 +186,7 @@ mod tests {
         ProvisionalJobSnapshot {
             schema_version: PROVISIONAL_JOB_SCHEMA_VERSION.to_owned(),
             job_id: JOB_ID.to_owned(),
-            plan_hash: "a".repeat(64),
+            plan_hash: "a".repeat(64).parse().expect("a digest of a parses"),
             stage,
             selected_package: None,
         }
@@ -208,8 +194,8 @@ mod tests {
 
     fn selected_package() -> SelectedPackageIdentity {
         SelectedPackageIdentity {
-            package_id: "b".repeat(64),
-            manifest_blake3: "c".repeat(64),
+            package_id: "b".repeat(64).parse().expect("a digest of b parses"),
+            manifest_blake3: "c".repeat(64).parse().expect("a digest of c parses"),
         }
     }
 
@@ -262,98 +248,39 @@ mod tests {
     }
 
     #[test]
-    fn t1_e0_job_snapshot_refuses_malformed_plan_hash() {
-        let mut snapshot = snapshot(ProvisionalJobStage::Planned);
-        snapshot.plan_hash = "not-a-plan-hash".to_owned();
+    fn t1_e0_job_snapshot_refuses_a_recorded_digest_that_is_not_one() {
+        // Refused at the parse rather than by a check after it, because
+        // `plan_hash`, `package_id`, and `manifest_blake3` are value objects
+        // now. That a snapshot carrying a malformed digest can no longer be
+        // *constructed* is the point, so the case has to be expressed as the
+        // JSON a repository actually reads back.
+        //
+        // The offending value is asserted, not just the failure: a mistyped
+        // field name here would also fail to deserialize, and a variant-only
+        // check would pass without the digest ever having been exercised.
+        let mut selected = snapshot(ProvisionalJobStage::PackageSelected);
+        selected.selected_package = Some(selected_package());
 
-        let error = validation_error(&snapshot, JOB_ID);
+        for (field, malformed) in [
+            ("plan_hash", "not-a-plan-hash"),
+            ("package_id", "not-a-package-id"),
+            ("manifest_blake3", "not-a-manifest-digest"),
+        ] {
+            let mut recorded = serde_json::to_value(&selected).expect("a job snapshot serializes");
+            let holder = if recorded.get(field).is_some() {
+                &mut recorded
+            } else {
+                &mut recorded["selected_package"]
+            };
+            holder[field] = Value::String(malformed.to_owned());
 
-        assert!(matches!(
-            error,
-            BuildError::DurableState(error)
-                if matches!(
-                    error.as_ref(),
-                    DurableStateError::MalformedDurableDigest { path, value }
-                        if path == &PathBuf::from(SNAPSHOT_PATH)
-                            && value == "not-a-plan-hash"
-                )
-        ));
-    }
+            let error = serde_json::from_value::<ProvisionalJobSnapshot>(recorded)
+                .expect_err("a recorded digest that is not one must not deserialize");
 
-    #[test]
-    fn t1_e0_job_snapshot_refuses_selection_before_package_selected_stage() {
-        let mut snapshot = snapshot(ProvisionalJobStage::Packaging);
-        snapshot.selected_package = Some(selected_package());
-
-        let error = validation_error(&snapshot, JOB_ID);
-
-        assert!(matches!(
-            error,
-            BuildError::DurableState(error)
-                if matches!(
-                    error.as_ref(),
-                    DurableStateError::JobSnapshotSelectionMismatch { path, stage }
-                        if path == &PathBuf::from(SNAPSHOT_PATH) && stage == "Packaging"
-                )
-        ));
-    }
-
-    #[test]
-    fn t1_e0_job_snapshot_refuses_package_selected_without_selection() {
-        let snapshot = snapshot(ProvisionalJobStage::PackageSelected);
-
-        let error = validation_error(&snapshot, JOB_ID);
-
-        assert!(matches!(
-            error,
-            BuildError::DurableState(error)
-                if matches!(
-                    error.as_ref(),
-                    DurableStateError::JobSnapshotSelectionMismatch { path, stage }
-                        if path == &PathBuf::from(SNAPSHOT_PATH) && stage == "PackageSelected"
-                )
-        ));
-    }
-
-    #[test]
-    fn t1_e0_job_snapshot_refuses_malformed_selected_package_id() {
-        let mut snapshot = snapshot(ProvisionalJobStage::PackageSelected);
-        let mut package = selected_package();
-        package.package_id = "not-a-package-id".to_owned();
-        snapshot.selected_package = Some(package);
-
-        let error = validation_error(&snapshot, JOB_ID);
-
-        assert!(matches!(
-            error,
-            BuildError::DurableState(error)
-                if matches!(
-                    error.as_ref(),
-                    DurableStateError::MalformedDurableDigest { path, value }
-                        if path == &PathBuf::from(SNAPSHOT_PATH)
-                            && value == "not-a-package-id"
-                )
-        ));
-    }
-
-    #[test]
-    fn t1_e0_job_snapshot_refuses_malformed_selected_manifest_digest() {
-        let mut snapshot = snapshot(ProvisionalJobStage::PackageSelected);
-        let mut package = selected_package();
-        package.manifest_blake3 = "not-a-manifest-digest".to_owned();
-        snapshot.selected_package = Some(package);
-
-        let error = validation_error(&snapshot, JOB_ID);
-
-        assert!(matches!(
-            error,
-            BuildError::DurableState(error)
-                if matches!(
-                    error.as_ref(),
-                    DurableStateError::MalformedDurableDigest { path, value }
-                        if path == &PathBuf::from(SNAPSHOT_PATH)
-                            && value == "not-a-manifest-digest"
-                )
-        ));
+            assert!(
+                error.to_string().contains(malformed),
+                "refusing `{field}` must name the offending value: {error}"
+            );
+        }
     }
 }

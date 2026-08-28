@@ -623,10 +623,10 @@ fn transaction_identity(
         plan_hash: plan_hash.as_str(),
         ffmpeg_executable: ffmpeg.resolved_executable.display().to_string(),
         ffmpeg_version: &ffmpeg.version,
-        ffmpeg_profile_blake3: profiles.ffmpeg.identity(),
+        ffmpeg_profile_blake3: profiles.ffmpeg.identity().as_str(),
         ffprobe_executable: ffprobe.resolved_executable.display().to_string(),
         ffprobe_version: &ffprobe.version,
-        ffprobe_profile_blake3: profiles.ffprobe.identity(),
+        ffprobe_profile_blake3: profiles.ffprobe.identity().as_str(),
     };
     let bytes = serde_json::to_vec(&identity)
         .expect("transaction identity contains only infallibly serializable values");

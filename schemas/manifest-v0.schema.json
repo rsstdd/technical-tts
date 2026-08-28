@@ -1,0 +1,190 @@
+{
+  "$defs": {
+    "AudioDigest": {
+      "description": "BLAKE3 over a cached audio artifact's bytes, as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "CacheKey": {
+      "description": "BLAKE3 over the canonical serialization of every speech-affecting input (ADR-0001 12.5), as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "CurrentStoredToolUse": {
+      "additionalProperties": false,
+      "properties": {
+        "argument_profile_blake3": {
+          "$ref": "#/$defs/ToolProfileHash"
+        },
+        "arguments": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "resolved_executable": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "resolved_executable",
+        "version",
+        "arguments",
+        "argument_profile_blake3"
+      ],
+      "type": "object"
+    },
+    "PlanHash": {
+      "description": "BLAKE3 over the canonical serialization of a render plan's resolved segments, as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "ReleaseStatus": {
+      "description": "What an artifact claims to be.",
+      "oneOf": [
+        {
+          "const": "private_preview",
+          "description": "Rendered and structurally valid, but not verified, approved, or\nreleasable.",
+          "type": "string"
+        },
+        {
+          "const": "production_release",
+          "description": "Every gate in `docs/governance/RELEASE-PROFILES.md` §3 has a passing\nevidence record.",
+          "type": "string"
+        }
+      ]
+    },
+    "StoredArtifact": {
+      "additionalProperties": false,
+      "properties": {
+        "blake3": {
+          "$ref": "#/$defs/AudioDigest"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "blake3"
+      ],
+      "type": "object"
+    },
+    "StoredArtifacts": {
+      "additionalProperties": false,
+      "properties": {
+        "m4a": {
+          "$ref": "#/$defs/StoredArtifact"
+        },
+        "master_wav": {
+          "$ref": "#/$defs/StoredArtifact"
+        }
+      },
+      "required": [
+        "master_wav",
+        "m4a"
+      ],
+      "type": "object"
+    },
+    "StoredManifestSegment": {
+      "additionalProperties": false,
+      "properties": {
+        "audio_blake3": {
+          "$ref": "#/$defs/AudioDigest"
+        },
+        "cache_key": {
+          "$ref": "#/$defs/CacheKey"
+        },
+        "frames": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pause_after_ms": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "segment_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "segment_id",
+        "cache_key",
+        "audio_blake3",
+        "frames",
+        "pause_after_ms"
+      ],
+      "type": "object"
+    },
+    "StoredTools": {
+      "additionalProperties": false,
+      "properties": {
+        "ffmpeg": {
+          "$ref": "#/$defs/CurrentStoredToolUse"
+        },
+        "ffprobe": {
+          "$ref": "#/$defs/CurrentStoredToolUse"
+        }
+      },
+      "required": [
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "type": "object"
+    },
+    "ToolProfileHash": {
+      "description": "BLAKE3 over an external tool's path-normalized argument profile, as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    }
+  },
+  "$id": "https://schemas.study-tts.example/manifest-v0.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Strict owned shape used when an immutable package is reconciled or reused.",
+  "properties": {
+    "artifacts": {
+      "$ref": "#/$defs/StoredArtifacts"
+    },
+    "lesson_id": {
+      "type": "string"
+    },
+    "plan_hash": {
+      "$ref": "#/$defs/PlanHash"
+    },
+    "release_status": {
+      "$ref": "#/$defs/ReleaseStatus"
+    },
+    "schema_version": {
+      "const": "0.2-skeleton",
+      "type": "string"
+    },
+    "segments": {
+      "items": {
+        "$ref": "#/$defs/StoredManifestSegment"
+      },
+      "type": "array"
+    },
+    "tools": {
+      "$ref": "#/$defs/StoredTools"
+    }
+  },
+  "required": [
+    "schema_version",
+    "release_status",
+    "lesson_id",
+    "plan_hash",
+    "segments",
+    "artifacts",
+    "tools"
+  ],
+  "title": "StoredManifest",
+  "type": "object"
+}

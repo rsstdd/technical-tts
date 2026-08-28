@@ -15,7 +15,7 @@ use std::{
     thread,
 };
 
-use study_tts_core::{ProvisionalJobSnapshot, SelectedPackageIdentity};
+use study_tts_core::{ManifestDigest, ProvisionalJobSnapshot, SelectedPackageIdentity};
 use study_tts_runtime::{
     BackendDescriptor, BackendError, BuildError, CachePublisher, CacheResolveRequest,
     FileSystemCachePublisher, IoError, JobOwnership, JobRepository, PackagePreflightRequest,
@@ -323,8 +323,8 @@ impl PreparedPackageWriter for FakePackageWriter {
             format!("{{\"release_status\":\"private_preview\",\"plan_hash\":\"{plan_hash}\"}}");
         fs::write(&manifest, manifest_bytes.as_bytes())
             .map_err(|source| file_error(&manifest, source))?;
-        let manifest_blake3 = blake3::hash(manifest_bytes.as_bytes()).to_hex().to_string();
-        fs::write(&publication_record, manifest_blake3.as_bytes())
+        let manifest_blake3 = ManifestDigest::from(blake3::hash(manifest_bytes.as_bytes()));
+        fs::write(&publication_record, manifest_blake3.as_str().as_bytes())
             .map_err(|source| file_error(&publication_record, source))?;
         let publication = PackagePublication {
             package_dir,
@@ -333,7 +333,10 @@ impl PreparedPackageWriter for FakePackageWriter {
             m4a,
             manifest,
             identity: SelectedPackageIdentity {
-                package_id: plan_hash.clone(),
+                // The fake names the package after its manifest, as the real
+                // writer does; the plan hash is this fake's map key, not an
+                // identity a package carries.
+                package_id: manifest_blake3.clone(),
                 manifest_blake3,
             },
         };

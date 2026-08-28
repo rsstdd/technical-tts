@@ -62,22 +62,36 @@ impl SourceClassification {
 
     /// Whether this classification permits use inside a production release.
     ///
-    /// `EvaluationOnly`, `RightsReviewRequired`, and `Prohibited` do not: an
-    /// unresolved or restricted classification blocks publish per
-    /// `docs/governance/ROUTING-TABLES.md` ("Missing rights classification →
-    /// External publication blocked").
+    /// Exhaustive rather than a negative `matches!`, because this gates a real
+    /// refusal in `study_tts_runtime::pipeline`: a ninth classification must
+    /// be a compile error here rather than a variant that inherits release
+    /// permission by falling through a default.
+    ///
+    /// The three refusals are rows a document states.
+    /// `docs/governance/ROUTING-TABLES.md` §Failure routing blocks external
+    /// publication for a missing rights classification, which is
+    /// [`Self::RightsReviewRequired`]; `evaluation-only` and `prohibited` are
+    /// refusals carried by their own names in
+    /// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Classification.
     pub fn permits_production_release(self) -> bool {
-        !matches!(
-            self,
-            Self::EvaluationOnly | Self::RightsReviewRequired | Self::Prohibited
-        )
+        match self {
+            Self::OwnerAuthored
+            | Self::PublicDomain
+            | Self::PermissivelyLicensed
+            | Self::CommerciallyOrPrivatelyLicensed
+            | Self::ConsentedVoiceReference => true,
+            Self::EvaluationOnly | Self::RightsReviewRequired | Self::Prohibited => false,
+        }
     }
 
     /// Whether this classification permits private preview rendering.
     ///
-    /// Only `Prohibited` is excluded. An unresolved classification restricts
-    /// use to the permitted private scope per
-    /// `docs/governance/ROUTING-TABLES.md`; it does not block private preview.
+    /// Exhaustive for the reason [`Self::permits_production_release`] is. Only
+    /// [`Self::Prohibited`] is excluded: `docs/governance/ROUTING-TABLES.md`
+    /// §Failure routing restricts an unresolved classification to the
+    /// permitted private scope rather than blocking it, and
+    /// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Classification keeps
+    /// private use and external distribution as separate permissions.
     ///
     /// Deliberately unenforced at E0-S2: `BuildRequest` carries no source
     /// classification, so nothing in the preview path can consult this yet. It
@@ -85,7 +99,16 @@ impl SourceClassification {
     /// cannot drift apart later; the preview-scope story wires it in. Do not
     /// read the preview path as classification-gated today.
     pub fn permits_private_preview(self) -> bool {
-        !matches!(self, Self::Prohibited)
+        match self {
+            Self::OwnerAuthored
+            | Self::PublicDomain
+            | Self::PermissivelyLicensed
+            | Self::CommerciallyOrPrivatelyLicensed
+            | Self::ConsentedVoiceReference
+            | Self::EvaluationOnly
+            | Self::RightsReviewRequired => true,
+            Self::Prohibited => false,
+        }
     }
 }
 
@@ -205,14 +228,24 @@ mod tests {
     }
 
     #[test]
-    fn t3_e0_only_resolved_classifications_permit_production_release() {
+    fn t3_e0_classification_permissions_match_the_recorded_policy() {
         for classification in ALL_CLASSIFICATIONS {
-            // Expected values are a table read off
-            // `RIGHTS-DATA-ARTIFACT-POLICY.md` §Classification, not a
-            // re-derivation of the implementation: repeating the
-            // implementation's own `matches!` here would pass for any policy,
+            // A table rather than a re-derivation of the implementation:
+            // repeating its own match here would pass for any policy,
             // including a wrong one. The exhaustive match also makes a ninth
-            // variant a compile error in this test rather than an untested one.
+            // variant a compile error in this test rather than an untested
+            // one.
+            //
+            // No document enumerates the whole table, so each row is read off
+            // what does state it. `ROUTING-TABLES.md` §Failure routing blocks
+            // external publication for a missing rights classification while
+            // restricting it to the permitted private scope, which is the
+            // `RightsReviewRequired` row. `RIGHTS-DATA-ARTIFACT-POLICY.md`
+            // §Classification names `evaluation-only` and `prohibited` and
+            // keeps private use separate from external distribution, and its
+            // §Required records blocks publish on unresolved external
+            // distribution alone, which is the five permitted rows. Ratifying
+            // the table itself takes a policy amendment.
             let (releasable, previewable) = match classification {
                 SourceClassification::OwnerAuthored => (true, true),
                 SourceClassification::PublicDomain => (true, true),

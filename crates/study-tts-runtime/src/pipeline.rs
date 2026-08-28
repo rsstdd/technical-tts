@@ -7,6 +7,7 @@
 //! observable fakes and missing tools.
 
 use std::{
+    collections::BTreeMap,
     fs::{self, File},
     future::Future,
     io::Read,
@@ -20,10 +21,10 @@ use std::{
 use serde::Deserialize;
 use serde_json::Value;
 use study_tts_core::{
-    CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, MAX_LESSON_JSON_BYTES,
-    ProvisionalJobSnapshot, ProvisionalJobStage, ReleaseClaim, ReleaseStatus, RenderPlan,
-    RightsDecision, SourceRightsDeclaration, ValidatedLesson, VoiceError, VoiceUse,
-    validate_lesson_id,
+    CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, LanguageTag,
+    MAX_LESSON_JSON_BYTES, ProvisionalJobSnapshot, ProvisionalJobStage, ReleaseClaim,
+    ReleaseStatus, RenderPlan, RightsDecision, SourceRightsDeclaration, ValidatedLesson,
+    VoiceError, VoiceUse, validate_lesson_id,
 };
 
 use crate::{
@@ -205,19 +206,16 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`crate::DurableStateError::PublicationJournalLessonMismatch`],
 /// [`crate::DurableStateError::InvalidCurrentPackageReference`],
 /// [`crate::DurableStateError::MissingPackageDirectory`],
-/// [`crate::DurableStateError::MalformedPackageManifest`],
+/// [`crate::DurableStateError::MalformedPackageManifest`], including when a
+/// recorded digest is not one and its value object refuses it during parsing,
 /// [`crate::DurableStateError::UnsupportedPackageManifest`],
 /// [`crate::DurableStateError::PackageReleaseStatusMismatch`],
 /// [`crate::DurableStateError::PackageLessonMismatch`],
-/// [`crate::DurableStateError::MalformedPackagePlanHash`],
 /// [`crate::DurableStateError::EmptyPackageSegmentId`],
-/// [`crate::DurableStateError::MalformedPackageSegmentChecksum`],
 /// [`crate::DurableStateError::EmptyPackageSegmentAudio`],
 /// [`crate::DurableStateError::UnexpectedPackageArtifactPath`],
-/// [`crate::DurableStateError::MalformedPackageArtifactChecksum`],
 /// [`crate::DurableStateError::PackageArtifactChecksumMismatch`],
 /// [`crate::DurableStateError::MissingPackageToolArguments`],
-/// [`crate::DurableStateError::MalformedPackageToolProfile`],
 /// [`crate::DurableStateError::PackageManifestChecksumMismatch`],
 /// [`crate::DurableStateError::MalformedDurableDigest`],
 /// [`crate::DurableStateError::MissingCurrentPreview`],
@@ -259,7 +257,15 @@ pub fn build_preview_with_services(
     let lesson_bytes = read_lesson(&request.lesson_path)?;
     let lesson = ValidatedLesson::from_json(&lesson_bytes)?;
     let descriptor = services.executor.descriptor();
-    let plan = RenderPlan::for_lesson(&lesson, &descriptor.synthesis_identity);
+    // No voice-conditioning hashes yet: the profile gate below runs after
+    // planning and its identity is not consumed until the real worker lands.
+    // The absent case is recorded as absent rather than as an empty string, so
+    // resolving a profile in E1-S2 changes the key instead of silently matching
+    // an unresolved one.
+    let plan = RenderPlan::for_lesson(
+        &lesson,
+        &descriptor.synthesis_context(lesson.language().clone(), BTreeMap::new()),
+    );
 
     // Rights precede work: the profile gate runs before tool preflight and
     // synthesis, so a refused voice performs no observable work. The loaded
@@ -269,7 +275,7 @@ pub fn build_preview_with_services(
         let _profile = voice_gate::load_profile(dir, VoiceUse::PrivateSynthesis)?;
     }
 
-    let synthesis_requests = synthesis_requests(&plan);
+    let synthesis_requests = synthesis_requests(&plan, lesson.language());
     for synthesis_request in &synthesis_requests {
         services.executor.validate(synthesis_request)?;
     }
@@ -283,7 +289,7 @@ pub fn build_preview_with_services(
     let workspace = fs::canonicalize(&request.workspace)
         .map_err(|error| io_error(&request.workspace, error))?;
     let _job_ownership = services.jobs.claim(&workspace, lesson.lesson_id())?;
-    let planned = ProvisionalJobSnapshot::planned(lesson.lesson_id(), plan.plan_hash.as_str());
+    let planned = ProvisionalJobSnapshot::planned(lesson.lesson_id(), plan.plan_hash.clone());
     services.jobs.replace(&workspace, &planned)?;
     packages.prepare(&PackagePrepareRequest {
         workspace: &workspace,
@@ -340,7 +346,7 @@ pub fn build_preview_with_services(
     })
 }
 
-fn synthesis_requests(plan: &RenderPlan) -> Vec<SynthesisRequest> {
+fn synthesis_requests(plan: &RenderPlan, language: &LanguageTag) -> Vec<SynthesisRequest> {
     plan.segments
         .iter()
         .map(|segment| SynthesisRequest {
@@ -349,6 +355,8 @@ fn synthesis_requests(plan: &RenderPlan) -> Vec<SynthesisRequest> {
             spoken_text: segment.spoken_text.clone(),
             voice: segment.speaker.clone(),
             style: segment.style.clone(),
+            language: language.clone(),
+            take: segment.take,
             cache_key: segment.cache_key.clone(),
             sample_rate: CANONICAL_SAMPLE_RATE,
             channels: CANONICAL_CHANNELS,
@@ -550,8 +558,8 @@ struct ManifestVersion {
     schema_version: Option<String>,
 }
 
-/// The provisional production-manifest shape, pending the E1-S1 versioned JSON
-/// Schemas.
+/// The provisional production-release claim shape, pending E1-S4's complete
+/// package manifest.
 ///
 /// `deny_unknown_fields` because a top-level field this build does not know
 /// is a field it cannot gate on, and publication must refuse what it cannot
@@ -576,7 +584,7 @@ struct ProductionManifest {
 
 /// A voice profile a production manifest declares it used.
 ///
-/// Provisional shape pending the E1-S1 versioned JSON Schemas, like
+/// Provisional shape pending E1-S4's complete package manifest, like
 /// `content_rights` below.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -645,7 +653,8 @@ fn require_declarations<'de, T: Deserialize<'de>>(
 /// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` — "Unresolved external
 /// distribution blocks publish", and the source *and* voice record identifiers
 /// its "Generated release" row requires — over provisional `content_rights` and
-/// `voice_profiles` manifest sections that the E1-S1 schema story will version.
+/// `voice_profiles` manifest sections that E1-S4's complete package manifest
+/// will replace.
 ///
 /// # Errors
 ///
@@ -794,13 +803,18 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn t1_e0_synthesis_request_ids_include_segment_identity() {
+    /// A two-segment lesson and the plan derived from it.
+    ///
+    /// Shared by the two request-mapping tests so each states only what it
+    /// asserts; both need a plan with more than one segment and neither cares
+    /// how it was authored.
+    fn planned_lesson() -> (ValidatedLesson, RenderPlan) {
         let lesson = ValidatedLesson::from_json(
             br#"{
-                "schema_version":"0.1-skeleton",
+                "schema_version":"1.1",
                 "lesson_id":"request-id-test",
                 "title":"Request IDs",
+                "language":"en",
                 "segments":[
                     {
                         "id":"segment-a",
@@ -827,10 +841,21 @@ mod tests {
                 ]
             }"#,
         )
-        .expect("validate the request-ID lesson");
-        let plan = RenderPlan::for_lesson(&lesson, "request-id-backend");
+        .expect("validate the request-mapping lesson");
+        let plan = RenderPlan::for_lesson(
+            &lesson,
+            &crate::synthesis::sample_descriptor()
+                .synthesis_context(lesson.language().clone(), std::collections::BTreeMap::new()),
+        );
 
-        let requests = synthesis_requests(&plan);
+        (lesson, plan)
+    }
+
+    #[test]
+    fn t1_e0_synthesis_request_ids_include_segment_identity() {
+        let (lesson, plan) = planned_lesson();
+
+        let requests = synthesis_requests(&plan, lesson.language());
 
         assert_eq!(plan.segments[0].cache_key, plan.segments[1].cache_key);
         assert_eq!(
@@ -842,6 +867,23 @@ mod tests {
             format!("e0-{}-segment-b", plan.segments[1].cache_key)
         );
         assert_ne!(requests[0].request_id, requests[1].request_id);
+    }
+
+    #[test]
+    fn t1_e1_a_synthesis_request_carries_the_take_its_cache_key_names() {
+        // The take is a term of the cache key and a required `synthesize`
+        // frame parameter, so dropping it here would ask an executor to
+        // reproduce a distinction it cannot see. `for_lesson` selects
+        // `BASE_TAKE` for every segment today, which is exactly why the plan
+        // is edited: a test reading only what the planner writes would pass
+        // for a mapping that hard-coded zero.
+        let (lesson, mut plan) = planned_lesson();
+        plan.segments[1].take = study_tts_core::BASE_TAKE + 7;
+
+        let requests = synthesis_requests(&plan, lesson.language());
+
+        assert_eq!(requests[0].take, plan.segments[0].take);
+        assert_eq!(requests[1].take, plan.segments[1].take);
     }
 
     #[test]

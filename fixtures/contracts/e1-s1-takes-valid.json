@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schemas.study-tts.example/takes-v1.schema.json",
+  "schema_version": "1.0",
+  "lesson_id": "e0-s0-walking-skeleton",
+  "selections": [
+    {
+      "segment_id": "seg-0001",
+      "synthesis_base_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "selected_take": 2,
+      "selected_cache_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "audio_blake3": "44f9d464e3afe71cf25f86f2c63cab242b539b25a7d9ebc3dd9382cb6a7e6367"
+    }
+  ]
+}

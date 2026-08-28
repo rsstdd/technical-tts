@@ -46,12 +46,21 @@ fn descriptor(name: &str) -> ContractDescriptor {
     serde_json::from_slice(&read_fixture(name)).expect("parse contract descriptor")
 }
 
-fn validated_plan(executor: &FakeTtsExecutor) -> RenderPlan {
-    let lesson = ValidatedLesson::from_json(
+fn lesson_fixture() -> ValidatedLesson {
+    ValidatedLesson::from_json(
         &std::fs::read(walking_skeleton_fixture()).expect("read lesson fixture"),
     )
-    .expect("validate lesson fixture");
-    RenderPlan::for_lesson(&lesson, &executor.descriptor().synthesis_identity)
+    .expect("validate lesson fixture")
+}
+
+fn validated_plan(executor: &FakeTtsExecutor) -> RenderPlan {
+    let lesson = lesson_fixture();
+    RenderPlan::for_lesson(
+        &lesson,
+        &executor
+            .descriptor()
+            .synthesis_context(lesson.language().clone(), std::collections::BTreeMap::new()),
+    )
 }
 
 fn synthesis_request(plan: &RenderPlan) -> SynthesisRequest {
@@ -62,6 +71,8 @@ fn synthesis_request(plan: &RenderPlan) -> SynthesisRequest {
         spoken_text: segment.spoken_text.clone(),
         voice: segment.speaker.clone(),
         style: segment.style.clone(),
+        language: lesson_fixture().language().clone(),
+        take: segment.take,
         cache_key: segment.cache_key.clone(),
         sample_rate: CANONICAL_SAMPLE_RATE,
         channels: CANONICAL_CHANNELS,
@@ -84,11 +95,12 @@ struct ZeroCapacityExecutor;
 
 impl TtsExecutor for ZeroCapacityExecutor {
     fn descriptor(&self) -> BackendDescriptor {
+        // Identical to the deterministic tone executor's identity except for
+        // capacity, so a refusal in this suite is attributable to capacity
+        // rather than to some unrelated identity difference.
         BackendDescriptor {
             contract_version: TTS_EXECUTOR_CONTRACT_VERSION.to_owned(),
-            synthesis_identity: "zero-capacity-contract-executor".to_owned(),
-            max_text_bytes: 64 * 1024,
-            deterministic_seed: true,
+            ..FakeTtsExecutor::default().descriptor()
         }
     }
 
@@ -246,7 +258,7 @@ fn t4_e0_every_provisional_seam_has_a_fake() {
     assert_eq!(cache.requests().len(), 2);
 
     let jobs = InMemoryJobRepository::default();
-    let snapshot = ProvisionalJobSnapshot::planned("contract-job", plan.plan_hash.as_str());
+    let snapshot = ProvisionalJobSnapshot::planned("contract-job", plan.plan_hash.clone());
     assert_eq!(
         run_job_repository_contract_scenario(&jobs, workspace.path(), &snapshot)
             .expect("job contract scenario"),

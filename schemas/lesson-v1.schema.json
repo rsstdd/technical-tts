@@ -1,0 +1,145 @@
+{
+  "$defs": {
+    "LessonSegment": {
+      "additionalProperties": false,
+      "description": "One continuously spoken passage, the unit that is synthesized, cached, and\nretaken.",
+      "properties": {
+        "display_text": {
+          "description": "Text as a reviewer reads it; display only, and outside the cache key.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Identity of the segment within its lesson, unique and portable as a path\ncomponent.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*$(?![\\s\\S])",
+          "type": "string"
+        },
+        "pause_after_ms": {
+          "description": "Silence written after this segment, in milliseconds.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "review_status": {
+          "$ref": "#/$defs/ReviewStatus",
+          "description": "Whether a human has approved this segment for synthesis."
+        },
+        "role": {
+          "description": "The speaker's role in the lesson, for review context rather than for\nsynthesis.",
+          "type": "string"
+        },
+        "source_refs": {
+          "description": "Source material this segment was written from, so a claim can be traced\nback.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "speaker": {
+          "description": "Which voice speaks this segment.",
+          "type": "string"
+        },
+        "spoken_text": {
+          "description": "Text as it is spoken, which is what synthesis and the cache key are\nderived from.",
+          "type": "string"
+        },
+        "style": {
+          "description": "Delivery style requested of the voice.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "speaker",
+        "role",
+        "source_refs",
+        "display_text",
+        "spoken_text",
+        "style",
+        "pause_after_ms",
+        "review_status"
+      ],
+      "type": "object"
+    },
+    "ReviewStatus": {
+      "description": "Whether a segment has cleared human review.\n\nClosed vocabulary rather than a flag: an unrecognized status is a parse\nerror, so a document cannot invent a state that would be treated as approved\nby default.",
+      "oneOf": [
+        {
+          "const": "approved",
+          "description": "A human approved this segment; the only status synthesis accepts.",
+          "type": "string"
+        },
+        {
+          "const": "draft",
+          "description": "Not yet submitted for review.",
+          "type": "string"
+        },
+        {
+          "const": "needs_review",
+          "description": "Submitted and awaiting a decision.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://schemas.study-tts.example/lesson-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One authored lesson, as it is written on disk and before validation.",
+  "properties": {
+    "$schema": {
+      "description": "Published schema this document links to, added by lesson schema `1.1`.\n\nOptional, with absent as its declared default, so a `1.0` document\nstays valid. When present it must name the schema for the version the\ndocument declares: a link to some other schema is a document claiming\nto have been checked against something it was not.\n\nSpelled `$schema` because that is the key every JSON Schema tool looks\nfor; `deny_unknown_fields` means the rename is the only way the field\ncan appear at all.",
+      "oneOf": [
+        {
+          "const": "https://schemas.study-tts.example/lesson-v1.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "language": {
+      "description": "Language the lesson is spoken in, as a BCP 47 tag.\n\nUnlike the title this *is* a synthesis-key input (ADR-0001 §12.5), so a\nlesson cannot leave it to a default: the same text in two languages is\ntwo different renders and must not share a cache entry.\n\nAuthored text here and a [`LanguageTag`] on [`ValidatedLesson`], for the\nreason given on `schema_version`.",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$(?![\\s\\S])",
+      "type": "string"
+    },
+    "lesson_id": {
+      "description": "Stable identity of the lesson, which also names its output directory.",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*$(?![\\s\\S])",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Schema this document claims; an unrecognized version is refused rather\nthan guessed at.\n\nHeld as authored text rather than a [`SchemaVersion`] so a malformed\nversion is reported by [`LessonError::UnsupportedSchema`] naming what\nwas written, instead of by a serde message about a field type.",
+      "enum": [
+        "1.0",
+        "1.1"
+      ],
+      "type": "string"
+    },
+    "segments": {
+      "description": "The lesson's segments in speaking order.",
+      "items": {
+        "$ref": "#/$defs/LessonSegment"
+      },
+      "type": "array"
+    },
+    "title": {
+      "description": "Human-readable title; display only, and deliberately outside every cache\nkey.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "lesson_id",
+    "title",
+    "language",
+    "segments"
+  ],
+  "title": "AuthoredLesson",
+  "type": "object"
+}

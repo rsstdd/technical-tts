@@ -14,7 +14,7 @@
 use std::{ffi::OsString, path::Path, process::Command};
 
 use serde::{Deserialize, Serialize};
-use study_tts_core::CANONICAL_CHANNELS;
+use study_tts_core::{CANONICAL_CHANNELS, ToolProfileHash};
 use tempfile::Builder;
 
 use crate::{
@@ -135,7 +135,7 @@ pub(crate) struct ToolExecution {
     /// The argument list the tool was invoked with, in order.
     pub arguments: Vec<String>,
     /// Digest of the path-normalized argument profile that produced the list.
-    pub argument_profile_blake3: String,
+    pub argument_profile_blake3: ToolProfileHash,
 }
 
 /// Path-normalized FFmpeg and ffprobe argument identities for one build.
@@ -151,7 +151,7 @@ pub(crate) struct ExportProfiles {
 #[derive(Clone, Debug)]
 pub(crate) struct ToolProfile {
     normalized_arguments: Vec<String>,
-    identity: String,
+    identity: ToolProfileHash,
 }
 
 #[derive(Serialize)]
@@ -175,7 +175,7 @@ impl ToolProfile {
             normalized_arguments: &normalized_arguments,
         })
         .expect("tool profiles contain only infallibly serializable values");
-        let identity = blake3::hash(&bytes).to_hex().to_string();
+        let identity = ToolProfileHash::from(blake3::hash(&bytes));
         Self {
             normalized_arguments,
             identity,
@@ -183,7 +183,7 @@ impl ToolProfile {
     }
 
     /// Returns the deterministic path-normalized argument identity.
-    pub(crate) fn identity(&self) -> &str {
+    pub(crate) fn identity(&self) -> &ToolProfileHash {
         &self.identity
     }
 }
@@ -281,7 +281,7 @@ pub(crate) fn export_m4a(
         .map_err(|error| io_error(destination, error.error))?;
     Ok(ToolExecution {
         arguments: display_arguments(&arguments),
-        argument_profile_blake3: profile.identity().to_owned(),
+        argument_profile_blake3: profile.identity().clone(),
     })
 }
 
@@ -348,7 +348,7 @@ pub(crate) fn probe_m4a(
 
     Ok(ToolExecution {
         arguments: display_arguments(&arguments),
-        argument_profile_blake3: profile.identity().to_owned(),
+        argument_profile_blake3: profile.identity().clone(),
     })
 }
 

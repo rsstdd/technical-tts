@@ -152,6 +152,29 @@ pub enum CacheEntryFault {
         required: CacheKey,
     },
 
+    /// The artifact's recorded provenance does not derive the key it is filed
+    /// under.
+    ///
+    /// Separate from [`CacheEntryFault::CacheKeyMismatch`], which compares the
+    /// recorded key with the plan's. That comparison says nothing about the
+    /// inputs recorded beside it: an edited `model_revision`, `language`, or
+    /// worker-bundle hash leaves both keys agreeing while the audit record
+    /// describes synthesis that never happened.
+    ///
+    /// The whole key is recomputed rather than the fields compared one by one,
+    /// so an input added to [`study_tts_core::SynthesisContext`] later is
+    /// covered without this check being edited.
+    #[error(
+        "the artifact is filed under cache key `{recorded}` but its recorded provenance derives \
+         `{derived}`, so the inputs it names are not the inputs that produced this audio"
+    )]
+    ProvenanceKeyMismatch {
+        /// The identity the entry is published under.
+        recorded: CacheKey,
+        /// The identity the recorded provenance actually derives.
+        derived: CacheKey,
+    },
+
     /// The audio length disagrees with its artifact record.
     #[error("the audio holds {found} frames but the artifact declares {declared}")]
     FrameCountMismatch {

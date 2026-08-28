@@ -17,9 +17,15 @@ The concrete IDs, versions, public representations, consumers, fakes,
 fixtures, identity effects, stabilization stories, and affected-test mapping
 are recorded in
 [`../architecture/PROVISIONAL-CONTRACT-BASELINE.md`](../architecture/PROVISIONAL-CONTRACT-BASELINE.md).
-The change classes below are mechanized by
-`crates/study-tts-core/src/contract.rs::ContractDescriptor::assess_successor`;
-that module names this document in return.
+The change classes below are mechanized in two places, and both name this
+document in return:
+
+- `crates/study-tts-core/src/contract.rs::ContractDescriptor::assess_successor`
+  applies them to a provisional *seam* descriptor.
+- `crates/study-tts-core/src/schema.rs::SchemaVersion::accepted_by` applies them
+  to a *document* on disk: a different major is refused, a newer minor is
+  refused, and an older minor of the same major is read with the defaults its
+  compatible extensions declared.
 
 ## G1 freeze
 

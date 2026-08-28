@@ -13,8 +13,14 @@
 //! add a governed [`RemedyAdvice`] only when the Failure routing table in
 //! `docs/governance/ROUTING-TABLES.md` establishes an owner, and update exact
 //! variant, message, conversion, source-chain, and advice tests together.
-//! [`BuildError::remedy`] and the category remedy methods mirror that table;
-//! `t1_e0_governed_remedy_mappings_are_exhaustive` pins the governed mapping.
+//! [`BuildError::remedy`] and the category remedy methods mirror that table.
+//! `t1_e0_governed_remedy_mappings_are_exhaustive` pins *exhaustiveness*: its
+//! `expected_*_remedy` helpers match every variant, so a new refusal is a
+//! compile error there rather than one that silently carries no advice. It
+//! does not pin the mapping — those helpers restate the implementation arm for
+//! arm, so they agree with any owner, action, and row, including a wrong one.
+//! Only the worker-bundle block writes its expectation as a literal read off
+//! the document, which is the shape the rest still needs.
 
 use std::{io, path::PathBuf};
 
@@ -32,6 +38,7 @@ mod rights;
 mod state;
 mod tool;
 mod voice_profile;
+mod worker_bundle;
 
 pub use audio::{AudioError, AudioFault};
 pub use cache::{CacheEntryFault, CacheError, PackageArtifactMismatch};
@@ -42,6 +49,7 @@ pub use rights::RightsError;
 pub use state::DurableStateError;
 pub use tool::{ToolError, ToolInvocation, ToolOperation, ToolOutputStream};
 pub use voice_profile::VoiceProfileError;
+pub use worker_bundle::{EnvironmentMismatch, RuntimeIdentityMismatch, WorkerBundleError};
 
 /// Why a build or publication was refused, grouped by its owning boundary.
 #[derive(Debug, Error)]
@@ -82,6 +90,9 @@ pub enum BuildError {
     /// TTS execution or its protocol boundary refused or failed.
     #[error(transparent)]
     Synthesis(Box<BackendError>),
+    /// The executable worker bundle could not be identified.
+    #[error(transparent)]
+    WorkerBundle(#[from] WorkerBundleError),
 }
 
 impl BuildError {
@@ -98,6 +109,7 @@ impl BuildError {
             Self::Tool(error) => error.remedy(),
             Self::ManagedPath(error) => error.remedy(),
             Self::DurableState(error) => error.remedy(),
+            Self::WorkerBundle(error) => error.remedy(),
         }
     }
 }
@@ -149,7 +161,13 @@ impl RemedyAdvice {
         self.action
     }
 
-    /// Returns the routing-table row that establishes the advice, when named.
+    /// Returns the §Failure routing row that establishes the advice, when
+    /// named.
+    ///
+    /// That table and no other in `docs/governance/ROUTING-TABLES.md`: the
+    /// module rule above grants advice only where §Failure routing establishes
+    /// an owner, so a label taken from §Decision routing names a decider
+    /// rather than a remedy.
     pub const fn routing(self) -> Option<&'static str> {
         self.routing
     }
@@ -235,6 +253,11 @@ mod tests {
         }
     }
 
+    // Each helper below restates the implementation it checks, so it proves
+    // only that every variant is mapped, never that the mapping is right — a
+    // copied arm passes for any owner, action, and row. The worker-bundle
+    // block in the test writes its expectation as a literal instead, and says
+    // why; the rows here are still owed that treatment.
     fn expected_voice_profile_remedy(error: &VoiceProfileError) -> Option<RemedyAdvice> {
         match error {
             VoiceProfileError::MissingVoiceRecord { .. }
@@ -323,6 +346,11 @@ mod tests {
             AudioError::SynthesizerReportMismatch { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::WorkerRuntime,
                 "correct the worker report before rerunning the build",
+                Some("Worker protocol or containment failure"),
+            )),
+            AudioError::SynthesizerIdentityMismatch { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::WorkerRuntime,
+                "correct the worker's synthesis identities before rerunning the build",
                 Some("Worker protocol or containment failure"),
             )),
             AudioError::AssembledLengthMismatch { .. } => Some(RemedyAdvice::new(
@@ -418,15 +446,11 @@ mod tests {
             | DurableStateError::UnsupportedPackageManifest { .. }
             | DurableStateError::PackageReleaseStatusMismatch { .. }
             | DurableStateError::PackageLessonMismatch { .. }
-            | DurableStateError::MalformedPackagePlanHash { .. }
             | DurableStateError::EmptyPackageSegmentId { .. }
-            | DurableStateError::MalformedPackageSegmentChecksum { .. }
             | DurableStateError::EmptyPackageSegmentAudio { .. }
             | DurableStateError::UnexpectedPackageArtifactPath { .. }
-            | DurableStateError::MalformedPackageArtifactChecksum { .. }
             | DurableStateError::PackageArtifactChecksumMismatch { .. }
             | DurableStateError::MissingPackageToolArguments { .. }
-            | DurableStateError::MalformedPackageToolProfile { .. }
             | DurableStateError::PackageManifestChecksumMismatch { .. }
             | DurableStateError::MalformedDurableDigest { .. }
             | DurableStateError::MissingCurrentPreview { .. }
@@ -676,6 +700,44 @@ mod tests {
         ] {
             let expected = expected_publication_remedy(&error);
             assert_expected_remedy(error.into(), expected);
+        }
+
+        // Written as a literal rather than through an `expected_*` helper, so
+        // this row is read off `docs/governance/ROUTING-TABLES.md` instead of
+        // restating the mapping it is supposed to check.
+        for error in [
+            WorkerBundleError::MissingDeclaredInput {
+                path: PathBuf::from("worker/requirements.lock"),
+                root: PathBuf::from("bundle"),
+            },
+            WorkerBundleError::DeclaredInputTooLarge {
+                path: PathBuf::from("worker/requirements.lock"),
+                max_bytes: 8 * 1024 * 1024,
+            },
+            WorkerBundleError::UndeclaredModule {
+                module: PathBuf::from("worker/study_tts_worker/pronunciation.py"),
+                import_root: PathBuf::from("worker/study_tts_worker"),
+                manifest: PathBuf::from("worker/bundle-manifest.json"),
+            },
+            WorkerBundleError::UnreadableBundleManifest {
+                path: PathBuf::from("worker/bundle-manifest.json"),
+                source: serde_json::from_str::<serde_json::Value>("{")
+                    .expect_err("an unterminated object is a parse error"),
+            },
+            WorkerBundleError::UnsupportedBundleManifest {
+                path: PathBuf::from("worker/bundle-manifest.json"),
+                declared: "9.9".to_owned(),
+                required: "1.0",
+            },
+        ] {
+            assert_expected_remedy(
+                error.into(),
+                Some(RemedyAdvice::new(
+                    RemedyOwner::WorkerRuntime,
+                    "restore the declared worker bundle input or amend the bundle manifest",
+                    Some("Worker bundle input missing or oversized"),
+                )),
+            );
         }
 
         let error = CacheError::UnusableCacheEntry {

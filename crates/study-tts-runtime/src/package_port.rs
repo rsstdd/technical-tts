@@ -7,7 +7,7 @@
 
 use std::{fs, path::PathBuf};
 
-use study_tts_core::{RenderPlan, SelectedPackageIdentity};
+use study_tts_core::{ManifestDigest, RenderPlan, SelectedPackageIdentity};
 
 use crate::{
     BuildError, CacheError, ManagedPathError, PackageArtifactMismatch, assembly,
@@ -292,7 +292,14 @@ fn validate_cached_artifacts(request: &PackageWriteRequest<'_>) -> Result<(), Bu
 }
 
 fn publication(package: preview::PublishedPackage) -> Result<PackagePublication, BuildError> {
-    let manifest_blake3 = cache::hash_file(&package.manifest)?;
+    // `hash_file` returns what `blake3::Hash::to_hex` produced, which is what
+    // `ManifestDigest` accepts, so this parse cannot fail from any package.
+    // Written as a parse rather than a cast because the value object is the
+    // only route into the field, and a second infallible constructor is a
+    // second way for something that is not a digest to become one.
+    let manifest_blake3: ManifestDigest = cache::hash_file(&package.manifest)?
+        .parse()
+        .expect("`hash_file` returns a BLAKE3 digest in lowercase hexadecimal");
     Ok(PackagePublication {
         package_dir: package.package_dir,
         publication_record: package.publication_record,
@@ -321,7 +328,11 @@ mod tests {
             "../../../fixtures/lessons/e0-s0-two-segment.json"
         ))
         .expect("validate package test lesson");
-        RenderPlan::for_lesson(&lesson, "package-test-executor")
+        RenderPlan::for_lesson(
+            &lesson,
+            &crate::synthesis::sample_descriptor()
+                .synthesis_context(lesson.language().clone(), std::collections::BTreeMap::new()),
+        )
     }
 
     fn artifact(
@@ -376,6 +387,7 @@ mod tests {
             workspace: workspace.path(),
             job_id: "job",
             plan: &RenderPlan {
+                schema_version: study_tts_core::PLAN_SCHEMA_VERSION,
                 lesson_id: plan.lesson_id.clone(),
                 plan_hash: plan.plan_hash.clone(),
                 segments: vec![plan.segments[0].clone()],
@@ -401,6 +413,7 @@ mod tests {
         let plan = plan();
         let artifact = artifact(&plan.segments[0], outside.path().to_path_buf(), audio_path);
         let one_segment_plan = RenderPlan {
+            schema_version: study_tts_core::PLAN_SCHEMA_VERSION,
             lesson_id: plan.lesson_id.clone(),
             plan_hash: plan.plan_hash.clone(),
             segments: vec![plan.segments[0].clone()],
@@ -431,6 +444,7 @@ mod tests {
         let plan = plan();
         let artifact = artifact(&plan.segments[0], outside.path().to_path_buf(), audio_path);
         let one_segment_plan = RenderPlan {
+            schema_version: study_tts_core::PLAN_SCHEMA_VERSION,
             lesson_id: plan.lesson_id.clone(),
             plan_hash: plan.plan_hash.clone(),
             segments: vec![plan.segments[0].clone()],
