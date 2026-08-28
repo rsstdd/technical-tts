@@ -28,9 +28,12 @@ evidence. Documents below explain execution without superseding either authority
 | Executable E0-S0 integration order and provisional seams | [`architecture/WALKING-SKELETON.md`](architecture/WALKING-SKELETON.md) |
 | E0-S4 provisional contract IDs, fakes, suites, and stabilization | [`architecture/PROVISIONAL-CONTRACT-BASELINE.md`](architecture/PROVISIONAL-CONTRACT-BASELINE.md) |
 | E0-S4 cache/package audit amendment | [`architecture/E0-S4-INTERFACE-CHANGE-001.md`](architecture/E0-S4-INTERFACE-CHANGE-001.md) |
+| E1-S1 synthesis and verification identity amendment | [`architecture/E1-S1-INTERFACE-CHANGE-001.md`](architecture/E1-S1-INTERFACE-CHANGE-001.md) |
 | Reference-machine qualification record | [`operations/REFERENCE-ENVIRONMENT.md`](operations/REFERENCE-ENVIRONMENT.md) |
+| Worker bundle manifest, lock procedure, and offline behavior | [`operations/WORKER-ENVIRONMENT.md`](operations/WORKER-ENVIRONMENT.md) |
 | E0-S3 G0 feasibility decision | [`../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v3.md`](../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v3.md) |
 | E0-S4 provisional contract evidence | [`../evidence/gates/g0/e0-s4/e0-s4-provisional-contract-baseline-v2.md`](../evidence/gates/g0/e0-s4/e0-s4-provisional-contract-baseline-v2.md) (v1 retained as historical provenance) |
+| E1-S1 controlled-record digests, superseding the E0-S4 table | [`../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v5.md`](../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v5.md), which supersedes [`…-v4.md`](../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v4.md) and through it v3, v2, and v1 for the table, verification run, and worker-bundle hash |
 | Upgrade and compatibility procedure | [`operations/UPGRADE-RUNBOOK.md`](operations/UPGRADE-RUNBOOK.md) |
 | Release, recovery, and rollback | [`operations/RELEASE-AND-ROLLBACK.md`](operations/RELEASE-AND-ROLLBACK.md) |
 | Threat model | [`security/THREAT-MODEL.md`](security/THREAT-MODEL.md) |
