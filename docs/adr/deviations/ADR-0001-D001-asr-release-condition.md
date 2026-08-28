@@ -1,7 +1,7 @@
 # ADR-0001-D001 — ASR release condition
 
 - **Status:** Approved
-- **Date:** _______________
+- **Date:** 2026-08-23
 - **Raised by:** Ross Todd
 - **Approved by:** Ross Todd (project owner; single-participant project, see
   `docs/governance/PROJECT-EXECUTION-CHARTER.md`)

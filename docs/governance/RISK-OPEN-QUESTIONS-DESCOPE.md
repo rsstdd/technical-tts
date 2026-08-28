@@ -6,13 +6,13 @@ Unresolved answers remain explicit. `TBD` does not authorize a default that expa
 
 | ID | Question | Owner | Decision deadline | Blocking effect | Current disposition |
 |---|---|---|---|---|---|
-| OQ-01 | What exact filesystem location does `publish` write, and who consumes it? | Project owner | Before G0 | Blocks external-publication definition and M3 | TBD; private previews only |
+| OQ-01 | What exact filesystem location does `publish` write, and who consumes it? | Project owner | Before G3 | Blocks external-publication definition and M3 | TBD; private previews only |
 | OQ-02 | Is version 1 single-machine, single-user, and local-filesystem only? | Project owner | Before G0 | Changes threat model and architecture | Proposed: yes |
 | OQ-03 | Is version 1 English only? | Project owner | Before G0 | Changes normalizer, ASR, and corpus | Proposed: yes |
 | OQ-04 | Which voice configuration has valid consent and permitted use? | Project owner/rightsholder | Before real voice use | Blocks G0 real-voice path | Resolved: `owner-fallback-v1`, acquired and approved under `rights-voice-owner-fallback-v2`; selected for version 1 by ADR-0001-D003 |
 | OQ-05 | Which source content may be narrated or distributed? | Project owner/rightsholder | Before qualification corpus use | Blocks affected use and external publication | Classify each source |
 | OQ-06 | What is the named reference machine and backup/recovery plan? | Engineering owner | Full-box machine before G3; backup before M3 | Blocks G3 performance qualification | Constrained development environment `reference-wsl2-d9d550f06b783405` measured; full-box deployment configuration not yet named; no qualified backup exists; accept single-machine risk with an eight-working-hour target to rebuild and rerun critical qualification before M3 |
-| OQ-07 | Does failed ASR calibration block 1.0? | Project owner | Before corpus investment | Changes M3 scope | Proposed: no, if ADR amendment mandates complete human review |
+| OQ-07 | Does failed ASR calibration block 1.0? | Project owner | Before corpus investment | Changes M3 scope | Resolved: no; ADR-0001-D001 requires recorded ASR triage, complete human review while ASR is unqualified, and explicit disclosure |
 | OQ-08 | What release signing mechanism and key custody apply? | Project owner | Before G3 | Blocks M3 release process | TBD |
 | OQ-09 | Is watermarking required by model terms, voice terms, or distribution policy? | Rights approver | Before G3 | Blocks final audio profile | TBD |
 | OQ-10 | Who is the independent listener representative? | Project owner | Before G1 listening approval | Blocks independent listening gates | Unassigned |

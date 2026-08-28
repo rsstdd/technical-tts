@@ -83,10 +83,12 @@ evidence without rewriting the raw synthesis record.
 
 The committed redacted records are
 `evidence/gates/g0/e0-s3/e0-s3-g0-qualification-report-v1.md` and
-`evidence/gates/g0/e0-s3/evidence_e0_fixed_seed_synthesis_determinism_is_characterized.md`.
+`evidence/gates/g0/e0-s3/evidence_e0_fixed_seed_synthesis_determinism_is_characterized_v2.md`,
+which supersedes the original fixed-seed report only to clarify its procedural wording.
 The fixed-seed characterization passes, including its checksum-linked human review. That result
 does not change the independent performance failure. The superseding progression decision is
-`evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v2.md`.
+`evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v3.md`, which carries the v2 decision
+forward with corrected provenance.
 
 ## FFmpeg and ffprobe identity
 
@@ -126,11 +128,11 @@ archived segment bundle. A seed, request identity, or takes file alone is insuff
 
 Both CPU performance measurements failed on this WSL2 allocation. Accepted ADR-0002 classifies
 the allocation as a constrained development environment and waives the failures only as blockers
-to development progression. The superseding E0-S3 feasibility decision is conditional, and E0-S4
-may begin. Overall G0 remains open until E0-S4 supplies the provisional contract baseline; the
-M2/M3 implementation forecast resumes after that closure. The measured values remain
-authoritative for local estimates. The intended full-box deployment configuration must pass both
-unchanged targets before G3 acceptance.
+to development progression. At the E0-S3 decision, E0-S4 could begin while overall G0 remained
+open pending its provisional contract baseline. E0-S4 has since supplied that baseline; this does
+not change the measured failures or the waiver. The measured values remain authoritative for local
+estimates. The intended full-box deployment configuration must pass both unchanged targets before
+G3 acceptance.
 
 No qualified backup machine exists. The accepted single-machine risk carries a target of eight
 working hours to rebuild the pinned environment and rerun critical qualification on replacement

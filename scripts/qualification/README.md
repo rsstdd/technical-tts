@@ -43,3 +43,21 @@ must fill every criterion; the harness deliberately records listening as pending
 generated pending sheet unchanged. Publish the completed review as a new checksum-linked file in
 the governed evidence root, then open the key and link both artifacts from a superseding evidence
 record or addendum.
+
+## Running the tests for this tooling
+
+```text
+cd scripts/qualification && python3 -m unittest discover --start-directory tests
+```
+
+Twenty-one tests across the three modules. They need none of what the harness
+needs — no restored environment, no governed artifacts, no network namespace —
+because they exercise the parsing, checksum, and refusal logic rather than a
+render. The `cd` is required: `tests/` is not a package, so discovery from the
+repository root reports `Start directory is not importable` instead of running
+them.
+
+`.github/workflows/ci.yml` runs `worker/tests` and not these, because this
+directory is disposable E0-S3 spike tooling rather than a product path. That
+makes the command above the only thing standing between these tests and rot, so
+run it whenever you change a script here.

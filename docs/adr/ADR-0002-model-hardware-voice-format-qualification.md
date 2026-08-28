@@ -28,10 +28,13 @@ backend, GPU path, remote execution path, or weaker audio/integrity control is a
 
 The original failed measurement decision is
 `evidence/gates/g0/e0-s3/e0-s3-g0-qualification-report-v1.md`. The superseding E0-S3 progression
-decision is `evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v2.md`. Fixed-seed evidence
-is recorded at the exact Delivery Plan path
-`evidence/gates/g0/e0-s3/evidence_e0_fixed_seed_synthesis_determinism_is_characterized.md`;
-its checksum-linked ten-sample human review passed on 2026-08-26.
+decision is `evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v3.md`, which carries the v2
+decision forward with corrected provenance. Fixed-seed evidence is recorded at the exact Delivery
+Plan path
+`evidence/gates/g0/e0-s3/evidence_e0_fixed_seed_synthesis_determinism_is_characterized.md`; the
+accepted `evidence_e0_fixed_seed_synthesis_determinism_is_characterized_v2.md` correction
+supersedes its procedural wording without changing the result, and its checksum-linked ten-sample
+human review passed on 2026-08-26.
 
 ## Required evidence
 

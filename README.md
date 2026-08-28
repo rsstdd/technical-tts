@@ -285,7 +285,7 @@ These capabilities require measured evidence and a separate decision record. The
 - [Development workflow](docs/operations/DEVELOPMENT-WORKFLOW.md) — implementation and pull-request workflow
 - [AGENTS.md](AGENTS.md) — repository implementation rules and source-of-truth routing
 
-ADR-0002 through ADR-0005 now exist as proposed evidence records. They remain unaccepted until their required measurements and approvals are complete.
+ADR-0002 was accepted on 2026-08-26 with a constrained-development performance waiver. ADR-0003 through ADR-0005 remain proposed and unaccepted until their required measurements and approvals are complete.
 
 ## License status
 
