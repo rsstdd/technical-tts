@@ -17,11 +17,11 @@ use std::{
 use serde_json::Value;
 use study_tts_core::ValidatedLesson;
 use study_tts_runtime::{
-    BuildRequest, MAX_WORKER_FRAME_BYTES, TtsExecutor, WORKER_PROTOCOL_VERSION, WorkerFailureCode,
-    WorkerRequestFrame, WorkerResponseFrame, build_preview, parse_worker_request,
-    parse_worker_response,
+    BuildRequest, MAX_WORKER_FRAME_BYTES, MAX_WORKER_REQUEST_ID_BYTES, TtsExecutor,
+    WORKER_PROTOCOL_SCHEMA_VERSION, WORKER_PROTOCOL_VERSION, WorkerFailureCode, WorkerRequestFrame,
+    WorkerResponseFrame, build_preview, parse_worker_request, parse_worker_response,
 };
-use study_tts_testkit::{FakeTtsExecutor, walking_skeleton_fixture};
+use study_tts_testkit::{FakeTtsExecutor, validate_against_schema, walking_skeleton_fixture};
 use tempfile::TempDir;
 
 fn repository_root() -> PathBuf {
@@ -117,6 +117,34 @@ fn t3_e1_both_protocol_ends_decide_the_committed_cases_alike() {
             case.why
         );
     }
+
+    // The published schema is the third end, and these two cases are where it
+    // could disagree with the other two: `maxLength` counts code points where
+    // both runtimes count UTF-8 bytes, on the request identity and on the
+    // `active_request_id` a cancellation echoes back.
+    let schema: Value = serde_json::from_slice(
+        &fs::read(repository_root().join(format!(
+            "schemas/worker-protocol-v{}.schema.json",
+            WORKER_PROTOCOL_SCHEMA_VERSION.major()
+        )))
+        .expect("the worker-protocol schema is readable"),
+    )
+    .expect("the worker-protocol schema is JSON");
+    for name in [
+        "non-ascii-request-id-under-the-character-ceiling",
+        "active-request-id-past-the-ceiling",
+    ] {
+        let case = cases
+            .iter()
+            .find(|case| case.case == name)
+            .unwrap_or_else(|| panic!("the shared cases must include `{name}`"));
+        let document: Value =
+            serde_json::from_str(&case.frame).expect("a shared case frame is JSON");
+        assert!(
+            validate_against_schema(&schema, &document).is_err(),
+            "the published schema must refuse `{name}`, which both runtimes refuse"
+        );
+    }
 }
 
 #[test]
@@ -133,7 +161,7 @@ fn t4_e1_fake_worker_passes_shared_protocol_contract() {
         .lines()
         .map(|line| parse_worker_request(line.as_bytes()).expect("a session frame is valid"))
         .collect();
-    assert_eq!(requests.len(), 5, "the session must exercise every method");
+    assert_eq!(requests.len(), 6, "the session must exercise every method");
 
     // Run inside a scratch directory. The session's `output` is a managed
     // relative path, and a worker that wrote it into the source tree would
@@ -190,19 +218,52 @@ fn t4_e1_fake_worker_passes_shared_protocol_contract() {
         responses[1]
     );
     assert!(
-        matches!(responses[2], WorkerResponseFrame::SynthesisSucceeded { .. }),
-        "synthesize must be answered by synthesis_succeeded, got {:?}",
+        matches!(responses[2], WorkerResponseFrame::Health { .. }),
+        "health must be answered by health, got {:?}",
         responses[2]
     );
     assert!(
-        matches!(responses[3], WorkerResponseFrame::Cancelled { .. }),
-        "cancel must be answered by cancelled, got {:?}",
+        matches!(responses[3], WorkerResponseFrame::SynthesisSucceeded { .. }),
+        "synthesize must be answered by synthesis_succeeded, got {:?}",
         responses[3]
     );
     assert!(
-        matches!(responses[4], WorkerResponseFrame::Shutdown { .. }),
-        "shutdown must be answered by shutdown, got {:?}",
+        matches!(responses[4], WorkerResponseFrame::Cancelled { .. }),
+        "cancel must be answered by cancelled, got {:?}",
         responses[4]
+    );
+    let WorkerRequestFrame::Cancel {
+        active_request_id: requested_active_id,
+        ..
+    } = &requests[4]
+    else {
+        panic!("the fifth session frame must be cancel")
+    };
+    let WorkerResponseFrame::Cancelled {
+        active_request_id: answered_active_id,
+        ..
+    } = &responses[4]
+    else {
+        panic!("the fifth response frame must be cancelled")
+    };
+    assert_eq!(
+        requested_active_id.len(),
+        MAX_WORKER_REQUEST_ID_BYTES,
+        "the shared process session must exercise the exact active-ID ceiling"
+    );
+    assert_eq!(
+        requested_active_id,
+        request_request_id(&requests[3]),
+        "the cancellation identity must name the synthesis request in the session"
+    );
+    assert_eq!(
+        answered_active_id, requested_active_id,
+        "the worker must echo a boundary identity byte for byte"
+    );
+    assert!(
+        matches!(responses[5], WorkerResponseFrame::Shutdown { .. }),
+        "shutdown must be answered by shutdown, got {:?}",
+        responses[5]
     );
 
     // The reported `worker_bundle_hash` and `voice_profile_hash` need no
@@ -261,6 +322,7 @@ fn request_request_id(frame: &WorkerRequestFrame) -> &str {
     match frame {
         WorkerRequestFrame::Initialize { request_id, .. }
         | WorkerRequestFrame::Capabilities { request_id, .. }
+        | WorkerRequestFrame::Health { request_id, .. }
         | WorkerRequestFrame::Synthesize { request_id, .. }
         | WorkerRequestFrame::Cancel { request_id, .. }
         | WorkerRequestFrame::Shutdown { request_id, .. } => request_id,
@@ -271,6 +333,7 @@ fn response_request_id(frame: &WorkerResponseFrame) -> &str {
     match frame {
         WorkerResponseFrame::Initialized { request_id, .. }
         | WorkerResponseFrame::Capabilities { request_id, .. }
+        | WorkerResponseFrame::Health { request_id, .. }
         | WorkerResponseFrame::Progress { request_id, .. }
         | WorkerResponseFrame::SynthesisSucceeded { request_id, .. }
         | WorkerResponseFrame::Cancelled { request_id, .. }
@@ -285,6 +348,9 @@ fn response_protocol_version(frame: &WorkerResponseFrame) -> &str {
             protocol_version, ..
         }
         | WorkerResponseFrame::Capabilities {
+            protocol_version, ..
+        }
+        | WorkerResponseFrame::Health {
             protocol_version, ..
         }
         | WorkerResponseFrame::Progress {

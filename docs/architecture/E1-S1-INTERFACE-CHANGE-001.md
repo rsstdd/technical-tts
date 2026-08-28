@@ -26,9 +26,11 @@
   name a cache entry that does not describe the audio in it.
 - Unknown-field behavior: unchanged; every project-owned JSON boundary keeps
   strict Serde deserialization and rejects unknown fields and enum values.
-- Wire or Rust representation changed: Rust representation and durable cache
-  keys. No worker frame changed, so `worker_frames` keeps `e0.worker.0.1` and
-  its declared `e0.worker.0.2` extension.
+- Wire or Rust representation changed: Rust representation, durable cache
+  keys, and worker frames. `worker_frames` moves from `e0.worker.0.1` with
+  extension `e0.worker.0.2` to breaking baseline `e1.worker.1.0` with extension
+  `e1.worker.1.1`. The new major collects the accumulated semantic narrowings,
+  adds the required `health` method, and makes correlation IDs bounded ASCII.
 
 Two other project-owned documents are versioned in the same change, and each is
 recorded here rather than as its own record because neither exists
@@ -85,13 +87,15 @@ the question the provenance was added to answer.
   `WORKER_BUNDLE_IDENTITY_VERSION` moved to `e1-s1-v2` when the derivation
   stopped accepting a caller-supplied input list and began reading
   `worker/bundle-manifest.json` and walking the import roots it declares to
-  check that the list is complete.
+  check that the list is complete. It moved again to `e1-s1-v3` when the
+  derivation began refusing a lock without explicit sources, artifact kinds,
+  and one artifact hash per index-supplied pin.
 - Plan, takes, or package identities affected: every plan hash changes, because
   `PlannedSegment` gains `take` and the plan is hashed canonically. The takes
   document is new at `1.0`; no takes file exists to migrate.
 - Consumers and commands affected: `study-tts-runtime`'s preview orchestration
   and `study-tts-testkit`'s fakes. No product command exists at E1-S1; the CLI
-  remains the placeholder binary until E1-S5.
+  reports the tested E1-S1 baseline until E1-S5 adds product commands.
 - Fakes and shared suites affected: `FakeTtsExecutor` reports the descriptor's
   own context rather than two unrelated digests. This is not cosmetic — the
   cache now recomputes the key from the report and refuses a mismatch, so the
@@ -182,16 +186,13 @@ breaking contract, and the argument is that no conforming frame changes:
 - No durable artifact is affected. Frames are transient, and the one committed
   session fixture already carries real digests.
 
-`WORKER_PROTOCOL_VERSION` therefore stays at `e0.worker.0.1` with its declared
-`e0.worker.0.2` extension. **This classification is the contract owner's to
-ratify.** The alternative reading — that narrowing a field's accepted values is
-a semantic change and therefore breaking under
+The later protocol audit applies the stricter reading: narrowing a field's
+accepted values is a semantic change and therefore breaking under
 [`../governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md`](../governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md)
-§Change classes — is defensible, and taking it would move the worker protocol to
-`e1.worker.1.0` and its extension to `e1.worker.1.1`, along with the session
-fixture, the published schema, the Python `WORKER_PROTOCOL_VERSION`, and
-[`PROVISIONAL-CONTRACT-BASELINE.md`](PROVISIONAL-CONTRACT-BASELINE.md). T-CORE
-owns that call; it is recorded here rather than taken silently either way.
+§Change classes. The worker protocol therefore moves to `e1.worker.1.0` and its
+extension to `e1.worker.1.1`, together with the session fixture, the published
+schema, the Python constants, and
+[`PROVISIONAL-CONTRACT-BASELINE.md`](PROVISIONAL-CONTRACT-BASELINE.md).
 
 Holding the schema against the parser moves no boundary:
 `manifest-v0.schema.json` regenerates with the same `schema_version` `const`,
@@ -237,16 +238,13 @@ gains the two fixed widths and the zero-to-one `progress` range. Every one of
 these **narrows** what the schema admits to what its parser already accepted, so
 no document this build reads today stops being read. Under
 [`../governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md`](../governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md)
-§Change classes this is the same **compatible patch** classification, and the
-same caveat, as the worker-frame typing recorded in §The two the audit left
-open: the alternative reading — that narrowing accepted values is semantic and
-therefore breaking — is defensible, and **T-CORE owns that call**. It is
-recorded here rather than taken silently.
+§Change classes the schema-only corrections are **compatible patches** because
+they publish rules the parsers already applied. Runtime frame narrowings are
+absorbed into the breaking `e1.worker.1.0` baseline.
 
-The worker protocol's own version is untouched by that classification either
-way: no frame this build accepted before is refused now, and one it refused
-before — a `capabilities` frame declaring `e0.worker.0.2` — is accepted by the
-Python end for the first time, which is a widening rather than a narrowing.
+The Python parity repair itself widened acceptance of the then-current extension
+version. The later breaking baseline carries that parity forward at
+`e1.worker.1.0` and `e1.worker.1.1`.
 
 ### What it does not close
 
@@ -325,14 +323,10 @@ document to what its parser now accepts, and both are narrower than what the
 *previous* parser accepted — a takes document with an unusable segment identity,
 or a frame with zero threads, parsed before and does not now. Under
 [`../governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md`](../governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md)
-§Change classes that is the same **compatible patch** classification and the same
-caveat as the narrowings in §What the second audit closed, and it is **T-CORE's
-to ratify** for the same reason: no document or frame that could ever have been
-*published* is refused — a takes file naming a segment no lesson can carry could
-not have been applied, and a worker given no threads could not have rendered —
-but the alternative reading, that narrowing accepted values is semantic and
-therefore breaking, is defensible. No takes document and no persisted frame
-exists to migrate either way.
+§Change classes the takes-schema repair is a compatible patch because it
+publishes a rule the parser already applied. The zero-thread frame refusal is a
+semantic narrowing and is absorbed into the breaking `e1.worker.1.0` baseline.
+No takes document and no persisted frame exists to migrate.
 
 ### What it does not close
 
@@ -416,8 +410,7 @@ either key; the bundle hash that is one of them holds a different value.
 The two schema narrowings are **compatible patches** under
 [`../governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md`](../governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md)
 §Change classes: each publishes a constraint the parser already applied, so no
-document this build accepts becomes invalid and every version is retained. That
-classification is **T-CORE's to ratify**, as the earlier narrowings are.
+document this build accepts becomes invalid and every version is retained.
 
 ## What the sixth audit closed
 
@@ -444,7 +437,7 @@ arrays and unknown type names.
 
 These are compatible patches under §Change classes for the same reason as the
 earlier schema narrowings: each rejects only documents the owning Rust parser
-already rejected. T-CORE still owns ratification of that classification.
+already rejected.
 
 ### What this moves
 
@@ -461,6 +454,309 @@ therefore a new plan hash. The checked-in fake executor carries its own stable
 bundle digest, so its golden plan does not move. Existing cache entries remain
 valid under the identity that produced them and are not reused under the new
 one; none is deleted or re-keyed.
+
+## What the seventh audit closed
+
+The Python environment was version-pinned but not artifact-locked. The same
+versions could resolve to different bytes, the `+cpu` PyTorch source depended
+on machine-local installer configuration, and the documented governed install
+said `--force-reinstall` was mandatory while omitting it from the command.
+
+`worker/requirements.lock` now names PyPI and the official PyTorch CPU index,
+defaults to wheels, declares `s3tokenizer` as the sole sdist exception, and
+binds every index-supplied pin to the SHA-256 of the artifact selected for the
+reference ABI. The governed `chatterbox-tts` pin remains the sole non-artifact
+exception and is bound to its adjacent Git commit. The restore first acquires
+with `--require-hashes`, then installs offline from that wheelhouse with
+`--no-index`, `--no-deps`, `--force-reinstall`, and a pinned, non-isolated
+build environment for the one sdist. Its VCS command now includes the required
+`--force-reinstall`.
+
+This is enforced before a worker identity is returned. `parse_lockfile`
+requires the four exact `REQUIRED_LOCK_DIRECTIVES` and exactly one well-formed
+SHA-256 for every index pin; it refuses an unknown or repeated directive, an
+unhashed or multiply hashed index pin, and any artifact hash on the governed
+pin. `t1_e1_every_index_pin_requires_one_artifact_hash` and
+`t1_e1_the_lock_records_its_package_sources_and_artifact_kinds` cover those
+failures, and `t1_e1_a_lockfile_fault_no_line_carries_names_no_line` covers the
+three it reports against the file rather than a line.
+
+### What this moves
+
+**Every worker-bundle identity moves.** `worker/requirements.lock` is a
+declared bundle input, and the validity rule for that input is now part of the
+derivation. `WORKER_BUNDLE_IDENTITY_VERSION` therefore moves from `e1-s1-v2`
+to `e1-s1-v3`. The restored locked environment returned
+`9ef560e8f884f50dc23bd0bc88d41aff88ff58d8077fbe283adb0f297361108e`
+twice on 2026-08-28. Existing cache entries remain valid under their original
+identities and are not reused under the new one; none is deleted or re-keyed.
+
+The artifact wheelhouse was restored into a fresh CPython 3.12.3 environment
+without index access. The runtime imports, including `torch==2.6.0+cpu`,
+`torchaudio==2.6.0+cpu`, and the sdist-built `s3tokenizer==0.1.7`, succeeded.
+The governed source was not reinstalled into that disposable environment
+because its model root is intentionally outside this repository; its existing
+qualified install passed the mechanical PEP 610 check when the bundle hash was
+read.
+
+## What the eighth audit closed
+
+Lesson `1.1` added `$schema` as an optional field so a `1.0` document without
+it remains readable. That compatibility rule also left the schema metadata
+writable: `AuthoredLesson` exposed `$schema` and `schema_version` as public
+fields, so a caller could serialize a `1.1` document naming another schema, or
+none, while every checked-in example still passed.
+
+Both fields are now private, so no caller outside `study-tts-core` can write
+them. `AuthoredLesson::new` is the publishing construction path: it supplies
+the current version and `schema_uri(LESSON_SCHEMA_STEM, major)` itself, so a
+generated document cannot omit or replace either value. Ingestion remains
+separate through `ValidatedLesson::from_json`, which still accepts a compatible
+earlier-minor document with no link.
+
+This changes no JSON layout and does not tighten ingestion: absent `$schema`
+remains the declared default for compatible earlier documents, and
+`t1_e1_a_lesson_from_an_earlier_minor_version_is_accepted` still proves a
+`1.0` lesson is readable. The Rust construction API is deliberately breaking
+before G1: callers that previously wrote schema metadata by hand can no longer
+reach those fields. No synthesis input, plan hash, cache key, generated
+schema, or worker-bundle identity moves.
+
+## What the ninth audit closed
+
+The four-crate replacement was incomplete in one literal respect: the CLI
+crate still identified itself as the E0-S0 placeholder even though the other
+three crates implemented the E1-S1 contract baseline. It had no test proving
+what the executable reported.
+
+The dependency-free binary now reports the tested E1-S1 contract baseline and
+names E1-S5 as the owner of product commands. The process-level
+`t4_e1_status_executable_reports_the_contract_baseline` test pins its exit
+status, stdout, and empty stderr. This adds no command parser or product
+behavior and changes no durable schema or identity.
+
+## What the tenth audit closed
+
+Both ends bounded the correlation identity only by `MAX_WORKER_FRAME_BYTES`,
+and a refusal has to repeat the identity it refuses. The parser also quoted the
+rejected value at that point, so a frame at the ceiling produced an answer past
+it, which the supervisor refuses for length — a sender chose whether its own
+mistake was reported or dropped.
+
+`MAX_WORKER_REQUEST_ID_BYTES` and `study_tts_worker.protocol.MAX_REQUEST_ID_BYTES`
+are one 256-byte ceiling at both ends, applied at validation rather than on the
+way out: `WorkerFrameError::RequestIdTooLong` and the byte-length check in
+`request_identity`, published as `maxLength` on every `request_id` in
+`worker-protocol-v0.schema.json` so a supervisor reads the bound instead of
+discovering it from the first refusal it cannot match.
+`MAX_REFUSAL_MESSAGE_CHARS` bounds the diagnostic `message` in `failure`, which
+is the one place this worker builds a failure frame and therefore the one place
+the bound cannot be forgotten.
+
+The two halves are deliberately unlike each other. Prose truncated is still
+prose, and the replacement keeps the original length so a reader can tell a
+truncated message from one written that way. An identity truncated is a
+*different* identity: it comes back looking like some other request that was
+answered, and the supervisor correlates nothing while believing it did. So
+`read_request` drops an oversized identity rather than echoing it shortened,
+and answers as `unknown`.
+
+`fixtures/contracts/e1-s1-worker-protocol-cases.ndjson` gains
+`request-id-at-the-ceiling` and `request-id-past-the-ceiling`, so the ceiling
+is decided from one committed file rather than from two suites that would agree
+only by coincidence — the same way its `empty-request-id` case already covers
+the other identity rule, and the reason the file exists.
+`t3_e0_worker_frame_ceiling_and_unknown_fields_fail_closed` covers the boundary
+and the byte past it at the Rust end, `RequestIdentityCeilingTests` covers the
+same rules at the Python end, and
+`test_an_oversized_internal_diagnostic_stays_under_the_ceiling` proves the
+failure builder keeps oversized diagnostics inside the frame ceiling.
+
+The same audit closed a governed refusal that routed nowhere. All eleven
+`WorkerBundleError` variants named the routing row `Worker bundle input missing
+or oversized`, and §Failure routing in
+[`../governance/ROUTING-TABLES.md`](../governance/ROUTING-TABLES.md) has no such
+row — the one covering this boundary is `Worker protocol or containment
+failure`, which every other worker-boundary refusal in the crate already named.
+An operator following that advice was sent to a table entry that does not
+exist, and nothing compared the string to the document.
+
+Those eleven also shared one action across four different repairs. Restoring a
+deleted input, restoring an environment that drifted from the lock,
+regenerating the lock, and aligning the manifest with the layout this build
+implements are not the same work, and an operator acts on the one they are
+handed: a refusal that says an input is missing when the installed environment
+drifted sends them to look for a file that is on disk.
+`WorkerBundleError::remedy` now selects among the four. The owner and the
+routing row stay single because the table gives this boundary one of each, and
+`t1_e0_governed_remedy_mappings_are_exhaustive` pins all four by naming every
+`WorkerBundleError` variant against the repair it carries.
+
+The same audit closed a published link that did not resolve. §What the eighth
+audit closed made `AuthoredLesson`'s schema-metadata fields private and left
+`LESSON_SCHEMA_VERSION` documenting itself with an intra-doc link to one of
+them, so `cargo doc` warned and the rendered link went nowhere. It names the
+`$schema` link in prose instead, because the field it describes is private and
+no public item stands in for it.
+
+### What this moves
+
+`worker/study_tts_worker/protocol.py` and
+`schemas/worker-protocol-v0.schema.json` are both declared bundle inputs, so
+**every worker-bundle identity moves**, from
+`9ef560e8f884f50dc23bd0bc88d41aff88ff58d8077fbe283adb0f297361108e` to
+`7e1c506f8ab81429f23b5edb7533beaa72dbae1a02d722c2bd289cd416b3be38`. The
+restored locked environment returned the latter value twice on 2026-08-28.
+Neither the input set nor the derivation changed, so
+`WORKER_BUNDLE_IDENTITY_VERSION` remains `e1-s1-v3`.
+
+A render plan built with that worker identity receives new synthesis keys and
+therefore a new plan hash. The checked-in fake executor carries its own stable
+bundle digest, so its golden plan does not move. Existing cache entries remain
+valid under the identity that produced them and are not reused under the new
+one; none is deleted or re-keyed.
+
+`fixtures/contracts/e1-s1-worker-protocol-cases.ndjson` moves with its two new
+cases, so its row in
+[`../testing/TEST-DATA-MANIFEST.md`](../testing/TEST-DATA-MANIFEST.md) carries a
+new SHA-256. Neither file is a bundle input and neither reaches a synthesis,
+plan, or cache identity. The `lesson.rs` link repair is a comment: no item,
+signature, visibility, or serialized byte moves with it.
+
+The remedy repair moves no identity either. Recovery advice is operator-facing
+text produced at the moment of a refusal; it is not serialized, not hashed, and
+reaches no lesson, plan, worker, cache, verification, or package document. What
+it changes is where an operator is sent, which is the point of it.
+
+The frame contract narrows without changing shape. §Change classes in
+[`../governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md`](../governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md)
+calls a frame change breaking, and this is a semantic narrowing of two existing
+fields rather than the publication of a rule the parsers already applied —
+which is what let §What the sixth audit closed classify its pattern anchors as
+compatible patches. The later audit therefore moves `worker_frames` to
+`e1.worker.1.0`; the bounded practical impact does not change its class.
+
+## What the eleventh audit closed
+
+The next audit found three disagreements in what the E1-S1 baseline called a
+complete worker protocol:
+
+| Finding | Closed by |
+|---|---|
+| The 256-byte request-ID ceiling narrowed accepted frames while the protocol retained its old major | Breaking `e1.worker.1.0` and extension `e1.worker.1.1`; the prior major is a shared refused fixture, and this record supplies impact, migration, and rollback |
+| ADR-0001 §10.2 defines six methods while the request enum, executable fake, Python worker, and five-frame session omitted `health` | `WorkerRequestFrame::Health`, `WorkerResponseFrame::Health`, both executables, and a six-frame `t4_e1_fake_worker_passes_shared_protocol_contract` session; the E1-S1 Python worker truthfully reports `ready: false` and `model_loaded: false` |
+| Rust and Python counted 256 UTF-8 bytes while JSON Schema `maxLength` counted Unicode characters | Request IDs are ASCII at both runtime parsers and carry the same pattern in `worker-protocol-v1.schema.json`; the shared 200-character `é` fixture is refused by Rust, Python, and the schema |
+
+The new major also absorbs the earlier runtime frame narrowings recorded above:
+typed digests, fixed integer widths, and nonzero threads. Schema changes that
+only publish a rule the parser already enforced remain compatible patches.
+
+### Migration, rollback, and identity impact
+
+No frame is durable and no compatibility adapter can safely reinterpret an old
+frame under new request-ID rules. Upgrade the Rust supervisor, Python worker,
+fake, fixtures, and schema together; an `e0.worker.0.1` or `e0.worker.0.2` frame
+is refused by version. Rollback reverts those consumers together. Cache entries
+remain valid under the worker-bundle identity that produced them and are not
+deleted or re-keyed.
+
+The published schema moves from `worker-protocol-v0.schema.json` at `0.1` to
+`worker-protocol-v1.schema.json` at `1.0`. That path and the executable protocol
+modules are declared worker-bundle inputs, so every worker-bundle hash moves and
+`WORKER_BUNDLE_IDENTITY_VERSION` advances from `e1-s1-v3` to `e1-s1-v4`. The
+restored locked environment returned
+`339e574dd6a06cbc1e5ce08a475e3f5f8de5e30f85e2218dd88b86ddebd24014`
+twice on 2026-08-28.
+
+## What the twelfth audit closed
+
+The cancellation correlation identity remained an unrestricted string even
+after the eleventh audit bounded every envelope `request_id`. Both workers echo
+`active_request_id`, so a cancel request accepted at the 1 MiB frame ceiling
+could produce a response beyond that same ceiling. Rust now validates the
+field on both `Cancel` and `Cancelled`, Python uses `request_identity` for the
+cancel shape, and the generated schema applies the same nonempty ASCII
+256-byte rule. The shared decision fixture carries accepted 256-byte and
+refused 257-byte cases; the shared subprocess session carries the exact
+boundary through both worker executables and asserts the response remains a
+readable frame.
+
+E1-S1 task 4 also required generated lessons to carry the stable `$schema`
+URI, while the eighth audit had deliberately left no egress path.
+`AuthoredLesson::new` now owns current-version construction and always supplies
+both metadata fields. `t1_e1_generated_lesson_includes_the_stable_schema_uri`
+pins the serialized values. This does not add the E1-S5 CLI command; it gives
+that later command the E1-S1 construction boundary it must call.
+
+Finally, every malformed lockfile condition used one
+`UnreadableWorkerLockfile` message claiming the named line was not an exact
+pin. `WorkerLockfileErrorReason` now distinguishes invalid UTF-8, malformed
+pins, artifact hashes, missing and repeated required directives, unsupported
+directives, and governed-source provenance. The refusal still withholds line
+contents and keeps the same worker/runtime remedy owner, but now names the
+invariant the owner must repair.
+
+Three of those invariants are the file's rather than a line's, and the typed
+reason alone still attributed them to a line: the refusal carried a `usize`,
+so invalid UTF-8 rendered as `line 0` and both the absent required directive
+and the missing governed pin rendered one past the last line — a 42-line lock
+reporting "line 43 omits a required resolution directive". The `line` field is
+now a `WorkerLockfileLocus`, either `Line(n)` or `WholeFile`, and a whole-file
+refusal reads "worker lockfile `worker/requirements.lock` as a whole is not
+UTF-8". `t1_e1_a_lockfile_fault_no_line_carries_names_no_line` drives all three
+through `verified_hash` and asserts the rendered message names no line, which
+is the only place the fault was visible.
+
+### Compatibility and identity impact
+
+The active-ID rule completes the same pre-G1 breaking worker baseline the
+eleventh audit introduced; it does not create another versioned shape.
+Supervisor, workers, fixtures, and `worker-protocol-v1.schema.json` must still
+move together, and an old-major frame remains refused rather than translated.
+
+`worker/study_tts_worker/protocol.py` and the generated worker schema are
+declared bundle inputs, so every worker-bundle hash moves from
+`339e574dd6a06cbc1e5ce08a475e3f5f8de5e30f85e2218dd88b86ddebd24014`
+to `8339a5b425781965527e299591a445a1c4452ecdbeea6756fa82fd401b8d508a`.
+The declared input set and derivation do not change, so
+`WORKER_BUNDLE_IDENTITY_VERSION` remains `e1-s1-v4`. Existing cache entries
+remain valid under their producing identity and are neither deleted nor
+re-keyed.
+
+The lesson constructor, the typed lockfile reason, and the `WorkerLockfileLocus`
+that replaces its line number change Rust construction and diagnostic APIs
+without changing any durable JSON shape or identity. The two
+fixture files are not bundle inputs; their new SHA-256 values are recorded in
+`docs/testing/TEST-DATA-MANIFEST.md`.
+
+## What the thirteenth audit closed
+
+The worker documented failure diagnostics as redacted, but its parser embedded
+sender-controlled method and protocol-version values unchanged in
+`FrameError`, and `_refusal` published that text on the protocol channel. The
+same path exposed duplicate and unknown field names, rejected numeric values,
+and interpreter exception text. A request using
+`/private/voices/owner/reference.wav` as its method therefore returned that
+voice path in a failure frame.
+
+Parser refusals now name only the violated invariant, schema-owned JSON path,
+and derived resource bound. They do not reproduce the rejected value or an
+unknown field name. The subprocess regression sends sentinel lesson text and a
+sentinel voice path through the formerly unsafe method and version branches,
+then asserts neither stdout nor stderr contains either sentinel and that the
+worker continues through shutdown.
+
+### Identity impact
+
+`worker/study_tts_worker/protocol.py` and
+`worker/study_tts_worker/worker.py` are declared bundle inputs, so every
+worker-bundle hash moves from
+`8339a5b425781965527e299591a445a1c4452ecdbeea6756fa82fd401b8d508a` to
+`5d77a5a6a520466043cb6a67ae805b148104d74d8c91fe85932b31d782d8b0af`.
+The input set and derivation are unchanged, so
+`WORKER_BUNDLE_IDENTITY_VERSION` remains `e1-s1-v4`. Existing cache entries
+remain valid under their producing identity and are neither deleted nor
+re-keyed.
 
 ## Impact of the two deliberately incomplete inputs
 
@@ -485,15 +781,10 @@ it lands.
 Recorded here rather than left for a reader to discover:
 
 - **The worker has no speech backend.** `worker/study_tts_worker/worker.py`
-  answers `initialize`, `capabilities`, `cancel`, and `shutdown`, and refuses
-  `synthesize` with `initialization_failed` naming E1-S3. It does not return a
-  placeholder tone, because the cache would publish that under a key claiming a
-  real model produced it.
-- **The Python lock pins versions, not artifact hashes.**
-  `pip install --require-hashes` cannot be used against `worker/requirements.lock`
-  yet. [`../operations/WORKER-ENVIRONMENT.md`](../operations/WORKER-ENVIRONMENT.md)
-  §Adding artifact hashes records the procedure, what it changes, and the fact
-  that taking it moves every cache key and needs its own record.
+  answers `initialize`, `capabilities`, `health`, `cancel`, and `shutdown`, and
+  refuses `synthesize` with `initialization_failed` naming E1-S3. It does not
+  return a placeholder tone, because the cache would publish that under a key
+  claiming a real model produced it.
 - **The verification schema describes the identity, not the finding.** The
   transcript, comparison, and scored findings arrive with the ASR stack in
   E4-S1 as a compatible extension at `1.1`.
@@ -504,12 +795,14 @@ Recorded here rather than left for a reader to discover:
   and the shared contract scenarios were updated with the descriptor, the
   declared language set, and the reported context, and the walking skeleton and
   provisional-contract suites were rerun against them.
-- Migration procedure: none is owed or possible. A synthesis key names a
-  requested take, not reproducible bytes, so an old cached artifact cannot be
-  re-keyed — the audio it holds was produced under inputs the new key does not
-  describe. Old entries are left in place and simply not reused; nothing is
-  deleted, because [`../governance/ROUTING-TABLES.md`](../governance/ROUTING-TABLES.md)
-  never routes a refusal to deletion of a valid artifact.
+- Migration procedure: update both protocol executables, their fixtures, and
+  the published schema together. Old-major frames are refused rather than
+  translated. A synthesis key names a requested take, not reproducible bytes,
+  so an old cached artifact cannot be re-keyed — the audio it holds was produced
+  under inputs the new key does not describe. Old entries are left in place and
+  simply not reused; nothing is deleted, because
+  [`../governance/ROUTING-TABLES.md`](../governance/ROUTING-TABLES.md) never
+  routes a refusal to deletion of a valid artifact.
 - Rollback procedure: revert the Rust change and its consumers together. Cache
   entries written under either identity remain on disk and remain valid under
   the identity that produced them, so a rollback loses reuse rather than data.
@@ -580,10 +873,26 @@ immutable record of the bundle it read, not a claim about the bundle today.
 §What the sixth audit closed moves this document and the bundle hash once more,
 so v4 is superseded by
 [`../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v5.md`](../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v5.md).
+§What the seventh audit closed moves this document, the worker lock, the
+bundle-identity derivation version, and the bundle hash; v5 is therefore
+superseded by
+[`../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v6.md`](../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v6.md).
+§What the eighth and ninth audits closed move this document, the Rust lesson-
+construction boundary, and the CLI status boundary; v6 is therefore superseded by
+[`../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v7.md`](../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v7.md).
+§What the tenth audit closed moves this document, both ends of the worker
+protocol, the published worker-protocol schema, and the bundle hash; v7 is
+therefore superseded by
+[`../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v8.md`](../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v8.md).
+§What the eleventh and twelfth audits closed are folded into that still-Proposed
+v8 record; v8 is updated before approval rather than superseded as though it
+were already immutable evidence.
 
 ## Approval
 
-- Contract owner decision: adopted as the E1-S1 identity baseline
-- Engineering owner approval: pending review of this change
+- Contract owner decision: identity baseline adopted before the eleventh audit;
+  breaking worker-frame baseline approved by the project owner on 2026-08-28
+- Worker-frame classification: approved as breaking at `e1.worker.1.0`
+- Engineering owner approval: approved on 2026-08-28
 - Affected-track approvals: deferred to the G1 fake/real parity review
 - Effective version and date: provisional `e1.tts-executor.1.0`, 2026-08-26

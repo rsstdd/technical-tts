@@ -49,8 +49,8 @@ const MAX_PAUSE_AFTER_MS: u32 = 10_000;
 /// Layout version this build publishes for a lesson document.
 ///
 /// Version `1.0` made synthesis-key language required; `1.1` added the optional
-/// [`AuthoredLesson::schema`] link. The change classes and history are recorded
-/// in `docs/architecture/E1-S1-INTERFACE-CHANGE-001.md`.
+/// `$schema` link a document may carry. The change classes and history are
+/// recorded in `docs/architecture/E1-S1-INTERFACE-CHANGE-001.md`.
 pub const LESSON_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(1, 1);
 
 /// File-name stem of the published lesson schema, per ADR-0001 §7.1.
@@ -75,7 +75,7 @@ pub struct AuthoredLesson {
     /// can appear at all.
     #[serde(rename = "$schema", default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "schema_link_json_schema")]
-    pub schema: Option<String>,
+    schema: Option<String>,
     /// Schema this document claims; an unrecognized version is refused rather
     /// than guessed at.
     ///
@@ -83,7 +83,7 @@ pub struct AuthoredLesson {
     /// version is reported by [`LessonError::UnsupportedSchema`] naming what
     /// was written, instead of by a serde message about a field type.
     #[schemars(schema_with = "schema_version_json_schema")]
-    pub schema_version: String,
+    schema_version: String,
     /// Stable identity of the lesson, which also names its output directory.
     #[schemars(schema_with = "portable_id_json_schema")]
     pub lesson_id: String,
@@ -98,6 +98,12 @@ pub struct AuthoredLesson {
     ///
     /// Authored text here and a [`LanguageTag`] on [`ValidatedLesson`], for the
     /// reason given on `schema_version`.
+    ///
+    /// The published `pattern` is necessary but not sufficient: `LanguageTag`
+    /// is the authority, and `language_json_schema` spells its grammar loosely
+    /// on purpose so an author's editor never rejects a tag this build accepts.
+    /// A tag the schema admits may still be refused by
+    /// [`ValidatedLesson::from_json`].
     #[schemars(schema_with = "language_json_schema")]
     pub language: String,
     /// The lesson's segments in speaking order.
@@ -333,6 +339,26 @@ pub enum LessonError {
 }
 
 impl AuthoredLesson {
+    /// Creates a current lesson document with its stable published-schema link.
+    pub fn new(
+        lesson_id: String,
+        title: String,
+        language: String,
+        segments: Vec<LessonSegment>,
+    ) -> Self {
+        Self {
+            schema: Some(schema_uri(
+                LESSON_SCHEMA_STEM,
+                LESSON_SCHEMA_VERSION.major(),
+            )),
+            schema_version: LESSON_SCHEMA_VERSION.to_string(),
+            lesson_id,
+            title,
+            language,
+            segments,
+        }
+    }
+
     /// Validates authored data before making it available to render planning.
     ///
     /// # Errors
@@ -769,6 +795,26 @@ mod tests {
             serde_json::to_value(authored).expect("authored lesson should serialize"),
             expected
         );
+    }
+
+    #[test]
+    fn t1_e1_generated_lesson_includes_the_stable_schema_uri() {
+        let fixture = authored_fixture();
+        let generated = AuthoredLesson::new(
+            fixture.lesson_id,
+            fixture.title,
+            fixture.language,
+            fixture.segments,
+        );
+
+        let document =
+            serde_json::to_value(generated).expect("a generated lesson should serialize");
+
+        assert_eq!(
+            document["$schema"],
+            "https://schemas.study-tts.example/lesson-v1.schema.json"
+        );
+        assert_eq!(document["schema_version"], "1.1");
     }
 
     #[test]

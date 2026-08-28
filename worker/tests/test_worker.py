@@ -34,6 +34,10 @@ sys.path.insert(0, str(WORKER_ROOT))
 
 from study_tts_worker import WORKER_PROTOCOL_VERSION  # noqa: E402
 from study_tts_worker import worker as worker_module  # noqa: E402
+from study_tts_worker.protocol import (  # noqa: E402
+    MAX_REQUEST_ID_BYTES,
+    MAX_WORKER_FRAME_BYTES,
+)
 from study_tts_worker.worker import (  # noqa: E402
     LAUNCHER_SCHEMA_VERSION,
     OPTIONAL_OFFLINE_ENVIRONMENT,
@@ -86,6 +90,28 @@ def run_worker(lines: list[str]) -> subprocess.CompletedProcess[str]:
         timeout=60,
         check=False,
     )
+
+
+class CancellationBoundaryTests(unittest.TestCase):
+    """Cancellation remains correlatable at its exact process boundary."""
+
+    def test_the_shared_session_echoes_the_active_id_at_the_ceiling(self) -> None:
+        session = (
+            WORKER_ROOT.parent
+            / "fixtures/contracts/e1-s1-fake-worker-session.ndjson"
+        ).read_text(encoding="utf-8").splitlines()
+
+        result = run_worker(session)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        frames = [json.loads(line) for line in lines]
+        cancelled = next(frame for frame in frames if frame["event"] == "cancelled")
+        active_request_id = cancelled["active_request_id"]
+        self.assertEqual(len(active_request_id.encode("utf-8")), MAX_REQUEST_ID_BYTES)
+        self.assertTrue(
+            all(len(line.encode("utf-8")) <= MAX_WORKER_FRAME_BYTES for line in lines)
+        )
 
 
 class ProtocolStreamTests(unittest.TestCase):
@@ -154,6 +180,61 @@ class HostileFrameTests(unittest.TestCase):
         for frame in frames[1:3]:
             self.assertEqual(frame["code"], "invalid_request")
         self.assertEqual(frames[3]["request_id"], "req-4")
+
+
+class RedactedRefusalTests(unittest.TestCase):
+    """Refusal frames identify violated invariants without echoing input."""
+
+    def test_sender_controlled_lesson_text_and_voice_path_are_not_published(self) -> None:
+        lesson_text = "PRIVATE LESSON SENTINEL: cache invalidation notes"
+        voice_path = "/private/voices/owner/reference.wav"
+
+        result = run_worker(
+            [
+                request(voice_path, "req-1"),
+                request("capabilities", "req-2", protocol_version=lesson_text),
+                request("capabilities", "req-3", **{lesson_text: True}),
+                request("shutdown", "req-4"),
+            ]
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        frames = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(
+            [frame["event"] for frame in frames],
+            ["failure", "failure", "failure", "shutdown"],
+        )
+        self.assertEqual(frames[0]["message"], "frame method is unsupported")
+        self.assertEqual(
+            frames[1]["message"],
+            "frame protocol version is unsupported",
+        )
+        self.assertEqual(frames[2]["message"], "`frame` carries an unknown field")
+        for sentinel in (lesson_text, voice_path):
+            self.assertNotIn(sentinel, result.stdout)
+            self.assertNotIn(sentinel, result.stderr)
+
+
+class HealthTests(unittest.TestCase):
+    """Health reports this build's actual readiness and model residency."""
+
+    def test_health_reports_that_the_e1_s1_worker_has_no_loaded_backend(self) -> None:
+        result = run_worker(
+            [request("health", "req-1"), request("shutdown", "req-2")]
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        frames = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(
+            frames[0],
+            {
+                "event": "health",
+                "protocol_version": WORKER_PROTOCOL_VERSION,
+                "request_id": "req-1",
+                "ready": False,
+                "model_loaded": False,
+            },
+        )
 
 
 class OfflineEnvironmentTests(unittest.TestCase):
@@ -247,8 +328,11 @@ class LauncherShapeTests(unittest.TestCase):
 
     def test_a_launcher_field_this_build_does_not_describe_is_refused(self) -> None:
         for launcher, named in [
-            (self.launcher(unexpected="value"), "unexpected"),
-            (self.launcher(schema_version="9.9"), "9.9"),
+            (
+                self.launcher(unexpected="value"),
+                "`launcher` carries an unknown field",
+            ),
+            (self.launcher(schema_version="9.9"), "declares layout '9.9'"),
             (self.launcher(local_files_only="yes"), "local_files_only"),
             (self.launcher(threads=True), "threads"),
             (
@@ -258,7 +342,7 @@ class LauncherShapeTests(unittest.TestCase):
                         "PYTHONPATH": "/tmp/injected",
                     }
                 ),
-                "PYTHONPATH",
+                "launcher.offline_environment",
             ),
         ]:
             with self.subTest(named=named):

@@ -92,7 +92,10 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 use study_tts_core::{CanonicalValue, WorkerBundleHash, canonical_digest};
 
-use crate::error::{EnvironmentMismatch, RuntimeIdentityMismatch, WorkerBundleError};
+use crate::error::{
+    EnvironmentMismatch, RuntimeIdentityMismatch, WorkerBundleError, WorkerLockfileErrorReason,
+    WorkerLockfileLocus,
+};
 use crate::process::{self, CommandRunError, VERSION_PROBE_POLICY};
 use crate::{
     BuildError, ManagedPathError, ToolInvocation, ToolOperation, io_error, managed, tools,
@@ -102,10 +105,11 @@ use crate::{
 ///
 /// The lever that invalidates every bundle identity when the derivation below
 /// changes, matching [`study_tts_core::SYNTHESIS_IDENTITY_VERSION`] in role.
-/// Moved to `e1-s1-v2` when the derivation gained the completeness check on
-/// the declared input list and began hashing the manifest's declared runtime
-/// identity rather than one supplied by the caller.
-pub const WORKER_BUNDLE_IDENTITY_VERSION: &str = "e1-s1-v2";
+/// Moved to `e1-s1-v3` when a valid environment lock began requiring explicit
+/// package sources, artifact kinds, and one SHA-256 artifact hash per
+/// index-supplied distribution. Moved to `e1-s1-v4` when the breaking worker
+/// protocol replaced its schema input with `worker-protocol-v1`.
+pub const WORKER_BUNDLE_IDENTITY_VERSION: &str = "e1-s1-v4";
 
 /// Path of the bundle manifest, relative to the repository root.
 ///
@@ -130,7 +134,7 @@ pub const WORKER_LAUNCHER_PATH: &str = "worker/launcher.json";
 /// list below needs; `t1_e1_the_required_protocol_schema_is_the_published_file`
 /// pins it to the name [`crate::PUBLISHED_SCHEMAS`] generates, so publishing a
 /// new major cannot leave this naming a file that is no longer written.
-pub const WORKER_PROTOCOL_SCHEMA_PATH: &str = "schemas/worker-protocol-v0.schema.json";
+pub const WORKER_PROTOCOL_SCHEMA_PATH: &str = "schemas/worker-protocol-v1.schema.json";
 
 /// The project-owned Python package, relative to the repository root.
 pub const WORKER_PACKAGE_ROOT: &str = "worker/study_tts_worker";
@@ -311,6 +315,31 @@ const RUNTIME_PROBE_SCRIPT: &str = concat!(
 /// constant in return. The commit follows it on the same line, and the pin it
 /// governs is the line after.
 const GOVERNED_SOURCE_MARKER: &str = "# installed from a governed local source tree at commit ";
+
+/// Resolution directives `worker/requirements.lock` must state for itself.
+///
+/// A pin says which version, never which index served it or whether a wheel or
+/// a source tree was built. Left to installer configuration, the same lock
+/// resolves differently on two machines while every pin and every artifact hash
+/// still reads as satisfied. Requiring the four here moves that decision into
+/// the bytes the bundle identity hashes.
+///
+/// A directive outside this list is refused rather than ignored: it would
+/// change resolution in a way this build has not reasoned about.
+/// `docs/operations/WORKER-ENVIRONMENT.md` §Regenerating the lock names this
+/// constant in return.
+const REQUIRED_LOCK_DIRECTIVES: [&str; 4] = [
+    "--index-url https://pypi.org/simple",
+    "--extra-index-url https://download.pytorch.org/whl/cpu",
+    "--only-binary=:all:",
+    "--no-binary=s3tokenizer",
+];
+
+/// Spelling `pip` gives the digest that binds a pin to its artifact bytes.
+const ARTIFACT_HASH_PREFIX: &str = "--hash=sha256:";
+
+/// Length of the SHA-256 an artifact hash carries, as lowercase hexadecimal.
+const ARTIFACT_HASH_HEX_LENGTH: usize = 64;
 
 /// The one distribution this lock may satisfy from outside an index.
 ///
@@ -649,8 +678,9 @@ impl WorkerBundle {
     /// # Errors
     ///
     /// [`WorkerBundleError::UnreadableWorkerLockfile`] when a lock line is not
-    /// an exact pin or the governed pin and its provenance marker have come
-    /// apart, and [`WorkerBundleError::EnvironmentDoesNotMatchLock`]
+    /// an artifact-bound pin, a required resolution directive is absent, or
+    /// the governed pin and its provenance marker have come apart, and
+    /// [`WorkerBundleError::EnvironmentDoesNotMatchLock`]
     /// carrying the [`EnvironmentMismatch`] variant for the first fault found:
     /// [`EnvironmentMismatch::AmbiguousDistribution`] when two installs share
     /// a canonicalized name, then, per locked pin,
@@ -665,7 +695,12 @@ impl WorkerBundle {
     fn check_environment_matches_lock(&self, probe: &RuntimeProbe) -> Result<(), BuildError> {
         let resolved = self.resolve(WORKER_LOCKFILE_PATH)?;
         let bytes = self.read_bounded(WORKER_LOCKFILE_PATH, &resolved)?;
-        let lockfile = String::from_utf8(bytes).map_err(|_| unreadable_lockfile(0))?;
+        let lockfile = String::from_utf8(bytes).map_err(|_| {
+            unreadable_lockfile(
+                WorkerLockfileLocus::WholeFile,
+                WorkerLockfileErrorReason::InvalidUtf8,
+            )
+        })?;
 
         let installed = installed_by_name(&probe.distributions)?;
         let pins = parse_lockfile(&lockfile)?;
@@ -1063,13 +1098,13 @@ fn check_path_hooks_are_pinned(
     Ok(())
 }
 
-/// Reads `worker/requirements.lock` as the set of pins it declares.
+/// Reads `worker/requirements.lock` as the artifact-bound set of pins it
+/// declares.
 ///
-/// Refuses a line that is not an exact `==` pin rather than skipping it: the
-/// lockfile's own header states that every entry is one, so a line this parser
-/// cannot read is a lockfile that was regenerated wrongly, and skipping it
-/// would drop a distribution out of the comparison silently — which is the
-/// class of failure this whole check exists to end.
+/// Refuses an unknown directive or an index pin without exactly one SHA-256
+/// digest rather than skipping it. A version without its artifact is still
+/// resolver input, not a lock; an implicit source can select different bytes
+/// while every visible pin remains unchanged.
 ///
 /// Refuses, for the same reason, any lock in which the
 /// [`GOVERNED_SOURCE_MARKER`] and the [`GOVERNED_DISTRIBUTION_NAME`] pin have
@@ -1078,14 +1113,17 @@ fn check_path_hooks_are_pinned(
 /// lock that has lost the pairing would pass while admitting the index install
 /// the marker exists to refuse.
 ///
-/// The refusal names the line *number* and not the line. A wrongly regenerated
-/// lock is exactly where a `chatterbox-tts @ file:///...` line appears, and
+/// The refusal names the *locus* and not the line: the line number where one
+/// line is at fault, and the file where the invariant is the whole file's to
+/// keep. A wrongly regenerated lock is exactly where a
+/// `chatterbox-tts @ file:///...` line appears, and
 /// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` keeps a governed model root
 /// out of logs.
 fn parse_lockfile(lockfile: &str) -> Result<Vec<LockedDistribution>, BuildError> {
     let mut pins = Vec::new();
     let mut pending_commit: Option<(usize, String)> = None;
     let mut governed_pin_seen = false;
+    let mut directives_seen = [false; REQUIRED_LOCK_DIRECTIVES.len()];
 
     for (index, line) in lockfile.lines().enumerate() {
         let line_number = index + 1;
@@ -1095,7 +1133,10 @@ fn parse_lockfile(lockfile: &str) -> Result<Vec<LockedDistribution>, BuildError>
             // A second marker before any pin leaves two provenance claims and
             // one distribution to attach them to.
             if pending_commit.is_some() {
-                return Err(unreadable_lockfile(line_number));
+                return Err(unreadable_lockfile_line(
+                    line_number,
+                    WorkerLockfileErrorReason::InvalidProvenance,
+                ));
             }
             pending_commit = Some((line_number, commit.trim().to_owned()));
             continue;
@@ -1107,17 +1148,63 @@ fn parse_lockfile(lockfile: &str) -> Result<Vec<LockedDistribution>, BuildError>
             // edit had displaced into a governed pin with no provenance, and a
             // pin with no provenance is not checked at all.
             if pending_commit.is_some() {
-                return Err(unreadable_lockfile(line_number));
+                return Err(unreadable_lockfile_line(
+                    line_number,
+                    WorkerLockfileErrorReason::InvalidProvenance,
+                ));
             }
             continue;
         }
 
-        let Some((name, version)) = line.split_once("==") else {
-            return Err(unreadable_lockfile(line_number));
+        if line.starts_with("--") {
+            // A directive between a marker and its pin would separate the two.
+            if pending_commit.is_some() {
+                return Err(unreadable_lockfile_line(
+                    line_number,
+                    WorkerLockfileErrorReason::InvalidProvenance,
+                ));
+            }
+            let Some(position) = REQUIRED_LOCK_DIRECTIVES.iter().position(|&it| it == line) else {
+                return Err(unreadable_lockfile_line(
+                    line_number,
+                    WorkerLockfileErrorReason::UnsupportedDirective,
+                ));
+            };
+            // Repeating one is not harmless: for the two index directives the
+            // last occurrence is the one that resolves, so a duplicate is a
+            // second answer to a question the lock must answer once.
+            if directives_seen[position] {
+                return Err(unreadable_lockfile_line(
+                    line_number,
+                    WorkerLockfileErrorReason::DuplicateRequiredDirective,
+                ));
+            }
+            directives_seen[position] = true;
+            continue;
+        }
+
+        // `line` is trimmed and the blank and comment cases are skipped above,
+        // so the first token always exists. Still a refusal rather than an
+        // `expect`: no lockfile this parser reads may panic the build.
+        let mut tokens = line.split_whitespace();
+        let Some(pin) = tokens.next() else {
+            return Err(unreadable_lockfile_line(
+                line_number,
+                WorkerLockfileErrorReason::MalformedPin,
+            ));
+        };
+        let hash = tokens.next();
+        let multiple_hashes = tokens.next().is_some();
+
+        let Some((name, version)) = pin.split_once("==") else {
+            return Err(unreadable_lockfile_line(
+                line_number,
+                WorkerLockfileErrorReason::MalformedPin,
+            ));
         };
 
-        let name = name.trim();
-        let version = version.trim();
+        // Neither is trimmed, and neither needs to be: `pin` stops at the first
+        // space, so no whitespace can survive into a name or a version.
         let name_bytes = name.as_bytes();
         if !name_bytes
             .first()
@@ -1130,20 +1217,69 @@ fn parse_lockfile(lockfile: &str) -> Result<Vec<LockedDistribution>, BuildError>
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
             || version.is_empty()
             || version.contains('=')
-            || version.bytes().any(|byte| byte.is_ascii_whitespace())
         {
-            return Err(unreadable_lockfile(line_number));
+            return Err(unreadable_lockfile_line(
+                line_number,
+                WorkerLockfileErrorReason::MalformedPin,
+            ));
         }
 
         let name = canonicalize_distribution_name(name);
         let governed_commit = pending_commit.take().map(|(_, commit)| commit);
         if name == GOVERNED_DISTRIBUTION_NAME {
-            if governed_pin_seen || governed_commit.is_none() {
-                return Err(unreadable_lockfile(line_number));
+            // The governed pin carries no hash, and must not: it is installed
+            // from a source tree at a commit rather than from a published
+            // artifact, so there are no artifact bytes to bind. Its provenance
+            // is `governed_commit`, checked against PEP 610 in
+            // `WorkerBundle::check_environment_matches_lock`.
+            if governed_pin_seen || governed_commit.is_none() || hash.is_some() {
+                return Err(unreadable_lockfile_line(
+                    line_number,
+                    WorkerLockfileErrorReason::InvalidProvenance,
+                ));
             }
             governed_pin_seen = true;
         } else if governed_commit.is_some() {
-            return Err(unreadable_lockfile(line_number));
+            return Err(unreadable_lockfile_line(
+                line_number,
+                WorkerLockfileErrorReason::InvalidProvenance,
+            ));
+        } else {
+            // Exactly one, so the artifact is named and named once. None leaves
+            // the version free to be served by any bytes the index offers under
+            // it; two leave the reader no way to tell which was installed.
+            //
+            // Validated and dropped rather than kept: nothing this build can
+            // ask the interpreter reports the hash of the artifact a
+            // distribution was installed from, so a stored value would have no
+            // reader. The lock's own bytes reach the bundle identity, which is
+            // what makes editing a hash change the identity.
+            let Some(hash) = hash.filter(|_| !multiple_hashes) else {
+                return Err(unreadable_lockfile_line(
+                    line_number,
+                    WorkerLockfileErrorReason::InvalidArtifactHash,
+                ));
+            };
+            let Some(digest) = hash.strip_prefix(ARTIFACT_HASH_PREFIX) else {
+                return Err(unreadable_lockfile_line(
+                    line_number,
+                    WorkerLockfileErrorReason::InvalidArtifactHash,
+                ));
+            };
+            // Lowercase only, for the reason `study_tts_core::is_blake3_hex`
+            // gives about its own digests: an uppercase spelling is not what
+            // the tool writing this file produces, so accepting it would
+            // normalize away the evidence that something else wrote the line.
+            if digest.len() != ARTIFACT_HASH_HEX_LENGTH
+                || !digest
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+            {
+                return Err(unreadable_lockfile_line(
+                    line_number,
+                    WorkerLockfileErrorReason::InvalidArtifactHash,
+                ));
+            }
         }
 
         pins.push(LockedDistribution {
@@ -1154,12 +1290,24 @@ fn parse_lockfile(lockfile: &str) -> Result<Vec<LockedDistribution>, BuildError>
     }
 
     if let Some((line_number, _)) = pending_commit {
-        return Err(unreadable_lockfile(line_number));
+        return Err(unreadable_lockfile_line(
+            line_number,
+            WorkerLockfileErrorReason::InvalidProvenance,
+        ));
     }
+    // Neither fault is a line's: no line was expected to carry the governed
+    // pin, and a directive that is absent is absent from the file.
     if !governed_pin_seen {
-        // Named past the last line because the fault is the file's rather than
-        // any one line's, and `0` already means "not UTF-8 at all".
-        return Err(unreadable_lockfile(lockfile.lines().count() + 1));
+        return Err(unreadable_lockfile(
+            WorkerLockfileLocus::WholeFile,
+            WorkerLockfileErrorReason::InvalidProvenance,
+        ));
+    }
+    if directives_seen.contains(&false) {
+        return Err(unreadable_lockfile(
+            WorkerLockfileLocus::WholeFile,
+            WorkerLockfileErrorReason::MissingRequiredDirective,
+        ));
     }
 
     Ok(pins)
@@ -1196,11 +1344,21 @@ fn canonicalize_distribution_name(name: &str) -> String {
     canonical
 }
 
-/// Builds the refusal for a lockfile line this build cannot read as a pin.
-fn unreadable_lockfile(line: usize) -> BuildError {
+/// Builds the refusal for a lockfile line this build cannot read as a
+/// resolution directive or artifact-bound pin.
+fn unreadable_lockfile_line(line: usize, reason: WorkerLockfileErrorReason) -> BuildError {
+    unreadable_lockfile(WorkerLockfileLocus::Line(line), reason)
+}
+
+/// Builds the refusal for a lockfile invariant that failed at `locus`.
+fn unreadable_lockfile(
+    locus: WorkerLockfileLocus,
+    reason: WorkerLockfileErrorReason,
+) -> BuildError {
     WorkerBundleError::UnreadableWorkerLockfile {
         path: PathBuf::from(WORKER_LOCKFILE_PATH),
-        line,
+        locus,
+        reason,
     }
     .into()
 }
@@ -2441,21 +2599,151 @@ mod tests {
                 .expect_err("a lockfile line that is not a pin must not hash");
 
             let BuildError::WorkerBundle(WorkerBundleError::UnreadableWorkerLockfile {
-                line, ..
+                locus,
+                reason,
+                ..
             }) = &error
             else {
                 panic!("`{malformed}` produced the wrong error: {error:?}");
             };
             assert_eq!(
-                *line,
-                original.lines().count() + 1,
+                locus,
+                &WorkerLockfileLocus::Line(original.lines().count() + 1),
                 "the refusal must name the offending line"
+            );
+            assert_eq!(reason, &WorkerLockfileErrorReason::MalformedPin);
+            assert!(
+                error
+                    .to_string()
+                    .contains("is not an exact `name==version` pin"),
+                "the refusal must name the malformed-pin invariant: {error}"
             );
             // The line itself is not printed: a wrongly regenerated lock is
             // exactly where a governed model path appears.
             assert!(
                 !error.to_string().contains("file:///"),
                 "a refusal must not print the offending line: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e1_every_index_pin_requires_one_artifact_hash() {
+        let root = bundle_copy();
+        let bundle = bundle(&root);
+        install_interpreter(&root, &matching_answer(&root, &bundle));
+
+        let path = root.path().join(WORKER_LOCKFILE_PATH);
+        let original = fs::read_to_string(&path).expect("the copied lockfile is readable");
+        let pin = original
+            .lines()
+            .find(|line| line.starts_with("audioread=="))
+            .expect("the checked-in lock carries an index pin");
+        let malformed = [
+            pin.split_once(" --hash=")
+                .expect("the checked-in index pin is hashed")
+                .0
+                .to_owned(),
+            pin.replacen("sha256:", "sha256:short-", 1),
+            format!("{pin} --hash=sha256:{}", "0".repeat(64)),
+            // Only the digest's case differs, so nothing but the case can be
+            // what refuses it. `pip` writes lowercase, so an uppercase digest
+            // came from something else, and normalizing would hide that.
+            {
+                let (head, digest) = pin
+                    .split_once(ARTIFACT_HASH_PREFIX)
+                    .expect("the checked-in index pin is hashed");
+                format!("{head}{ARTIFACT_HASH_PREFIX}{}", digest.to_uppercase())
+            },
+        ];
+
+        for replacement in malformed {
+            fs::write(&path, original.replacen(pin, &replacement, 1))
+                .expect("the lockfile is writable");
+
+            let error = bundle
+                .verified_hash()
+                .expect_err("an unbound or ambiguous index artifact must not hash");
+
+            let BuildError::WorkerBundle(WorkerBundleError::UnreadableWorkerLockfile {
+                reason,
+                ..
+            }) = &error
+            else {
+                panic!("malformed pin `{replacement}` produced the wrong error: {error:?}");
+            };
+            assert_eq!(reason, &WorkerLockfileErrorReason::InvalidArtifactHash);
+            assert!(
+                error
+                    .to_string()
+                    .contains("lowercase SHA-256 artifact hash"),
+                "the refusal must name the artifact-hash invariant: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e1_the_lock_records_its_package_sources_and_artifact_kinds() {
+        let root = bundle_copy();
+        let bundle = bundle(&root);
+        install_interpreter(&root, &matching_answer(&root, &bundle));
+
+        let path = root.path().join(WORKER_LOCKFILE_PATH);
+        let original = fs::read_to_string(&path).expect("the copied lockfile is readable");
+        for required in REQUIRED_LOCK_DIRECTIVES {
+            let without = original.replacen(&format!("{required}\n"), "", 1);
+            assert_ne!(
+                without, original,
+                "the checked-in lock must carry `{required}`"
+            );
+            fs::write(&path, without).expect("the lockfile is writable");
+
+            let error = bundle
+                .verified_hash()
+                .expect_err("a lock with an implicit source or artifact kind must not hash");
+
+            let BuildError::WorkerBundle(WorkerBundleError::UnreadableWorkerLockfile {
+                reason,
+                ..
+            }) = &error
+            else {
+                panic!("removing `{required}` produced the wrong error: {error:?}");
+            };
+            assert_eq!(reason, &WorkerLockfileErrorReason::MissingRequiredDirective);
+            assert!(
+                error
+                    .to_string()
+                    .contains("omits a required resolution directive"),
+                "the refusal must name the missing-directive invariant: {error}"
+            );
+        }
+
+        for extra in [
+            REQUIRED_LOCK_DIRECTIVES[0],
+            "--trusted-host packages.example.invalid",
+        ] {
+            fs::write(&path, format!("{original}{extra}\n")).expect("the lockfile is writable");
+
+            let error = bundle
+                .verified_hash()
+                .expect_err("a repeated or unknown resolution directive must not hash");
+
+            let BuildError::WorkerBundle(WorkerBundleError::UnreadableWorkerLockfile {
+                reason,
+                ..
+            }) = &error
+            else {
+                panic!("adding `{extra}` produced the wrong error: {error:?}");
+            };
+            let expected = if extra == REQUIRED_LOCK_DIRECTIVES[0] {
+                WorkerLockfileErrorReason::DuplicateRequiredDirective
+            } else {
+                WorkerLockfileErrorReason::UnsupportedDirective
+            };
+            assert_eq!(reason, &expected);
+            assert!(
+                !error.to_string().contains("not an exact"),
+                "a directive refusal must not claim the line is a malformed pin: {error}"
             );
         }
     }
@@ -2502,12 +2790,73 @@ mod tests {
                 .verified_hash()
                 .expect_err("a lockfile whose provenance marker has come apart must not hash");
 
+            let BuildError::WorkerBundle(WorkerBundleError::UnreadableWorkerLockfile {
+                reason,
+                ..
+            }) = &error
+            else {
+                panic!("a marker `{parting}` produced the wrong error: {error:?}");
+            };
+            assert_eq!(reason, &WorkerLockfileErrorReason::InvalidProvenance);
             assert!(
-                matches!(
-                    error,
-                    BuildError::WorkerBundle(WorkerBundleError::UnreadableWorkerLockfile { .. })
-                ),
-                "a marker `{parting}` must be refused as an unreadable lockfile, got {error:?}"
+                error.to_string().contains("governed-source provenance"),
+                "the refusal must name the provenance invariant: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e1_a_lockfile_fault_no_line_carries_names_no_line() {
+        // Three invariants are the file's rather than a line's, and each was
+        // reported against a line number anyway: `0` for bytes that are not
+        // UTF-8, one past the last line for the two absences. Both sentinels
+        // rendered as a real line the operator would open and find nothing
+        // wrong with, and only the rendered message shows it.
+        let root = bundle_copy();
+        let bundle = bundle(&root);
+        install_interpreter(&root, &matching_answer(&root, &bundle));
+
+        let path = root.path().join(WORKER_LOCKFILE_PATH);
+        let original = fs::read_to_string(&path).expect("the copied lockfile is readable");
+        let marker = original
+            .lines()
+            .position(|line| line.starts_with(GOVERNED_SOURCE_MARKER))
+            .expect("the checked-in lockfile marks its governed pin");
+        // The marker and the pin beneath it, so what is left has no governed
+        // pin rather than one whose provenance was torn off.
+        let ungoverned: String = original
+            .lines()
+            .enumerate()
+            .filter(|(index, _)| *index != marker && *index != marker + 1)
+            .map(|(_, line)| format!("{line}\n"))
+            .collect();
+
+        for (fault, lockfile) in [
+            ("bytes that are not UTF-8", vec![0xff]),
+            (
+                "a required directive absent",
+                original
+                    .replacen(&format!("{}\n", REQUIRED_LOCK_DIRECTIVES[0]), "", 1)
+                    .into_bytes(),
+            ),
+            ("no governed pin at all", ungoverned.into_bytes()),
+        ] {
+            fs::write(&path, &lockfile).expect("the lockfile is writable");
+
+            let error = bundle
+                .verified_hash()
+                .expect_err("a lockfile the whole file breaks must not hash");
+
+            let BuildError::WorkerBundle(WorkerBundleError::UnreadableWorkerLockfile {
+                locus, ..
+            }) = &error
+            else {
+                panic!("`{fault}` produced the wrong error: {error:?}");
+            };
+            assert_eq!(locus, &WorkerLockfileLocus::WholeFile);
+            assert!(
+                !error.to_string().contains("line"),
+                "`{fault}` is no line's fault, so the refusal must name none: {error}"
             );
         }
     }

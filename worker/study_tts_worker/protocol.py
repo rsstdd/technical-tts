@@ -19,7 +19,7 @@ are enforced here because they cannot be enforced anywhere else in this process:
 * **Unknown fields are refused, at every depth.** This is a project-owned
   format, so a field this worker cannot honor is an error rather than something
   to ignore -- the requester would otherwise believe it had been applied. The
-  shapes below mirror ``schemas/worker-protocol-v0.schema.json``, which
+  shapes below mirror ``schemas/worker-protocol-v1.schema.json``, which
   describes each method's parameters and not only the frame that carries them.
 
 :class:`Object`, :func:`check_object`, and the field checks beside them carry no
@@ -45,6 +45,28 @@ MAX_WORKER_FRAME_BYTES: Final[int] = 1024 * 1024
 
 ``docs/architecture/PROVISIONAL-CONTRACT-BASELINE.md`` records the ceiling and
 names both spellings of it.
+"""
+
+MAX_REQUEST_ID_BYTES: Final[int] = 256
+"""Longest correlation identity this worker will accept, in UTF-8 bytes.
+
+Mirrors ``study_tts_runtime::MAX_WORKER_REQUEST_ID_BYTES``, which names this
+constant in return. A refusal has to name the request it refuses, so an
+identity bounded only by ``MAX_WORKER_FRAME_BYTES`` is one that can make the
+answer to a frame larger than the ceiling that answer must fit inside.
+
+Refused here rather than shortened in the response. A shortened identity is a
+*different* identity: it comes back looking like some other request that was
+answered, and the supervisor correlates nothing while believing it did.
+"""
+
+MAX_REFUSAL_MESSAGE_CHARS: Final[int] = 4096
+"""Longest ``message`` a failure frame carries.
+
+Diagnostic prose, not an identity, so truncating it loses nothing a reader
+needs -- unlike ``request_id``, which is only useful byte for byte. Parser
+refusals contain only invariant names, schema-owned paths, and derived bounds;
+this ceiling is the final backstop for other failure diagnostics.
 """
 
 MAX_JSON_NESTING_DEPTH: Final[int] = 32
@@ -81,7 +103,7 @@ ACCEPTED_PROTOCOL_VERSIONS: Final[tuple[str, ...]] = (
 
 Exactly ``study_tts_runtime::worker_protocol::validate_version``. Accepting one
 fewer than the Rust end is not a conservative choice: the supervisor writes
-``0.2`` whenever it sends a trace context, and a worker that refused it would
+``1.1`` whenever it sends a trace context, and a worker that refused it would
 turn a supported frame into a refusal the supervisor did not ask for.
 """
 
@@ -92,7 +114,7 @@ UNSIGNED_32_MAXIMUM: Final[int] = 2**32 - 1
 width, so without this a frame carrying ``4294967296`` was answered here and
 dropped by ``serde_json`` there -- the sender seeing a response for a request
 its counterpart never accepted.
-``schemas/worker-protocol-v0.schema.json`` publishes the same ceilings from the
+``schemas/worker-protocol-v1.schema.json`` publishes the same ceilings from the
 Rust types, in ``study_tts_runtime::schemas::publish_integer_bounds``.
 """
 
@@ -113,7 +135,9 @@ class FrameError(Exception):
 
     Carries the request ID when one was recoverable, so the caller can correlate
     the refusal with what it sent; ``None`` means the frame was unreadable
-    before any ID could be trusted.
+    before any ID could be trusted. Its message is published on the protocol
+    channel, so it may name only invariants, schema-owned paths, and derived
+    bounds -- never a sender-controlled value or field name.
     """
 
     def __init__(self, message: str, request_id: str | None = None) -> None:
@@ -155,7 +179,7 @@ def _distinct_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     frame: dict[str, Any] = {}
     for name, value in pairs:
         if name in frame:
-            raise FrameError(f"frame names `{name}` twice")
+            raise FrameError("frame names an object field twice")
         frame[name] = value
     return frame
 
@@ -230,7 +254,7 @@ def unsigned(maximum: int) -> Check:
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise FrameError(f"`{path}` is not an unsigned integer")
         if value > maximum:
-            raise FrameError(f"`{path}` is {value} but the ceiling is {maximum}")
+            raise FrameError(f"`{path}` exceeds the unsigned integer ceiling of {maximum}")
 
     return check
 
@@ -254,17 +278,23 @@ def positive(maximum: int) -> Check:
 
 
 def request_identity(value: Any, path: str) -> None:
-    """Accepts a correlation identity: a string with something in it.
+    """Accepts a correlation identity: a string with something in it, bounded.
 
     Empty is refused rather than tolerated because the identity is what a
     supervisor matches a response to a request by, and a refusal it cannot
     correlate is one it reports as a timeout against whatever it was waiting
     for. ``study_tts_runtime::WorkerFrameError::EmptyRequestId`` is the same
-    rule at the other end.
+    rule at the other end, and ``RequestIdTooLong`` is the other half:
+    :data:`MAX_REQUEST_ID_BYTES` bounds what either end agrees to carry back.
     """
     text(value, path)
     if not value:
         raise FrameError(f"`{path}` is empty")
+    if not value.isascii():
+        raise FrameError(f"`{path}` must contain only ASCII characters")
+    encoded = len(value.encode("utf-8"))
+    if encoded > MAX_REQUEST_ID_BYTES:
+        raise FrameError(f"`{path}` is {encoded} bytes but the ceiling is {MAX_REQUEST_ID_BYTES}")
 
 
 def boolean(value: Any, path: str) -> None:
@@ -332,10 +362,11 @@ _REQUEST_FRAMES: Final[dict[str, Object]] = {
         required={**_ENVELOPE, "parameters": nested(_INITIALIZE_PARAMETERS)}
     ),
     "capabilities": Object(required=dict(_ENVELOPE)),
+    "health": Object(required=dict(_ENVELOPE)),
     "synthesize": Object(
         required={**_ENVELOPE, "parameters": nested(_SYNTHESIZE_PARAMETERS)}
     ),
-    "cancel": Object(required={**_ENVELOPE, "active_request_id": text}),
+    "cancel": Object(required={**_ENVELOPE, "active_request_id": request_identity}),
     "shutdown": Object(required=dict(_ENVELOPE)),
 }
 
@@ -352,9 +383,8 @@ def check_object(value: Any, shape: Object, path: str) -> None:
     missing = sorted(set(shape.required) - set(value))
     if missing:
         raise FrameError(f"`{path}` is missing {missing}")
-    unknown = sorted(set(value) - set(shape.required) - set(shape.optional))
-    if unknown:
-        raise FrameError(f"`{path}` carries unknown fields {unknown}")
+    if set(value) - set(shape.required) - set(shape.optional):
+        raise FrameError(f"`{path}` carries an unknown field")
     for name, check in (*shape.required.items(), *shape.optional.items()):
         if name in value:
             check(value[name], f"{path}.{name}")
@@ -428,13 +458,13 @@ def read_request(line: bytes) -> dict[str, Any]:
     try:
         body = line.decode("utf-8")
     except UnicodeDecodeError as error:
-        raise FrameError(f"frame is not UTF-8: {error}") from error
+        raise FrameError("frame is not UTF-8") from error
     try:
         frame = json.loads(
             body, parse_int=_bounded_int, object_pairs_hook=_distinct_keys
         )
     except json.JSONDecodeError as error:
-        raise FrameError(f"frame is not JSON: {error}") from error
+        raise FrameError("frame is not valid JSON") from error
     # `json` refuses some syntactically valid input by raising outside
     # `JSONDecodeError`, and every such raise used to leave this function by a
     # path `worker.py` does not catch -- so a frame well inside the byte ceiling
@@ -452,23 +482,28 @@ def read_request(line: bytes) -> dict[str, Any]:
     except RecursionError as error:
         raise FrameError("frame nests deeper than this worker will parse") from error
     except ValueError as error:
-        raise FrameError(f"frame is JSON this worker will not parse: {error}") from error
+        raise FrameError("frame is JSON this worker will not parse") from error
     if not isinstance(frame, dict):
         raise FrameError("frame is not a JSON object")
     _check_nesting(frame)
 
     method = frame.get("method")
+    # Recovered before the shape checks so an early refusal is still
+    # correlated, and dropped when it is past the ceiling those checks refuse
+    # it at: an identity too long to carry back is answered as `unknown`
+    # rather than as a shortened one the supervisor would match to nothing.
     request_id = frame.get("request_id")
-    request_id = request_id if isinstance(request_id, str) else None
+    if (
+        not isinstance(request_id, str)
+        or not request_id.isascii()
+        or len(request_id.encode("utf-8")) > MAX_REQUEST_ID_BYTES
+    ):
+        request_id = None
     version = frame.get("protocol_version")
     if method not in _REQUEST_FRAMES:
-        raise FrameError(f"unknown method {method!r}", request_id)
+        raise FrameError("frame method is unsupported", request_id)
     if version not in ACCEPTED_PROTOCOL_VERSIONS:
-        raise FrameError(
-            f"frame declares protocol {version!r}, "
-            f"not one of {list(ACCEPTED_PROTOCOL_VERSIONS)}",
-            request_id,
-        )
+        raise FrameError("frame protocol version is unsupported", request_id)
     try:
         check_object(frame, _REQUEST_FRAMES[method], "frame")
     except FrameError as error:
@@ -483,7 +518,7 @@ def read_request(line: bytes) -> dict[str, Any]:
 def _check_extension_version(
     frame: dict[str, Any], version: str, request_id: str | None
 ) -> None:
-    """Refuses a 0.2 field on a frame that declares 0.1.
+    """Refuses a 1.1 field on a frame that declares 1.0.
 
     Presence is what decides, not the value: an explicit ``"trace_context":
     null`` is a sender saying it knows about the extension, and a baseline frame
@@ -555,12 +590,33 @@ def failure(request_id: str, code: str, message: str, recoverable: bool) -> dict
     ``message`` must already be free of source text and voice paths; ADR-0001
     §16 keeps both off the protocol channel, and this function cannot check
     that for the caller.
+
+    ``message`` is bounded here rather than at each refusal site, because every
+    failure frame this worker writes is built by this function and a ceiling one
+    caller forgets is not a ceiling. ``request_id`` is deliberately *not*
+    bounded here: it is repeated exactly as given, because an identity the
+    supervisor cannot match against what it sent is worse than no answer, and
+    the ceiling that keeps it small belongs at validation
+    (:func:`request_identity`) where an oversized one is refused rather than
+    quietly rewritten into a different request's identity.
     """
     return {
         "event": "failure",
         "protocol_version": WORKER_PROTOCOL_VERSION,
         "request_id": request_id,
         "code": code,
-        "message": message,
+        "message": _bounded(message),
         "recoverable": recoverable,
     }
+
+
+def _bounded(message: str) -> str:
+    """Truncates a refusal message to :data:`MAX_REFUSAL_MESSAGE_CHARS`.
+
+    The original length is kept in the replacement so a reader can tell a
+    message that was truncated from one that was written that way. Only prose
+    goes through here; see :func:`failure` for why an identity does not.
+    """
+    if len(message) <= MAX_REFUSAL_MESSAGE_CHARS:
+        return message
+    return f"{message[:MAX_REFUSAL_MESSAGE_CHARS]} (truncated from {len(message)} characters)"

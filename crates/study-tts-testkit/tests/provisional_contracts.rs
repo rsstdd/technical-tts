@@ -17,11 +17,11 @@ use study_tts_core::{
 use study_tts_runtime::{
     BackendDescriptor, BackendError, BackendValidationError, BuildError, CacheResolveRequest,
     FileSystemCachePublisher, FileSystemJobRepository, FileSystemPackageWriter, JobRepository,
-    MAX_WORKER_FRAME_BYTES, PackagePreflightRequest, PackagePrepareRequest, PackageWriteRequest,
-    PreviewServiceBundle, SynthesisReport, SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION,
-    TtsExecutor, WorkerFrameError, WorkerRequestFrame, WorkerResponseFrame, build_preview,
-    build_preview_with_services, parse_worker_request, parse_worker_response,
-    validate_executor_request,
+    MAX_WORKER_FRAME_BYTES, MAX_WORKER_REQUEST_ID_BYTES, PackagePreflightRequest,
+    PackagePrepareRequest, PackageWriteRequest, PreviewServiceBundle, SynthesisReport,
+    SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, WorkerFrameError,
+    WorkerRequestFrame, WorkerResponseFrame, build_preview, build_preview_with_services,
+    parse_worker_request, parse_worker_response, validate_executor_request,
 };
 use study_tts_testkit::{
     FakeCachePublisher, FakeJobCall, FakePackageCall, FakePackageWriter, FakeTtsExecutor,
@@ -402,7 +402,7 @@ fn t3_e0_worker_frame_ceiling_and_unknown_fields_fail_closed() {
     assert!(matches!(
         parse_worker_request(
             concat!(
-                r#"{"method":"shutdown","protocol_version":"e0.worker.0.1","#,
+                r#"{"method":"shutdown","protocol_version":"e1.worker.1.0","#,
                 r#""request_id":"id","extra":true}"#,
             )
             .as_bytes()
@@ -411,20 +411,48 @@ fn t3_e0_worker_frame_ceiling_and_unknown_fields_fail_closed() {
     ));
     assert!(matches!(
         parse_worker_response(
-            br#"{"event":"shutdown","protocol_version":"e0.worker.9.0","request_id":"id"}"#
+            br#"{"event":"shutdown","protocol_version":"e1.worker.9.0","request_id":"id"}"#
         ),
         Err(WorkerFrameError::UnsupportedVersion { .. })
     ));
     assert!(matches!(
         parse_worker_response(
-            br#"{"event":"shutdown","protocol_version":"e0.worker.0.1","request_id":""}"#
+            br#"{"event":"shutdown","protocol_version":"e1.worker.1.0","request_id":""}"#
         ),
         Err(WorkerFrameError::EmptyRequestId)
+    ));
+    // Refused rather than shortened on the way back: an identity the supervisor
+    // cannot match to what it sent reads as a different request's answer.
+    let oversized_identity = format!(
+        r#"{{"event":"shutdown","protocol_version":"e1.worker.1.0","request_id":"{}"}}"#,
+        "r".repeat(MAX_WORKER_REQUEST_ID_BYTES + 1)
+    );
+    assert!(matches!(
+        parse_worker_response(oversized_identity.as_bytes()),
+        Err(WorkerFrameError::RequestIdTooLong { .. })
+    ));
+    assert!(
+        parse_worker_response(
+            format!(
+                r#"{{"event":"shutdown","protocol_version":"e1.worker.1.0","request_id":"{}"}}"#,
+                "r".repeat(MAX_WORKER_REQUEST_ID_BYTES)
+            )
+            .as_bytes()
+        )
+        .is_ok(),
+        "an identity at the ceiling is accepted, not refused"
+    );
+    assert!(matches!(
+        parse_worker_response(
+            r#"{"event":"shutdown","protocol_version":"e1.worker.1.0","request_id":"réq"}"#
+                .as_bytes()
+        ),
+        Err(WorkerFrameError::NonAsciiRequestId)
     ));
     assert!(matches!(
         parse_worker_response(
             concat!(
-                r#"{"event":"progress","protocol_version":"e0.worker.0.1","#,
+                r#"{"event":"progress","protocol_version":"e1.worker.1.0","#,
                 r#""request_id":"id","progress":1.1}"#,
             )
             .as_bytes()

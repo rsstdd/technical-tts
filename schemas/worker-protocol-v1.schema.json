@@ -24,7 +24,7 @@
     },
     "TraceContext": {
       "additionalProperties": false,
-      "description": "Optional correlation metadata added by worker protocol 0.2.",
+      "description": "Optional correlation metadata added by worker protocol 1.1.",
       "properties": {
         "trace_id": {
           "description": "Opaque local trace identifier; never source text or a voice path.",
@@ -181,14 +181,16 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e0.worker.0.1",
-                "e0.worker.0.2"
+                "e1.worker.1.0",
+                "e1.worker.1.1"
               ],
               "type": "string"
             },
             "request_id": {
               "description": "Request correlation identity.",
+              "maxLength": 256,
               "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
               "type": "string"
             }
           },
@@ -211,14 +213,47 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e0.worker.0.1",
-                "e0.worker.0.2"
+                "e1.worker.1.0",
+                "e1.worker.1.1"
               ],
               "type": "string"
             },
             "request_id": {
               "description": "Request correlation identity.",
+              "maxLength": 256,
               "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "method",
+            "protocol_version",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Report readiness and model-resource residency.",
+          "properties": {
+            "method": {
+              "const": "health",
+              "type": "string"
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
               "type": "string"
             }
           },
@@ -244,14 +279,16 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e0.worker.0.1",
-                "e0.worker.0.2"
+                "e1.worker.1.0",
+                "e1.worker.1.1"
               ],
               "type": "string"
             },
             "request_id": {
               "description": "Request correlation identity.",
+              "maxLength": 256,
               "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
               "type": "string"
             }
           },
@@ -269,6 +306,9 @@
           "properties": {
             "active_request_id": {
               "description": "Active synthesis request to cancel.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
               "type": "string"
             },
             "method": {
@@ -278,14 +318,16 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e0.worker.0.1",
-                "e0.worker.0.2"
+                "e1.worker.1.0",
+                "e1.worker.1.1"
               ],
               "type": "string"
             },
             "request_id": {
               "description": "Request correlation identity.",
+              "maxLength": 256,
               "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
               "type": "string"
             }
           },
@@ -308,14 +350,16 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e0.worker.0.1",
-                "e0.worker.0.2"
+                "e1.worker.1.0",
+                "e1.worker.1.1"
               ],
               "type": "string"
             },
             "request_id": {
               "description": "Request correlation identity.",
+              "maxLength": 256,
               "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
               "type": "string"
             }
           },
@@ -349,14 +393,16 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e0.worker.0.1",
-                "e0.worker.0.2"
+                "e1.worker.1.0",
+                "e1.worker.1.1"
               ],
               "type": "string"
             },
             "request_id": {
               "description": "Request correlation identity.",
+              "maxLength": 256,
               "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
               "type": "string"
             }
           },
@@ -383,14 +429,16 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e0.worker.0.1",
-                "e0.worker.0.2"
+                "e1.worker.1.0",
+                "e1.worker.1.1"
               ],
               "type": "string"
             },
             "request_id": {
               "description": "Request correlation identity.",
+              "maxLength": 256,
               "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
               "type": "string"
             }
           },
@@ -399,6 +447,47 @@
             "protocol_version",
             "request_id",
             "capabilities"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Worker readiness and model-resource residency were reported.",
+          "properties": {
+            "event": {
+              "const": "health",
+              "type": "string"
+            },
+            "model_loaded": {
+              "description": "Whether the speech model currently occupies worker resources.",
+              "type": "boolean"
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "ready": {
+              "description": "Whether this process can accept a synthesis request.",
+              "type": "boolean"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "protocol_version",
+            "request_id",
+            "ready",
+            "model_loaded"
           ],
           "type": "object"
         },
@@ -420,14 +509,16 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e0.worker.0.1",
-                "e0.worker.0.2"
+                "e1.worker.1.0",
+                "e1.worker.1.1"
               ],
               "type": "string"
             },
             "request_id": {
               "description": "Request correlation identity.",
+              "maxLength": 256,
               "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
               "type": "string"
             }
           },
@@ -472,14 +563,16 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e0.worker.0.1",
-                "e0.worker.0.2"
+                "e1.worker.1.0",
+                "e1.worker.1.1"
               ],
               "type": "string"
             },
             "request_id": {
               "description": "Request correlation identity.",
+              "maxLength": 256,
               "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
               "type": "string"
             },
             "sample_rate": {
@@ -518,6 +611,9 @@
           "properties": {
             "active_request_id": {
               "description": "Active synthesis request that was cancelled.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
               "type": "string"
             },
             "event": {
@@ -527,14 +623,16 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e0.worker.0.1",
-                "e0.worker.0.2"
+                "e1.worker.1.0",
+                "e1.worker.1.1"
               ],
               "type": "string"
             },
             "request_id": {
               "description": "Request correlation identity.",
+              "maxLength": 256,
               "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
               "type": "string"
             }
           },
@@ -557,14 +655,16 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e0.worker.0.1",
-                "e0.worker.0.2"
+                "e1.worker.1.0",
+                "e1.worker.1.1"
               ],
               "type": "string"
             },
             "request_id": {
               "description": "Request correlation identity.",
+              "maxLength": 256,
               "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
               "type": "string"
             }
           },
@@ -594,8 +694,8 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e0.worker.0.1",
-                "e0.worker.0.2"
+                "e1.worker.1.0",
+                "e1.worker.1.1"
               ],
               "type": "string"
             },
@@ -605,7 +705,9 @@
             },
             "request_id": {
               "description": "Request correlation identity.",
+              "maxLength": 256,
               "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
               "type": "string"
             }
           },
@@ -660,7 +762,7 @@
               "type": "null"
             }
           ],
-          "description": "Optional 0.2 trace extension; absent means no trace correlation."
+          "description": "Optional 1.1 trace extension; absent means no trace correlation."
         },
         "voice": {
           "description": "Voice-profile identity, never a raw reference path.",
@@ -678,7 +780,7 @@
       "type": "object"
     }
   },
-  "$id": "https://schemas.study-tts.example/worker-protocol-v0.schema.json",
+  "$id": "https://schemas.study-tts.example/worker-protocol-v1.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "anyOf": [
     {

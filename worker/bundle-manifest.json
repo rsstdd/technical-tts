@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "import_roots": ["worker/study_tts_worker"],
   "inputs": [
-    "schemas/worker-protocol-v0.schema.json",
+    "schemas/worker-protocol-v1.schema.json",
     "worker/bundle-manifest.json",
     "worker/launcher.json",
     "worker/pyproject.toml",

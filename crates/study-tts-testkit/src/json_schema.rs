@@ -519,10 +519,6 @@ fn check_pattern(expected: &Value, instance: &Value, at: &str, found: &mut Vec<S
         malformed_schema("pattern", expected, "a regular expression", at, found);
         return;
     };
-    let Some(text) = instance.as_str() else {
-        return;
-    };
-
     let Some(prefix) = pattern.strip_suffix(ABSOLUTE_END_GUARD) else {
         found.push(format!(
             "{at}: schema pattern `{pattern}` has no ECMAScript absolute-end guard; end it with \
@@ -561,6 +557,14 @@ fn check_pattern(expected: &Value, instance: &Value, at: &str, found: &mut Vec<S
         ));
         return;
     }
+
+    // Checked after the schema itself and not before it: an unanchored or
+    // uncompilable `pattern` is a fault in the published schema whether or not
+    // the instance under it happens to be a string, and returning on the
+    // instance type first left that fault unreported wherever it was.
+    let Some(text) = instance.as_str() else {
+        return;
+    };
 
     // Compiled from the same text rather than from `parsed`, because building a
     // `Regex` from an HIR is `regex-automata`'s meta API rather than this one,

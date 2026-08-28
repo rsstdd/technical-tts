@@ -101,7 +101,7 @@
       ]
     },
     "language": {
-      "description": "Language the lesson is spoken in, as a BCP 47 tag.\n\nUnlike the title this *is* a synthesis-key input (ADR-0001 §12.5), so a\nlesson cannot leave it to a default: the same text in two languages is\ntwo different renders and must not share a cache entry.\n\nAuthored text here and a [`LanguageTag`] on [`ValidatedLesson`], for the\nreason given on `schema_version`.",
+      "description": "Language the lesson is spoken in, as a BCP 47 tag.\n\nUnlike the title this *is* a synthesis-key input (ADR-0001 §12.5), so a\nlesson cannot leave it to a default: the same text in two languages is\ntwo different renders and must not share a cache entry.\n\nAuthored text here and a [`LanguageTag`] on [`ValidatedLesson`], for the\nreason given on `schema_version`.\n\nThe published `pattern` is necessary but not sufficient: `LanguageTag`\nis the authority, and `language_json_schema` spells its grammar loosely\non purpose so an author's editor never rejects a tag this build accepts.\nA tag the schema admits may still be refused by\n[`ValidatedLesson::from_json`].",
       "maxLength": 64,
       "pattern": "^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$(?![\\s\\S])",
       "type": "string"

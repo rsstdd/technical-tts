@@ -177,11 +177,9 @@ pub const MANIFEST_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(0, 2);
 
 /// Version of the published worker-protocol schema.
 ///
-/// `0.1`, matching the `e0.worker.0.1` baseline frame version in
-/// `docs/architecture/PROVISIONAL-CONTRACT-BASELINE.md`. The frames stay
-/// provisional until the G1 freeze, and the schema says so by sharing their
-/// number.
-pub const WORKER_PROTOCOL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(0, 1);
+/// `1.0`, matching the `e1.worker.1.0` breaking frame baseline in
+/// `docs/architecture/PROVISIONAL-CONTRACT-BASELINE.md`.
+pub const WORKER_PROTOCOL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(1, 0);
 
 // The job snapshot's two version spellings must not drift: one labels the
 // record on disk, the other names its published schema.
@@ -215,7 +213,7 @@ const INTEGER_FORMAT_MAXIMUMS: [(&str, u64); 4] = [
 /// `schemars` describes a `u32` as `"format": "uint32"` and, above `u16`, stops
 /// there. `format` is an annotation a JSON Schema validator may ignore, so the
 /// published documents admitted values the Rust parsers refuse — a worker frame
-/// carrying `take: 4294967296` validated against `worker-protocol-v0` and was
+/// carrying `take: 4294967296` validated against `worker-protocol-v1` and was
 /// then dropped by `parse_worker_request`. An author whose editor is green and
 /// whose build fails has been told the wrong thing by the schema this project
 /// publishes for exactly that purpose.

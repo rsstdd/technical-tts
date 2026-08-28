@@ -64,6 +64,11 @@ pub struct TakesDocument {
     #[schemars(schema_with = "schema_version_json_schema")]
     pub schema_version: String,
     /// Lesson these selections belong to.
+    ///
+    /// Held to the same rule `crate::lesson` applies to that identity, through
+    /// [`validate_lesson_id`]: a document naming a lesson no lesson file can
+    /// carry records approvals for a lesson that cannot exist.
+    #[schemars(schema_with = "crate::lesson::portable_id_json_schema")]
     pub lesson_id: String,
     /// One selection per segment, in the lesson's speaking order.
     ///

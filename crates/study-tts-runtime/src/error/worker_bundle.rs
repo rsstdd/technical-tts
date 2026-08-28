@@ -1,6 +1,6 @@
 //! Refusals raised while deriving the identity of the executable worker bundle.
 
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf};
 
 use thiserror::Error;
 
@@ -174,14 +174,14 @@ pub enum WorkerBundleError {
         mismatch: Box<EnvironmentMismatch>,
     },
 
-    /// A `worker/requirements.lock` line is not an exact pin.
+    /// A `worker/requirements.lock` invariant is malformed or absent.
     ///
-    /// The line number and not the line: a wrongly regenerated lock is exactly
-    /// where a `chatterbox-tts @ file:///...` line appears, and
+    /// The locus and not the line: a wrongly regenerated lock is exactly where
+    /// a `chatterbox-tts @ file:///...` line appears, and
     /// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` keeps a governed model
     /// root out of logs.
     #[error(
-        "worker lockfile `{path}` line {line} is not an exact `==` pin; ADR-0001 §12.5 makes this \
+        "worker lockfile `{path}` {locus} {reason}; ADR-0001 §12.5 makes this \
          file a synthesis-key input, so the worker/runtime owner must regenerate it per \
          docs/operations/WORKER-ENVIRONMENT.md rather than derive an identity from a resolved set \
          this build cannot read"
@@ -189,8 +189,10 @@ pub enum WorkerBundleError {
     UnreadableWorkerLockfile {
         /// The lockfile that could not be read.
         path: PathBuf,
-        /// The 1-based line, or `0` when the file is not UTF-8 at all.
-        line: usize,
+        /// Where in the lockfile the invariant failed.
+        locus: WorkerLockfileLocus,
+        /// Exact lockfile invariant that failed.
+        reason: WorkerLockfileErrorReason,
     },
 
     /// A declared bundle input exceeds the size this boundary will read.
@@ -205,6 +207,62 @@ pub enum WorkerBundleError {
         /// The ceiling this boundary enforces.
         max_bytes: usize,
     },
+}
+
+/// Where in `worker/requirements.lock` an invariant failed.
+///
+/// A locus rather than a line number, because three of the invariants are not
+/// a line's to break: the bytes are not UTF-8, a required directive is absent,
+/// and the governed pin is missing. A line number said them anyway — `0` for
+/// the first and one past the last line for the other two — so a 42-line lock
+/// reported "line 43 omits a required resolution directive" and sent the
+/// operator to a line that is not there.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerLockfileLocus {
+    /// The 1-based line carrying the fault.
+    Line(usize),
+    /// No one line: the invariant is the whole file's to keep.
+    WholeFile,
+}
+
+impl fmt::Display for WorkerLockfileLocus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Line(line) => write!(formatter, "line {line}"),
+            Self::WholeFile => formatter.write_str("as a whole"),
+        }
+    }
+}
+
+/// Why `worker/requirements.lock` cannot describe one reproducible environment.
+///
+/// `docs/operations/WORKER-ENVIRONMENT.md` §Their startup hooks are not ignored
+/// states the lock rules these variants refuse, and names this enum in return.
+/// One variant per rule, so a test asserts which invariant failed rather than
+/// that something did.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum WorkerLockfileErrorReason {
+    /// The lockfile bytes are not UTF-8.
+    #[error("is not UTF-8")]
+    InvalidUtf8,
+    /// A package line is not one exact name-and-version pin.
+    #[error("is not an exact `name==version` pin")]
+    MalformedPin,
+    /// An index pin does not bind exactly one artifact digest.
+    #[error("does not carry exactly one lowercase SHA-256 artifact hash")]
+    InvalidArtifactHash,
+    /// One required installer directive is absent.
+    #[error("omits a required resolution directive")]
+    MissingRequiredDirective,
+    /// One required installer directive appears more than once.
+    #[error("repeats a required resolution directive")]
+    DuplicateRequiredDirective,
+    /// A directive outside the governed set is present.
+    #[error("contains an unsupported resolution directive")]
+    UnsupportedDirective,
+    /// The governed pin and its source revision are not adjacent and unique.
+    #[error("does not keep one governed-source provenance marker beside its governed pin")]
+    InvalidProvenance,
 }
 
 /// How one distribution disagrees with `worker/requirements.lock`.
@@ -363,26 +421,39 @@ pub struct RuntimeIdentityMismatch {
 impl WorkerBundleError {
     /// Returns governed recovery advice for the worker/runtime owner.
     ///
-    /// `docs/governance/ROUTING-TABLES.md` routes worker boundary failures to
-    /// worker/runtime, which owns both the bundle contents and the declared
-    /// input list.
+    /// `docs/governance/ROUTING-TABLES.md` §Failure routing routes worker
+    /// boundary failures to worker/runtime, which owns the bundle contents, the
+    /// declared input list, and the environment the bundle is identified
+    /// against. One owner and one routing row, four actions: restoring a
+    /// deleted input, restoring an environment that drifted from the lock,
+    /// regenerating the lock, and aligning the manifest with this build are
+    /// different repairs, and an operator acts on the one they are handed.
     pub(super) fn remedy(&self) -> Option<RemedyAdvice> {
-        match self {
+        let action = match self {
             Self::MissingDeclaredInput { .. }
             | Self::DeclaredInputTooLarge { .. }
             | Self::UndeclaredModule { .. }
             | Self::UndeclaredRequiredInput { .. }
             | Self::UndeclaredImportRoot { .. }
-            | Self::UnreadableBundleManifest { .. }
-            | Self::UnsupportedBundleManifest { .. }
-            | Self::RuntimeIdentityMismatch { .. }
+            | Self::UnreadableBundleManifest { .. } => {
+                "restore the declared worker bundle input or amend the bundle manifest"
+            }
+            Self::UnsupportedBundleManifest { .. } => {
+                "align the bundle manifest layout with the one this build implements"
+            }
+            Self::RuntimeIdentityMismatch { .. }
             | Self::UnreadableRuntimeIdentity { .. }
-            | Self::EnvironmentDoesNotMatchLock { .. }
-            | Self::UnreadableWorkerLockfile { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::WorkerRuntime,
-                "restore the declared worker bundle input or amend the bundle manifest",
-                Some("Worker bundle input missing or oversized"),
-            )),
-        }
+            | Self::EnvironmentDoesNotMatchLock { .. } => {
+                "restore the locked worker environment per docs/operations/WORKER-ENVIRONMENT.md"
+            }
+            Self::UnreadableWorkerLockfile { .. } => {
+                "regenerate worker/requirements.lock per docs/operations/WORKER-ENVIRONMENT.md"
+            }
+        };
+        Some(RemedyAdvice::new(
+            RemedyOwner::WorkerRuntime,
+            action,
+            Some("Worker protocol or containment failure"),
+        ))
     }
 }

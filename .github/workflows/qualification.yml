@@ -151,6 +151,16 @@ jobs:
         # the whole build, not only the measurements layered on top of it.
         run: cargo test --offline --workspace --all-targets --locked
 
+      - name: Run the worker protocol suite on the qualified interpreter
+        # `ci.yml` proves the frame reader refuses what it must on a hosted
+        # runner's interpreter. This runs the same standard-library suite on the
+        # interpreter the worker is actually launched with, which is the only
+        # one ADR-0002 accepts a result from. `PYTHONPYCACHEPREFIX` keeps the
+        # bytecode out of a checkout a qualification result is taken from.
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/pycache
+        run: worker/.venv/bin/python -m unittest discover --start-directory worker/tests
+
       - name: Record the worker bundle identity
         # ADR-0001 §12.5 derives this hash from the declared worker inputs and
         # the runtime ABI, so it belongs in the evidence record beside any

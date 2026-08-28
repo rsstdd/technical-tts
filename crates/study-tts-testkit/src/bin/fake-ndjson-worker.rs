@@ -122,6 +122,15 @@ fn respond(
                 device: "cpu".to_owned(),
             },
         }),
+        WorkerRequestFrame::Health {
+            protocol_version,
+            request_id,
+        } => Ok(WorkerResponseFrame::Health {
+            protocol_version,
+            request_id,
+            ready: true,
+            model_loaded: false,
+        }),
         WorkerRequestFrame::Synthesize {
             protocol_version,
             request_id,
@@ -182,6 +191,10 @@ fn frame_identity(frame: &WorkerRequestFrame) -> (&str, &str) {
             ..
         }
         | WorkerRequestFrame::Capabilities {
+            protocol_version,
+            request_id,
+        }
+        | WorkerRequestFrame::Health {
             protocol_version,
             request_id,
         }

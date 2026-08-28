@@ -22,7 +22,7 @@ record or the governing change-control document in return.
 | Contract ID / version | Owner and public representation | Consumers | Fake, fixtures, and unchanged shared suite | Identity effect | Stabilization story |
 |---|---|---|---|---|---|
 | `tts_executor` / `e1.tts-executor.1.0` | T-WORKER; `study_tts_runtime::TtsExecutor`, `BackendDescriptor`, `SynthesisRequest`, `SynthesisReport`, `BackendError` | Preview orchestration; E1-S3 worker pool | `study_tts_testkit::FakeTtsExecutor`; `run_tts_executor_contract_scenario`; descriptor fixtures under `fixtures/contracts/` | every `BackendDescriptor` field but `contract_version` and `max_text_bytes` affects every synthesis key; backend and worker identities in a report become artifact provenance | E1-S1/E1-S3; frozen at G1 only after the capacity-one Chatterbox adapter passes the suite |
-| `worker_frames` / baseline `e0.worker.0.1`; declared optional extension `e0.worker.0.2` | T-WORKER; strict `WorkerRequestFrame` and `WorkerResponseFrame` in `study-tts-runtime/src/worker_protocol.rs` | Future Rust worker client and executable worker | `fake-ndjson-worker`; valid, malformed, incompatible-version, and compatible-extension NDJSON fixtures; `fixtures/contracts/e1-s1-worker-protocol-cases.ndjson`, the committed decisions both the Rust and the Python end must make alike; `t3_e0_contract_change_requires_version_or_explicit_compatible_extension`, `t3_e1_both_protocol_ends_decide_the_committed_cases_alike`, and frame-boundary tests | Executable protocol interpretation is a worker-bundle input and therefore synthesis-affecting | E1-S1/E1-S3; security and real-worker protocol suites must pass before G1 |
+| `worker_frames` / baseline `e1.worker.1.0`; declared optional extension `e1.worker.1.1` | T-WORKER; strict `WorkerRequestFrame` and `WorkerResponseFrame` in `study-tts-runtime/src/worker_protocol.rs` | Future Rust worker client and executable worker | `fake-ndjson-worker`; valid, malformed, incompatible-version, and compatible-extension NDJSON fixtures; `fixtures/contracts/e1-s1-worker-protocol-cases.ndjson`, the committed decisions both the Rust and the Python end must make alike; `t3_e0_contract_change_requires_version_or_explicit_compatible_extension`, `t3_e1_both_protocol_ends_decide_the_committed_cases_alike`, and frame-boundary tests | Executable protocol interpretation is a worker-bundle input and therefore synthesis-affecting | E1-S1/E1-S3; security and real-worker protocol suites must pass before G1 |
 | `cache_publication` / `e0.cache-publication.1.0` | T-AUDIO; `CachePublisher`, `CacheResolveRequest`, `StagedAudioProducer`, and opaque `ValidatedCachedArtifact` with read-only accessors | Preview orchestration, PCM assembly, manifest writer | `FakeCachePublisher`; `run_cache_contract_scenario`; deterministic worker WAV | Cache-layout or acceptance changes affect reusable artifacts; speech-affecting acceptance changes require synthesis-identity review | E1-S3, E2-S1, E2-S2, and E4 cache/recovery/prune work; frozen after fake and filesystem adapters pass at G1 |
 | `package_writer` / `e0.package-writer.1.0` | T-AUDIO; `PackageWriter::preflight`, `PackagePreflightRequest`, `PreparedPackageWriter`, prepare/write requests, and `PackagePublication` | Preview orchestration and provisional job state | `FakePackageWriter`; `run_package_writer_contract_scenario` without external tools; real FFmpeg walking-skeleton fixture | Package tool/profile or assembly changes affect package identity; they do not silently reuse a package selected under different tool identities | E1-S4 and E2-S3; real master-first package path must pass the shared suite before G1 |
 | `job_state` / `e0.job-state.0.1` | T-CORE/T-RUNTIME; `ProvisionalJobSnapshot` plus `JobRepository` and `JobOwnership` | Preview orchestration and later E2 recovery | `InMemoryJobRepository`; `run_job_repository_contract_scenario`; strict snapshot written as `job.json` | Selected package ID and manifest digest are durable state; this snapshot does not define synthesis or verification keys | E2-S1, E4-S4, and E5 recovery; complete state machine and resume semantics remain deferred |
@@ -69,13 +69,16 @@ hold.
 ## Wire compatibility and rejection
 
 Every project-owned JSON representation uses strict Serde deserialization and
-rejects unknown fields and enum values. Every worker request requires a nonempty
-request ID and one recognized protocol version. The parser enforces
-`MAX_WORKER_FRAME_BYTES` before JSON decoding and accepts exactly one NDJSON
-object per call.
+rejects unknown fields and enum values. Every worker correlation identity,
+including a cancellation's `active_request_id`, is nonempty ASCII of at most
+`MAX_WORKER_REQUEST_ID_BYTES`, and every request carries one recognized
+protocol version. The parser enforces `MAX_WORKER_FRAME_BYTES` before JSON
+decoding and accepts exactly one NDJSON object per call. The six methods are
+initialize, capabilities, health, synthesize, cancel, and shutdown; health
+reports readiness and model-resource residency.
 
-Worker `0.2` is the one demonstrated compatible extension: optional
-`trace_context`, default absent, with unknown fields still rejected. A `0.1`
+Worker `1.1` is the one demonstrated compatible extension: optional
+`trace_context`, default absent, with unknown fields still rejected. A `1.0`
 frame carrying that field is refused. No other successor version is inferred as
 compatible.
 

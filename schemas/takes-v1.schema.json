@@ -68,7 +68,10 @@
       ]
     },
     "lesson_id": {
-      "description": "Lesson these selections belong to.",
+      "description": "Lesson these selections belong to.\n\nHeld to the same rule `crate::lesson` applies to that identity, through\n[`validate_lesson_id`]: a document naming a lesson no lesson file can\ncarry records approvals for a lesson that cannot exist.",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*$(?![\\s\\S])",
       "type": "string"
     },
     "schema_version": {

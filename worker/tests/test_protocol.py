@@ -28,12 +28,15 @@ from study_tts_worker import (  # noqa: E402
     WORKER_PROTOCOL_VERSION,
 )
 from study_tts_worker.protocol import (  # noqa: E402
+    MAX_REQUEST_ID_BYTES,
     MAX_WORKER_FRAME_BYTES,
     UNSIGNED_32_MAXIMUM,
     UNSIGNED_64_MAXIMUM,
     FrameError,
+    failure,
     read_line,
     read_request,
+    write_frame,
 )
 
 
@@ -115,7 +118,9 @@ class ParameterShapeTests(unittest.TestCase):
         with self.assertRaises(FrameError) as refused:
             read_request(encode(frame))
 
-        self.assertIn("extra", str(refused.exception))
+        self.assertIn("frame.parameters", str(refused.exception))
+        self.assertIn("unknown field", str(refused.exception))
+        self.assertNotIn("extra", str(refused.exception))
         self.assertEqual(refused.exception.request_id, "req-1")
 
     def test_a_missing_nested_field_is_refused_by_name(self) -> None:
@@ -325,6 +330,67 @@ class FrameCeilingTests(unittest.TestCase):
         with self.assertRaises(FrameError):
             read_request(b"x" * (MAX_WORKER_FRAME_BYTES + 1))
 
+    def test_an_oversized_internal_diagnostic_stays_under_the_ceiling(self) -> None:
+        # Parser refusals never echo input, but backend and process failures also
+        # use this builder. The shared bound keeps those diagnostics readable by
+        # the supervisor even if their internal prose grows unexpectedly.
+        oversized = "internal diagnostic " * MAX_WORKER_FRAME_BYTES
+        written = io.StringIO()
+
+        write_frame(
+            written,
+            failure("req-1", "invalid_request", oversized, False),
+        )
+
+        self.assertLess(len(written.getvalue().encode("utf-8")), MAX_WORKER_FRAME_BYTES)
+
+
+class RequestIdentityCeilingTests(unittest.TestCase):
+    """An identity is correlated exactly or refused, never quietly rewritten."""
+
+    def test_an_identity_at_the_ceiling_is_answered_byte_for_byte(self) -> None:
+        # The whole purpose of the field. A response carrying a *different*
+        # identity is worse than no response: the supervisor matches it to
+        # nothing while believing the request was answered.
+        identity = "r" * MAX_REQUEST_ID_BYTES
+
+        answered = failure(identity, "invalid_request", "refused", False)
+
+        self.assertEqual(answered["request_id"], identity)
+
+    def test_an_identity_past_the_ceiling_is_refused_at_validation(self) -> None:
+        oversized = "r" * (MAX_REQUEST_ID_BYTES + 1)
+        frame = json.dumps(
+            {
+                "method": "capabilities",
+                "protocol_version": WORKER_PROTOCOL_VERSION,
+                "request_id": oversized,
+            }
+        ).encode("utf-8")
+
+        with self.assertRaises(FrameError) as refused:
+            read_request(frame)
+
+        self.assertIn(str(MAX_REQUEST_ID_BYTES), str(refused.exception))
+
+    def test_an_identity_past_the_ceiling_is_not_echoed_back_shortened(self) -> None:
+        # `read_request` recovers the identity before the shape checks so an
+        # early refusal can still be correlated. One it cannot carry back is
+        # dropped there rather than shortened into a different request's.
+        oversized = "r" * (MAX_REQUEST_ID_BYTES + 1)
+        frame = json.dumps(
+            {
+                "method": "no-such-method",
+                "protocol_version": WORKER_PROTOCOL_VERSION,
+                "request_id": oversized,
+            }
+        ).encode("utf-8")
+
+        with self.assertRaises(FrameError) as refused:
+            read_request(frame)
+
+        self.assertIsNone(refused.exception.request_id)
+
 
 class EnvelopeTests(unittest.TestCase):
     """The checks that run before a method's parameters are looked at."""
@@ -335,7 +401,7 @@ class EnvelopeTests(unittest.TestCase):
 
     def test_a_protocol_version_neither_end_speaks_is_refused(self) -> None:
         with self.assertRaises(FrameError):
-            read_request(encode(initialize_frame(protocol_version="e0.worker.9.9")))
+            read_request(encode(initialize_frame(protocol_version="e1.worker.9.9")))
 
     def test_bytes_that_are_not_utf8_are_refused_as_such(self) -> None:
         with self.assertRaises(FrameError) as refused:

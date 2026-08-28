@@ -1,1 +1,1 @@
-{"method":"synthesize","protocol_version":"e0.worker.0.1","request_id":"request-valid","parameters":{"text":"Synthetic contract fixture.","voice":"synthetic-test-voice-v1","style":"calm","seed":42,"take":0,"output":"staging/segment.wav"}}
+{"method":"synthesize","protocol_version":"e1.worker.1.0","request_id":"request-valid","parameters":{"text":"Synthetic contract fixture.","voice":"synthetic-test-voice-v1","style":"calm","seed":42,"take":0,"output":"staging/segment.wav"}}

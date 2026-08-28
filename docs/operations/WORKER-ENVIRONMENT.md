@@ -37,7 +37,7 @@ is the other end of the mirror they name:
 
 | Constant | What it requires |
 |---|---|
-| `REQUIRED_BUNDLE_INPUTS` | `worker/bundle-manifest.json`, `worker/launcher.json`, `worker/requirements.lock`, `schemas/worker-protocol-v0.schema.json`, and `worker/study_tts_worker/worker.py` appear in `inputs`. |
+| `REQUIRED_BUNDLE_INPUTS` | `worker/bundle-manifest.json`, `worker/launcher.json`, `worker/requirements.lock`, `schemas/worker-protocol-v1.schema.json`, and `worker/study_tts_worker/worker.py` appear in `inputs`. |
 | `REQUIRED_IMPORT_ROOT` | `worker/study_tts_worker` appears in `import_roots`. |
 
 Each is an input ADR-0001 §12.5 names one by one, so none of them is optional. Both failures they
@@ -179,12 +179,19 @@ a hook at all. The rule is therefore what keeps the shared virtualenv defensible
 ends it — an extra install remains fine, and an extra install that reaches into interpreter startup
 does not.
 
-A lock line that is not an exact `==` pin is refused as `UnreadableWorkerLockfile` rather than
-skipped — the header of `worker/requirements.lock` states that every entry is one, so a line the
-parser cannot read is a lock regenerated wrongly, and skipping it would drop a distribution out of
-the comparison silently. The refusal names the line number and never the line, and no provenance
-refusal prints the recorded URL: a wrongly regenerated lock is exactly where a local-path line
-appears, and
+A valid lock also states the two package indexes and its wheel/source policy exactly once, as
+`REQUIRED_LOCK_DIRECTIVES` in `crates/study-tts-runtime/src/worker_bundle.rs` requires. Every
+index-supplied pin carries exactly one SHA-256 artifact hash. The governed `chatterbox-tts` pin is
+the sole exception: it carries the adjacent commit marker instead because it is installed from
+that VCS revision rather than from a published artifact. An unknown or repeated directive, a
+missing required directive, an unhashed or multiply hashed index pin, a malformed pin, or a
+governed pin parted from its provenance is refused as `UnreadableWorkerLockfile` carrying the
+exact `WorkerLockfileErrorReason`; silently skipping any of those would leave resolution outside
+the identity. The refusal names the invariant and a `WorkerLockfileLocus` — the line number where
+one line is at fault, the file as a whole where the invariant is no line's to keep, as when the
+bytes are not UTF-8, a required directive is absent, or the governed pin is missing entirely. It
+never names the line's contents, and no provenance refusal prints the recorded URL: a wrongly
+regenerated lock is exactly where a local-path line appears, and
 [`../governance/RIGHTS-DATA-ARTIFACT-POLICY.md`](../governance/RIGHTS-DATA-ARTIFACT-POLICY.md) keeps
 the governed model root out of logs. Naming the commit to reinstall from says everything the URL
 would.
@@ -213,22 +220,42 @@ this section in return.
 
 ```text
 QUALIFIED_WORKER_VENV=<checkout-parent>/study-tts-qualified-worker-venv
+WORKER_WHEELHOUSE=$(mktemp -d /tmp/study-tts-worker-wheelhouse.XXXXXX)
 
 python3.12 -m venv "${QUALIFIED_WORKER_VENV}"
-"${QUALIFIED_WORKER_VENV}/bin/python" -m pip install --upgrade pip
+"${QUALIFIED_WORKER_VENV}/bin/python" - <<'CHECK'
+import pip, sys
+
+assert sys.version_info[:3] == (3, 12, 3), sys.version
+assert pip.__version__ == "24.0", pip.__version__
+CHECK
 ```
 
-### Install from the index, minus the one distribution the index must not supply
+Use a fresh path when creating the environment. Do not upgrade `pip`: CPython 3.12.3's pinned
+`ensurepip` supplies 24.0, and changing the installer changes how the one permitted source
+distribution is built. The assertions fail before acquisition when either input differs.
+
+### Acquire the hashed artifacts, minus the governed distribution
 
 ```text
-grep -v '^chatterbox-tts==' worker/requirements.lock > /tmp/worker-index-requirements.txt
-"${QUALIFIED_WORKER_VENV}/bin/python" -m pip install --no-deps \
-  --requirement /tmp/worker-index-requirements.txt
+set -o pipefail
+grep -v '^chatterbox-tts==' worker/requirements.lock | \
+  "${QUALIFIED_WORKER_VENV}/bin/python" -m pip download --isolated \
+    --require-hashes --no-deps --dest "${WORKER_WHEELHOUSE}" --requirement /dev/stdin
 ```
 
-`--no-deps` is not optional. The lockfile is the complete resolved set; letting `pip` resolve
-transitively would allow a dependency the lockfile does not name, and the bundle hash would then
-describe an environment the machine does not have.
+The lock itself names PyPI as the primary index and the official PyTorch CPU index as the only
+extra index. `--isolated` prevents a user or machine `pip` configuration from adding another one;
+`--require-hashes` makes an index name insufficient without the selected artifact bytes. Every
+artifact is a wheel except `s3tokenizer==0.1.7`, for which PyPI publishes only an sdist. That one
+exception is declared by `--no-binary=s3tokenizer`; the default remains wheel-only.
+
+`--no-deps` is not optional. The lock is the complete worker-loaded set; letting `pip` resolve
+transitively would allow a dependency the lock does not name, and the bundle hash would then
+describe an environment the machine does not have. `s3tokenizer` declares `pre-commit` as an
+install dependency even though it is development tooling and is not imported at runtime. Its
+packages are deliberately excluded from the synthesis identity, as described under
+[Regenerating the lock](#regenerating-the-lock).
 
 **Excluding `chatterbox-tts` from this command is not optional either, and the reason is not
 obvious.** It is in `worker/requirements.lock` as an exact pin like everything else, because the
@@ -239,13 +266,34 @@ all. The environment would look correct, the version would match the lock, and t
 would be the index's rather than the governed tree's, with nothing in the result saying so. Removing
 the line leaves nothing to be already satisfied by.
 
+### Install only from the verified wheelhouse
+
+```text
+sed -n '/^--/p;/^setuptools==/p' worker/requirements.lock | \
+  "${QUALIFIED_WORKER_VENV}/bin/python" -m pip install --isolated --no-index \
+    --find-links "${WORKER_WHEELHOUSE}" --require-hashes --no-deps \
+    --force-reinstall --requirement /dev/stdin
+
+grep -v '^chatterbox-tts==' worker/requirements.lock | \
+  "${QUALIFIED_WORKER_VENV}/bin/python" -m pip install --isolated --no-index \
+    --find-links "${WORKER_WHEELHOUSE}" --require-hashes --no-deps \
+    --force-reinstall --no-build-isolation --requirement /dev/stdin
+```
+
+The first command installs the hashed `setuptools==78.1.0` wheel before the second builds the sole
+sdist; `--no-build-isolation` prevents that build from resolving an unrecorded build environment.
+The second command force-reinstalls every pin, so reusing an otherwise clean destination cannot
+leave stale same-version bytes in place. `--no-index` makes this phase offline and proves the
+wheelhouse acquired above is sufficient.
+
 ### Install the governed Chatterbox source explicitly
 
 `chatterbox-tts` resolves from the governed local source tree rather than from an index, per
 [`../governance/RIGHTS-DATA-ARTIFACT-POLICY.md`](../governance/RIGHTS-DATA-ARTIFACT-POLICY.md).
 
 ```text
-"${QUALIFIED_WORKER_VENV}/bin/python" -m pip install --no-deps --no-build-isolation \
+"${QUALIFIED_WORKER_VENV}/bin/python" -m pip install --isolated --no-deps \
+  --no-build-isolation --force-reinstall \
   "git+file://<governed-model-root>/chatterbox/code-<commit>@<commit>"
 ```
 
@@ -263,8 +311,8 @@ creates. Installing from the tree's git URL at the commit makes `pip` check that
 record the `commit_id` it resolved, which is an observation rather than a label. The check below is
 what reads it.
 
-**`--force-reinstall` is not optional when anything is already installed**, and it is the same trap
-[Install from the index](#install-from-the-index-minus-the-one-distribution-the-index-must-not-supply)
+**`--force-reinstall` is not optional**, and it is the same trap
+[Acquire the hashed artifacts](#acquire-the-hashed-artifacts-minus-the-governed-distribution)
 warns about, arriving one step later. `pip` compares the *version*, finds `0.1.2` already satisfied,
 and stops — printing nothing that looks like a failure while leaving the previous install exactly
 where it was. On a clean environment the flag changes nothing; on one restored by the previous
@@ -353,48 +401,69 @@ that keeps the workspace honest.
 
 ## Regenerating the lock
 
-Run on the reference machine, with network access, from a clean interpreter:
+Run on the reference machine, with network access, from a clean interpreter. A change to an index
+or artifact policy changes the lock, its parser, this procedure, and the worker identity version
+together.
 
 1. Create a scratch environment: `python3.12 -m venv /tmp/worker-lock`.
-2. Install the direct dependencies declared in `worker/pyproject.toml`, and only those.
-3. Install the governed `chatterbox-tts` source tree with `--no-deps --no-build-isolation`.
-4. Freeze: `/tmp/worker-lock/bin/python -m pip freeze`.
-5. Replace the `chatterbox-tts @ file://...` line with `chatterbox-tts==<version>` and a comment
+2. Assert CPython 3.12.3 and `pip==24.0` as in the restore procedure; do not upgrade the installer.
+3. Install only the direct dependencies declared in `worker/pyproject.toml`, using the four
+   resolution directives recorded at the top of `requirements.lock`.
+4. Install the governed `chatterbox-tts` source tree with `--isolated --no-deps
+   --no-build-isolation --force-reinstall`.
+5. Freeze: `/tmp/worker-lock/bin/python -m pip freeze`.
+6. Replace the `chatterbox-tts @ file://...` line with `chatterbox-tts==<version>` and a comment
    recording the commit, so the lock never carries a machine-local path.
-6. Remove the development-only distributions listed below, which share the qualification
+7. Remove the development-only distributions listed below, which share the qualification
    virtualenv but are not loaded by the worker: `cfgv`, `distlib`, `identify`, `nodeenv`,
    `pre_commit`, `python-discovery`, `virtualenv`.
-7. Keep the explanatory header. It is what tells the next reader which limits still apply.
-8. Regenerate the bundle hash and record it in the interface-change record for the story that
-   caused the change, because every cache key moves with it.
+8. Keep the four resolution directives at the top of the file, byte for byte:
+   `--index-url https://pypi.org/simple`, `--extra-index-url https://download.pytorch.org/whl/cpu`,
+   `--only-binary=:all:`, and `--no-binary=s3tokenizer`. They are `REQUIRED_LOCK_DIRECTIVES` in
+   `crates/study-tts-runtime/src/worker_bundle.rs`, which names this section in return; the parser
+   refuses a lock missing one, repeating one, or carrying a fifth.
+9. For every remaining index pin, use `pip download --isolated --no-deps` with those directives to
+   acquire the artifact selected on the reference ABI, then run `pip hash <artifact>` and put that
+   one SHA-256 on the pin. The governed pin receives no artifact hash.
+10. Test the candidate lock by acquiring it again with `--require-hashes` into an empty
+    wheelhouse, then restoring that wheelhouse offline into a fresh environment with the commands
+    above. This catches a hash copied to the wrong pin, a missing artifact, and an undeclared build
+    dependency.
+11. Keep the explanatory header. It is what tells the next reader which limits still apply.
+12. Regenerate the bundle hash and record it in the interface-change record for the story that
+    caused the change, because every cache key moves with it.
 
-Step 6 is the step most likely to be skipped, and skipping it is not cosmetic: a pre-commit hook
+Step 7 is the step most likely to be skipped, and skipping it is not cosmetic: a pre-commit hook
 upgrade would otherwise change the worker-bundle hash and invalidate every cache entry in the
 project for a reason that has nothing to do with speech.
 
-### Adding artifact hashes
+### What binds the lock to artifact bytes
 
-**The current lock pins versions, not artifact hashes.** `pip install --require-hashes` cannot be
-used against it. This is a known and recorded gap rather than an oversight, and closing it needs a
-network-connected resolve on the reference machine:
+A version pin names which release, never which bytes: an index may serve different artifacts for
+one version across ABIs, and a compromised or re-uploaded artifact keeps the version it claims. So
+every index-supplied pin carries the SHA-256 of the artifact resolved for this ABI, and
+`pip install --require-hashes` refuses anything else.
 
-```text
-uv pip compile worker/pyproject.toml --generate-hashes --output-file worker/requirements.lock
-```
+Three things are checked together, and each closes what the others leave open:
 
-`uv` is not currently installed on the reference machine, which is why this step has not been taken.
-When it is:
+- **The directives** decide where a name may resolve from and whether a wheel or a source tree is
+  built. Without them the same lock resolves differently under different installer configuration
+  while every pin still reads as satisfied.
+- **The hashes** bind each resolved name to bytes.
+- **The governed commit** does the same job for `chatterbox-tts`, which has no published artifact
+  to hash; PEP 610 provenance is checked before a bundle identity is returned.
 
-- every entry gains one or more `--hash=sha256:...` lines;
-- the file's bytes change, so the worker-bundle hash changes, so **every cache key changes**;
-- that change needs its own interface-change record under
-  [`../governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md`](../governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md),
-  because it is a change to a synthesis-key input even though no behavior moves;
-- the header comment in `worker/requirements.lock` recording this limit must be removed in the same
-  change, since an outdated comment is a bug.
+`parse_lockfile` in `crates/study-tts-runtime/src/worker_bundle.rs` refuses the lock when any of
+the three is missing, malformed, or duplicated, and
+`t1_e1_every_index_pin_requires_one_artifact_hash` and
+`t1_e1_the_lock_records_its_package_sources_and_artifact_kinds` are what keep that refusal real,
+and `t1_e1_a_lockfile_fault_no_line_carries_names_no_line` is what keeps a whole-file refusal from
+sending an operator to a line the lock does not have.
 
-Until then, the offline restore path above is what bounds the risk: the environment is installed
-from a lockfile with `--no-deps`, and ADR-0001 §14 denies network egress during the contract test.
+What the hashes do **not** do is prove what is installed. Nothing this build can ask the
+interpreter reports the artifact hash a distribution came from, so the parser validates each hash
+and drops it. Their force is that they are part of the lock's bytes, and the lock's bytes are a
+worker-bundle hash input: editing one moves every cache key.
 
 ## Offline behavior
 

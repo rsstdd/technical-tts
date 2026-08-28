@@ -14,13 +14,15 @@
 //! `docs/governance/ROUTING-TABLES.md` establishes an owner, and update exact
 //! variant, message, conversion, source-chain, and advice tests together.
 //! [`BuildError::remedy`] and the category remedy methods mirror that table.
-//! `t1_e0_governed_remedy_mappings_are_exhaustive` pins *exhaustiveness*: its
-//! `expected_*_remedy` helpers match every variant, so a new refusal is a
-//! compile error there rather than one that silently carries no advice. It
-//! does not pin the mapping — those helpers restate the implementation arm for
-//! arm, so they agree with any owner, action, and row, including a wrong one.
-//! Only the worker-bundle block writes its expectation as a literal read off
-//! the document, which is the shape the rest still needs.
+//! `t1_e0_governed_remedy_mappings_are_exhaustive` pins *exhaustiveness* for
+//! every category but one: its `expected_*_remedy` helpers match every variant,
+//! so a new refusal is a compile error there rather than one that silently
+//! carries no advice. It does not pin the mapping — those helpers restate the
+//! implementation arm for arm, so they agree with any owner, action, and row,
+//! including a wrong one. Only the worker-bundle block writes its expectation
+//! as a literal read off the document, which is the shape the rest still needs;
+//! it buys that by listing its variants by hand, so a new one there is caught
+//! by review rather than by the compiler.
 
 use std::{io, path::PathBuf};
 
@@ -49,7 +51,10 @@ pub use rights::RightsError;
 pub use state::DurableStateError;
 pub use tool::{ToolError, ToolInvocation, ToolOperation, ToolOutputStream};
 pub use voice_profile::VoiceProfileError;
-pub use worker_bundle::{EnvironmentMismatch, RuntimeIdentityMismatch, WorkerBundleError};
+pub use worker_bundle::{
+    EnvironmentMismatch, RuntimeIdentityMismatch, WorkerBundleError, WorkerLockfileErrorReason,
+    WorkerLockfileLocus,
+};
 
 /// Why a build or publication was refused, grouped by its owning boundary.
 #[derive(Debug, Error)]
@@ -234,6 +239,8 @@ mod tests {
 
     use study_tts_core::{LessonError, ReleaseError, ReleaseStatus, VoiceError};
 
+    use crate::worker_bundle::PythonRuntimeIdentity;
+
     use super::*;
 
     // Mirrors the supported-target measurement in
@@ -250,6 +257,18 @@ mod tests {
             request_id: "request".to_owned(),
             code: "injected_failure".to_owned(),
             message: "worker failed".to_owned(),
+        }
+    }
+
+    // Two identities that differ, so the fixture reads as the drift the variant
+    // reports rather than as a copy-paste slip. Which field differs is
+    // immaterial: `remedy` is chosen by variant and reads none of them.
+    fn runtime_identity(abi_tag: &str) -> PythonRuntimeIdentity {
+        PythonRuntimeIdentity {
+            implementation: "cpython".to_owned(),
+            version: "3.13.1".to_owned(),
+            abi_tag: abi_tag.to_owned(),
+            platform_tag: "manylinux_2_39_x86_64".to_owned(),
         }
     }
 
@@ -702,40 +721,112 @@ mod tests {
             assert_expected_remedy(error.into(), expected);
         }
 
-        // Written as a literal rather than through an `expected_*` helper, so
-        // this row is read off `docs/governance/ROUTING-TABLES.md` instead of
-        // restating the mapping it is supposed to check.
-        for error in [
-            WorkerBundleError::MissingDeclaredInput {
-                path: PathBuf::from("worker/requirements.lock"),
-                root: PathBuf::from("bundle"),
-            },
-            WorkerBundleError::DeclaredInputTooLarge {
-                path: PathBuf::from("worker/requirements.lock"),
-                max_bytes: 8 * 1024 * 1024,
-            },
-            WorkerBundleError::UndeclaredModule {
-                module: PathBuf::from("worker/study_tts_worker/pronunciation.py"),
-                import_root: PathBuf::from("worker/study_tts_worker"),
-                manifest: PathBuf::from("worker/bundle-manifest.json"),
-            },
-            WorkerBundleError::UnreadableBundleManifest {
-                path: PathBuf::from("worker/bundle-manifest.json"),
-                source: serde_json::from_str::<serde_json::Value>("{")
-                    .expect_err("an unterminated object is a parse error"),
-            },
-            WorkerBundleError::UnsupportedBundleManifest {
-                path: PathBuf::from("worker/bundle-manifest.json"),
-                declared: "9.9".to_owned(),
-                required: "1.0",
-            },
+        // Written as literals rather than through an `expected_*` helper, so
+        // these rows are read off `docs/governance/ROUTING-TABLES.md` instead
+        // of restating the mapping they are supposed to check. Every variant is
+        // listed because `WorkerBundleError::remedy` hands out four different
+        // repairs, and the one an operator is handed is the one they act on.
+        //
+        // The trade is that completeness is hand-maintained: a new variant
+        // compiles with no row and is checked by nothing, so its row goes in
+        // the same commit.
+        let restore_input = "restore the declared worker bundle input or amend the bundle manifest";
+        let restore_environment =
+            "restore the locked worker environment per docs/operations/WORKER-ENVIRONMENT.md";
+        for (error, action) in [
+            (
+                WorkerBundleError::MissingDeclaredInput {
+                    path: PathBuf::from("worker/requirements.lock"),
+                    root: PathBuf::from("bundle"),
+                },
+                restore_input,
+            ),
+            (
+                WorkerBundleError::DeclaredInputTooLarge {
+                    path: PathBuf::from("worker/requirements.lock"),
+                    max_bytes: 8 * 1024 * 1024,
+                },
+                restore_input,
+            ),
+            (
+                WorkerBundleError::UndeclaredModule {
+                    module: PathBuf::from("worker/study_tts_worker/pronunciation.py"),
+                    import_root: PathBuf::from("worker/study_tts_worker"),
+                    manifest: PathBuf::from("worker/bundle-manifest.json"),
+                },
+                restore_input,
+            ),
+            (
+                WorkerBundleError::UndeclaredRequiredInput {
+                    path: PathBuf::from("worker/requirements.lock"),
+                    manifest: PathBuf::from("worker/bundle-manifest.json"),
+                },
+                restore_input,
+            ),
+            (
+                WorkerBundleError::UndeclaredImportRoot {
+                    import_root: PathBuf::from("worker/study_tts_worker"),
+                    manifest: PathBuf::from("worker/bundle-manifest.json"),
+                },
+                restore_input,
+            ),
+            (
+                WorkerBundleError::UnreadableBundleManifest {
+                    path: PathBuf::from("worker/bundle-manifest.json"),
+                    source: json_error(),
+                },
+                restore_input,
+            ),
+            (
+                WorkerBundleError::UnsupportedBundleManifest {
+                    path: PathBuf::from("worker/bundle-manifest.json"),
+                    declared: "9.9".to_owned(),
+                    required: "1.0",
+                },
+                "align the bundle manifest layout with the one this build implements",
+            ),
+            (
+                WorkerBundleError::RuntimeIdentityMismatch {
+                    mismatch: Box::new(RuntimeIdentityMismatch {
+                        manifest: PathBuf::from("worker/bundle-manifest.json"),
+                        interpreter: PathBuf::from("worker/.venv/bin/python"),
+                        declared: runtime_identity("cp313"),
+                        observed: runtime_identity("cp312"),
+                    }),
+                },
+                restore_environment,
+            ),
+            (
+                WorkerBundleError::UnreadableRuntimeIdentity {
+                    interpreter: PathBuf::from("worker/.venv/bin/python"),
+                    detail: "no module named packaging".to_owned(),
+                },
+                restore_environment,
+            ),
+            (
+                WorkerBundleError::EnvironmentDoesNotMatchLock {
+                    mismatch: Box::new(EnvironmentMismatch::Absent {
+                        distribution: "torch".to_owned(),
+                        required: "2.9.1".to_owned(),
+                    }),
+                },
+                restore_environment,
+            ),
+            (
+                WorkerBundleError::UnreadableWorkerLockfile {
+                    path: PathBuf::from("worker/requirements.lock"),
+                    locus: WorkerLockfileLocus::Line(12),
+                    reason: WorkerLockfileErrorReason::MalformedPin,
+                },
+                "regenerate worker/requirements.lock per docs/operations/WORKER-ENVIRONMENT.md",
+            ),
         ] {
             assert_expected_remedy(
                 error.into(),
                 Some(RemedyAdvice::new(
                     RemedyOwner::WorkerRuntime,
-                    "restore the declared worker bundle input or amend the bundle manifest",
-                    Some("Worker bundle input missing or oversized"),
+                    action,
+                    Some("Worker protocol or containment failure"),
                 )),
             );
         }

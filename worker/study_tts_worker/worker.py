@@ -274,6 +274,14 @@ def _respond(frame: dict[str, Any], launcher: dict[str, Any]) -> dict[str, Any]:
             "request_id": request_id,
             "capabilities": _capabilities(launcher),
         }
+    if method == "health":
+        return {
+            "event": "health",
+            "protocol_version": WORKER_PROTOCOL_VERSION,
+            "request_id": request_id,
+            "ready": False,
+            "model_loaded": False,
+        }
     if method == "synthesize":
         return failure(
             request_id,
@@ -298,7 +306,7 @@ def _respond(frame: dict[str, Any], launcher: dict[str, Any]) -> dict[str, Any]:
 
 
 def _refusal(error: FrameError) -> dict[str, Any]:
-    """Turns a frame this worker could not read into the failure it reports."""
+    """Publishes a parser-owned invariant/path diagnostic as a failure."""
     return failure(
         error.request_id or "unknown",
         "invalid_request",

@@ -39,8 +39,18 @@ impl CanonicalValue {
     ///
     /// # Panics
     ///
-    /// Panics when two entries use the same key, preventing a later value from
-    /// silently replacing an identity input.
+    /// Panics when two entries use the same key, rather than let
+    /// `BTreeMap::insert` drop the earlier value and return an identity naming
+    /// fewer inputs than the caller wrote — a key wrong in the one direction
+    /// that serves audio it does not describe.
+    ///
+    /// No runtime input reaches it: the keys are a literal array in the call,
+    /// so a duplicate is a source edit, and
+    /// `t1_e1_a_repeated_identity_field_is_refused_rather_than_collapsed`
+    /// fails on one. A `Result` would put a `?` on every identity in the
+    /// workspace for a condition only a source edit can produce. Build an
+    /// identity whose keys come from data with [`CanonicalValue::Object`],
+    /// where the map makes duplicates unrepresentable.
     pub fn object<const N: usize>(entries: [(&str, CanonicalValue); N]) -> Self {
         let mut fields = BTreeMap::new();
         for (key, value) in entries {

@@ -2,7 +2,7 @@
 
 ## Codebase
 
-This is the four-crate Rust workspace for a local-first WSL2 CLI that converts reviewed technical lessons into long-form study-guide audio: `study-tts-core` owns durable domain decisions, `study-tts-runtime` owns the render pipeline through FFmpeg, `study-tts-cli` is the binary (currently a stub; product commands begin at G1), and `study-tts-testkit` holds shared test helpers plus the end-to-end suite.
+This is the four-crate Rust workspace for a local-first WSL2 CLI that converts reviewed technical lessons into long-form study-guide audio: `study-tts-core` owns durable domain decisions, `study-tts-runtime` owns the render pipeline through FFmpeg, `study-tts-cli` reports the current baseline until product commands begin at E1-S5, and `study-tts-testkit` holds shared test helpers plus the end-to-end suite.
 
 The root `AGENTS.md` governs the whole repository; this file adds the rules and routing for work inside `crates/`.
 

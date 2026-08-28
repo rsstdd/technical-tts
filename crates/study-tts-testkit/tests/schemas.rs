@@ -462,11 +462,16 @@ const VALID_EXAMPLES: [ValidExample; 5] = [
     ),
 ];
 
-const INVALID_EXAMPLES: [InvalidExample; 9] = [
+const INVALID_EXAMPLES: [InvalidExample; 10] = [
     (
         study_tts_core::TAKES_SCHEMA_STEM,
         "fixtures/contracts/e1-s1-takes-uppercase-digest.json",
         &["/selections/0/audio_blake3"],
+    ),
+    (
+        study_tts_core::TAKES_SCHEMA_STEM,
+        "fixtures/contracts/e1-s1-takes-unusable-lesson-id.json",
+        &["/lesson_id"],
     ),
     (
         study_tts_core::VERIFICATION_SCHEMA_STEM,

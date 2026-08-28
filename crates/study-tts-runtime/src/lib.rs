@@ -36,6 +36,7 @@ pub use error::{
     EnvironmentMismatch, IoError, ManagedPathError, PackageArtifactMismatch, PublicationError,
     RemedyAdvice, RemedyOwner, RightsError, RuntimeIdentityMismatch, ToolError, ToolInvocation,
     ToolOperation, ToolOutputStream, VoiceProfileError, WorkerBundleError,
+    WorkerLockfileErrorReason, WorkerLockfileLocus,
 };
 pub use job_repository::{
     FileSystemJobRepository, JOB_STATE_CONTRACT_VERSION, JobOwnership, JobRepository,
@@ -65,10 +66,10 @@ pub use worker_bundle::{
     WorkerBundle,
 };
 pub use worker_protocol::{
-    InitializeParameters, MAX_WORKER_FRAME_BYTES, TraceContext, WORKER_PROTOCOL_EXTENSION_VERSION,
-    WORKER_PROTOCOL_VERSION, WorkerCapabilities, WorkerFailureCode, WorkerFrame, WorkerFrameError,
-    WorkerRequestFrame, WorkerResponseFrame, WorkerSynthesisParameters, parse_worker_request,
-    parse_worker_response,
+    InitializeParameters, MAX_WORKER_FRAME_BYTES, MAX_WORKER_REQUEST_ID_BYTES, TraceContext,
+    WORKER_PROTOCOL_EXTENSION_VERSION, WORKER_PROTOCOL_VERSION, WorkerCapabilities,
+    WorkerFailureCode, WorkerFrame, WorkerFrameError, WorkerRequestFrame, WorkerResponseFrame,
+    WorkerSynthesisParameters, parse_worker_request, parse_worker_response,
 };
 
 /// Re-exported at the root so every module keeps constructing these the same
