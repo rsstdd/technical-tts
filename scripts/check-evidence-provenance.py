@@ -37,6 +37,10 @@ REPOSITORY_FILES = {
 }
 ACCEPTED_DECISIONS = ("Accepted", "Adopted", "Approved")
 UNACCEPTED_DECISIONS = ("Pending", "Proposed")
+# A record that declares this is a draft: not in force, and the only
+# record `--write` may re-pin. `evidence/README.md` §Provenance states
+# both halves and names this script in return.
+PROPOSED_STATUS = "Proposed"
 ACCOUNTING_HEADING = "## Accounted provenance mismatches"
 # `evidence/README.md` §Provenance: a mismatch "can be suppressed only by
 # an exact row under `## Accounted provenance mismatches` in an accepted
@@ -87,12 +91,18 @@ def review_decisions(text: str) -> list[str]:
     return []
 
 
+def declared_status(record: pathlib.Path) -> str | None:
+    """Returns a record's explicit `- Status:` field, or `None` if it has none."""
+    declared = STATUS.search(record.read_text(encoding="utf-8"))
+    return declared.group(1) if declared else None
+
+
 def is_accepted(record: pathlib.Path) -> bool:
     """Returns whether a record carries an affirmative, completed approval."""
     text = record.read_text(encoding="utf-8")
-    declared = STATUS.search(text)
+    declared = declared_status(record)
     if declared:
-        return declared.group(1) == "Accepted"
+        return declared == "Accepted"
     if "- [x] Approved for recorded scope" in section(text, "## Decision"):
         return True
     decisions = review_decisions(text)
@@ -160,12 +170,19 @@ def records_to_check(records: list[pathlib.Path]) -> list[pathlib.Path]:
     least likely to declare a status are the oldest, whose cited documents have
     had the longest to move. Only a supersession removes a record from this
     list, so nothing drops out of scope by staying silent.
+
+    A record declaring `Proposed` is the one exception, and it is narrow: a
+    proposal is not in force, so nothing rests on its pins and holding one open
+    while the tree moves costs a supersession per commit. The fail-open concern
+    above is untouched, because it is about records that declare *nothing*.
     """
     superseded = superseded_ids(records) | declared_superseded_ids(records)
     return [
         record
         for record in records
-        if record.name != POLICY_FILE and record_id(record) not in superseded
+        if record.name != POLICY_FILE
+        and record_id(record) not in superseded
+        and declared_status(record) != PROPOSED_STATUS
     ]
 
 
@@ -245,6 +262,53 @@ def violations(
             )
 
 
+def repin_refusal(record: pathlib.Path, evidence_root: pathlib.Path) -> str | None:
+    """Returns why a record must not be rewritten, or `None` if it may be.
+
+    `evidence/README.md` forbids overwriting an accepted report; a record
+    declaring no status is among the legacy records that rule exists to protect;
+    and a superseded record pins what it measured, which is what supersession is
+    for. Only a live proposal is left, because only a proposal is not yet
+    something a reader was told to rely on.
+    """
+    resolved = record.resolve()
+    if not resolved.is_relative_to(evidence_root.resolve()):
+        return f"`{record}` is outside `{evidence_root.name}/`; it is not an evidence record"
+    if not resolved.is_file():
+        return f"`{record}` does not exist"
+    status = declared_status(record)
+    if status != PROPOSED_STATUS:
+        declared = f"declares `{status}`" if status else "declares no status"
+        return f"`{record_id(record)}` {declared}; only a proposed record may be re-pinned"
+    records = sorted(evidence_root.rglob("*.md"))
+    if record_id(record) in superseded_ids(records) | declared_superseded_ids(records):
+        return f"`{record_id(record)}` is superseded; it pins what it measured"
+    return None
+
+
+def repin(record: pathlib.Path, repository_root: pathlib.Path) -> bool:
+    """Rewrites a record's stale digest cells, returning whether any moved.
+
+    Callers gate this on `repin_refusal`. A row citing two paths is left alone:
+    one digest cannot name two files' bytes, and choosing one silently is the
+    transcription error this exists to replace.
+    """
+    original = record.read_text(encoding="utf-8")
+    lines = original.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        cited = citations(record, line, repository_root)
+        if len(cited) != 1:
+            continue
+        _, target, pinned = cited[0]
+        if target.is_file():
+            lines[index] = line.replace(pinned, digest(target))
+    rewritten = "".join(lines)
+    if rewritten == original:
+        return False
+    record.write_text(rewritten, encoding="utf-8")
+    return True
+
+
 def check(repository_root: pathlib.Path, evidence_root: pathlib.Path) -> list[str]:
     """Returns all provenance violations under one repository root."""
     records = sorted(evidence_root.rglob("*.md"))
@@ -262,6 +326,19 @@ def check(repository_root: pathlib.Path, evidence_root: pathlib.Path) -> list[st
 
 
 def main() -> int:
+    arguments = sys.argv[1:]
+    if arguments[:1] == ["--write"]:
+        if len(arguments) != 2:
+            print("usage: check-evidence-provenance.py --write <record.md>")
+            return 2
+        record = pathlib.Path(arguments[1]).resolve()
+        refusal = repin_refusal(record, EVIDENCE_ROOT)
+        if refusal:
+            print(f"refusing to re-pin: {refusal}")
+            return 1
+        moved = repin(record, REPOSITORY_ROOT)
+        print(f"re-pinned {arguments[1]}" if moved else f"{arguments[1]} was already current")
+        return 0
     found = check(REPOSITORY_ROOT, EVIDENCE_ROOT)
     for message in found:
         print(message)

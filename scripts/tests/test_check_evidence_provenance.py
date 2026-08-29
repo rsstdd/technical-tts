@@ -242,5 +242,101 @@ class EvidenceProvenanceTests(unittest.TestCase):
         self.assertEqual(found, [])
 
 
+    def test_a_proposed_record_is_not_checked(self):
+        # `evidence/README.md` §Provenance: a proposal is not in force, so its
+        # pins bind nothing yet. Only an explicit `Proposed` earns this; a
+        # record declaring no status stays checked, per the test above.
+        self.write("docs/control.md", "current")
+        current = hashlib.sha256(b"current").hexdigest()
+        self.write(
+            "evidence/draft-v1.md",
+            f"# Draft\n\n- Status: Proposed\n\n| Record | SHA-256 |\n|---|---|\n"
+            f"| `docs/control.md` | `{hashlib.sha256(b'previous').hexdigest()}` |\n",
+        )
+        self.accepted_record("anchor-v1", "docs/control.md", current)
+
+        found = PROVENANCE.check(self.root, self.evidence)
+
+        self.assertEqual(found, [])
+
+    def test_repin_rewrites_the_named_proposed_record_from_current_bytes(self):
+        control = self.write("docs/control.md", "current")
+        stale = hashlib.sha256(b"previous").hexdigest()
+        draft = self.write(
+            "evidence/draft-v1.md",
+            f"# Draft\n\n- Status: Proposed\n\n| Record | SHA-256 |\n|---|---|\n"
+            f"| `docs/control.md` | `{stale}` |\n",
+        )
+
+        self.assertIsNone(PROVENANCE.repin_refusal(draft, self.evidence))
+        self.assertTrue(PROVENANCE.repin(draft, self.root))
+        self.assertIn(PROVENANCE.digest(control), draft.read_text(encoding="utf-8"))
+        self.assertNotIn(stale, draft.read_text(encoding="utf-8"))
+
+    def test_repin_refuses_an_accepted_record(self):
+        # `evidence/README.md`: never overwrite an accepted report. Re-pinning
+        # one would rewrite the bytes an approver signed off against.
+        self.write("docs/control.md", "current")
+        accepted = self.accepted_record(
+            "anchor-v1", "docs/control.md", hashlib.sha256(b"previous").hexdigest()
+        )
+
+        self.assertIn("`Accepted`", PROVENANCE.repin_refusal(accepted, self.evidence))
+
+    def test_repin_refuses_a_record_declaring_no_status(self):
+        self.write("docs/control.md", "current")
+        legacy = self.write(
+            "evidence/legacy-v1.md",
+            f"# Legacy\n\n| Record | SHA-256 |\n|---|---|\n"
+            f"| `docs/control.md` | `{hashlib.sha256(b'previous').hexdigest()}` |\n",
+        )
+
+        self.assertIn("no status", PROVENANCE.repin_refusal(legacy, self.evidence))
+
+    def test_repin_refuses_a_superseded_record(self):
+        # A superseded record pins what it measured; that is what supersession
+        # is for. It is out of the check, and equally out of any rewrite.
+        retired = self.write(
+            "evidence/draft-v1.md",
+            "# Draft\n\n- Status: Proposed\n",
+        )
+        self.write(
+            "evidence/draft-v2.md",
+            "# Draft\n\n- Status: Accepted\n- Supersedes: `draft-v1`\n",
+        )
+
+        self.assertIn("superseded", PROVENANCE.repin_refusal(retired, self.evidence))
+
+    def test_repin_refuses_a_path_outside_the_evidence_tree(self):
+        # `--write` rewrites whatever it is handed, so the containment lives in
+        # the guard rather than in the caller's care.
+        outside = self.write(
+            "docs/not-a-record.md",
+            f"# Doc\n\n- Status: Proposed\n\n| Record | SHA-256 |\n|---|---|\n"
+            f"| `docs/not-a-record.md` | `{hashlib.sha256(b'x').hexdigest()}` |\n",
+        )
+
+        self.assertIn("outside", PROVENANCE.repin_refusal(outside, self.evidence))
+
+    def test_repin_refuses_a_record_that_does_not_exist(self):
+        missing = self.evidence / "absent-v1.md"
+
+        self.assertIn("does not exist", PROVENANCE.repin_refusal(missing, self.evidence))
+
+    def test_repin_leaves_a_row_citing_two_paths_to_its_author(self):
+        # One digest cannot name two files' bytes, so rewriting would have to
+        # choose one silently. The check still reports the row.
+        self.write("docs/first.md", "first")
+        self.write("docs/second.md", "second")
+        stale = hashlib.sha256(b"previous").hexdigest()
+        draft = self.write(
+            "evidence/draft-v1.md",
+            f"# Draft\n\n- Status: Proposed\n\n| Record | SHA-256 |\n|---|---|\n"
+            f"| `docs/first.md` and `docs/second.md` | `{stale}` |\n",
+        )
+
+        self.assertFalse(PROVENANCE.repin(draft, self.root))
+        self.assertIn(stale, draft.read_text(encoding="utf-8"))
+
 if __name__ == "__main__":
     unittest.main()

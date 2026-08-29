@@ -38,9 +38,18 @@ routine revision from a rewritten control without reading both versions.
 
 So editing a governed document obliges you to say what happened to every accepted record pinning
 it: recompute and supersede, or write a record showing the conclusion stands.
-`scripts/check-evidence-provenance.py` enforces this over every unsuperseded record — an
-unapproved draft included, per the last paragraph below — and is wired into
-the `lint` job of `.github/workflows/ci.yml`. A mismatch can be suppressed only by an exact row
+`scripts/check-evidence-provenance.py` enforces this over every unsuperseded record that is in
+force, and is wired into the `lint` job of `.github/workflows/ci.yml`. Digests are transcribed by
+that script, not by hand. `python3 scripts/check-evidence-provenance.py --write <record.md>`
+re-pins that record's digest cells from current bytes, and the diff is what a reviewer reads. The
+record is named by its author and never inferred, so a sweep can never rewrite one nobody was
+looking at. It refuses an accepted record, one declaring no status, and a superseded one —
+amending the first is what this file forbids, the second is the legacy case that rule protects,
+and the third pins what it measured. It also leaves a row citing two paths alone, because one
+digest cannot name two files' bytes and picking one silently is the error being replaced.
+Copying a digest by hand is how a record comes to pin a tree that moved under it.
+
+A mismatch can be suppressed only by an exact row
 under `## Accounted provenance mismatches` in an accepted reconciliation record. A proposed
 record, an unapproved superseding record, or a prose mention has no effect. Nothing inside a
 record declares its kind, so a reconciliation record is one carrying `reconciliation` as a
@@ -65,3 +74,41 @@ Acceptance decides who may *grant* — supersede a record, or account for a mism
 *checked*. A record that declares no status is checked rather than skipped, because the reverse
 fails open: the records least likely to declare a status are the oldest, whose cited documents
 have had the longest to move.
+
+A record declaring `- Status: Proposed` is the one exception, and it is narrow. A proposal is not
+in force — `CLAUDE.md` says a proposed ADR authorizes nothing — so nothing rests on its pins and
+there is no conclusion for a moved document to invalidate. Checking one costs a supersession per
+commit for a claim no reader may rely on. This takes nothing away from the paragraph above, which
+is about records that declare *nothing*; those stay checked.
+
+## Load-bearing pins and context references
+
+A digest is an obligation: every commit touching those bytes owes this record a supersession or a
+reconciliation row. Spend it only where a conclusion actually rests.
+
+- A **load-bearing pin** carries a trailing SHA-256 in its table row. Use it for bytes a stated
+  result was measured from, or that a control's behavior was verified against — the code, schema,
+  fixture, protocol, workflow, or ratified policy whose movement obliges someone to re-decide
+  whether the conclusion still holds.
+- A **context reference** is cited in prose or in a row carrying no digest. Use it for a document
+  that orients a reader but that no conclusion was measured against — an index, an operating
+  standard, a delivery plan, a README.
+
+The test is one question: *if this file changed, would anything in this record have to be re-run
+or re-decided?* If no, it is context, and pinning it buys a false sense of coverage at the price
+of a supersession every time an unrelated sentence moves.
+
+This needs no separate enforcement. `scripts/check-evidence-provenance.py` reads only a row whose
+final cell is a SHA-256, so a context reference is already outside the check — which is why the
+distinction has to be made deliberately rather than by leaving a digest off in haste.
+
+## Accepting a record at its gate
+
+Supersession means *a conclusion an approver relied on turned out to be wrong*. That signal is
+worth keeping legible, and it is lost when supersession doubles as a way to track a tree that is
+still moving.
+
+So a story keeps **one** record, `Proposed` for as long as the work runs, accumulating findings as
+they are made. It is pinned once — with `--write` — and accepted once, at the gate it serves,
+against the bytes that gate actually approved. A version after that means a conclusion was wrong,
+and a reader who sees one should expect to find out which.
