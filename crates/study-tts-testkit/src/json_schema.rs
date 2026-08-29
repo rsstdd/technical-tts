@@ -760,7 +760,7 @@ mod tests {
         // One case per keyword, each with the instance that satisfies it and
         // the instance that does not, so a keyword that silently accepted
         // everything fails here.
-        let cases: [(Value, Value, Value); 16] = [
+        let cases: [(Value, Value, Value); 17] = [
             (json!({"type": "string"}), json!("x"), json!(1)),
             (json!({"type": ["string", "null"]}), json!(null), json!(1)),
             (json!({"type": "integer"}), json!(3), json!(3.5)),
@@ -786,6 +786,11 @@ mod tests {
                 json!([1]),
             ),
             (json!({"minProperties": 1}), json!({"a": 1}), json!({})),
+            (
+                json!({"maxProperties": 1}),
+                json!({"a": 1}),
+                json!({"a": 1, "b": 2}),
+            ),
             (json!({"uniqueItems": true}), json!([1, 2]), json!([1, 1])),
             (json!({"minLength": 2}), json!("ab"), json!("a")),
             (json!({"maxLength": 2}), json!("ab"), json!("abc")),
