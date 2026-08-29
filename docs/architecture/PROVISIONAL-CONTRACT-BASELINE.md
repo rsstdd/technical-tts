@@ -82,6 +82,27 @@ Worker `1.1` is the one demonstrated compatible extension: optional
 frame carrying that field is refused. No other successor version is inferred as
 compatible.
 
+A successful `initialized` response is evidence that the worker loaded a
+pinned model revision, tokenizer or codec revision, the requested worker
+bundle, and at least one voice profile. Its `identities` field is therefore the
+closed `WorkerInitializationIdentities` record, not an arbitrary map: all four
+categories are required, revisions and hashes use their checked value types,
+unknown fields are refused, and `voice_profile_hashes` cannot be empty. The
+E1-S1 product worker has loaded none of those inputs, so it refuses both
+`initialize` and `synthesize` with nonrecoverable `initialization_failed` until
+E1-S3. The executable fake instead owns a loaded synthetic backend, returns its
+complete deterministic identities, and consistently reports `ready: true` and
+`model_loaded: true`. It refuses initialization when the requested worker-bundle
+hash differs from its fixed deterministic identity, and every successful
+synthesis reports the same fixed identities as successful initialization.
+
+This correction completes the same pre-G1 `e1.worker.1.0` baseline and `1.1`
+extension. It changes a required response shape, but E1-S1 evidence remains
+Proposed and the provisional baseline promises no migration before G1;
+supervisor, fake, worker, tests, and generated schema move together rather than
+introducing another version that would preserve a success frame whose identity
+claim was incomplete.
+
 ## Amendment rules before G1
 
 These rules mirror

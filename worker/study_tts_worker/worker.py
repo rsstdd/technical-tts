@@ -1,7 +1,8 @@
 """The worker process: read frames, answer what this build can answer, refuse
 the rest by name.
 
-**Synthesis is not implemented here, and this module does not pretend it is.**
+**Initialization and synthesis are not implemented here, and this module does
+not pretend they are.**
 ADR-0001 §7.2 and DELIVERY-PLAN E1-S3 place the real Chatterbox backend in
 E1-S3; E1-S1 delivers the locked environment, the bundle identity, and the
 protocol surface. A ``synthesize`` request is therefore answered with the
@@ -256,17 +257,14 @@ def _respond(frame: dict[str, Any], launcher: dict[str, Any]) -> dict[str, Any]:
     method = frame["method"]
 
     if method == "initialize":
-        return {
-            "event": "initialized",
-            "protocol_version": WORKER_PROTOCOL_VERSION,
-            "request_id": request_id,
-            # No model identity, because no model was loaded. An identity map
-            # reporting a revision this process never read would be the exact
-            # provenance lie the Rust cache refuses at publication.
-            "identities": {
-                "worker_bundle_hash": frame["parameters"]["worker_bundle_hash"],
-            },
-        }
+        return failure(
+            request_id,
+            "initialization_failed",
+            "this worker build has no speech backend to initialize; DELIVERY-PLAN E1-S3 "
+            "wires the qualified Chatterbox backend, and until then initialization must "
+            "not claim model, tokenizer, bundle, or voice identities were loaded",
+            recoverable=False,
+        )
     if method == "capabilities":
         return {
             "event": "capabilities",

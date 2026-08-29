@@ -1,7 +1,8 @@
 //! Executable protocol fake for worker supervision and fault-injection tests.
 //!
-//! It speaks the provisional frames and emits synthetic WAVs but never loads a
-//! model or voice; command-line behaviors expose failures for supervisor tests.
+//! It speaks the provisional frames and emits synthetic WAVs from a loaded
+//! synthetic backend; command-line behaviors expose failures for supervisor
+//! tests without loading model weights.
 
 use std::{
     collections::BTreeMap,
@@ -13,9 +14,10 @@ use std::{
 
 use study_tts_core::{CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_RATE};
 use study_tts_runtime::{
-    WorkerCapabilities, WorkerFailureCode, WorkerRequestFrame, WorkerResponseFrame,
-    parse_worker_request,
+    WorkerCapabilities, WorkerFailureCode, WorkerInitializationIdentities, WorkerRequestFrame,
+    WorkerResponseFrame, parse_worker_request,
 };
+use study_tts_testkit::{DETERMINISTIC_TONE_BUNDLE_HASH, DETERMINISTIC_TONE_VOICE_PROFILE_HASH};
 
 const FAKE_FRAMES: u32 = CANONICAL_SAMPLE_RATE / 10;
 
@@ -93,17 +95,32 @@ fn respond(
             protocol_version,
             request_id,
             parameters,
-        } => Ok(WorkerResponseFrame::Initialized {
-            protocol_version,
-            request_id,
-            identities: BTreeMap::from([
-                ("backend_revision".to_owned(), "fake-backend-v1".to_owned()),
-                (
-                    "worker_bundle_hash".to_owned(),
-                    parameters.worker_bundle_hash.to_string(),
-                ),
-            ]),
-        }),
+        } => {
+            let worker_bundle_hash = DETERMINISTIC_TONE_BUNDLE_HASH.parse()?;
+            if parameters.worker_bundle_hash != worker_bundle_hash {
+                return Ok(WorkerResponseFrame::Failure {
+                    protocol_version,
+                    request_id,
+                    code: WorkerFailureCode::InitializationFailed,
+                    message: "requested bundle identity does not match the deterministic fake"
+                        .to_owned(),
+                    recoverable: false,
+                });
+            }
+            Ok(WorkerResponseFrame::Initialized {
+                protocol_version,
+                request_id,
+                identities: WorkerInitializationIdentities {
+                    model_revision: "v1".parse()?,
+                    tokenizer_revision: "none".parse()?,
+                    worker_bundle_hash,
+                    voice_profile_hashes: BTreeMap::from([(
+                        "synthetic-test-voice-v1".to_owned(),
+                        DETERMINISTIC_TONE_VOICE_PROFILE_HASH.parse()?,
+                    )]),
+                },
+            })
+        }
         WorkerRequestFrame::Capabilities {
             protocol_version,
             request_id,
@@ -129,7 +146,7 @@ fn respond(
             protocol_version,
             request_id,
             ready: true,
-            model_loaded: false,
+            model_loaded: true,
         }),
         WorkerRequestFrame::Synthesize {
             protocol_version,
@@ -147,10 +164,10 @@ fn respond(
                 sample_rate: CANONICAL_SAMPLE_RATE,
                 channels: CANONICAL_CHANNELS,
                 frames: FAKE_FRAMES,
-                model_revision: "fake-model-v1".to_owned(),
-                codec_revision: "fake-codec-v1".to_owned(),
-                worker_bundle_hash: blake3::hash(b"fake-worker-bundle").into(),
-                voice_profile_hash: blake3::hash(parameters.voice.as_bytes()).into(),
+                model_revision: "v1".to_owned(),
+                codec_revision: "none".to_owned(),
+                worker_bundle_hash: DETERMINISTIC_TONE_BUNDLE_HASH.parse()?,
+                voice_profile_hash: DETERMINISTIC_TONE_VOICE_PROFILE_HASH.parse()?,
             })
         }
         WorkerRequestFrame::Cancel {

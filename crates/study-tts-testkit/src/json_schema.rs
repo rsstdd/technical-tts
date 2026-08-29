@@ -158,6 +158,9 @@ fn check(root: &Value, schema: &Value, instance: &Value, at: &str, found: &mut V
             "minimum" | "maximum" => check_bound(keyword, expected, instance, at, found),
             "minLength" | "maxLength" => check_length(keyword, expected, instance, at, found),
             "minItems" | "maxItems" => check_item_count(keyword, expected, instance, at, found),
+            "minProperties" | "maxProperties" => {
+                check_property_count(keyword, expected, instance, at, found);
+            }
             "enum" => check_enum(expected, instance, at, found),
             "pattern" => check_pattern(expected, instance, at, found),
             "oneOf" | "anyOf" => check_branches(root, keyword, expected, instance, at, found),
@@ -480,6 +483,32 @@ fn check_item_count(
     }
 }
 
+fn check_property_count(
+    keyword: &str,
+    expected: &Value,
+    instance: &Value,
+    at: &str,
+    found: &mut Vec<String>,
+) {
+    let Some(bound) = expected.as_u64() else {
+        malformed_schema(keyword, expected, "a non-negative integer", at, found);
+        return;
+    };
+    let Some(properties) = instance.as_object() else {
+        return;
+    };
+    let count = properties.len() as u64;
+    let violated = match keyword {
+        "minProperties" => count < bound,
+        _ => count > bound,
+    };
+    if violated {
+        found.push(format!(
+            "{at}: {count} properties violate {keyword} {bound}"
+        ));
+    }
+}
+
 fn check_enum(expected: &Value, instance: &Value, at: &str, found: &mut Vec<String>) {
     let Some(accepted) = expected.as_array() else {
         malformed_schema("enum", expected, "an array of accepted values", at, found);
@@ -731,7 +760,7 @@ mod tests {
         // One case per keyword, each with the instance that satisfies it and
         // the instance that does not, so a keyword that silently accepted
         // everything fails here.
-        let cases: [(Value, Value, Value); 15] = [
+        let cases: [(Value, Value, Value); 16] = [
             (json!({"type": "string"}), json!("x"), json!(1)),
             (json!({"type": ["string", "null"]}), json!(null), json!(1)),
             (json!({"type": "integer"}), json!(3), json!(3.5)),
@@ -756,6 +785,7 @@ mod tests {
                 json!(["x"]),
                 json!([1]),
             ),
+            (json!({"minProperties": 1}), json!({"a": 1}), json!({})),
             (json!({"uniqueItems": true}), json!([1, 2]), json!([1, 1])),
             (json!({"minLength": 2}), json!("ab"), json!("a")),
             (json!({"maxLength": 2}), json!("ab"), json!("abc")),

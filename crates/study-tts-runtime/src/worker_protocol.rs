@@ -26,9 +26,10 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use study_tts_core::{VoiceProfileHash, WorkerBundleHash};
+use study_tts_core::{MAX_REVISION_BYTES, Revision, VoiceProfileHash, WorkerBundleHash};
 use thiserror::Error;
 
 /// Baseline wire version in the provisional contract record.
@@ -260,6 +261,39 @@ pub struct WorkerCapabilities {
     pub device: String,
 }
 
+/// Immutable identities loaded by a successfully initialized worker.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct WorkerInitializationIdentities {
+    /// Pinned model revision loaded by the worker.
+    #[schemars(schema_with = "revision_json_schema")]
+    pub model_revision: Revision,
+    /// Pinned tokenizer or codec revision loaded by the worker.
+    #[schemars(schema_with = "revision_json_schema")]
+    pub tokenizer_revision: Revision,
+    /// Identity of the executable worker bundle.
+    pub worker_bundle_hash: WorkerBundleHash,
+    /// Loaded voice profiles keyed by their stable profile identifiers.
+    #[serde(deserialize_with = "deserialize_nonempty_voice_profile_hashes")]
+    #[schemars(schema_with = "nonempty_voice_profile_hashes_json_schema")]
+    pub voice_profile_hashes: BTreeMap<String, VoiceProfileHash>,
+}
+
+fn deserialize_nonempty_voice_profile_hashes<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, VoiceProfileHash>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let hashes = BTreeMap::deserialize(deserializer)?;
+    if hashes.is_empty() {
+        return Err(D::Error::custom(
+            "a successful initialization must report at least one voice-profile identity",
+        ));
+    }
+    Ok(hashes)
+}
+
 /// Stable worker failure vocabulary carried on the protocol channel.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -295,7 +329,7 @@ pub enum WorkerResponseFrame {
         #[schemars(schema_with = "request_id_json_schema")]
         request_id: String,
         /// Immutable backend identities loaded by the worker.
-        identities: BTreeMap<String, String>,
+        identities: WorkerInitializationIdentities,
     },
     /// Capability discovery completed successfully.
     Capabilities {
@@ -633,6 +667,32 @@ fn request_id_json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema
     })
 }
 
+/// Publishes the format constraints [`Revision`] enforces at deserialization.
+///
+/// Moving branch names are still refused by [`Revision`] at runtime. JSON
+/// Schema's portable regular-expression vocabulary cannot express that
+/// case-insensitive denylist without a negative lookaround, which this
+/// repository deliberately excludes from published patterns.
+fn revision_json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": MAX_REVISION_BYTES,
+        "pattern": r"^[\x21-\x7E]+$(?![\s\S])",
+    })
+}
+
+fn nonempty_voice_profile_hashes_json_schema(
+    generator: &mut schemars::SchemaGenerator,
+) -> schemars::Schema {
+    let value_schema = generator.subschema_for::<VoiceProfileHash>();
+    schemars::json_schema!({
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": value_schema,
+    })
+}
+
 fn validate_frame_identity(version: &str, request_id: &str) -> Result<(), WorkerFrameError> {
     validate_version(version)?;
     validate_request_identity(request_id)
@@ -670,8 +730,111 @@ fn validate_version(version: &str) -> Result<(), WorkerFrameError> {
 mod tests {
     use super::{
         MAX_WORKER_REQUEST_ID_BYTES, WORKER_PROTOCOL_EXTENSION_VERSION, WorkerFrameError,
-        parse_worker_request, parse_worker_response,
+        WorkerResponseFrame, parse_worker_request, parse_worker_response,
     };
+
+    fn complete_initialized_response() -> serde_json::Value {
+        serde_json::json!({
+            "event": "initialized",
+            "protocol_version": "e1.worker.1.0",
+            "request_id": "request-1",
+            "identities": {
+                "model_revision": "model-v1",
+                "tokenizer_revision": "tokenizer-v1",
+                "worker_bundle_hash": "1".repeat(64),
+                "voice_profile_hashes": {
+                    "synthetic-test-voice-v1": "2".repeat(64),
+                },
+            },
+        })
+    }
+
+    #[test]
+    fn t1_e1_complete_initialized_response_parses() {
+        let frame = parse_worker_response(
+            &serde_json::to_vec(&complete_initialized_response())
+                .expect("the initialized response serializes"),
+        )
+        .expect("complete typed initialization identities must parse");
+
+        assert!(matches!(frame, WorkerResponseFrame::Initialized { .. }));
+    }
+
+    #[test]
+    fn t1_e1_initialized_response_requires_every_identity_category() {
+        for missing in [
+            "model_revision",
+            "tokenizer_revision",
+            "worker_bundle_hash",
+            "voice_profile_hashes",
+        ] {
+            let mut frame = complete_initialized_response();
+            frame["identities"]
+                .as_object_mut()
+                .expect("the fixture identities are an object")
+                .remove(missing);
+
+            let error = parse_worker_response(
+                &serde_json::to_vec(&frame).expect("the initialized response serializes"),
+            )
+            .expect_err("an initialized response missing an identity must be refused");
+
+            assert!(
+                matches!(error, WorkerFrameError::Malformed(_)),
+                "missing `{missing}` must be a malformed frame, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e1_initialized_response_refuses_each_malformed_identity_category() {
+        let cases = [
+            ("model_revision", serde_json::json!("main")),
+            (
+                "tokenizer_revision",
+                serde_json::json!("tokenizer revision"),
+            ),
+            ("worker_bundle_hash", serde_json::json!("abc")),
+            (
+                "voice_profile_hashes",
+                serde_json::json!({"synthetic-test-voice-v1": "abc"}),
+            ),
+        ];
+
+        for (malformed, value) in cases {
+            let mut frame = complete_initialized_response();
+            frame["identities"][malformed] = value;
+
+            let error = parse_worker_response(
+                &serde_json::to_vec(&frame).expect("the initialized response serializes"),
+            )
+            .expect_err("an initialized response naming a malformed identity must be refused");
+
+            assert!(
+                matches!(error, WorkerFrameError::Malformed(_)),
+                "malformed `{malformed}` must be refused at the typed boundary, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e1_initialized_response_refuses_unknown_or_empty_identity_data() {
+        let mut unknown = complete_initialized_response();
+        unknown["identities"]["backend_revision"] = serde_json::json!("fake-v1");
+        let unknown_error = parse_worker_response(
+            &serde_json::to_vec(&unknown).expect("the initialized response serializes"),
+        )
+        .expect_err("unknown initialization identity data must be refused");
+        assert!(matches!(unknown_error, WorkerFrameError::Malformed(_)));
+
+        let mut empty = complete_initialized_response();
+        empty["identities"]["voice_profile_hashes"] = serde_json::json!({});
+        let empty_error = parse_worker_response(
+            &serde_json::to_vec(&empty).expect("the initialized response serializes"),
+        )
+        .expect_err("an empty voice-profile identity set must be refused");
+        assert!(matches!(empty_error, WorkerFrameError::Malformed(_)));
+    }
 
     #[test]
     fn t1_e0_worker_protocol_1_0_refuses_explicit_null_trace_context() {

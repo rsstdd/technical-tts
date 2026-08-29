@@ -237,6 +237,31 @@ class HealthTests(unittest.TestCase):
         )
 
 
+class InitializationTests(unittest.TestCase):
+    """Initialization fails closed until the Chatterbox backend exists."""
+
+    def test_initialize_fails_nonrecoverably_and_health_stays_unready(self) -> None:
+        result = run_worker(
+            [
+                request(
+                    "initialize",
+                    "req-1",
+                    parameters={"worker_bundle_hash": "a" * 64, "threads": 1},
+                ),
+                request("health", "req-2"),
+                request("shutdown", "req-3"),
+            ]
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        frames = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual([frame["event"] for frame in frames], ["failure", "health", "shutdown"])
+        self.assertEqual(frames[0]["code"], "initialization_failed")
+        self.assertFalse(frames[0]["recoverable"])
+        self.assertFalse(frames[1]["ready"])
+        self.assertFalse(frames[1]["model_loaded"])
+
+
 class OfflineEnvironmentTests(unittest.TestCase):
     """The launcher's offline settings reach the process, not just the file."""
 

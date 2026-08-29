@@ -49,9 +49,10 @@ the bundle hash. CI runs them with `python3 -m unittest discover --start-directo
   `JSONDecodeError` — into a `FrameError` the supervisor reads as a failure frame. A process that
   died on a hostile frame would take every queued request with it
   (`HostileFrameTests` in `tests/test_worker.py`).
-- **No model is loaded in this build.** `synthesize` refuses with `initialization_failed` naming
-  E1-S3. Do not add a placeholder tone: the cache would publish it under a key claiming a real
-  model produced it. `AGENTS.md` forbids shipping a stub as though it were implemented.
+- **No model is loaded in this build.** Both `initialize` and `synthesize` refuse with
+  `initialization_failed` naming E1-S3. Do not add a placeholder identity or tone: the cache would
+  publish it under a key claiming a real model produced it. `AGENTS.md` forbids shipping a stub as
+  though it were implemented.
 - **Offline is applied, not merely configured.** `worker.main` loads and validates `launcher.json`,
   then calls `worker._apply_offline_environment` before reserving the protocol descriptor. A
   backend must be imported *inside* `main`, after both operations — `huggingface_hub` and
@@ -68,5 +69,3 @@ install that makes `pip` record which revision of the governed tree it checked o
 that every `.pth` in the environment belongs to a distribution the lock pins.
 Model code and weights never enter Git, CI, fixtures, or logs
 ([`../docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`](../docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md)).
-
-

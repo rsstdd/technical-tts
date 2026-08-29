@@ -163,6 +163,45 @@
         }
       ]
     },
+    "WorkerInitializationIdentities": {
+      "additionalProperties": false,
+      "description": "Immutable identities loaded by a successfully initialized worker.",
+      "properties": {
+        "model_revision": {
+          "description": "Pinned model revision loaded by the worker.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[\\x21-\\x7E]+$(?![\\s\\S])",
+          "type": "string"
+        },
+        "tokenizer_revision": {
+          "description": "Pinned tokenizer or codec revision loaded by the worker.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[\\x21-\\x7E]+$(?![\\s\\S])",
+          "type": "string"
+        },
+        "voice_profile_hashes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/VoiceProfileHash"
+          },
+          "description": "Loaded voice profiles keyed by their stable profile identifiers.",
+          "minProperties": 1,
+          "type": "object"
+        },
+        "worker_bundle_hash": {
+          "$ref": "#/$defs/WorkerBundleHash",
+          "description": "Identity of the executable worker bundle."
+        }
+      },
+      "required": [
+        "model_revision",
+        "tokenizer_revision",
+        "worker_bundle_hash",
+        "voice_profile_hashes"
+      ],
+      "type": "object"
+    },
     "WorkerRequestFrame": {
       "description": "Requests Rust may send to one worker process.",
       "oneOf": [
@@ -384,11 +423,8 @@
               "type": "string"
             },
             "identities": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "description": "Immutable backend identities loaded by the worker.",
-              "type": "object"
+              "$ref": "#/$defs/WorkerInitializationIdentities",
+              "description": "Immutable backend identities loaded by the worker."
             },
             "protocol_version": {
               "description": "Worker protocol version.",

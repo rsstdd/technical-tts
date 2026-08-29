@@ -7,7 +7,7 @@
 //! one costs — no weights, no download, no reference machine.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -18,9 +18,11 @@ use serde_json::Value;
 use study_tts_core::ValidatedLesson;
 use study_tts_runtime::{
     BuildRequest, MAX_WORKER_FRAME_BYTES, MAX_WORKER_REQUEST_ID_BYTES, TtsExecutor,
-    WORKER_PROTOCOL_SCHEMA_VERSION, WORKER_PROTOCOL_VERSION, WorkerFailureCode, WorkerRequestFrame,
-    WorkerResponseFrame, build_preview, parse_worker_request, parse_worker_response,
+    WORKER_PROTOCOL_SCHEMA_VERSION, WORKER_PROTOCOL_VERSION, WorkerFailureCode,
+    WorkerInitializationIdentities, WorkerRequestFrame, WorkerResponseFrame, build_preview,
+    parse_worker_request, parse_worker_response,
 };
+use study_tts_testkit::{DETERMINISTIC_TONE_BUNDLE_HASH, DETERMINISTIC_TONE_VOICE_PROFILE_HASH};
 use study_tts_testkit::{FakeTtsExecutor, validate_against_schema, walking_skeleton_fixture};
 use tempfile::TempDir;
 
@@ -169,18 +171,14 @@ fn t4_e1_fake_worker_passes_shared_protocol_contract() {
     // on a previous one.
     let staging = TempDir::new().expect("create a worker staging directory");
     let stdout = drive(&staging, &["deterministic"], &session);
+    let schema: Value = serde_json::from_slice(
+        &fs::read(repository_root().join("schemas/worker-protocol-v1.schema.json"))
+            .expect("the worker-protocol schema is readable"),
+    )
+    .expect("the worker-protocol schema is JSON");
     let responses: Vec<WorkerResponseFrame> = stdout
         .lines()
-        .map(|line| {
-            assert!(
-                line.len() <= MAX_WORKER_FRAME_BYTES,
-                "a response frame must stay within the declared ceiling"
-            );
-            // Parsed through the *published* parser, not through `serde_json`:
-            // that parser is what the supervisor uses, and a fake whose frames
-            // only survive a lenient read is a fake that hides a real refusal.
-            parse_worker_response(line.as_bytes()).expect("a response frame is valid")
-        })
+        .map(|line| parse_schema_validated_response(&schema, line))
         .collect();
 
     assert_eq!(
@@ -207,10 +205,39 @@ fn t4_e1_fake_worker_passes_shared_protocol_contract() {
     // The fake answers every method with the frame that method defines, and no
     // failure frame: a fake that failed here would make a supervisor test pass
     // for the wrong reason.
+    let WorkerResponseFrame::Initialized { identities, .. } = &responses[0] else {
+        panic!(
+            "initialize must be answered by initialized, got {:?}",
+            responses[0]
+        )
+    };
+    assert_eq!(
+        identities,
+        &WorkerInitializationIdentities {
+            model_revision: "v1".parse().expect("`v1` is a revision"),
+            tokenizer_revision: "none".parse().expect("`none` is a revision"),
+            worker_bundle_hash: DETERMINISTIC_TONE_BUNDLE_HASH
+                .parse()
+                .expect("the fake bundle identity is a digest"),
+            voice_profile_hashes: BTreeMap::from([(
+                "synthetic-test-voice-v1".to_owned(),
+                DETERMINISTIC_TONE_VOICE_PROFILE_HASH
+                    .parse()
+                    .expect("the fake voice-profile identity is a digest"),
+            )]),
+        }
+    );
+    let mut empty_identities: Value = serde_json::from_str(
+        stdout
+            .lines()
+            .next()
+            .expect("the fake answers initialization first"),
+    )
+    .expect("the initialized response is JSON");
+    empty_identities["identities"]["voice_profile_hashes"] = serde_json::json!({});
     assert!(
-        matches!(responses[0], WorkerResponseFrame::Initialized { .. }),
-        "initialize must be answered by initialized, got {:?}",
-        responses[0]
+        validate_against_schema(&schema, &empty_identities).is_err(),
+        "the schema must refuse a successful initialization with no loaded voice profile"
     );
     assert!(
         matches!(responses[1], WorkerResponseFrame::Capabilities { .. }),
@@ -222,10 +249,35 @@ fn t4_e1_fake_worker_passes_shared_protocol_contract() {
         "health must be answered by health, got {:?}",
         responses[2]
     );
-    assert!(
-        matches!(responses[3], WorkerResponseFrame::SynthesisSucceeded { .. }),
-        "synthesize must be answered by synthesis_succeeded, got {:?}",
-        responses[3]
+    assert!(matches!(
+        responses[2],
+        WorkerResponseFrame::Health {
+            ready: true,
+            model_loaded: true,
+            ..
+        }
+    ));
+    let WorkerResponseFrame::SynthesisSucceeded {
+        model_revision,
+        codec_revision,
+        worker_bundle_hash,
+        voice_profile_hash,
+        ..
+    } = &responses[3]
+    else {
+        panic!(
+            "synthesize must be answered by synthesis_succeeded, got {:?}",
+            responses[3]
+        )
+    };
+    assert_eq!(model_revision, identities.model_revision.as_str());
+    assert_eq!(codec_revision, identities.tokenizer_revision.as_str());
+    assert_eq!(worker_bundle_hash, &identities.worker_bundle_hash);
+    assert_eq!(
+        identities
+            .voice_profile_hashes
+            .get("synthetic-test-voice-v1"),
+        Some(voice_profile_hash)
     );
     assert!(
         matches!(responses[4], WorkerResponseFrame::Cancelled { .. }),
@@ -266,21 +318,40 @@ fn t4_e1_fake_worker_passes_shared_protocol_contract() {
         responses[5]
     );
 
-    // The reported `worker_bundle_hash` and `voice_profile_hash` need no
-    // assertion here: they parse as `WorkerBundleHash` and `VoiceProfileHash`,
-    // so a fake reporting a value that is not a digest would have failed the
-    // parse above rather than reached this line.
-    // `worker_protocol`'s own
-    // `t1_e1_a_frame_naming_an_identity_that_is_not_a_digest_is_refused` proves
-    // that refusal, and it fails if the fields go back to `String` while this
-    // test carries on passing.
+    let mismatched_bundle = "f".repeat(64);
+    let mismatched_session = serde_json::json!({
+        "method": "initialize",
+        "protocol_version": WORKER_PROTOCOL_VERSION,
+        "request_id": "mismatched-bundle",
+        "parameters": {
+            "worker_bundle_hash": mismatched_bundle,
+            "threads": 1,
+        },
+    })
+    .to_string();
+    let mismatch = drive(&staging, &["deterministic"], &mismatched_session);
+    let mismatch_responses: Vec<WorkerResponseFrame> = mismatch
+        .lines()
+        .map(|line| parse_schema_validated_response(&schema, line))
+        .collect();
+    assert!(
+        matches!(
+            mismatch_responses.as_slice(),
+            [WorkerResponseFrame::Failure {
+                code: WorkerFailureCode::InitializationFailed,
+                recoverable: false,
+                ..
+            }]
+        ),
+        "the fake must refuse a bundle identity other than its own, got {mismatch_responses:?}"
+    );
 
     // A refusal is still a valid frame. The fault-injecting behavior is what
     // the supervisor tests drive, so it has to satisfy the same contract.
     let refusal = drive(&staging, &["failure"], &session);
     let refusals: Vec<WorkerResponseFrame> = refusal
         .lines()
-        .map(|line| parse_worker_response(line.as_bytes()).expect("a failure frame is valid"))
+        .map(|line| parse_schema_validated_response(&schema, line))
         .collect();
     assert!(
         refusals.iter().any(|frame| matches!(
@@ -292,6 +363,19 @@ fn t4_e1_fake_worker_passes_shared_protocol_contract() {
         )),
         "the failure behavior must produce a typed failure frame, got {refusals:?}"
     );
+}
+
+fn parse_schema_validated_response(schema: &Value, line: &str) -> WorkerResponseFrame {
+    assert!(
+        line.len() <= MAX_WORKER_FRAME_BYTES,
+        "a response frame must stay within the declared ceiling"
+    );
+    let document: Value = serde_json::from_str(line).expect("a fake response frame is JSON");
+    validate_against_schema(schema, &document)
+        .unwrap_or_else(|violations| panic!("the schema refused `{line}`: {violations:?}"));
+    // The parser is what the supervisor uses. Schema-only acceptance would
+    // let a lenient fake hide a refusal in the real boundary.
+    parse_worker_response(line.as_bytes()).expect("a response frame is valid")
 }
 
 /// Runs the fake worker in `staging` over `session` and returns its stdout.
