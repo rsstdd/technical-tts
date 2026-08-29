@@ -40,6 +40,7 @@ from each section's own §What this moves rather than inferred.
 | 17 | `ADR-0001-D004` authorizing the environment precondition, the `worker_bundle`/`worker_environment` split, the probe extracted to a `.py` file, sixteen tier corrections, and tier-duration reporting in CI | no move |
 | 18 | The version retention in audit 15 moved out of a mirror document into `ADR-0001-D005`, and the required-field surface of every published schema put under test | no move |
 | 19 | Audits 15–16 approved, the authoritative 60-second T4 deadline restored, and the fake-worker contract harness bounded with timeout cleanup | no move |
+| 20 | The environment probe bootstrapped under `-S`, installed `RECORD`s authenticated against manifest layout `1.2`, and the interpreter attach step made to refuse a real directory | moves, manifest layout `1.1`→`1.2` |
 
 Audits 1 through 13 name `schemas/worker-protocol-v0.schema.json`, which is
 correct for the time each was written. The eleventh audit's breaking change
@@ -1226,5 +1227,77 @@ separate decision and accepted risk.
 | Engineering owner | Ross Todd | Accept schema, parser, product-worker, fake, and fixture parity, plus the bounded contract harness and restored 60-second CI deadline | 2026-08-29 |
 | Project owner | Ross Todd | Accept audits 15–16, `ADR-0001-D005`, and `e1-s1-provisional-contract-baseline-v11`, subject to the remaining G1 limits recorded there | 2026-08-29 |
 | Worker owner | Ross Todd for T-WORKER | Accept the fail-closed product worker and current developer-machine bundle hash; require reference-machine reproduction before G1 | 2026-08-29 |
+| Affected-track reviewer | Ross Todd for T-RUNTIME | Accept that old plan and cache entries remain valid only under their producing identities and are not reused, deleted, or re-keyed by this change | 2026-08-29 |
+| Affected-track reviewer | Ross Todd for T-AUDIO | Accept that no audio behavior or bytes changed, so no listening evidence is required | 2026-08-29 |
+
+## What the twentieth audit closed
+
+This remediation answers three review findings against the environment
+precondition `ADR-0001-D004` authorizes. Each was a control that read as
+enforced while a specific action passed it.
+
+| Finding | Closed by |
+|---|---|
+| The integrity probe ran under `python -I`, which still executes every `.pth` file and imports `sitecustomize` before the script runs. Startup code could therefore edit what the probe reported about it: one `.pth` line replacing `json.dumps` made the probe answer that an environment holding a modified module and an unowned hook was clean, leaving the bundle hash unchanged | The probe is bootstrapped with `-I -S`, makes every observation with the standard library, and imports `packaging` last from a site directory it has checked resolves inside a prefix `site` itself would search. `crates/study-tts-runtime/src/runtime_probe.py` repeats the prefix half of `site.venv`, which `-S` also skips, and nothing else of `site.main`. `t4_e1_interpreter_startup_code_cannot_edit_what_the_probe_reports` drives the real probe against an interpreter carrying exactly that hook, and fails under `-I` alone |
+| Installed files were checked against their adjacent, mutable `RECORD`, so editing a module and the `RECORD` line pinning it was one action that left the distribution self-consistent. `docs/operations/WORKER-ENVIRONMENT.md` records that the lock's artifact hashes are explicitly not compared against the installation, so nothing outside the environment stated what it should hold | `worker/bundle-manifest.json` moves to layout `1.2`, adding a required `record_digests` declaring, per locked distribution, a digest over the `RECORD` claims the check rests on. The manifest is a declared bundle input, so changing what the lock may have installed moves every cache key. `check_records_match_their_declarations` compares them, and `t4_e1_an_installed_record_the_manifest_does_not_vouch_for_is_refused` pins both refusals |
+| `ln -sfn "${QUALIFIED_WORKER_VENV}" worker/.venv` does not replace an existing real directory. It creates a link *inside* it, exits `0`, and the version check on the next line then runs the stale interpreter that was already there — a success an operator reads as an attached qualified environment | The documented step guards on a non-symlink destination and attaches with `ln -sfnT`, which is what `.github/workflows/qualification.yml` already used. Reproduced in a scratch tree before and after |
+
+### What layout `1.2` costs, and what it does not buy
+
+An omitted `record_digests` is a refusal rather than an exemption, so a layout
+`1.0` or `1.1` manifest still loads and then refuses every locked distribution.
+That is the field working. It also means the declarations can only be produced
+from a restored environment: `docs/operations/WORKER-ENVIRONMENT.md` §Declaring
+what the lock installed carries the command that prints them, and the
+fifty-six entries now in `worker/bundle-manifest.json` came from it, run against
+the reference machine's own restored `worker/.venv`.
+
+The digest is taken over `RECORD` rows rather than over the `RECORD` file, and
+excludes the `.dist-info` directory. `INSTALLER`, `REQUESTED`, and
+`direct_url.json` are installer bookkeeping that moves with the command that
+installed rather than with anything the worker imports; pinning the file itself
+would make a correct restore read as tampering, and train an operator to
+regenerate on every mismatch, which is the control switched off by habit.
+
+What it does not give is authentication against the locked *artifact*. Nothing
+this build can ask the interpreter reports the artifact a distribution came
+from, so the declaration is an independently generated manifest rather than a
+re-derivation from the wheel.
+
+### Compatibility and identity impact
+
+No public Rust API signature, wire field, published schema, or worker protocol
+version changes. Two `EnvironmentMismatch` variants are added —
+`UndeclaredDistributionRecord` and `ModifiedDistributionRecord` — and no
+existing variant, refusal message, or audio byte moves.
+
+**The worker-bundle identity moves**, from
+`6b0a3c1466bd1dc24202b913f8917a49bd0284b39a81807d030216efa8aa8d02` to
+`f9711a21f3e046d53c7c617e9308893c9c0240badec0d3656487fe2796c6dc2a`.
+`worker/bundle-manifest.json` is a declared input and its bytes changed, which
+is the intended shape of this control: what the lock may have installed is now
+part of what the identity describes. Existing cache and plan entries remain
+valid only under the identities that produced them; nothing is reused under a
+new identity, deleted, or re-keyed. `WORKER_BUNDLE_IDENTITY_VERSION` does not
+move — the derivation is unchanged and ADR-0001 §12.5's input list gains
+nothing; only the bytes of a declared input did.
+
+The cost is unchanged. Five consecutive `verified_hash` runs on the reference
+machine took 3.43–3.52 s, inside the 3.43–3.62 s `ADR-0001-D004` records: the
+added digest covers a few kilobytes of `RECORD` text per distribution, against
+the 1,263 MiB the per-file comparison already reads.
+
+### Approval
+
+Ross Todd holds each role below under
+`docs/governance/PROJECT-EXECUTION-CHARTER.md`; each row records that role's
+separate decision and accepted risk.
+
+| Role | Name | Decision | Date |
+|---|---|---|---|
+| Contract owner | Ross Todd for T-CORE | Accept manifest layout `1.2` as a pre-freeze extension of a project-owned format, with `1.0` and `1.1` still readable and refusing rather than exempting | 2026-08-29 |
+| Engineering owner | Ross Todd | Accept the `-S` bootstrap, the `site.venv` prefix repetition it requires, the two added `EnvironmentMismatch` variants, and the two added T4 tests | 2026-08-29 |
+| Project owner | Ross Todd | Accept that the manifest now carries fifty-six machine-generated declarations, and that regenerating the lock means regenerating them | 2026-08-29 |
+| Worker owner | Ross Todd for T-WORKER | Accept the worker-bundle identity moving to `f9711a21…6c6dc2a`, reproduced twice on the reference machine, with hosted-CI and protected qualification reproduction still owed before G1 | 2026-08-29 |
 | Affected-track reviewer | Ross Todd for T-RUNTIME | Accept that old plan and cache entries remain valid only under their producing identities and are not reused, deleted, or re-keyed by this change | 2026-08-29 |
 | Affected-track reviewer | Ross Todd for T-AUDIO | Accept that no audio behavior or bytes changed, so no listening evidence is required | 2026-08-29 |
