@@ -500,8 +500,12 @@ def read_request(line: bytes) -> dict[str, Any]:
     ):
         request_id = None
     version = frame.get("protocol_version")
+    if not isinstance(method, str):
+        raise FrameError("`frame.method` is not a string", request_id)
     if method not in _REQUEST_FRAMES:
         raise FrameError("frame method is unsupported", request_id)
+    if not isinstance(version, str):
+        raise FrameError("`frame.protocol_version` is not a string", request_id)
     if version not in ACCEPTED_PROTOCOL_VERSIONS:
         raise FrameError("frame protocol version is unsupported", request_id)
     try:

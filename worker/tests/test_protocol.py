@@ -395,12 +395,30 @@ class RequestIdentityCeilingTests(unittest.TestCase):
 class EnvelopeTests(unittest.TestCase):
     """The checks that run before a method's parameters are looked at."""
 
+    def test_an_unhashable_method_is_refused_with_its_request_id(self) -> None:
+        for method in [[], {}]:
+            with self.subTest(method=method):
+                with self.assertRaises(FrameError) as refused:
+                    read_request(encode(initialize_frame(method=method)))
+
+                self.assertIn("frame.method", str(refused.exception))
+                self.assertEqual(refused.exception.request_id, "req-1")
+
+    def test_an_unhashable_protocol_version_is_refused_with_its_request_id(self) -> None:
+        for version in [[], {}]:
+            with self.subTest(protocol_version=version):
+                with self.assertRaises(FrameError) as refused:
+                    read_request(encode(initialize_frame(protocol_version=version)))
+
+                self.assertIn("frame.protocol_version", str(refused.exception))
+                self.assertEqual(refused.exception.request_id, "req-1")
+
     def test_an_unknown_method_is_refused(self) -> None:
-        with self.assertRaises(FrameError):
+        with self.assertRaisesRegex(FrameError, "frame method is unsupported"):
             read_request(encode(initialize_frame(method="teleport")))
 
     def test_a_protocol_version_neither_end_speaks_is_refused(self) -> None:
-        with self.assertRaises(FrameError):
+        with self.assertRaisesRegex(FrameError, "frame protocol version is unsupported"):
             read_request(encode(initialize_frame(protocol_version="e1.worker.9.9")))
 
     def test_bytes_that_are_not_utf8_are_refused_as_such(self) -> None:
