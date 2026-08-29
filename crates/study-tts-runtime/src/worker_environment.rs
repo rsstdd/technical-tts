@@ -51,10 +51,19 @@ pub const WORKER_INTERPRETER_PATH: &str = "worker/.venv/bin/python";
 /// what it is, and what is installed beside it.
 ///
 /// Kept as a `.py` file rather than a Rust string so a Python editor, linter,
-/// and `compileall` can all read it. It is executed with `python -I -c`:
-/// isolated mode ignores `PYTHONPATH` and the user site directory, so a
-/// shadowing `packaging` cannot dictate the identity this build records, and
-/// the site directories it reports are the ones the worker itself processes.
+/// and `compileall` can all read it. It is executed with `python -I -S -c`.
+/// Isolated mode ignores `PYTHONPATH` and the user site directory, so a
+/// shadowing `packaging` cannot dictate the identity this build records.
+///
+/// `-S` is what makes the answer worth reading. Under `-I` alone `site.main`
+/// still runs before the script does: every `.pth` file executes, and
+/// `sitecustomize` is imported — the two hazards this probe exists to report,
+/// running first inside the process that would report them. A single `.pth`
+/// line was enough to make the probe answer that an environment with a modified
+/// module and an unaccounted hook was clean, and the bundle hash it guards then
+/// came out unchanged. `-S` suppresses both, and the script makes its
+/// observations with the standard library before importing anything the
+/// environment supplies.
 ///
 /// The script states its own reasoning; `docs/operations/WORKER-ENVIRONMENT.md`
 /// §The declared runtime is checked too and the sections after it hold the
@@ -143,8 +152,9 @@ struct RuntimeProbe {
     /// A version is a claim about which release was installed, never about what
     /// the files hold now. `RECORD` is the installed distribution's per-file
     /// digest, so this detects a file that drifted without its metadata
-    /// changing. The probe bounds this list to one because one refusal is
-    /// enough to stop the identity.
+    /// changing. Rust authenticates the `RECORD` claims against the manifest
+    /// before trusting this comparison. The probe bounds this list to one
+    /// because one refusal is enough to stop the identity.
     integrity_faults: Vec<IntegrityFault>,
     /// `sitecustomize` and `usercustomize`, where the interpreter finds them.
     startup_modules: Vec<StartupModule>,
@@ -220,6 +230,15 @@ struct InstalledDistribution {
     /// install proves a path and a path is not a revision, so a governed
     /// distribution without this is refused as surely as one from an index.
     commit: Option<String>,
+    /// Digest over the `RECORD` claims the integrity check rests on.
+    ///
+    /// `None` for a distribution the lock does not pin, whose `RECORD` the
+    /// probe never reads, and for a locked one that ships no `RECORD` at all.
+    /// Compared against [`crate::worker_bundle::DeclaredDistributionRecord`],
+    /// which is what makes the per-file comparison an authentication rather
+    /// than a check of the environment against itself.
+    #[serde(deserialize_with = "deserialize_optional_record_digest")]
+    record_digest: Option<String>,
 }
 
 /// One `.pth` file found in a site directory, and the distribution owning it.
@@ -367,8 +386,11 @@ fn check_runtime_matches_manifest(
 /// [`EnvironmentMismatch::FromAnotherRevision`], then
 /// [`EnvironmentMismatch::UnownedPathHook`] or
 /// [`EnvironmentMismatch::UnlockedPathHook`] for a startup hook the lock
-/// does not account for, the `RECORD` integrity variants for an incomplete,
-/// malformed, or modified install, or
+/// does not account for, then
+/// [`EnvironmentMismatch::UndeclaredDistributionRecord`] or
+/// [`EnvironmentMismatch::ModifiedDistributionRecord`] for installed metadata
+/// the manifest does not vouch for, then the `RECORD` integrity variants for an
+/// incomplete, malformed, or modified install, or
 /// [`EnvironmentMismatch::UnaccountedStartupModule`] for executable startup
 /// code neither the lock nor manifest declares.
 fn check_environment_matches_lock(
@@ -424,8 +446,77 @@ fn check_environment_matches_lock(
     }
 
     check_path_hooks_are_pinned(pins, &probe.path_hooks)?;
+    check_records_match_their_declarations(manifest, pins, &installed)?;
     check_recorded_files_are_intact(&probe.integrity_faults)?;
     check_startup_modules_are_accounted(manifest, pins, &probe.startup_modules)
+}
+
+/// Refuses an installed `RECORD` the manifest does not vouch for.
+///
+/// The gap the per-file comparison leaves open, and the one no check inside the
+/// environment can close. `RECORD` is the distribution's own statement of which
+/// bytes it installed, and it is installed beside them: editing a module and
+/// the line that pins its digest is one action, after which the distribution
+/// agrees with itself and [`check_recorded_files_are_intact`] finds nothing.
+/// `worker/bundle-manifest.json` states the same claims from outside the
+/// environment, and is itself a hashed bundle input — so an intended change to
+/// what the lock may have installed moves every cache key, and an unintended
+/// one is this refusal.
+///
+/// Runs before the fault check because a per-file comparison is evidence only
+/// after the `RECORD` claims it used match the declaration outside the
+/// environment. A distribution shipping no `RECORD` is still reported as
+/// [`EnvironmentMismatch::UnrecordedDistribution`] here.
+///
+/// `docs/operations/WORKER-ENVIRONMENT.md` §Declaring what the lock installed
+/// states this rule in prose, gives the operator the command that regenerates
+/// the declarations, and names this function in return.
+///
+/// # Errors
+///
+/// [`WorkerBundleError::EnvironmentDoesNotMatchLock`] carrying
+/// [`EnvironmentMismatch::UndeclaredDistributionRecord`] when the manifest
+/// declares nothing for a locked distribution,
+/// [`EnvironmentMismatch::ModifiedDistributionRecord`] when what it declares is
+/// not what the environment reports, and
+/// [`EnvironmentMismatch::UnrecordedDistribution`] when the probe reported no
+/// digest at all.
+fn check_records_match_their_declarations(
+    manifest: &BundleManifest,
+    pins: &[LockedDistribution],
+    installed: &BTreeMap<&str, &InstalledDistribution>,
+) -> Result<(), BuildError> {
+    for locked in pins {
+        let Some(observed) = installed
+            .get(locked.name.as_str())
+            .and_then(|distribution| distribution.record_digest.as_deref())
+        else {
+            return Err(mismatch(EnvironmentMismatch::UnrecordedDistribution {
+                distribution: locked.name.clone(),
+            }));
+        };
+        // Canonicalized on this side too, for the reason the lock and the probe
+        // are: a manifest spelling `hf_xet` where the lock spells `hf-xet`
+        // names one distribution, and matching by literal text would read as a
+        // missing declaration.
+        let Some(declared) = manifest
+            .record_digests
+            .iter()
+            .find(|entry| canonicalize_distribution_name(&entry.distribution) == locked.name)
+        else {
+            return Err(mismatch(
+                EnvironmentMismatch::UndeclaredDistributionRecord {
+                    distribution: locked.name.clone(),
+                },
+            ));
+        };
+        if declared.digest != observed {
+            return Err(mismatch(EnvironmentMismatch::ModifiedDistributionRecord {
+                distribution: locked.name.clone(),
+            }));
+        }
+    }
+    Ok(())
 }
 
 /// Refuses a startup module nothing accounts for.
@@ -814,9 +905,10 @@ fn mismatch(mismatch: EnvironmentMismatch) -> BuildError {
 /// Refuses a locked distribution that disagrees with its installed `RECORD`.
 ///
 /// The probe compares each locked distribution's files against its own
-/// `RECORD`; this turns the first fault it reports into the refusal. First
-/// rather than all, because a partial uninstall of `torch` can contain
-/// thousands and a refusal is read in a terminal.
+/// `RECORD`; this turns the first fault it reports into the refusal, but only
+/// after [`check_records_match_their_declarations`] authenticates those claims
+/// against the manifest. First rather than all, because a partial uninstall of
+/// `torch` can contain thousands and a refusal is read in a terminal.
 ///
 /// # Errors
 ///
@@ -915,7 +1007,7 @@ fn probe_runtime(
     locked: &[&str],
 ) -> Result<RuntimeProbe, BuildError> {
     let mut command = Command::new(resolved);
-    command.args(["-I", "-c", RUNTIME_PROBE_SCRIPT]);
+    command.args(["-I", "-S", "-c", RUNTIME_PROBE_SCRIPT]);
     // `-c` puts `-c` itself in `sys.argv[0]`, so the names start at `[1:]`,
     // which is where the script reads them.
     command.args(locked);
@@ -980,7 +1072,7 @@ mod tests {
     use super::*;
     use crate::WorkerBundle;
     use crate::worker_bundle::{
-        DeclaredStartupModule,
+        DeclaredDistributionRecord, DeclaredStartupModule,
         tests::{RuntimeMutation, bundle, bundle_copy, write_manifest},
     };
     /// How long [`install_executable`] waits for a script it just wrote to
@@ -1083,16 +1175,54 @@ mod tests {
                 // so PEP 610 records `vcs_info.commit_id`; an index install
                 // writes no record at all.
                 let commit = locked.governed_commit.clone();
+                let record_digest = record_digest_for(&locked.name);
                 (
                     locked.name,
                     serde_json::json!({
                         "version": locked.version,
                         "recorded_source": commit.is_some(),
                         "commit": commit,
+                        "record_digest": record_digest,
                     }),
                 )
             })
             .collect()
+    }
+
+    /// The `RECORD` digest a distribution reports in an environment restored
+    /// exactly to the lock.
+    ///
+    /// A stand-in rather than a real digest, because every case here drives the
+    /// probe with a script: what is under test is the comparison, not the
+    /// hashing, which
+    /// `t4_e1_the_probe_reads_record_digests_from_a_real_interpreter` exercises
+    /// against a real interpreter instead. The spelling is what
+    /// `validate_record_digest` requires — 43 URL-safe base64 characters ending
+    /// in a canonical final sextet — and it is derived from the name so a
+    /// comparison that pairs the wrong two distributions fails here.
+    fn record_digest_for(distribution: &str) -> String {
+        format!("{distribution:_<42.42}A")
+    }
+
+    /// Loads the copied bundle with every locked `RECORD` declared.
+    ///
+    /// `verified_hash` authenticates each locked distribution's `RECORD`
+    /// against the manifest, so a copy declaring none refuses at the first
+    /// pin — before reaching whatever the case under test is about. The
+    /// declarations are derived from the same lock [`matching_distributions`]
+    /// derives its answer from, which is what makes an environment restored to
+    /// the lock agree with the manifest.
+    fn bundle_declaring_records(root: &TempDir) -> WorkerBundle {
+        let mut manifest = bundle(root).manifest().clone();
+        manifest.record_digests = matching_distributions(root)
+            .into_keys()
+            .map(|distribution| DeclaredDistributionRecord {
+                digest: record_digest_for(&distribution),
+                distribution,
+            })
+            .collect();
+        write_manifest(root, &manifest);
+        bundle(root)
     }
 
     /// The keyed distribution set as the probe reports it: a list, each entry
@@ -1164,7 +1294,7 @@ mod tests {
     #[test]
     fn t4_e1_an_interpreter_matching_the_manifest_hashes_the_bundle() {
         let root = bundle_copy();
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
         install_interpreter(&root, &matching_answer(&root, &bundle));
 
         assert_eq!(
@@ -1193,7 +1323,7 @@ mod tests {
         // invoked through, which is the observable difference a script can
         // carry and the one a real virtualenv has.
         let root = bundle_copy();
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
 
         let mut resolved_runtime = bundle.manifest().python.clone();
         resolved_runtime.platform_tag = "linux_x86_64".to_owned();
@@ -1244,7 +1374,7 @@ mod tests {
         // interpreter patch version or platform keeps its identity while the
         // wheels it loads change.
         let root = bundle_copy();
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
         let changes: [RuntimeMutation; 4] = [
             ("implementation", |runtime| {
                 runtime.implementation = "pypy".to_owned();
@@ -1298,7 +1428,7 @@ mod tests {
         // Distinct from a mismatch: the environment is not merely the wrong one
         // but unusable, and the remedies differ.
         let root = bundle_copy();
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
 
         for (name, reported) in [
             ("silent", ""),
@@ -1374,7 +1504,7 @@ mod tests {
     #[test]
     fn t4_e1_runtime_probe_diagnostics_cannot_emit_terminal_controls() {
         let root = bundle_copy();
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
         install_executable(
             &root.path().join(WORKER_INTERPRETER_PATH),
             "#!/bin/sh\nprintf '\\033[31mboom\\033[0m\\nsecond line' >&2\nexit 1\n".to_owned(),
@@ -1406,7 +1536,7 @@ mod tests {
         // Driven from the checked-in lock rather than from a fixture, because
         // what is under test is the comparison against the real one.
         let root = bundle_copy();
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
         let (governed, commit) = governed_distribution(&root);
         let sample = matching_distributions(&root)
             .keys()
@@ -1421,6 +1551,7 @@ mod tests {
                     "version": "0.0.0-not-locked",
                     "recorded_source": false,
                     "commit": null,
+                    "record_digest": record_digest_for(&sample),
                 }),
             );
             installed
@@ -1491,23 +1622,11 @@ mod tests {
             else {
                 panic!("the `{expected}` case produced the wrong error: {error:?}");
             };
-            let named = match mismatch.as_ref() {
-                EnvironmentMismatch::Absent { .. } => "absent",
-                EnvironmentMismatch::Version { .. } => "version",
-                EnvironmentMismatch::FromIndex { .. } => "from-index",
-                EnvironmentMismatch::WithoutRecordedRevision { .. } => "without-recorded-revision",
-                EnvironmentMismatch::FromAnotherRevision { .. } => "from-another-revision",
-                EnvironmentMismatch::UnownedPathHook { .. } => "unowned-path-hook",
-                EnvironmentMismatch::UnlockedPathHook { .. } => "unlocked-path-hook",
-                EnvironmentMismatch::AmbiguousDistribution { .. } => "ambiguous",
-                EnvironmentMismatch::ModifiedDistributionFile { .. } => "modified-file",
-                EnvironmentMismatch::MissingDistributionFile { .. } => "missing-file",
-                EnvironmentMismatch::UnrecordedDistribution { .. } => "unrecorded",
-                EnvironmentMismatch::MalformedDistributionRecord { .. } => "malformed-record",
-                EnvironmentMismatch::UnsafeDistributionRecord { .. } => "unsafe-record",
-                EnvironmentMismatch::UnaccountedStartupModule { .. } => "startup-module",
-            };
-            assert_eq!(named, expected, "wrong fault reported: {mismatch}");
+            assert_eq!(
+                fault_name(mismatch),
+                expected,
+                "wrong fault reported: {mismatch}"
+            );
 
             // The governed model root never reaches a message.
             // `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` keeps it out of
@@ -1542,7 +1661,12 @@ mod tests {
         let mut with_extras = matching_distributions(&root);
         with_extras.insert(
             "pre-commit".to_owned(),
-            serde_json::json!({"version": "4.0.1", "recorded_source": false, "commit": null}),
+            serde_json::json!({
+                "version": "4.0.1",
+                "recorded_source": false,
+                "commit": null,
+                "record_digest": null,
+            }),
         );
         install_interpreter(&root, &answer(&bundle, with_extras));
         bundle
@@ -1559,7 +1683,7 @@ mod tests {
         // install was never mentioned. It is reported as a list now, and the
         // collision is a refusal.
         let root = bundle_copy();
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
         let installed = matching_distributions(&root);
         let sample = installed
             .keys()
@@ -1597,42 +1721,13 @@ mod tests {
         );
     }
 
-    /// Writes a `packaging` stand-in the probe's imports are satisfied by.
+    /// Builds a real virtual environment the probe can be run against.
     ///
-    /// The probe needs `packaging` for the ABI tag and for PEP 503
-    /// canonicalization. Installing the real one needs an index, and this test
-    /// is about `RECORD` verification rather than about tag derivation, so the
-    /// two functions it calls are stubbed. Offline, and it keeps the assertions
-    /// below independent of whichever wheel tags this machine reports.
-    fn install_packaging_stub(site_packages: &Path) {
-        let packaging = site_packages.join("packaging");
-        fs::create_dir_all(&packaging).expect("the stub package directory is creatable");
-        fs::write(packaging.join("__init__.py"), "").expect("the stub is writable");
-        fs::write(
-            packaging.join("tags.py"),
-            "class _Tag:\n    abi = 'cp312'\n\
-             def sys_tags():\n    return [_Tag()]\n\
-             def platform_tags():\n    return ['manylinux_2_39_x86_64']\n",
-        )
-        .expect("the tag stub is writable");
-        fs::write(
-            packaging.join("utils.py"),
-            "import re\n\
-             def canonicalize_name(name):\n\
-             \x20   return re.sub(r'[-_.]+', '-', name).lower()\n",
-        )
-        .expect("the canonicalization stub is writable");
-    }
-
-    #[test]
-    fn t4_e1_the_probe_reads_record_digests_from_a_real_interpreter() {
-        // Every other test here answers the probe with a shell script, which is
-        // right for them: they are about what this build does with an answer.
-        // It leaves the script itself -- the `RECORD` parse that decides
-        // whether an installed file still matches its `RECORD` -- run by
-        // nothing. This executes it against a real interpreter and a real
-        // `.dist-info`, so a mistake in the Python is a failure here rather
-        // than a check that silently reports no faults.
+    /// Returns the workspace whose `Drop` removes it, the environment root, and
+    /// its site-packages directory. The workspace must be held for the length
+    /// of the test: dropping it removes the interpreter the caller is about to
+    /// run.
+    fn real_interpreter() -> (TempDir, PathBuf, PathBuf) {
         let workspace = TempDir::new().expect("a workspace is creatable");
         let venv = workspace.path().join("venv");
         let built = Command::new("python3")
@@ -1644,8 +1739,11 @@ mod tests {
             built.success(),
             "`python3 -m venv` must create the interpreter this T4 test exercises"
         );
-        let interpreter = venv.join("bin/python");
-        let site_packages = Command::new(&interpreter)
+        // Asked without `-S`, because this is the environment's own answer
+        // about where it keeps its packages rather than anything the probe
+        // reports: under `-S` the interpreter has not yet been told it is a
+        // virtual environment and names the base installation instead.
+        let site_packages = Command::new(venv.join("bin/python"))
             .args([
                 "-I",
                 "-c",
@@ -1663,6 +1761,40 @@ mod tests {
                 .trim(),
         );
         install_packaging_stub(&site_packages);
+        (workspace, venv, site_packages)
+    }
+
+    /// Writes a `packaging` stand-in the probe's one import is satisfied by.
+    ///
+    /// The probe needs `packaging` for the wheel tags. Installing the real one
+    /// needs an index, and these tests are about what the probe observes rather
+    /// than about tag derivation, so the two functions it calls are stubbed.
+    /// Offline, and it keeps the assertions independent of whichever wheel tags
+    /// this machine reports.
+    fn install_packaging_stub(site_packages: &Path) {
+        let packaging = site_packages.join("packaging");
+        fs::create_dir_all(&packaging).expect("the stub package directory is creatable");
+        fs::write(packaging.join("__init__.py"), "").expect("the stub is writable");
+        fs::write(
+            packaging.join("tags.py"),
+            "class _Tag:\n    abi = 'cp312'\n\
+             def sys_tags():\n    return [_Tag()]\n\
+             def platform_tags():\n    return ['manylinux_2_39_x86_64']\n",
+        )
+        .expect("the tag stub is writable");
+    }
+
+    #[test]
+    fn t4_e1_the_probe_reads_record_digests_from_a_real_interpreter() {
+        // Every other test here answers the probe with a shell script, which is
+        // right for them: they are about what this build does with an answer.
+        // It leaves the script itself -- the `RECORD` parse that decides
+        // whether an installed file still matches its `RECORD` -- run by
+        // nothing. This executes it against a real interpreter and a real
+        // `.dist-info`, so a mistake in the Python is a failure here rather
+        // than a check that silently reports no faults.
+        let (_workspace, venv, site_packages) = real_interpreter();
+        let interpreter = venv.join("bin/python");
 
         let module = site_packages.join("demo_pkg/__init__.py");
         fs::create_dir_all(module.parent().expect("the module has a parent"))
@@ -1707,7 +1839,7 @@ mod tests {
 
         let probe = |expected_faults: &[(&str, &str)], why: &str| {
             let output = Command::new(&interpreter)
-                .args(["-I", "-c", RUNTIME_PROBE_SCRIPT, "demo-pkg"])
+                .args(["-I", "-S", "-c", RUNTIME_PROBE_SCRIPT, "demo-pkg"])
                 .output()
                 .expect("the probe runs");
             assert!(
@@ -1737,7 +1869,67 @@ mod tests {
             answer
         };
 
-        probe(&[], "an untouched install matches its own RECORD");
+        let baseline = probe(&[], "an untouched install matches its own RECORD");
+        let declared = baseline["distributions"][0]["record_digest"].clone();
+        assert!(
+            declared.is_string(),
+            "a locked distribution must report the digest the manifest declares it by"
+        );
+
+        // The pair of edits `RECORD` cannot see, driven against a real
+        // interpreter: a module and the row pinning it, changed together. The
+        // install stays self-consistent, so no fault is reported. The digest
+        // the manifest is compared against still moves, and Rust refuses it
+        // below.
+        fs::write(&module, b"VALUE = 66\n").expect("the module is rewritable");
+        write_record("czvH6lxUSF8w8iZ-lqIoDr_Ff1Co8DqpsUb7j38HlAw");
+        let rewritten = probe(
+            &[],
+            "a module edited together with its own RECORD row reports no fault",
+        );
+        assert_ne!(
+            rewritten["distributions"][0]["record_digest"], declared,
+            "a rewritten RECORD row must move the digest the manifest pins"
+        );
+        let record_bundle_root = bundle_copy();
+        let mut manifest = bundle(&record_bundle_root).manifest().clone();
+        manifest.record_digests = vec![DeclaredDistributionRecord {
+            distribution: "demo-pkg".to_owned(),
+            digest: declared
+                .as_str()
+                .expect("the declared RECORD digest is a string")
+                .to_owned(),
+        }];
+        let pins = vec![LockedDistribution {
+            name: "demo-pkg".to_owned(),
+            version: "1.0".to_owned(),
+            governed_commit: None,
+        }];
+        let rewritten_probe: RuntimeProbe = serde_json::from_value(rewritten)
+            .expect("the real interpreter answers with the runtime probe shape");
+
+        let error = check_environment_matches_lock(&manifest, &pins, &rewritten_probe)
+            .expect_err("changing a module and its RECORD row together must be refused");
+        assert!(
+            matches!(
+                &error,
+                BuildError::WorkerBundle(
+                    WorkerBundleError::EnvironmentDoesNotMatchLock { mismatch }
+                ) if matches!(
+                    mismatch.as_ref(),
+                    EnvironmentMismatch::ModifiedDistributionRecord { distribution }
+                        if distribution == "demo-pkg"
+                )
+            ),
+            "the authenticated RECORD declaration must catch the paired edit: {error}"
+        );
+        fs::write(&module, module_bytes).expect("the module is restorable");
+        write_record(module_digest);
+        let restored = probe(&[], "the restored install matches its own RECORD again");
+        assert_eq!(
+            restored["distributions"][0]["record_digest"], declared,
+            "the digest must depend on the RECORD rows alone, not on when it was read"
+        );
 
         let nested_hook = site_packages.join("nested/demo.pth");
         fs::create_dir_all(nested_hook.parent().expect("the nested hook has a parent"))
@@ -1882,6 +2074,84 @@ mod tests {
     }
 
     #[test]
+    fn t4_e1_interpreter_startup_code_cannot_edit_what_the_probe_reports() {
+        // The hazards this probe exists to report are the ones that run first.
+        // Under `-I` alone `site.main` still executes every `.pth` file and
+        // imports `sitecustomize` before the script does, so a single `.pth`
+        // line was enough to replace `json.dumps` in the process doing the
+        // reporting: the probe then answered that an environment holding a
+        // modified module and an unowned hook was clean, and the bundle hash it
+        // guards came out unchanged. `-S` suppresses both, and every
+        // observation is made with the standard library before anything the
+        // environment supplies is imported.
+        let (_workspace, venv, site_packages) = real_interpreter();
+        let interpreter = venv.join("bin/python");
+
+        let module = site_packages.join("demo_pkg/__init__.py");
+        fs::create_dir_all(module.parent().expect("the module has a parent"))
+            .expect("the package directory is creatable");
+        fs::write(&module, b"VALUE = 1\n").expect("the module is writable");
+        let dist_info = site_packages.join("demo_pkg-1.0.dist-info");
+        fs::create_dir_all(&dist_info).expect("the dist-info directory is creatable");
+        fs::write(
+            dist_info.join("METADATA"),
+            "Metadata-Version: 2.1\nName: demo-pkg\nVersion: 1.0\n",
+        )
+        .expect("the metadata is writable");
+        fs::write(
+            dist_info.join("RECORD"),
+            "demo_pkg/__init__.py,sha256=4T34xEr13qHkEkA5ELmcxaSPLMv2imazN01quc75_GU,10\n\
+             demo_pkg-1.0.dist-info/RECORD,,\n",
+        )
+        .expect("the record is writable");
+
+        // The hostile pair: a hook that rewrites the report as the interpreter
+        // starts, and the drift it exists to hide.
+        fs::write(
+            site_packages.join("silence.py"),
+            "import json\n\
+             _answer = json.dumps\n\
+             def _silenced(value, *arguments, **keywords):\n\
+             \x20   if isinstance(value, dict) and 'integrity_faults' in value:\n\
+             \x20       value['integrity_faults'] = []\n\
+             \x20       value['path_hooks'] = []\n\
+             \x20   return _answer(value, *arguments, **keywords)\n\
+             json.dumps = _silenced\n",
+        )
+        .expect("the startup hook module is writable");
+        fs::write(site_packages.join("silence.pth"), b"import silence\n")
+            .expect("the startup hook is writable");
+        fs::write(&module, b"VALUE = 99\n").expect("the module is rewritable");
+
+        let output = Command::new(&interpreter)
+            .args(["-I", "-S", "-c", RUNTIME_PROBE_SCRIPT, "demo-pkg"])
+            .output()
+            .expect("the probe runs");
+        assert!(
+            output.status.success(),
+            "the probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let answer: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("the probe answers with JSON");
+
+        assert_eq!(
+            answer["integrity_faults"],
+            serde_json::json!([{
+                "distribution": "demo-pkg",
+                "file": "demo_pkg/__init__.py",
+                "fault": "modified",
+            }]),
+            "startup code must not be able to edit the integrity findings"
+        );
+        assert_eq!(
+            answer["path_hooks"],
+            serde_json::json!([{"file": "silence.pth", "owner": null}]),
+            "the hook that ran must be reported by the probe it tried to silence"
+        );
+    }
+
+    #[test]
     fn t4_e1_a_locked_distribution_whose_bytes_moved_is_refused() {
         // The gap the version comparison leaves open, and the one a lockfile
         // cannot close by itself. A pin proves which release was resolved and
@@ -1891,7 +2161,7 @@ mod tests {
         // version, every provenance record, and every declared input
         // byte-identical while the code the worker imports changed.
         let root = bundle_copy();
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
         let locked = governed_distribution(&root).0;
 
         // Read off `EnvironmentMismatch`: each fault the probe can report, and
@@ -1981,6 +2251,72 @@ mod tests {
     }
 
     #[test]
+    fn t4_e1_an_installed_record_the_manifest_does_not_vouch_for_is_refused() {
+        // The pair of edits the per-file comparison cannot see. `RECORD` is a
+        // distribution's own statement of which bytes it installed, and it is
+        // installed beside them: changing a module and the line that pins its
+        // digest is one action, after which the distribution agrees with itself
+        // and `integrity_faults` comes back empty. So the claims are declared
+        // in `worker/bundle-manifest.json` as well, which is outside the
+        // environment and is itself a hashed bundle input -- an intended change
+        // moves every cache key where a reviewer sees it, and an unintended one
+        // is a refusal.
+        let root = bundle_copy();
+        let sample = governed_distribution(&root).0;
+
+        // Layout 1.2 requires one declaration per locked pin. An absent
+        // declaration is refused rather than read as an exemption, or the
+        // control would be switched off by leaving it out. Cleared explicitly
+        // rather than assumed: the copied manifest is the real one, which
+        // declares the reference machine's own records.
+        let mut undeclared = bundle(&root).manifest().clone();
+        undeclared.record_digests.clear();
+        write_manifest(&root, &undeclared);
+        let undeclared = bundle(&root);
+        install_interpreter(&root, &matching_answer(&root, &undeclared));
+        assert_environment_mismatch(
+            &undeclared,
+            "undeclared-record",
+            "a locked `RECORD` the manifest does not declare must not hash",
+        );
+
+        let bundle = bundle_declaring_records(&root);
+        let mut installed = matching_distributions(&root);
+        installed
+            .get_mut(&sample)
+            .expect("the sampled distribution is installed")["record_digest"] =
+            serde_json::Value::String(record_digest_for("a-record-nobody-declared"));
+        install_interpreter(
+            &root,
+            &answer_with(
+                &bundle,
+                reported(installed),
+                Vec::new(),
+                vec![serde_json::json!({
+                    "distribution": sample,
+                    "file": "changed.py",
+                    "fault": "modified",
+                })],
+                Vec::new(),
+            ),
+        );
+        assert_environment_mismatch(
+            &bundle,
+            "modified-record",
+            "a `RECORD` must be authenticated before its file claims are trusted",
+        );
+
+        // And the environment whose `RECORD`s are the declared ones still
+        // hashes, so both cases above fail for the reason they name rather than
+        // because the check refuses everything.
+        install_interpreter(&root, &matching_answer(&root, &bundle));
+        assert_environment_hashes(
+            &bundle,
+            "a `RECORD` the manifest declares must not block the hash",
+        );
+    }
+
+    #[test]
     fn t4_e1_an_unaccounted_startup_module_is_refused_and_an_inert_one_is_not() {
         // `.pth` files were refused because they run at interpreter startup.
         // `site` imports `sitecustomize` and `usercustomize` by name at the
@@ -1994,7 +2330,7 @@ mod tests {
         // file that cannot execute would refuse an environment it does not
         // affect.
         let root = bundle_copy();
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
         let digest = "4T34xEr13qHkEkA5ELmcxaSPLMv2imazN01quc75_GU";
 
         let module = |name: &str, executes: bool, owner: Option<&str>| {
@@ -2081,6 +2417,43 @@ mod tests {
         );
     }
 
+    /// Names one environment mismatch, for a table a reviewer reads.
+    ///
+    /// An exhaustive `match` rather than a `Display` string or a hand-kept
+    /// list, so a new [`EnvironmentMismatch`] variant is a compile error here
+    /// rather than a case no test drives.
+    fn fault_name(mismatch: &EnvironmentMismatch) -> &'static str {
+        match mismatch {
+            EnvironmentMismatch::Absent { .. } => "absent",
+            EnvironmentMismatch::Version { .. } => "version",
+            EnvironmentMismatch::FromIndex { .. } => "from-index",
+            EnvironmentMismatch::WithoutRecordedRevision { .. } => "without-recorded-revision",
+            EnvironmentMismatch::FromAnotherRevision { .. } => "from-another-revision",
+            EnvironmentMismatch::UnownedPathHook { .. } => "unowned-path-hook",
+            EnvironmentMismatch::UnlockedPathHook { .. } => "unlocked-path-hook",
+            EnvironmentMismatch::AmbiguousDistribution { .. } => "ambiguous",
+            EnvironmentMismatch::ModifiedDistributionFile { .. } => "modified-file",
+            EnvironmentMismatch::MissingDistributionFile { .. } => "missing-file",
+            EnvironmentMismatch::UnrecordedDistribution { .. } => "unrecorded",
+            EnvironmentMismatch::MalformedDistributionRecord { .. } => "malformed-record",
+            EnvironmentMismatch::UnsafeDistributionRecord { .. } => "unsafe-record",
+            EnvironmentMismatch::UndeclaredDistributionRecord { .. } => "undeclared-record",
+            EnvironmentMismatch::ModifiedDistributionRecord { .. } => "modified-record",
+            EnvironmentMismatch::UnaccountedStartupModule { .. } => "startup-module",
+        }
+    }
+
+    /// Asserts `verified_hash` refuses with the named environment mismatch.
+    fn assert_environment_mismatch(bundle: &WorkerBundle, expected: &str, why: &str) {
+        let error = bundle.verified_hash().expect_err(why);
+        let BuildError::WorkerBundle(WorkerBundleError::EnvironmentDoesNotMatchLock { mismatch }) =
+            &error
+        else {
+            panic!("{why}, and produced the wrong error: {error:?}");
+        };
+        assert_eq!(fault_name(mismatch), expected, "{why}: {mismatch}");
+    }
+
     /// Asserts `verified_hash` agrees with `hash` under the installed answer.
     fn assert_environment_hashes(bundle: &WorkerBundle, why: &str) {
         assert_eq!(
@@ -2098,7 +2471,7 @@ mod tests {
         // arriving through a file no declared input covers. Extra distributions
         // are tolerated, which is precisely why their hooks cannot be.
         let root = bundle_copy();
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
         let owner = matching_distributions(&root)
             .keys()
             .next()
@@ -2187,7 +2560,7 @@ mod tests {
         // would drop a distribution out of the comparison silently, which is
         // the failure the comparison exists to end.
         let root = bundle_copy();
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
         install_interpreter(&root, &matching_answer(&root, &bundle));
 
         let lockfile = root.path().join(WORKER_LOCKFILE_PATH);
@@ -2237,7 +2610,7 @@ mod tests {
     #[test]
     fn t4_e1_every_index_pin_requires_one_artifact_hash() {
         let root = bundle_copy();
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
         install_interpreter(&root, &matching_answer(&root, &bundle));
 
         let path = root.path().join(WORKER_LOCKFILE_PATH);
@@ -2292,7 +2665,7 @@ mod tests {
     #[test]
     fn t4_e1_the_lock_records_its_package_sources_and_artifact_kinds() {
         let root = bundle_copy();
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
         install_interpreter(&root, &matching_answer(&root, &bundle));
 
         let path = root.path().join(WORKER_LOCKFILE_PATH);
@@ -2364,7 +2737,7 @@ mod tests {
         // Driven from the checked-in lock, because that pairing is the one
         // under test.
         let root = bundle_copy();
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
         install_interpreter(&root, &matching_answer(&root, &bundle));
 
         let path = root.path().join(WORKER_LOCKFILE_PATH);
@@ -2424,7 +2797,7 @@ mod tests {
         // rendered as a real line the operator would open and find nothing
         // wrong with, and only the rendered message shows it.
         let root = bundle_copy();
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
         install_interpreter(&root, &matching_answer(&root, &bundle));
 
         let path = root.path().join(WORKER_LOCKFILE_PATH);
@@ -2478,7 +2851,7 @@ mod tests {
         // Removed after the bundle is loaded, so the only thing wrong with this
         // bundle is that its interpreter is not installed. A late gate would
         // report the missing input instead.
-        let bundle = bundle(&root);
+        let bundle = bundle_declaring_records(&root);
         fs::remove_file(root.path().join("worker/requirements.lock"))
             .expect("the lockfile is removable");
 

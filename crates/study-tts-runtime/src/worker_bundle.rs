@@ -74,17 +74,24 @@ pub const WORKER_BUNDLE_IDENTITY_VERSION: &str = "e1-s1-v4";
 pub const BUNDLE_MANIFEST_PATH: &str = "worker/bundle-manifest.json";
 
 /// Layout version this build publishes for a bundle manifest.
-pub const BUNDLE_MANIFEST_SCHEMA_VERSION: &str = "1.1";
+pub const BUNDLE_MANIFEST_SCHEMA_VERSION: &str = "1.2";
 
 /// Manifest layouts this build reads.
 ///
-/// `1.1` adds `startup_modules` as an optional field. A `1.0` manifest remains
-/// readable and declares none, but its decoder still rejects the newer field;
-/// accepting a future declaration under an older version would make the
+/// `1.1` adds `startup_modules` as an optional field and `1.2` adds
+/// `record_digests` as a required one. An older manifest remains readable and
+/// declares neither, but each decoder still rejects the fields a later layout
+/// added; accepting a future declaration under an older version would make the
 /// version meaningless. A layout outside this list is refused rather than
 /// guessed at.
-const SUPPORTED_BUNDLE_MANIFEST_SCHEMA_VERSIONS: [&str; 2] =
-    ["1.0", BUNDLE_MANIFEST_SCHEMA_VERSION];
+///
+/// Reading an older layout is not the same as passing under it. A manifest that
+/// declares no `record_digests` has nothing to authenticate an installed
+/// `RECORD` against, so `verified_hash` refuses every locked distribution with
+/// [`crate::EnvironmentMismatch::UndeclaredDistributionRecord`] — which is the
+/// point of the field rather than a gap in it.
+const SUPPORTED_BUNDLE_MANIFEST_SCHEMA_VERSIONS: [&str; 3] =
+    ["1.0", "1.1", BUNDLE_MANIFEST_SCHEMA_VERSION];
 
 /// Path of the resolved Python lockfile, relative to the repository root.
 pub const WORKER_LOCKFILE_PATH: &str = "worker/requirements.lock";
@@ -244,6 +251,43 @@ pub struct BundleManifest {
     /// manifest, which is itself a hashed input.
     #[serde(default)]
     pub startup_modules: Vec<DeclaredStartupModule>,
+    /// The `RECORD` each locked distribution must ship, by digest.
+    ///
+    /// Added by manifest layout `1.2`, and required by it: an omitted
+    /// declaration refuses the distribution rather than exempting it.
+    ///
+    /// `RECORD` is a distribution's own statement of which bytes it installed,
+    /// and it sits inside the environment it describes. Comparing installed
+    /// files against it alone answers whether the install is self-consistent,
+    /// which an edit to a module and its `RECORD` line keeps true. Declaring
+    /// the digest here moves the claim outside the environment: this manifest
+    /// is a hashed bundle input, so a change to what the lock is allowed to
+    /// have installed is a change to every cache key, made where a reviewer
+    /// sees it.
+    ///
+    /// Only the locked distributions are declared. An unlocked one is tolerated
+    /// because the worker does not load it, and the one part of it that is not
+    /// inert — a `.pth` — is already refused by name.
+    pub record_digests: Vec<DeclaredDistributionRecord>,
+}
+
+/// One locked distribution's `RECORD`, as the manifest declares it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct DeclaredDistributionRecord {
+    /// Distribution name, canonicalized before comparison.
+    pub distribution: String,
+    /// URL-safe unpadded base64 SHA-256 over the `RECORD` claims this build
+    /// verifies, in `RECORD`'s own digest spelling.
+    ///
+    /// Not the digest of the `RECORD` file. `.dist-info` rows are installer
+    /// bookkeeping — `INSTALLER`, `REQUESTED`, `direct_url.json` — that moves
+    /// with the command that installed rather than with what the worker
+    /// imports, so pinning the file itself would make a correct restore look
+    /// like tampering. `runtime_probe.py` states the exact canonical form it
+    /// hashes and names this field in return.
+    #[serde(deserialize_with = "deserialize_record_digest")]
+    pub digest: String,
 }
 
 /// One startup module the manifest accounts for, by digest.
@@ -319,6 +363,32 @@ impl From<BundleManifestV1_0> for BundleManifest {
             inputs: manifest.inputs,
             python: manifest.python,
             startup_modules: Vec::new(),
+            record_digests: Vec::new(),
+        }
+    }
+}
+
+/// Manifest layout `1.1`, before installed `RECORD`s could be declared.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+struct BundleManifestV1_1 {
+    schema_version: String,
+    import_roots: Vec<String>,
+    inputs: Vec<String>,
+    python: PythonRuntimeIdentity,
+    #[serde(default)]
+    startup_modules: Vec<DeclaredStartupModule>,
+}
+
+impl From<BundleManifestV1_1> for BundleManifest {
+    fn from(manifest: BundleManifestV1_1) -> Self {
+        Self {
+            schema_version: manifest.schema_version,
+            import_roots: manifest.import_roots,
+            inputs: manifest.inputs,
+            python: manifest.python,
+            startup_modules: manifest.startup_modules,
+            record_digests: Vec::new(),
         }
     }
 }
@@ -377,6 +447,7 @@ impl WorkerBundle {
                     platform_tag: String::new(),
                 },
                 startup_modules: Vec::new(),
+                record_digests: Vec::new(),
             },
         };
 
@@ -399,6 +470,7 @@ impl WorkerBundle {
 
         let manifest = match version.schema_version.as_str() {
             "1.0" => serde_json::from_slice::<BundleManifestV1_0>(&bytes).map(BundleManifest::from),
+            "1.1" => serde_json::from_slice::<BundleManifestV1_1>(&bytes).map(BundleManifest::from),
             _ => serde_json::from_slice::<BundleManifest>(&bytes),
         }
         .map_err(|source| WorkerBundleError::UnreadableBundleManifest {
@@ -444,7 +516,9 @@ impl WorkerBundle {
     /// something this build cannot read,
     /// [`WorkerBundleError::UnreadableWorkerLockfile`] when the lock cannot be
     /// parsed, [`WorkerBundleError::EnvironmentDoesNotMatchLock`] when the
-    /// installed environment disagrees with it,
+    /// installed environment disagrees with it, including when an installed
+    /// `RECORD` differs from the declaration this manifest authenticates or a
+    /// file differs from that authenticated `RECORD`,
     /// [`crate::ToolError::MissingTool`] when nothing executable is at
     /// [`WORKER_INTERPRETER_PATH`], and whatever `WorkerBundle::hash` reports
     /// once the runtime agrees.
@@ -1196,12 +1270,47 @@ pub(crate) mod tests {
             .as_object_mut()
             .expect("the manifest is an object")
             .remove("extra");
+        // Each layout must refuse the field the layout after it added, or
+        // declaring an older version buys a reader nothing. Walked down one
+        // step at a time, dropping exactly one field per step, so a refusal is
+        // attributable to the field the step is about.
+        let publish = |manifest_value: &serde_json::Value| {
+            fs::write(
+                &manifest,
+                serde_json::to_vec_pretty(manifest_value).expect("the manifest serializes"),
+            )
+            .expect("the manifest is writable");
+        };
+        let drop_field = |manifest_value: &mut serde_json::Value, field: &str| {
+            manifest_value
+                .as_object_mut()
+                .expect("the manifest is an object")
+                .remove(field);
+        };
+
+        with_unknown_field["schema_version"] = serde_json::Value::String("1.1".to_owned());
+        publish(&with_unknown_field);
+        assert!(
+            matches!(
+                WorkerBundle::load(root.path()),
+                Err(BuildError::WorkerBundle(
+                    WorkerBundleError::UnreadableBundleManifest { .. }
+                ))
+            ),
+            "a 1.1 manifest must not accept the 1.2 record-digest field"
+        );
+
+        drop_field(&mut with_unknown_field, "record_digests");
+        publish(&with_unknown_field);
+        let without_records =
+            WorkerBundle::load(root.path()).expect("a strict 1.1 manifest remains readable");
+        assert!(
+            without_records.manifest().record_digests.is_empty(),
+            "layout 1.1 declares no record digests"
+        );
+
         with_unknown_field["schema_version"] = serde_json::Value::String("1.0".to_owned());
-        fs::write(
-            &manifest,
-            serde_json::to_vec_pretty(&with_unknown_field).expect("the manifest serializes"),
-        )
-        .expect("the manifest is writable");
+        publish(&with_unknown_field);
         assert!(
             matches!(
                 WorkerBundle::load(root.path()),
@@ -1212,22 +1321,20 @@ pub(crate) mod tests {
             "a 1.0 manifest must not accept the 1.1 startup-module field"
         );
 
-        with_unknown_field
-            .as_object_mut()
-            .expect("the manifest is an object")
-            .remove("startup_modules");
-        fs::write(
-            &manifest,
-            serde_json::to_vec_pretty(&with_unknown_field).expect("the manifest serializes"),
-        )
-        .expect("the manifest is writable");
+        drop_field(&mut with_unknown_field, "startup_modules");
+        publish(&with_unknown_field);
         let legacy =
             WorkerBundle::load(root.path()).expect("a strict 1.0 manifest remains readable");
         assert!(
             legacy.manifest().startup_modules.is_empty(),
             "layout 1.0 declares no startup modules"
         );
+        assert!(
+            legacy.manifest().record_digests.is_empty(),
+            "layout 1.0 declares no record digests"
+        );
 
+        with_unknown_field["record_digests"] = serde_json::json!([]);
         for startup_module in [
             serde_json::json!({
                 "module": "arbitrary_startup_code",
@@ -1241,11 +1348,7 @@ pub(crate) mod tests {
             with_unknown_field["schema_version"] =
                 serde_json::Value::String(BUNDLE_MANIFEST_SCHEMA_VERSION.to_owned());
             with_unknown_field["startup_modules"] = serde_json::json!([startup_module]);
-            fs::write(
-                &manifest,
-                serde_json::to_vec_pretty(&with_unknown_field).expect("the manifest serializes"),
-            )
-            .expect("the manifest is writable");
+            publish(&with_unknown_field);
 
             assert!(
                 matches!(

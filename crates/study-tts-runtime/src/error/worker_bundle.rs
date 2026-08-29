@@ -455,6 +455,46 @@ pub enum EnvironmentMismatch {
         distribution: String,
     },
 
+    /// A locked distribution whose `RECORD` the manifest does not declare.
+    ///
+    /// `RECORD` sits inside the environment it describes, so on its own it
+    /// proves nothing: an edit to a module and an edit to the line claiming
+    /// that module's digest are one action, and
+    /// [`EnvironmentMismatch::ModifiedDistributionFile`] cannot see a pair of
+    /// them. `worker/bundle-manifest.json` declares each locked `RECORD` from
+    /// outside the environment, which is what makes the per-file comparison an
+    /// authentication rather than a self-consistency check. A locked
+    /// distribution with no declaration is refused rather than checked against
+    /// itself. Remedy: regenerate the declarations per
+    /// `docs/operations/WORKER-ENVIRONMENT.md` §Declaring what the lock
+    /// installed; the worker/runtime owner in
+    /// `docs/governance/ROUTING-TABLES.md` owns the manifest.
+    #[error(
+        "installs `{distribution}`, whose `RECORD` `worker/bundle-manifest.json` does not \
+         declare, so nothing outside the environment states which files it holds"
+    )]
+    UndeclaredDistributionRecord {
+        /// Canonicalized distribution name.
+        distribution: String,
+    },
+
+    /// A locked distribution's `RECORD` is not the one the manifest declares.
+    ///
+    /// The pair of edits [`EnvironmentMismatch::ModifiedDistributionFile`]
+    /// cannot see. A file changed together with the `RECORD` line that pins it
+    /// leaves the distribution self-consistent, so this is the comparison that
+    /// still moves. Remedy: restore the environment from the lock per
+    /// `docs/operations/WORKER-ENVIRONMENT.md` §Restoring the environment, or
+    /// regenerate the declarations if the change was intended.
+    #[error(
+        "installs `{distribution}` whose `RECORD` is not the one \
+         `worker/bundle-manifest.json` declares for it"
+    )]
+    ModifiedDistributionRecord {
+        /// Canonicalized distribution name.
+        distribution: String,
+    },
+
     /// An interpreter startup module the lock does not account for.
     ///
     /// `site` imports `sitecustomize` and `usercustomize` by name as the
