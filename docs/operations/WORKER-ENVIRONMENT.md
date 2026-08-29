@@ -22,6 +22,8 @@ a cache that reuses such an entry ships audio its identity does not describe.
 | `import_roots` | Package directories, relative to the repository root, whose modules are project-owned. |
 | `inputs` | Every file that belongs to the bundle, relative to the repository root. |
 | `python` | Interpreter implementation, version, ABI tag, and platform tag the bundle is resolved for. Checked against the interpreter at `worker/.venv/bin/python`, not trusted (`WORKER_INTERPRETER_PATH` in `crates/study-tts-runtime/src/worker_environment.rs`). |
+| `startup_modules` | Interpreter startup code this machine carries that no locked distribution owns, by digest. Added by layout `1.1`; see [Nor are their bytes, nor the modules `site` imports by name](#nor-are-their-bytes-nor-the-modules-site-imports-by-name). |
+| `record_digests` | What each locked distribution's `RECORD` must claim, by digest. Added by layout `1.2`; see [Declaring what the lock installed](#declaring-what-the-lock-installed). |
 
 What the manifest does **not** decide is which of these fields, and which files, have to be there at
 all. That floor is the next section.
@@ -140,9 +142,9 @@ against the lock before returning a hash:
 | a pin | `EnvironmentMismatch::Absent`, or `::Version` when another version is installed |
 | a governed source tree | `EnvironmentMismatch::FromIndex` when no PEP 610 record exists at all, `::WithoutRecordedRevision` when one exists but records a path rather than a revision, `::FromAnotherRevision` when it records a different one |
 
-Names are canonicalized on both sides — `packaging.utils.canonicalize_name` in the probe and
-`canonicalize_distribution_name` in `crates/study-tts-runtime/src/worker_environment.rs`, which names this
-section in return — because a lock and a `pip freeze` routinely spell `hf-xet` and `hf_xet`
+Names are canonicalized on both sides — `canonicalize_name` in
+`crates/study-tts-runtime/src/runtime_probe.py` and `canonicalize_distribution_name` in
+`crates/study-tts-runtime/src/worker_environment.rs`, which names this section in return — because a lock and a `pip freeze` routinely spell `hf-xet` and `hf_xet`
 differently and they are one distribution. That mapping is many-to-one, so the probe reports a
 **list** and the comparison refuses a repeated name as `EnvironmentMismatch::AmbiguousDistribution`.
 Reported as a map it would have kept whichever install was walked last and called the other absent,
@@ -192,15 +194,36 @@ does not.
 A `.pth` was the first thing found that is not inert; it was not the last, and two more reach the
 same process by other routes. Both are observed by
 `crates/study-tts-runtime/src/runtime_probe.py`, the script `worker_environment` embeds and runs
-under `python -I`, which names this section in return.
+under `python -I -S`, which names this section in return.
+
+**`-S` is what makes the probe's answer evidence rather than a claim.** Under `-I` alone the
+interpreter still runs `site.main` before the script: every `.pth` file executes and `sitecustomize`
+is imported — the two hazards this probe exists to report, running first, inside the process doing
+the reporting. One `.pth` line replacing `json.dumps` was enough to make the probe answer that an
+environment holding a modified module and an unowned hook was clean, leaving the bundle hash it
+guards unchanged. `-S` suppresses both, and the script makes every observation with the standard
+library before importing anything the environment supplies.
+`t4_e1_interpreter_startup_code_cannot_edit_what_the_probe_reports` runs the real probe against a
+real interpreter carrying exactly that hook, and is what keeps the flag from being dropped.
+
+`-S` also skips `site.venv`, which is what moves `sys.prefix` onto a virtual environment, so the
+script repeats the prefix half of it — and only that half, because the rest of `site.main` is what
+`-S` is there to stop. `packaging` stays the source of the wheel tags for the reason given above, and is
+the one environment-owned import: it is imported last, after every observation is made, from a site
+directory the script has checked resolves inside a prefix `site` itself would search. PEP 503
+canonicalization moved out of `packaging.utils` and into the script for the same ordering reason —
+it is needed while walking the distributions, which is before anything may be imported — and it is
+one substitution that a pinned dependency cannot state more exactly.
 
 **A pin is not a claim about content.** A version says which release was resolved and nothing about
 what the files hold now, so a module edited in place — or a `.pth` belonging to a *locked*
 distribution, whose file name and owning distribution both stay correct while its lines change —
 left every version, every provenance record, and every declared input byte-identical. The probe
-therefore verifies each SHA-256-bearing `RECORD` entry beneath the distribution's site-package
-root, and `check_recorded_files_are_intact` in
-`crates/study-tts-runtime/src/worker_environment.rs` turns the first fault into the refusal.
+therefore reports both the digest of the `RECORD` claims and the result of comparing files against
+them. Rust first authenticates those claims against `worker/bundle-manifest.json` through
+`check_records_match_their_declarations`; only then may `check_recorded_files_are_intact` turn the
+reported file comparison into a refusal. Both functions live in
+`crates/study-tts-runtime/src/worker_environment.rs` and name this flow in return.
 Generated wheel scripts elsewhere in the same interpreter environment are not imported by
 `python -m study_tts_worker` and are not read. A non-printable or absolute path, a path escaping the
 interpreter environment, or a site-package symlink escaping its distribution root is refused
@@ -269,6 +292,81 @@ regenerated lock is exactly where a local-path line appears, and
 [`../governance/RIGHTS-DATA-ARTIFACT-POLICY.md`](../governance/RIGHTS-DATA-ARTIFACT-POLICY.md) keeps
 the governed model root out of logs. Naming the commit to reinstall from says everything the URL
 would.
+
+### Declaring what the lock installed
+
+**`RECORD` alone answers the wrong question.** It is the distribution's own statement of which bytes
+it installed, and it is installed beside them. Comparing the tree against it therefore establishes
+that the install is *self-consistent* — which an edit to a module and to the line pinning that
+module's digest keeps true, in one action, leaving every fault above empty. Nothing inside the
+environment can close that: the artifact hashes cannot, because
+[What binds the lock to artifact bytes](#what-binds-the-lock-to-artifact-bytes) records that nothing
+this build can ask the interpreter reports the artifact a distribution came from.
+
+So the claims are stated a second time from outside the environment. Manifest layout `1.2` adds
+`record_digests`, one entry per locked distribution:
+
+```json
+"record_digests": [
+  { "distribution": "torch", "digest": "<RECORD-spelled SHA-256 of the claims below>" }
+]
+```
+
+The digest is **not** the digest of the `RECORD` file. It is taken over the `RECORD` rows this check
+actually rests on — every SHA-256-bearing row resolving inside the distribution's site-package root,
+excluding the `.dist-info` directory — spelled `<path>,sha256=<digest>`, sorted, and joined with
+newlines. `crates/study-tts-runtime/src/runtime_probe.py` computes exactly that and names this
+section in return. The exclusion is what keeps a correct restore from reading as tampering:
+`.dist-info` holds `INSTALLER`, `REQUESTED`, and `direct_url.json`, which move with the command that
+installed rather than with anything the worker imports.
+
+`worker/bundle-manifest.json` is itself a declared bundle input, so this is not merely a second copy.
+Changing what the lock is allowed to have installed changes the manifest, changes the bundle hash,
+and moves every cache key — where a reviewer sees it. `verified_hash` authenticates the installed
+`RECORD` against this declaration before it trusts any digest from that `RECORD`.
+`check_records_match_their_declarations` in
+`crates/study-tts-runtime/src/worker_environment.rs` is the comparison, and
+`t4_e1_an_installed_record_the_manifest_does_not_vouch_for_is_refused` pins the ordering while
+`t4_e1_the_probe_reads_record_digests_from_a_real_interpreter` proves that changing a module and its
+`RECORD` row together is refused.
+
+| The disagreement | The refusal |
+|---|---|
+| a locked distribution has no declaration | `EnvironmentMismatch::UndeclaredDistributionRecord` |
+| the declared digest is not the one reported | `EnvironmentMismatch::ModifiedDistributionRecord` |
+
+**An omitted declaration is a refusal, never an exemption.** A layout `1.0` or `1.1` manifest still
+loads and declares none, and every locked distribution is then refused — which is the field working,
+not a gap in it. A manifest carried from before this layout must be regenerated on the machine it
+describes, from a **freshly restored** environment, before its digests mean anything. Regenerate
+from an environment you have just restored and verified, never from one that has been in use, or the
+declaration records whatever drift is already there:
+
+```text
+worker/.venv/bin/python -I -S crates/study-tts-runtime/src/runtime_probe.py \
+  $(sed -n 's/^\([A-Za-z0-9._-]*\)==.*/\1/p' worker/requirements.lock) > /tmp/probe.json
+
+python3 - <<'DECLARE'
+import json
+
+with open("/tmp/probe.json", encoding="utf-8") as probe:
+    reported = json.load(probe)["distributions"]
+print(json.dumps(
+    sorted(
+        ({"distribution": entry["name"], "digest": entry["record_digest"]}
+         for entry in reported if entry["record_digest"]),
+        key=lambda entry: entry["distribution"],
+    ),
+    indent=2,
+))
+DECLARE
+```
+
+The probe canonicalizes the names it is given, so the lock's own spellings pass through unchanged.
+Paste the printed array as `record_digests` and set `schema_version` to `1.2`. Regenerating the lock
+means regenerating these too, and step 12 of
+[Regenerating the lock](#regenerating-the-lock) already requires the bundle hash to be recorded
+afterwards for exactly that reason.
 
 ### Reading the current identity
 
@@ -450,9 +548,23 @@ out of logs.
 ### Attach it at the fixed interpreter path
 
 ```text
-ln -sfn "${QUALIFIED_WORKER_VENV}" worker/.venv
+if [ -e worker/.venv ] && [ ! -L worker/.venv ]; then
+  echo "worker/.venv is a real directory, not a link; move or remove it first" >&2
+  exit 1
+fi
+ln -sfnT "${QUALIFIED_WORKER_VENV}" worker/.venv
 worker/.venv/bin/python -c 'import sys; print(sys.version)'
 ```
+
+**Both halves of the first two lines are load-bearing, and the failure they prevent is silent.**
+`ln -sfn` replaces an existing *link* but not an existing *directory*: given a real `worker/.venv` it
+creates `worker/.venv/<basename of QUALIFIED_WORKER_VENV>` inside it, exits `0`, and leaves
+`worker/.venv/bin/python` pointing at whatever interpreter was already there. The version line below
+it then prints that interpreter's version, the operator reads a success, and every later check —
+including the bundle identity — describes an environment nobody qualified. `-T` refuses to treat the
+destination as a directory, so the same case becomes `ln: worker/.venv: cannot overwrite directory`.
+The guard above it is what turns that into a sentence naming the remedy, and it is the same shape
+`.github/workflows/qualification.yml` uses, which already attaches with `ln -sfnT`.
 
 `.gitignore` carries `/worker/.venv` without a trailing slash, and the missing slash is the point: a
 trailing one matches a directory only, so the link this command creates was reported as untracked
@@ -538,6 +650,11 @@ What the hashes do **not** do is prove what is installed. Nothing this build can
 interpreter reports the artifact hash a distribution came from, so the parser validates each hash
 and drops it. Their force is that they are part of the lock's bytes, and the lock's bytes are a
 worker-bundle hash input: editing one moves every cache key.
+
+That gap is why installed bytes are authenticated against a separate declaration rather than against
+the lock. [Declaring what the lock installed](#declaring-what-the-lock-installed) records what each
+locked distribution's `RECORD` must claim in `worker/bundle-manifest.json`, which is the same kind of
+force — a hashed bundle input — applied to a question the artifact hashes cannot reach from here.
 
 ## Offline behavior
 
