@@ -17,15 +17,33 @@ The concrete IDs, versions, public representations, consumers, fakes,
 fixtures, identity effects, stabilization stories, and affected-test mapping
 are recorded in
 [`../architecture/PROVISIONAL-CONTRACT-BASELINE.md`](../architecture/PROVISIONAL-CONTRACT-BASELINE.md).
-The change classes below are mechanized in two places, and both name this
-document in return:
+The change classes below are mechanized in three places, each naming this
+document in return. What each one reaches is stated exactly, because the gap
+between them is where a class change escapes:
 
 - `crates/study-tts-core/src/contract.rs::ContractDescriptor::assess_successor`
-  applies them to a provisional *seam* descriptor.
+  classifies **a pair of declared descriptors** against the class each claims.
+  It reads no schema and no code: it answers whether a stated version move
+  matches a stated change, never whether either describes what was built.
 - `crates/study-tts-core/src/schema.rs::SchemaVersion::accepted_by` applies them
   to a *document* on disk: a different major is refused, a newer minor is
   refused, and an older minor of the same major is read with the defaults its
-  compatible extensions declared.
+  compatible extensions declared. It governs which documents this build will
+  **read**, not whether a published schema was entitled to change.
+- `PUBLISHED_REQUIRED_SURFACE` and
+  `t3_e1_published_schema_required_fields_match_the_recorded_surface` in
+  `crates/study-tts-testkit/tests/schemas.rs` hold the required-field surface of
+  every published schema, per version. Any required field entering or leaving
+  any schema in `schemas/` fails the suite until that table is edited, and the
+  failure names the document, the version, the JSON Pointer, and the field.
+
+The third exists because the first two, together, still let a **Breaking
+contract** land silently: a required field could appear in a published schema
+while its version stood still, and no test in the suite would notice. What it
+guarantees is that such a change is explicit and reviewable where it is made.
+It does not choose the version — an author who edits a schema and that table in
+one commit still passes, and the class table below remains a rule people apply,
+not one a machine decides.
 
 ## G1 freeze
 

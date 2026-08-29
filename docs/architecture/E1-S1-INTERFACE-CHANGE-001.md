@@ -38,6 +38,8 @@ from each section's own §What this moves rather than inferred.
 | 15 | Typed initialization identities; the product worker fails closed instead of reporting a successful load of nothing | moves, to `6b0a3c14…` |
 | 16 | The fake refuses a requested worker-bundle identity other than its own | no move |
 | 17 | `ADR-0001-D004` authorizing the environment precondition, the `worker_bundle`/`worker_environment` split, the probe extracted to a `.py` file, sixteen tier corrections, and tier-duration reporting in CI | no move |
+| 18 | The version retention in audit 15 moved out of a mirror document into `ADR-0001-D005`, and the required-field surface of every published schema put under test | no move |
+| 19 | Audits 15–16 approved, the authoritative 60-second T4 deadline restored, and the fake-worker contract harness bounded with timeout cleanup | no move |
 
 Audits 1 through 13 name `schemas/worker-protocol-v0.schema.json`, which is
 correct for the time each was written. The eleventh audit's breaking change
@@ -892,10 +894,16 @@ worker could safely make:
 ### Compatibility and identity impact
 
 This is a breaking required-response correction folded into the same pre-G1
-`e1.worker.1.0` baseline and `1.1` trace extension. The still-Proposed E1-S1
-evidence gives no migration promise, no released consumer or durable frame
-exists, and preserving the incomplete response under another version would
-preserve a false initialization success. Rust supervisor types, the fake,
+`e1.worker.1.0` baseline and `1.1` trace extension. Retaining the version
+across a **Breaking contract** change is a deviation from
+`docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` §Change classes, and
+the eighteenth audit moved that decision into
+[`../adr/deviations/ADR-0001-D005-prefreeze-breaking-correction-retains-version.md`](../adr/deviations/ADR-0001-D005-prefreeze-breaking-correction-retains-version.md),
+where it is `Proposed` and therefore authorizes nothing yet. The reasoning
+recorded at the time, and carried into that record, is that the still-Proposed
+E1-S1 evidence gives no migration promise, no released consumer or durable
+frame exists, and preserving the incomplete response under another version
+would preserve a false initialization success. Rust supervisor types, the fake,
 Python worker, tests, and generated schema move together. Unknown or incomplete
 old `initialized` responses are refused rather than translated.
 
@@ -1150,3 +1158,73 @@ record.
   and this record must not be read as approving past it.
 - Affected-track approvals: deferred to the G1 fake/real parity review
 - Effective version and date: provisional `e1.tts-executor.1.0`, 2026-08-26
+
+## What the eighteenth audit closed
+
+This audit closed no defect in the build. It answers a review of the E1-S1
+baseline that found two governance statements standing wider than what supports
+them.
+
+| Finding | Closed by |
+|---|---|
+| The fifteenth audit's decision to retain `e1.worker.1.0` across a required-field change was argued inline in `PROVISIONAL-CONTRACT-BASELINE.md` — a document that describes itself as *mirroring* `INTERFACE-FREEZE-AND-CHANGE-CONTROL.md`, and that therefore cannot grant an exception to it | [`ADR-0001-D005`](../adr/deviations/ADR-0001-D005-prefreeze-breaking-correction-retains-version.md), `Proposed`, carrying five conditions such a correction must meet and an expiry at G1. The baseline document now names that record instead of reasoning on its own authority, and says plainly that a Proposed record authorizes nothing |
+| `PROVISIONAL-CONTRACT-BASELINE.md` §Amendment rules claimed the change classes were "enforced by" `assess_successor` plus `t3_e0_contract_change_requires_version_or_explicit_compatible_extension`. That test reads `fixtures/contracts/e0-s4-contract-*.json` and nothing else, so it could not have observed the fifteenth audit's own change: a required field entered a published schema while its version stood still, and the whole suite stayed green | `t3_e1_published_schema_required_fields_match_the_recorded_surface` and the `PUBLISHED_REQUIRED_SURFACE` table in `crates/study-tts-testkit/tests/schemas.rs`, which hold the required-field surface of all seven published schemas per version. The claim in both documents was also narrowed to what each mechanism actually reaches |
+
+### What the new test does and does not give
+
+Any required field entering or leaving any schema in `schemas/` now fails the
+suite until `PUBLISHED_REQUIRED_SURFACE` is edited, and the failure names the
+document, the version, the JSON Pointer, and the field. Reverting the fifteenth
+audit's `voice_profile_hashes` requirement was run against it and produces
+exactly that message.
+
+It does not decide the version. An author who edits a schema and the table in
+one commit still passes, and saying otherwise would repeat the overstatement
+this audit exists to correct. What it converts is a change that could land
+silently into one that is explicit and reviewable where it is made.
+
+### Compatibility and identity impact
+
+No wire contract, schema, error variant, refusal message, or bundle input moved.
+`PUBLISHED_REQUIRED_SURFACE` records the surface the seventeenth audit's schemas
+already published, so the table is a transcription of the current state rather
+than a change to it. The verified worker-bundle hash is unchanged at
+`6b0a3c1466bd1dc24202b913f8917a49bd0284b39a81807d030216efa8aa8d02`. The new test
+and this record are not worker-bundle manifest inputs.
+
+## What the nineteenth audit closed
+
+This remediation closes the approval, deadline, and harness gaps left after
+audits 15–18. Statements above that audits 15–16 were pending and
+`ADR-0001-D005` was Proposed record the state at those audits; the decisions
+below supersede them without rewriting that history.
+
+| Finding | Closed by |
+|---|---|
+| Audits 15–16 had implemented typed initialization identities, fail-closed product behavior, and fake identity parity without the required owner decisions | The role-specific approvals below and accepted `e1-s1-provisional-contract-baseline-v11` |
+| The Delivery Plan fixes the ordinary T4 run at 60 seconds, while CI allowed 120 seconds | `.github/workflows/ci.yml` again applies `timeout --signal=TERM 60s`; the Delivery Plan and walking-skeleton contract are unchanged |
+| `t4_e1_fake_worker_passes_shared_protocol_contract` used an unbounded `wait_with_output`, so the fake's existing `hang` behavior could hang the contract driver itself | A test-local standard-library child guard with a two-second session deadline, bounded polling, direct-child kill and reap on timeout, and best-effort `Drop` cleanup; `t4_e1_fake_worker_contract_deadline_kills_and_reaps_a_hung_worker` proves the timeout is bounded and leaves no zombie |
+
+### Compatibility and identity impact
+
+No public Rust API, wire field, schema version, dependency, product-worker
+behavior, or audio byte changes. Existing cache entries remain valid only under
+the identities that produced them; this audit neither reuses them under a new
+identity nor deletes or re-keys them. The worker-bundle identity remains
+`6b0a3c1466bd1dc24202b913f8917a49bd0284b39a81807d030216efa8aa8d02`.
+Reference-machine reproduction is still required before G1.
+
+### Approval
+
+Ross Todd holds each role below under
+`docs/governance/PROJECT-EXECUTION-CHARTER.md`; each row records that role's
+separate decision and accepted risk.
+
+| Role | Name | Decision | Date |
+|---|---|---|---|
+| Contract owner | Ross Todd for T-CORE | Accept the required typed initialization identities and refusal of incomplete legacy success frames within the unreleased `e1.worker.1.0` baseline and `1.1` extension, including approved `ADR-0001-D005` | 2026-08-29 |
+| Engineering owner | Ross Todd | Accept schema, parser, product-worker, fake, and fixture parity, plus the bounded contract harness and restored 60-second CI deadline | 2026-08-29 |
+| Project owner | Ross Todd | Accept audits 15–16, `ADR-0001-D005`, and `e1-s1-provisional-contract-baseline-v11`, subject to the remaining G1 limits recorded there | 2026-08-29 |
+| Worker owner | Ross Todd for T-WORKER | Accept the fail-closed product worker and current developer-machine bundle hash; require reference-machine reproduction before G1 | 2026-08-29 |
+| Affected-track reviewer | Ross Todd for T-RUNTIME | Accept that old plan and cache entries remain valid only under their producing identities and are not reused, deleted, or re-keyed by this change | 2026-08-29 |
+| Affected-track reviewer | Ross Todd for T-AUDIO | Accept that no audio behavior or bytes changed, so no listening evidence is required | 2026-08-29 |

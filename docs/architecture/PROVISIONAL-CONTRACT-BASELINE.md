@@ -97,18 +97,42 @@ hash differs from its fixed deterministic identity, and every successful
 synthesis reports the same fixed identities as successful initialization.
 
 This correction completes the same pre-G1 `e1.worker.1.0` baseline and `1.1`
-extension. It changes a required response shape, but E1-S1 evidence remains
-Proposed and the provisional baseline promises no migration before G1;
-supervisor, fake, worker, tests, and generated schema move together rather than
-introducing another version that would preserve a success frame whose identity
-claim was incomplete.
+extension. It changes a required response shape, which
+`docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` §Change classes puts
+under **Breaking contract** and would normally answer with a major increment
+and a migration procedure. Retaining the version instead is a deviation,
+approved in
+[`../adr/deviations/ADR-0001-D005-prefreeze-breaking-correction-retains-version.md`](../adr/deviations/ADR-0001-D005-prefreeze-breaking-correction-retains-version.md),
+which names this document in return and lists the five conditions such a
+correction must meet. The current accepted evidence is
+[`../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v11.md`](../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v11.md),
+which records the distinct owner approvals for that decision.
+
+The reasoning it records is that supervisor, fake, worker, tests, and generated
+schema moved together, that no released consumer or durable artifact ever saw
+the incomplete success frame, and that the baseline remained provisional until
+the accepted v11 review; the alternative would publish an `e1.worker.1.0` this
+project never intends anyone to speak.
 
 ## Amendment rules before G1
 
-These rules mirror
-`docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` and are enforced by
-`study-tts-core/src/contract.rs::ContractDescriptor::assess_successor` plus
-`t3_e0_contract_change_requires_version_or_explicit_compatible_extension`:
+These rules mirror `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md`,
+which owns them; that document's own list of where they are mechanized is the
+authority, and this section does not restate it loosely.
+
+Two of the rules below are mechanized, and it is worth being exact about which,
+because an earlier version of this section was not. **A declared descriptor
+pair** is checked by
+`study-tts-core/src/contract.rs::ContractDescriptor::assess_successor` through
+`t3_e0_contract_change_requires_version_or_explicit_compatible_extension` —
+that test reads `fixtures/contracts/e0-s4-contract-*.json` and nothing else, so
+it proves the classifier is right and says nothing about any schema in this
+repository. **The required-field surface of the published schemas** is held by
+`t3_e1_published_schema_required_fields_match_the_recorded_surface`, which is
+what makes a required-field change to a real document in `schemas/` impossible
+to land unremarked. Everything else here — migration, rollback, impact report,
+owner approval — is applied by people, and a claim that a test enforces it
+would be false.
 
 - An unchanged contract retains its version.
 - A diagnostic-only compatible patch retains the version and changes no

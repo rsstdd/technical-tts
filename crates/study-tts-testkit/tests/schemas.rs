@@ -23,7 +23,11 @@
 //! accepts everything, and an author needs the editor and the build to refuse
 //! the same document.
 
-use std::{collections::BTreeSet, fs, path::Path, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::{Path, PathBuf},
+};
 
 use serde_json::Value;
 use study_tts_core::{
@@ -544,8 +548,8 @@ fn planning_context() -> study_tts_core::SynthesisContext {
         language: "en".parse().expect("`en` is a language tag"),
         determinism_class: study_tts_core::DeterminismClass::Reproducible,
         seed: 0,
-        generation_parameters: std::collections::BTreeMap::new(),
-        voice_conditioning_hashes: std::collections::BTreeMap::new(),
+        generation_parameters: BTreeMap::new(),
+        voice_conditioning_hashes: BTreeMap::new(),
     }
 }
 
@@ -772,4 +776,435 @@ fn t3_e1_every_published_schema_claims_the_uri_its_documents_name() {
             schema.file_name()
         );
     }
+}
+
+/// Every required-field location the published schemas declare today.
+///
+/// Keyed `"<stem> <major>.<minor>"`, then by the JSON Pointer of the object
+/// carrying the `required` array, so a row reads as "this version of this
+/// document requires these fields here".
+///
+/// The controlling rule is
+/// `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` §Change classes,
+/// whose **Breaking contract** row names a required field first among the
+/// changes that need a major version, migration, impact report, and owner
+/// approval. That document names this table in return.
+///
+/// Written out rather than derived. A table computed from the schemas would
+/// agree with any schema it was handed, including one that grew a required
+/// field nobody meant to add — which is the change this table exists to make
+/// impossible to land quietly.
+const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 38] = [
+    (
+        "job 0.1",
+        "/",
+        &["job_id", "plan_hash", "schema_version", "stage"],
+    ),
+    (
+        "job 0.1",
+        "/$defs/SelectedPackageIdentity",
+        &["manifest_blake3", "package_id"],
+    ),
+    (
+        "lesson 1.1",
+        "/",
+        &[
+            "language",
+            "lesson_id",
+            "schema_version",
+            "segments",
+            "title",
+        ],
+    ),
+    (
+        "lesson 1.1",
+        "/$defs/LessonSegment",
+        &[
+            "display_text",
+            "id",
+            "pause_after_ms",
+            "review_status",
+            "role",
+            "source_refs",
+            "speaker",
+            "spoken_text",
+            "style",
+        ],
+    ),
+    (
+        "manifest 0.2",
+        "/",
+        &[
+            "artifacts",
+            "lesson_id",
+            "plan_hash",
+            "release_status",
+            "schema_version",
+            "segments",
+            "tools",
+        ],
+    ),
+    (
+        "manifest 0.2",
+        "/$defs/CurrentStoredToolUse",
+        &[
+            "argument_profile_blake3",
+            "arguments",
+            "resolved_executable",
+            "version",
+        ],
+    ),
+    ("manifest 0.2", "/$defs/StoredArtifact", &["blake3", "path"]),
+    (
+        "manifest 0.2",
+        "/$defs/StoredArtifacts",
+        &["m4a", "master_wav"],
+    ),
+    (
+        "manifest 0.2",
+        "/$defs/StoredManifestSegment",
+        &[
+            "audio_blake3",
+            "cache_key",
+            "frames",
+            "pause_after_ms",
+            "segment_id",
+        ],
+    ),
+    ("manifest 0.2", "/$defs/StoredTools", &["ffmpeg", "ffprobe"]),
+    (
+        "plan 1.0",
+        "/",
+        &["lesson_id", "plan_hash", "schema_version", "segments"],
+    ),
+    (
+        "plan 1.0",
+        "/$defs/PlannedSegment",
+        &[
+            "cache_key",
+            "id",
+            "pause_after_ms",
+            "speaker",
+            "spoken_text",
+            "style",
+            "take",
+        ],
+    ),
+    (
+        "takes 1.0",
+        "/",
+        &["lesson_id", "schema_version", "selections"],
+    ),
+    (
+        "takes 1.0",
+        "/$defs/SelectedTake",
+        &[
+            "audio_blake3",
+            "segment_id",
+            "selected_cache_key",
+            "selected_take",
+            "synthesis_base_key",
+        ],
+    ),
+    (
+        "verification 1.0",
+        "/",
+        &["context", "schema_version", "subject", "verification_key"],
+    ),
+    (
+        "verification 1.0",
+        "/$defs/AsrConversionIdentity",
+        &["arguments", "ffmpeg_version"],
+    ),
+    (
+        "verification 1.0",
+        "/$defs/AsrStackIdentity",
+        &[
+            "compilation_features",
+            "execution_device",
+            "model_identity",
+            "whisper_cpp_revision",
+            "whisper_rs_sys_version",
+            "whisper_rs_version",
+        ],
+    ),
+    (
+        "verification 1.0",
+        "/$defs/VerificationContext",
+        &[
+            "comparison_normalizer_hash",
+            "conversion",
+            "decoder_parameters",
+            "expected_pattern_profile_hash",
+            "stack",
+            "thread_count",
+            "threshold_profile_hash",
+        ],
+    ),
+    (
+        "verification 1.0",
+        "/$defs/VerificationSubject",
+        &["audio_blake3", "spoken_text"],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/InitializeParameters",
+        &["threads", "worker_bundle_hash"],
+    ),
+    ("worker-protocol 1.0", "/$defs/TraceContext", &["trace_id"]),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerCapabilities",
+        &[
+            "channels",
+            "deterministic_seed",
+            "device",
+            "languages",
+            "max_text_bytes",
+            "sample_format",
+            "sample_rate",
+            "styles",
+            "voices",
+        ],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerInitializationIdentities",
+        &[
+            "model_revision",
+            "tokenizer_revision",
+            "voice_profile_hashes",
+            "worker_bundle_hash",
+        ],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerRequestFrame/oneOf/0",
+        &["method", "parameters", "protocol_version", "request_id"],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerRequestFrame/oneOf/1",
+        &["method", "protocol_version", "request_id"],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerRequestFrame/oneOf/2",
+        &["method", "protocol_version", "request_id"],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerRequestFrame/oneOf/3",
+        &["method", "parameters", "protocol_version", "request_id"],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerRequestFrame/oneOf/4",
+        &[
+            "active_request_id",
+            "method",
+            "protocol_version",
+            "request_id",
+        ],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerRequestFrame/oneOf/5",
+        &["method", "protocol_version", "request_id"],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerResponseFrame/oneOf/0",
+        &["event", "identities", "protocol_version", "request_id"],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerResponseFrame/oneOf/1",
+        &["capabilities", "event", "protocol_version", "request_id"],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerResponseFrame/oneOf/2",
+        &[
+            "event",
+            "model_loaded",
+            "protocol_version",
+            "ready",
+            "request_id",
+        ],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerResponseFrame/oneOf/3",
+        &["event", "progress", "protocol_version", "request_id"],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerResponseFrame/oneOf/4",
+        &[
+            "channels",
+            "codec_revision",
+            "event",
+            "frames",
+            "model_revision",
+            "protocol_version",
+            "request_id",
+            "sample_rate",
+            "voice_profile_hash",
+            "worker_bundle_hash",
+        ],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerResponseFrame/oneOf/5",
+        &[
+            "active_request_id",
+            "event",
+            "protocol_version",
+            "request_id",
+        ],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerResponseFrame/oneOf/6",
+        &["event", "protocol_version", "request_id"],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerResponseFrame/oneOf/7",
+        &[
+            "code",
+            "event",
+            "message",
+            "protocol_version",
+            "recoverable",
+            "request_id",
+        ],
+    ),
+    (
+        "worker-protocol 1.0",
+        "/$defs/WorkerSynthesisParameters",
+        &["output", "seed", "style", "take", "text", "voice"],
+    ),
+];
+
+/// The required-field surface of one generated schema, by JSON Pointer.
+///
+/// Walks the whole document rather than its top level: `$defs` is where every
+/// frame and nested record declares what it requires, and a check that read
+/// only the root would have watched the one object that changes least.
+fn required_surface(schema: &Value) -> BTreeMap<String, Vec<String>> {
+    fn walk(node: &Value, pointer: &str, found: &mut BTreeMap<String, Vec<String>>) {
+        match node {
+            Value::Object(fields) => {
+                if let Some(required) = fields.get("required").and_then(Value::as_array) {
+                    // Sorted, because `required` is a set: reordering it
+                    // changes no contract, and an alphabetical list is what
+                    // lets a reviewer see at a glance which name appeared.
+                    // Reordering still moves the published bytes, and
+                    // `t3_e1_generated_schemas_match_checked_in_files` is what
+                    // catches that.
+                    let mut names: Vec<String> = required
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect();
+                    names.sort();
+                    // A property *named* `required` holding something other
+                    // than a list of strings is a subschema, not a constraint.
+                    if names.len() == required.len() {
+                        let location = if pointer.is_empty() { "/" } else { pointer };
+                        found.insert(location.to_owned(), names);
+                    }
+                }
+                for (key, value) in fields {
+                    walk(value, &format!("{pointer}/{key}"), found);
+                }
+            }
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    walk(item, &format!("{pointer}/{index}"), found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut found = BTreeMap::new();
+    walk(schema, "", &mut found);
+    found
+}
+
+/// A required field cannot enter or leave a published schema unremarked.
+///
+/// Not in `DELIVERY-PLAN.md`; it carries a direction the four named E1-S1
+/// schema tests do not. They prove the checked-in files match the types and
+/// that the version gate refuses the right documents. None of them looks at
+/// *what changed* between one version of a document and the next, so a
+/// required field could appear in a published schema while its version stood
+/// still, and every one of them would still pass.
+///
+/// What this test gives is exact, and worth stating as narrowly as it holds:
+/// any movement in the required-field surface fails the suite until somebody
+/// edits [`PUBLISHED_REQUIRED_SURFACE`], and the diff then names the document,
+/// the version, the pointer, and the field. It does not decide the version —
+/// an author who edits the schema and this table together still passes. The
+/// guarantee is that the change is explicit and reviewable at the point it is
+/// made, not that a machine chose the version number.
+#[test]
+fn t3_e1_published_schema_required_fields_match_the_recorded_surface() {
+    let mut recorded: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
+    for (version, pointer, fields) in PUBLISHED_REQUIRED_SURFACE {
+        let previous = recorded.entry(version.to_owned()).or_default().insert(
+            pointer.to_owned(),
+            fields.iter().map(|f| (*f).to_owned()).collect(),
+        );
+        assert!(previous.is_none(), "`{version}` records `{pointer}` twice");
+    }
+
+    for schema in PUBLISHED_SCHEMAS {
+        let version = format!("{} {}", schema.stem, schema.version);
+        let expected = recorded.remove(&version).unwrap_or_else(|| {
+            panic!(
+                "no required-field surface is recorded for `{version}`. A published document at a \
+                 version this table does not know has either just been added or just moved; \
+                 record it here together with the interface-change record that classifies it."
+            )
+        });
+
+        // Reported location by location rather than as two whole maps. The
+        // worker protocol declares nineteen of them, and a reviewer handed
+        // both copies in full has to find the one that moved by eye.
+        let published = required_surface(&schema.generate());
+        let moved: Vec<String> = published
+            .keys()
+            .chain(expected.keys())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter(|pointer| published.get(*pointer) != expected.get(*pointer))
+            .map(|pointer| {
+                let recorded = expected.get(pointer).map(Vec::as_slice).unwrap_or_default();
+                let now = published
+                    .get(pointer)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                format!("{pointer}: recorded {recorded:?}, published {now:?}")
+            })
+            .collect();
+
+        assert!(
+            moved.is_empty(),
+            "the required-field surface of `{version}` is not what this table records. \
+             `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` §Change classes puts a \
+             required-field change under **Breaking contract**: move the major version and file \
+             the interface-change record, then record the new surface here. What moved: {moved:#?}"
+        );
+    }
+
+    assert!(
+        recorded.is_empty(),
+        "this table records surfaces no published document claims: {:?}. A retired version is \
+         removed by the change that retired it.",
+        recorded.keys().collect::<Vec<_>>()
+    );
 }
