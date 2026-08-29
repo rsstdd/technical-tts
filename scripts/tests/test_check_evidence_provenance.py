@@ -118,6 +118,24 @@ class EvidenceProvenanceTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("docs/second.md", found[0])
 
+    def test_an_ordinary_accepted_record_cannot_suppress_a_mismatch(self):
+        self.write("docs/control.md", "current")
+        pinned = hashlib.sha256(b"previous").hexdigest()
+        self.accepted_record("baseline-v1", "docs/control.md", pinned)
+        self.write(
+            "evidence/baseline-v2.md",
+            "# Baseline\n\n- Status: Accepted\n\n"
+            "## Accounted provenance mismatches\n\n"
+            "| Citing record | Cited repository path |\n"
+            "|---|---|\n"
+            "| `baseline-v1` | `docs/control.md` |\n",
+        )
+
+        found = PROVENANCE.check(self.root, self.evidence)
+
+        self.assertEqual(len(found), 1)
+        self.assertIn("docs/control.md", found[0])
+
     def test_a_missing_repository_citation_is_a_violation(self):
         pinned = hashlib.sha256(b"missing").hexdigest()
         self.accepted_record("baseline-v1", "docs/missing.md", pinned)

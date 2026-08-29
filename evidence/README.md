@@ -42,10 +42,12 @@ it: recompute and supersede, or write a record showing the conclusion stands.
 unapproved draft included, per the last paragraph below — and is wired into
 the `lint` job of `.github/workflows/ci.yml`. A mismatch can be suppressed only by an exact row
 under `## Accounted provenance mismatches` in an accepted reconciliation record. A proposed
-record, an unapproved superseding record, or a prose mention has no effect. The reconciliation
-this repository carries today is
-`gates/g1/e1-s1/e1-s1-evidence-provenance-reconciliation-v1.md`, which is accepted and names
-that script in return.
+record, an unapproved superseding record, or a prose mention has no effect. Nothing inside a
+record declares its kind, so a reconciliation record is one carrying `reconciliation` as a
+hyphen-separated word in its record ID; a baseline record's own accounting section grants
+nothing, however it is worded. The reconciliation this repository carries today is
+`gates/g1/e1-s1/e1-s1-evidence-provenance-reconciliation-v2.md`, which is accepted, supersedes
+`-v1`, and names that script in return.
 
 New records declare acceptance with an exact `- Status: Accepted` field and supersession with
 ``- Supersedes: `<record-id>` ``. Immutable legacy records without a status field remain readable

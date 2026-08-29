@@ -38,6 +38,13 @@ REPOSITORY_FILES = {
 ACCEPTED_DECISIONS = ("Accepted", "Adopted", "Approved")
 UNACCEPTED_DECISIONS = ("Pending", "Proposed")
 ACCOUNTING_HEADING = "## Accounted provenance mismatches"
+# `evidence/README.md` §Provenance: a mismatch "can be suppressed only by
+# an exact row under `## Accounted provenance mismatches` in an accepted
+# reconciliation record. A proposed record, an unapproved superseding
+# record, or a prose mention has no effect." Nothing inside a record
+# declares its kind, so the kind is read from the identifier; that README
+# states the convention and names this script in return.
+RECONCILIATION_TOKEN = "reconciliation"
 SUPERSESSION_HEADING = "## Superseded without supersession metadata"
 # Only the first cell is read; any further cell is prose for the reader.
 SUPERSESSION_ROW = re.compile(r"^\|\s*`([^`]+)`\s*\|")
@@ -166,6 +173,8 @@ def accounted_mismatches(records: list[pathlib.Path]) -> set[tuple[str, str]]:
     """Returns mismatch pairs authorized by accepted reconciliation records."""
     accounted = set()
     for record in records:
+        if RECONCILIATION_TOKEN not in record_id(record).split("-"):
+            continue
         for line in section(record.read_text(encoding="utf-8"), ACCOUNTING_HEADING):
             match = ACCOUNTING_ROW.match(line)
             if match:
