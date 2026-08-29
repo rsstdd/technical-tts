@@ -146,7 +146,7 @@ fn respond(
             protocol_version,
             request_id,
             ready: true,
-            model_loaded: true,
+            model_loaded: false,
         }),
         WorkerRequestFrame::Synthesize {
             protocol_version,

@@ -258,7 +258,7 @@ fn t4_e1_fake_worker_passes_shared_protocol_contract() {
         responses[2],
         WorkerResponseFrame::Health {
             ready: true,
-            model_loaded: true,
+            model_loaded: false,
             ..
         }
     ));
