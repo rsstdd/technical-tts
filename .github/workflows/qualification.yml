@@ -175,9 +175,15 @@ jobs:
         # attached environment disagreeing with the lock, which
         # `docs/operations/WORKER-ENVIRONMENT.md` §The installed environment is
         # checked against the lock explains and routes.
+        #
+        # Timed because the check is not free: it reads every file each locked
+        # distribution's `RECORD` lists. ADR-0001-D004 records what that cost
+        # on the reference environment, and a run that has drifted far from it
+        # is the signal that the number needs retaking.
         run: |
-          cargo run --offline --locked --package study-tts-runtime \
+          cargo build --offline --locked --package study-tts-runtime \
             --example worker-bundle-hash
+          time ./target/debug/examples/worker-bundle-hash
 
       - name: Point at the operator-run measurement steps
         if: always()

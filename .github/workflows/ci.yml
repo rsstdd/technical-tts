@@ -89,6 +89,15 @@ jobs:
           PYTHONPYCACHEPREFIX: ${{ runner.temp }}/pycache
         run: python3 -m compileall -q -f worker/study_tts_worker
 
+      - name: Check the runtime probe compiles
+        # `crates/study-tts-runtime/src/runtime_probe.py` is embedded by
+        # `include_str!` and executed by `worker_environment`, so a syntax error
+        # in it is a build that compiles and a probe that cannot run. It is not
+        # a declared bundle input and does not change the bundle hash.
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/pycache
+        run: python3 -m compileall -q -f crates/study-tts-runtime/src/runtime_probe.py
+
       - name: Check the worker protocol boundary
         # `worker/tests/` is outside the declared bundle and uses only the
         # standard library, so proving the frame reader refuses what it must
@@ -155,6 +164,38 @@ jobs:
                   done < "$TEST_BINARIES"
                 '\''
             '
+
+      - name: Report tier durations
+        # `DELIVERY-PLAN.md` §3.3: "CI reports tier duration so a budget
+        # regression is visible." Every test in this workspace is named
+        # `t<tier>_e<epic>_<behavior>`, so the tier is a libtest filter and this
+        # needs no per-test bookkeeping to maintain.
+        #
+        # Reported, not enforced. §3.3 asks for visibility, and a threshold
+        # nobody has agreed to would fail a pull request over a slow runner.
+        # The step before this one is what proves the suite passes and shows
+        # any failure's output; the binaries are already built, so these four
+        # filtered passes cost seconds.
+        run: |
+          {
+            echo "| Tier | Scope | Duration | Budget (§3.2) |"
+            echo "|---|---|---:|---:|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for entry in "t1:Unit:30s" "t2:Property:2m" "t3:Schema/golden:30s" \
+                       "t4:Integration:5m"; do
+            tier="${entry%%:*}"
+            scope="${entry#*:}"
+            budget="${scope##*:}"
+            scope="${scope%%:*}"
+            start=$(date +%s%N)
+            while IFS= read -r test_binary; do
+              "$test_binary" "${tier}_" > /dev/null
+            done < "$RUNNER_TEMP/study-tts-test-binaries"
+            elapsed=$(( ($(date +%s%N) - start) / 1000000 ))
+            printf '| %s | %s | %d.%03ds | %s |\n' \
+              "${tier^^}" "$scope" "$((elapsed / 1000))" "$((elapsed % 1000))" "$budget" \
+              >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Run doc tests offline
         run: cargo test --offline --workspace --doc --locked
