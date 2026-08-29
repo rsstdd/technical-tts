@@ -41,6 +41,7 @@ from each section's own §What this moves rather than inferred.
 | 18 | The version retention in audit 15 moved out of a mirror document into `ADR-0001-D005`, and the required-field surface of every published schema put under test | no move |
 | 19 | Audits 15–16 approved, the authoritative 60-second T4 deadline restored, and the fake-worker contract harness bounded with timeout cleanup | no move |
 | 20 | The environment probe bootstrapped under `-S`, installed `RECORD`s authenticated against manifest layout `1.2`, and the interpreter attach step made to refuse a real directory | moves, manifest layout `1.1`→`1.2` |
+| 21 | An unhashable frame method refused instead of crashing the parser, provenance accounting restricted to reconciliation records, and two false statements in accepted evidence corrected by supersession | moves, `protocol.py` is a declared bundle input |
 
 Audits 1 through 13 name `schemas/worker-protocol-v0.schema.json`, which is
 correct for the time each was written. The eleventh audit's breaking change
@@ -1299,5 +1300,91 @@ separate decision and accepted risk.
 | Engineering owner | Ross Todd | Accept the `-S` bootstrap, the `site.venv` prefix repetition it requires, the two added `EnvironmentMismatch` variants, and the two added T4 tests | 2026-08-29 |
 | Project owner | Ross Todd | Accept that the manifest now carries fifty-six machine-generated declarations, and that regenerating the lock means regenerating them | 2026-08-29 |
 | Worker owner | Ross Todd for T-WORKER | Accept the worker-bundle identity moving to `f9711a21…6c6dc2a`, reproduced twice on the reference machine, with hosted-CI and protected qualification reproduction still owed before G1 | 2026-08-29 |
+| Affected-track reviewer | Ross Todd for T-RUNTIME | Accept that old plan and cache entries remain valid only under their producing identities and are not reused, deleted, or re-keyed by this change | 2026-08-29 |
+| Affected-track reviewer | Ross Todd for T-AUDIO | Accept that no audio behavior or bytes changed, so no listening evidence is required | 2026-08-29 |
+
+## What the twenty-first audit closed
+
+This remediation answers four findings. Two are controls that read as enforced
+while a specific input or record walked past them. Two are false statements
+carried by accepted evidence records, corrected in
+`evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v13.md` rather than
+edited where they were written, because `evidence/README.md` forbids amending an
+accepted report.
+
+| Finding | Closed by |
+|---|---|
+| `read_request` evaluated `method not in _REQUEST_FRAMES` — a `dict` — before establishing that `method` is a string. A frame carrying `"method": []` or `"method": {}` therefore raised `TypeError: unhashable type` out of the NDJSON parser: an unhandled crash at the trust boundary, where every other malformed frame is answered with a `FrameError` the supervisor can correlate | An `isinstance(method, str)` guard ahead of the membership test. `test_an_unhashable_method_is_refused_with_its_request_id` drives both unhashable JSON types and asserts the refusal still carries its `request_id`. Removing the guard reproduces `TypeError: unhashable type: 'list'` and `'dict'` |
+| `accounted_mismatches` read the `## Accounted provenance mismatches` section of *every* accepted record, while its own docstring and `evidence/README.md` §Provenance both restrict that power to an accepted **reconciliation** record. `e1-s1-provisional-contract-baseline-v12` carried three such rows and they were honored: with the guard removed, the repository reports zero mismatches for `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md`; with it in place, three | The scan is restricted to records carrying `reconciliation` as a hyphen-separated word in their record ID. `evidence/README.md` now states that convention and the script names it in return, so the mirror is two-sided rather than a naming habit. `test_an_ordinary_accepted_record_cannot_suppress_a_mismatch` pins it |
+| `e1-s1-provisional-contract-baseline-v12` §Controlled records pinned six records at digests that were already stale at the commit introducing it, and its §Verification run recorded `Provenance … Clean` for a run that does not pass | `-v13` re-pins all six from current bytes and records the false row as false |
+| `e1-s1-provisional-contract-baseline-v10` §Scope and decision states that everything v9 concluded about the seventeenth audit stands, which v10's own §Commit `9b66fd4` repaired a control that was weaker than its own document contradicts in the same record | `-v13` narrows the statement to the conclusions that survive, and names the one that does not |
+
+### The `protocol_version` guard is symmetry, not a second defect
+
+The same commit adds an `isinstance(version, str)` guard beside the method one.
+It closes no crash and this record claims none for it.
+`ACCEPTED_PROTOCOL_VERSIONS` is a `tuple`, whose `in` compares by equality and
+never hashes, so `"protocol_version": []` was already refused as
+`frame protocol version is unsupported` with its `request_id` attached. The
+guard only makes the refusal name the field, and keeps both envelope fields
+checked in one shape rather than two.
+
+Saying so matters here more than usual: the audit exists partly because an
+evidence record claimed a clean run it had not had, and a remediation that
+counted a cosmetic guard as a fixed crash would be the same error in the
+opposite direction.
+
+### This is audit 20's mirror defect in a second place
+
+`e1-s1-provisional-contract-baseline-v10` describes
+`check_startup_modules_are_accounted` accepting a startup module owned by *any*
+installed distribution while `docs/operations/WORKER-ENVIRONMENT.md` had said
+**locked** since the fourteenth audit — code weaker than the document it
+mirrors, passing because no test drove the distinguishing case.
+
+`accounted_mismatches` was the same shape. Its docstring said "accepted
+reconciliation records" and its body said every accepted record; the eleven
+existing tests all used a reconciliation record, so the suite agreed with the
+docstring rather than with the code. The repair is again a restoration of the
+stated control rather than a tightening beyond spec, so no ADR is amended.
+
+What generalizes is the detection, not the fix: both were found by reading a
+function against the document it claims to implement, and neither was reachable
+by reading the function against itself.
+
+### Compatibility and identity impact
+
+No public Rust API signature, wire field, published schema, worker protocol
+version, error variant, refusal message, or audio byte changes. No Rust source
+changes at all; the workspace suite is unchanged at 287 tests.
+
+The refusal surface of `worker/study_tts_worker/protocol.py` widens by two
+messages, both on frames that previously crashed or were already refused. The
+Rust end is unaffected: `study_tts_runtime::worker_protocol` decodes into typed
+frames and never had the untyped membership test this closes.
+
+**The worker-bundle identity moves**, from
+`f9711a21f3e046d53c7c617e9308893c9c0240badec0d3656487fe2796c6dc2a` to
+`75d563103eccc76616ce97b66e2d4648b2a258cda1118e6ffc9ccc20b9d2bab3`.
+`worker/study_tts_worker/protocol.py` is a declared input in
+`worker/bundle-manifest.json`, so a guard added to it moves the identity exactly
+as a behavior change would. Existing cache and plan entries remain valid only
+under the identities that produced them; nothing is reused under a new identity,
+deleted, or re-keyed. `WORKER_BUNDLE_IDENTITY_VERSION` does not move — the
+derivation and ADR-0001 §12.5's input list are untouched, only the bytes of a
+declared input.
+
+### Approval
+
+Ross Todd holds each role below under
+`docs/governance/PROJECT-EXECUTION-CHARTER.md`; each row records that role's
+separate decision and accepted risk.
+
+| Role | Name | Decision | Date |
+|---|---|---|---|
+| Contract owner | Ross Todd for T-CORE | Accept that two added refusal messages on frames that previously crashed or were already refused move no contract: no wire shape, schema, protocol version, or Rust error variant changes | 2026-08-29 |
+| Engineering owner | Ross Todd | Accept both guards and the provenance restriction, on the two reproduced red regressions and the unchanged 287-test workspace suite, and accept that the `protocol_version` guard is recorded as symmetry rather than as a closed defect | 2026-08-29 |
+| Project owner | Ross Todd | Accept that a record's power to excuse a provenance mismatch now depends on its identifier, and that `evidence/README.md` carries that convention as a stated rule rather than a habit | 2026-08-29 |
+| Worker owner | Ross Todd for T-WORKER | Accept the worker-bundle identity moving to `75d56310…9d2bab3`, reproduced five times on the reference machine, with hosted-CI and protected qualification reproduction still owed before G1 | 2026-08-29 |
 | Affected-track reviewer | Ross Todd for T-RUNTIME | Accept that old plan and cache entries remain valid only under their producing identities and are not reused, deleted, or re-keyed by this change | 2026-08-29 |
 | Affected-track reviewer | Ross Todd for T-AUDIO | Accept that no audio behavior or bytes changed, so no listening evidence is required | 2026-08-29 |
