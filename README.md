@@ -5,7 +5,7 @@
 The project targets software-engineering education, technical interview preparation, and repeated listening. It uses Rust for every durable decision, Chatterbox for speech synthesis, an in-process Whisper verifier for post-render text-integrity triage, and FFmpeg for final audio processing.
 
 > [!IMPORTANT]
-> This repository contains the tested E0-S0 walking skeleton. It uses a deterministic tone synthesizer, not Chatterbox, to exercise lesson loading, planning, validated WAV caching, Rust PCM assembly, real FFmpeg M4A export, and a minimal private-preview manifest. The Chatterbox worker, production schemas, hardened recovery, and product CLI are not implemented. Planned commands and behavior remain architectural intent rather than completed functionality.
+> This repository contains the tested E0-S0 walking skeleton and the E1-S1 contract baseline. It uses a deterministic tone synthesizer, not Chatterbox, to exercise lesson loading, planning, validated WAV caching, Rust PCM assembly, real FFmpeg M4A export, and a minimal private-preview manifest. On top of that E1-S1 added the published versioned schemas, the synthesis and verification identities, the worker-bundle identity, and the locked Python worker environment. The Chatterbox worker, hardened recovery, the complete output package, and the product CLI are not implemented. Planned commands and behavior remain architectural intent rather than completed functionality.
 
 ## Goals
 
@@ -23,14 +23,16 @@ The priority order is technical correctness, comfortable listening, retention va
 
 | Area | Status |
 |---|---|
-| Architecture | Accepted in [ADR-0001](docs/adr/ADR-0001-production-rust-study-guide-tts.md), as amended by [ADR-0001-D001](docs/adr/deviations/ADR-0001-D001-asr-release-condition.md), [ADR-0001-D002](docs/adr/deviations/ADR-0001-D002-constrained-development-performance-gate.md), and [ADR-0001-D003](docs/adr/deviations/ADR-0001-D003-single-instructor-fallback.md) |
+| Architecture | Accepted in [ADR-0001](docs/adr/ADR-0001-production-rust-study-guide-tts.md), as amended by [ADR-0001-D001](docs/adr/deviations/ADR-0001-D001-asr-release-condition.md), [ADR-0001-D002](docs/adr/deviations/ADR-0001-D002-constrained-development-performance-gate.md), [ADR-0001-D003](docs/adr/deviations/ADR-0001-D003-single-instructor-fallback.md), and [ADR-0001-D004](docs/adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md) |
 | Delivery backlog | Approved in [DELIVERY-PLAN.md](DELIVERY-PLAN.md) |
-| Rust workspace | Four-crate workspace with a tested end-to-end skeleton |
+| Rust workspace | Four-crate workspace with a tested end-to-end skeleton and the E1-S1 contract baseline |
 | Model and voice qualification | E0-S2 rights prerequisites and E0-S3 qualification complete; full-box performance qualification remains required before G3 |
-| Chatterbox worker | Not started |
+| Chatterbox worker | Not started. The locked Python environment, the worker protocol, and an executable protocol fake exist; the speech backend lands in E1-S3 |
 | ASR verifier | Not started |
 | CLI | Product commands not implemented |
-| Schemas and fixtures | Two-segment skeleton fixture present; production schemas not implemented |
+| Schemas and fixtures | Seven published versioned schemas under `schemas/`, generated from the Rust types and checked against the checked-in files; skeleton, contract, and deterministic-audio fixtures present |
+| Identities | Canonical serialization and the BLAKE3 synthesis and verification identities implemented; the worker-bundle identity is derived mechanically, with the environment precondition [ADR-0001-D004](docs/adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md) authorizes |
+| Continuous integration | Fast offline pull-request checks with tier-duration reporting, separated from a dispatch-only reference-machine qualification workflow |
 | Production qualification | Not started |
 
 The first delivery target is a private, human-reviewed MVP. It will accept canonical lesson JSON with hand-authored spoken text, use a single persistent Chatterbox worker, produce the complete audio package and run report, and record immutable human approval. It will remain mechanically marked as `private_preview`; ASR integration follows M2, and production publication stays disabled until the production verification, loudness, licensing, recovery, and long-form qualification gates pass.

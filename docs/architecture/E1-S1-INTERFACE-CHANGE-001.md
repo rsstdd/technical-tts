@@ -9,6 +9,41 @@
 - Accepted ADR, if architectural: not applicable; this implements ADR-0001 §12.5
   as written and changes no authority boundary
 
+## Audit index
+
+This record is append-only: each audit added a section rather than editing an
+earlier one, because superseded evidence records cite those sections by name and
+are immutable. The table is the way in. Every section below is kept verbatim.
+
+The last column is the question a reader usually arrives with, since a moved
+worker-bundle identity re-keys every cache entry written after it. It is read
+from each section's own §What this moves rather than inferred.
+
+| Audit | What it closed | Bundle identity |
+|---:|---|---|
+| 1 | The E1-S1 baseline itself: canonical serialization, the synthesis and verification identities, digest-typed frame identities, and worker frames moved to breaking `e1.worker.1.0` with extension `1.1` | baseline, `e1-s1-v1` |
+| 2 | The installed environment compared against `worker/requirements.lock`, and the manifest layout published as a `const` | moves, `v1`→`v2` |
+| 3 | `.pth` startup hooks reported, and refused where the lock does not account for them | moves |
+| 4 | An unreadable `worker/launcher.json` reported as a startup error rather than a parse failure | moves |
+| 5 | Frame and session labelling separated, so one frame is no longer described as a session of them | moves |
+| 6 | The worker-protocol schema gained `$id` | moves |
+| 7 | The lock required to state its package sources, artifact kinds, and one artifact hash per index-supplied pin | moves, `v2`→`v3` |
+| 8 | Lesson schema metadata made private, so `$schema` and `schema_version` cannot be rewritten after validation | no move |
+| 9 | The CLI crate stopped identifying itself as the E0-S0 placeholder, with a process-level test pinning what it reports | no move |
+| 10 | Correlation identities and refusal messages bounded at both protocol ends; two references that pointed at nothing repaired | moves |
+| 11 | Three disagreements about what a complete worker protocol is; the schema input became `worker-protocol-v1` | moves, `v3`→`v4` |
+| 12 | `threads` narrowed to `NonZeroU32` and `minimum: 1`, refusing a value no application could honor | moves |
+| 13 | The refusal-boundary confidentiality defect: no rejected value, field name, or interpreter exception text reaches a failure frame | moves |
+| 14 | Manifest layout `1.1`, declared startup modules, and per-file `RECORD` digest verification | moves |
+| 15 | Typed initialization identities; the product worker fails closed instead of reporting a successful load of nothing | moves, to `6b0a3c14…` |
+| 16 | The fake refuses a requested worker-bundle identity other than its own | no move |
+| 17 | `ADR-0001-D004` authorizing the environment precondition, the `worker_bundle`/`worker_environment` split, the probe extracted to a `.py` file, sixteen tier corrections, and tier-duration reporting in CI | no move |
+
+Audits 1 through 13 name `schemas/worker-protocol-v0.schema.json`, which is
+correct for the time each was written. The eleventh audit's breaking change
+renamed it to `schemas/worker-protocol-v1.schema.json`, which is the only such
+file in the tree today.
+
 ## Version and compatibility
 
 - Contract ID: `tts_executor`
@@ -119,7 +154,7 @@ test rather than by assertion:
 | Gap | Closed by |
 |---|---|
 | Published lesson schema accepted any string for `$schema`, `schema_version`, `language`, and portable identifiers | `enum`, `const`, `pattern`, and length constraints derived from `LESSON_SCHEMA_VERSION`, `schema_uri`, `is_portable_id`, and `MAX_LANGUAGE_TAG_BYTES`; `t3_e1_the_published_lesson_schema_refuses_the_invalid_fixtures` |
-| Bundle hash trusted the manifest's declared Python runtime and platform ABI | `WorkerBundle::verified_hash` probes the interpreter at `WORKER_INTERPRETER_PATH`; `t1_e1_an_interpreter_disagreeing_with_the_manifest_is_refused` |
+| Bundle hash trusted the manifest's declared Python runtime and platform ABI | `WorkerBundle::verified_hash` probes the interpreter at `WORKER_INTERPRETER_PATH`; `t4_e1_an_interpreter_disagreeing_with_the_manifest_is_refused` |
 | Cache hits compared the recorded key but never re-derived it from the recorded provenance | `CacheEntryFault::ProvenanceKeyMismatch`; `t1_e1_an_entry_whose_provenance_does_not_derive_its_key_is_refused` |
 | Worker frame parameters were unchecked below the top level, and the frame ceiling was applied after the line had been buffered | `worker/study_tts_worker/protocol.py` per-method shapes and `read_line`; `worker/tests/test_protocol.py` |
 | No `worker/` environment or lock procedure | `worker/pyproject.toml`, `worker/requirements.lock`, `worker/launcher.json`, `worker/study_tts_worker/`, and [`../operations/WORKER-ENVIRONMENT.md`](../operations/WORKER-ENVIRONMENT.md) |
@@ -211,7 +246,7 @@ each closes a gap between what a boundary claimed and what it enforced.
 | Published schemas described `u32`, `u64`, and `usize` through `format` annotations with no `maximum`, so every published document admitted integers its Rust parser refuses; two wire fields were `usize`, whose width is the reader's pointer size | `publish_integer_bounds` writes the `maximum` each fixed-width format implies, applied to every document at publication rather than per field; `InitializeParameters::threads` and `WorkerCapabilities::max_text_bytes` became `u32` and `u64`; `t3_e1_every_published_numeric_field_declares_the_range_it_accepts` |
 | Fields named `*_hash` and `*_blake3` were unrestricted `String`s in the verification, job, and manifest records, so those published schemas admitted malformed digests — and `VerificationContext::key_for` derived a well-formed key from a malformed profile hash, which `VerificationIdentityRecord::validate` then accepted | `VerificationProfileHash`, `VoiceConditioningHash`, `ManifestDigest`, `ToolProfileHash`, and a parseable `PlanHash`, at every recorded-digest boundary those three schemas publish; the hand-written `is_blake3_hex` checks and their four `DurableStateError` variants are deleted, because the refusal now carries each digest type's own remedy routing. Malformed fixtures for all three formats: `e1-s1-verification-malformed-profile-hashes.json`, `e1-s1-job-malformed-digests.json`, `e1-s1-manifest-malformed-digests.json` |
 | `worker.py` copied every entry of the launcher's `offline_environment` into `os.environ`, so `worker/launcher.json` — a declared bundle input, and therefore a file that reads as governed — could set `PYTHONPATH` for the backend import one statement later. An adversarial check injected `PYTHONPATH=/tmp/injected` | `LAUNCHER_SHAPE` describes the launcher's complete shape and refuses an unknown field at either level, and the apply loop runs over `REQUIRED_OFFLINE_ENVIRONMENT` and `OPTIONAL_OFFLINE_ENVIRONMENT` rather than over the file; `LauncherShapeTests` in `worker/tests/test_worker.py` drives both halves |
-| `verified_hash` proved the interpreter's ABI and hashed the lockfile's *bytes*, which says what that file claims and nothing about the environment beside it: a distribution upgraded in place, or a `chatterbox-tts` the configured index satisfied at the same version, left every declared input byte-identical and every cache key where it was | The same probe now reports every installed distribution and its PEP 610 `direct_url`, and `check_environment_matches_lock` compares both against `worker/requirements.lock` before a hash is returned; `EnvironmentMismatch` names which of the four faults occurred, and never prints the recorded URL; `t1_e1_an_environment_that_is_not_the_locked_one_is_refused`, `t1_e1_a_lockfile_line_that_is_not_an_exact_pin_is_refused` |
+| `verified_hash` proved the interpreter's ABI and hashed the lockfile's *bytes*, which says what that file claims and nothing about the environment beside it: a distribution upgraded in place, or a `chatterbox-tts` the configured index satisfied at the same version, left every declared input byte-identical and every cache key where it was | The same probe now reports every installed distribution and its PEP 610 `direct_url`, and `check_environment_matches_lock` compares both against `worker/requirements.lock` before a hash is returned; `EnvironmentMismatch` names which of the four faults occurred, and never prints the recorded URL; `t4_e1_an_environment_that_is_not_the_locked_one_is_refused`, `t4_e1_a_lockfile_line_that_is_not_an_exact_pin_is_refused` |
 | The evidence record and this document disagreed: 34 walking-skeleton tests recorded against 35 run, `cargo deny` recorded as warning-free while it reports a duplicate `cpufeatures`, and real-model qualification pointed at `.github/workflows/qualification.yml`, which states in its own comments that it invokes no such measurement | Corrected above and in `evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v2.md`, which supersedes v1's controlled-record table and re-pins every digest |
 | `ManifestLayout::ALL` was a hand-maintained variant list — the pattern this repository's review standard rejects, because a third variant is silently missing from it | The enum is gone. `parse_stored_manifest` matches the two accepted version strings directly, and `t3_e1_the_published_manifest_schema_names_every_layout_it_describes` now proves the published `const` and the dispatcher's fail-closed arm rather than walking a list |
 
@@ -275,9 +310,9 @@ gap between what a boundary claimed and what it enforced.
 
 | Finding | Closed by |
 |---|---|
-| The governed-source provenance check compared a `code-<commit>` **path component**, and a component proves a directory *name*. A directory install records PEP 610 `dir_info` and no `commit_id` at all, so the tree at `code-<commit>` could hold any bytes and `code-<commit>-backup` beside it is a name an operator really creates | The governed distribution is installed from the tree's git URL at its commit, so `pip` records the `vcs_info.commit_id` it checked out, and that is what is compared. The probe no longer reports the URL at all. A record with no revision is `EnvironmentMismatch::WithoutRecordedRevision`, distinct from `::FromIndex` because the remedy is a different command rather than a different directory; `t1_e1_an_environment_that_is_not_the_locked_one_is_refused` |
-| Extra installed distributions were ignored, and an extra distribution can ship a `.pth` — which runs at interpreter startup and joins `sys.path` ahead of the search that resolves `torch`, outside the bundle identity entirely | The probe reports every `.pth` in the interpreter's site directories with the distribution whose `RECORD` lists it, and a hook the lock does not account for is `EnvironmentMismatch::UnownedPathHook` or `::UnlockedPathHook`. The tolerance for extra *distributions* survives, and is what it was always resting on: `setuptools` is pinned and owns the one hook the reference machine has; `t1_e1_a_startup_hook_the_lockfile_does_not_account_for_is_refused` |
-| The probe reported distributions as a map keyed by the canonicalized name, and that mapping is many-to-one: two installs collapsed to one entry silently, and the comparison answered for whichever was walked last | The probe reports a list and the collision is `EnvironmentMismatch::AmbiguousDistribution`; `t1_e1_two_installs_canonicalizing_alike_are_refused_rather_than_collapsed` |
+| The governed-source provenance check compared a `code-<commit>` **path component**, and a component proves a directory *name*. A directory install records PEP 610 `dir_info` and no `commit_id` at all, so the tree at `code-<commit>` could hold any bytes and `code-<commit>-backup` beside it is a name an operator really creates | The governed distribution is installed from the tree's git URL at its commit, so `pip` records the `vcs_info.commit_id` it checked out, and that is what is compared. The probe no longer reports the URL at all. A record with no revision is `EnvironmentMismatch::WithoutRecordedRevision`, distinct from `::FromIndex` because the remedy is a different command rather than a different directory; `t4_e1_an_environment_that_is_not_the_locked_one_is_refused` |
+| Extra installed distributions were ignored, and an extra distribution can ship a `.pth` — which runs at interpreter startup and joins `sys.path` ahead of the search that resolves `torch`, outside the bundle identity entirely | The probe reports every `.pth` in the interpreter's site directories with the distribution whose `RECORD` lists it, and a hook the lock does not account for is `EnvironmentMismatch::UnownedPathHook` or `::UnlockedPathHook`. The tolerance for extra *distributions* survives, and is what it was always resting on: `setuptools` is pinned and owns the one hook the reference machine has; `t4_e1_a_startup_hook_the_lockfile_does_not_account_for_is_refused` |
+| The probe reported distributions as a map keyed by the canonicalized name, and that mapping is many-to-one: two installs collapsed to one entry silently, and the comparison answered for whichever was walked last | The probe reports a list and the collision is `EnvironmentMismatch::AmbiguousDistribution`; `t4_e1_two_installs_canonicalizing_alike_are_refused_rather_than_collapsed` |
 | `PlannedSegment::take` was dropped building `SynthesisRequest`, although the worker protocol requires `take` on every `synthesize` frame and the cache key encodes it | `SynthesisRequest::take`, carried from the planned segment; `t1_e1_a_synthesis_request_carries_the_take_its_cache_key_names` edits the plan rather than reading only what the planner writes, because `for_lesson` selects `BASE_TAKE` for every segment and a test reading that would pass for a mapping that hard-coded zero |
 | `SelectedTake::segment_id` was unvalidated and unconstrained and the selection list had no count cap, while the lesson boundary refuses the same values | `validate_segment_id`, extracted from `AuthoredLesson::validate` so both boundaries apply one rule, plus the lesson's own segment ceiling on the list; `takes-v1.schema.json` publishes the portable-identifier pattern and `maxItems`; `t1_e1_a_selection_naming_an_identity_no_lesson_can_carry_is_refused`, `t1_e1_takes_selection_ceiling_accepts_the_boundary_and_is_the_lesson_ceiling` |
 | `threads` accepted zero at both protocol ends and in the published schema — a value no application could honor — while `worker/launcher.json` says 4 and the session fixture says 1 and nothing reads either | `InitializeParameters::threads` is `NonZeroU32`, `protocol.positive` is the Python end, and `worker-protocol-v0.schema.json` publishes `minimum: 1`. The new `zero-threads` case in `fixtures/contracts/e1-s1-worker-protocol-cases.ndjson` proves both ends refuse it alike. Applying the count is still E1-S3's; refusing a value no application could honor is the parse's, and the launcher and the fixture are free to differ until something reads them |
@@ -290,7 +325,7 @@ seen without a restored environment:
 
 | Finding | Closed by |
 |---|---|
-| `verified_hash` resolved the interpreter through `tools::resolve_executable`, which canonicalizes. A virtualenv's `bin/python` is a symlink chain to the base interpreter and `worker/.venv` is itself a link, so the probe ran `/usr/bin/python3.12` — `sys.prefix` `/usr`, none of the locked distributions present. **The environment check had never once read the environment it exists to read**, and the argument that "which interpreter is asked is not a parameter" was true of a path nobody ran | `tools::executable_in_place`, which checks the file is executable without resolving where it points; `t1_e1_the_interpreter_is_probed_where_it_is_attached_not_where_it_resolves`. Every earlier interpreter in the suite was a regular file, and canonicalizing a regular file returns the same file — which is why the stand-in in that test answers differently depending on the path it is invoked through |
+| `verified_hash` resolved the interpreter through `tools::resolve_executable`, which canonicalizes. A virtualenv's `bin/python` is a symlink chain to the base interpreter and `worker/.venv` is itself a link, so the probe ran `/usr/bin/python3.12` — `sys.prefix` `/usr`, none of the locked distributions present. **The environment check had never once read the environment it exists to read**, and the argument that "which interpreter is asked is not a parameter" was true of a path nobody ran | `tools::executable_in_place`, which checks the file is executable without resolving where it points; `t4_e1_the_interpreter_is_probed_where_it_is_attached_not_where_it_resolves`. Every earlier interpreter in the suite was a regular file, and canonicalizing a regular file returns the same file — which is why the stand-in in that test answers differently depending on the path it is invoked through |
 | The probe recorded the first platform tag `packaging` yields. On Linux that is the bare `linux_x86_64`, which is the same string on glibc 2.31 and glibc 2.39 — so two environments loading different compiled wheels would have shared one bundle identity, and it could never match the `manylinux_2_39_x86_64` the manifest declares | The probe skips the bare tag and records the first `manylinux_*` or `musllinux_*` behind it. ADR-0001 §12.5 hashes *platform ABI* identity and [`../operations/REFERENCE-ENVIRONMENT.md`](../operations/REFERENCE-ENVIRONMENT.md) records the reference machine's glibc, so the manifest's declaration was right and the probe was the side that had to move — `worker/bundle-manifest.json` is unchanged and no cache key moves for this reason |
 
 ### What this moves
@@ -476,9 +511,9 @@ This is enforced before a worker identity is returned. `parse_lockfile`
 requires the four exact `REQUIRED_LOCK_DIRECTIVES` and exactly one well-formed
 SHA-256 for every index pin; it refuses an unknown or repeated directive, an
 unhashed or multiply hashed index pin, and any artifact hash on the governed
-pin. `t1_e1_every_index_pin_requires_one_artifact_hash` and
-`t1_e1_the_lock_records_its_package_sources_and_artifact_kinds` cover those
-failures, and `t1_e1_a_lockfile_fault_no_line_carries_names_no_line` covers the
+pin. `t4_e1_every_index_pin_requires_one_artifact_hash` and
+`t4_e1_the_lock_records_its_package_sources_and_artifact_kinds` cover those
+failures, and `t4_e1_a_lockfile_fault_no_line_carries_names_no_line` covers the
 three it reports against the file rather than a line.
 
 ### What this moves
@@ -703,7 +738,7 @@ and the missing governed pin rendered one past the last line — a 42-line lock
 reporting "line 43 omits a required resolution directive". The `line` field is
 now a `WorkerLockfileLocus`, either `Line(n)` or `WholeFile`, and a whole-file
 refusal reads "worker lockfile `worker/requirements.lock` as a whole is not
-UTF-8". `t1_e1_a_lockfile_fault_no_line_carries_names_no_line` drives all three
+UTF-8". `t4_e1_a_lockfile_fault_no_line_carries_names_no_line` drives all three
 through `verified_hash` and asserts the rendered message names no line, which
 is the only place the fault was visible.
 
@@ -843,6 +878,103 @@ both now refused unless something accounts for them. A dedicated worker-only
 environment enforcing an exact installed set would remove the tolerance itself,
 and is not in this change.
 
+## What the fifteenth audit closed
+
+The initialization response still admitted a provenance claim no successful
+worker could safely make:
+
+| Finding | Closed by |
+|---|---|
+| `WorkerResponseFrame::Initialized` carried an arbitrary string map, so model and tokenizer revisions could be absent or moving refs, voice profiles could be absent, and unknown identity categories were accepted | Public `WorkerInitializationIdentities` with required checked `Revision`, `WorkerBundleHash`, and nonempty `BTreeMap<String, VoiceProfileHash>` fields; parser tests cover a complete response plus every missing and malformed category, an unknown field, and an empty voice-profile set |
+| The E1-S1 product worker returned `initialized` after loading no model, tokenizer, or voice | `initialize` now returns nonrecoverable `initialization_failed`, and a subprocess regression proves later health remains `ready: false` and `model_loaded: false`; `synthesize` retains the same fail-closed result until E1-S3 |
+| The deterministic fake reported `ready: true` but `model_loaded: false`, and its initialization and synthesis identities disagreed | The fake represents its loaded synthetic test backend consistently: complete exact initialization identities, `ready: true`, `model_loaded: true`, and the same model, tokenizer, bundle, and voice-profile identities on synthesis; every response is validated against `worker-protocol-v1.schema.json` |
+
+### Compatibility and identity impact
+
+This is a breaking required-response correction folded into the same pre-G1
+`e1.worker.1.0` baseline and `1.1` trace extension. The still-Proposed E1-S1
+evidence gives no migration promise, no released consumer or durable frame
+exists, and preserving the incomplete response under another version would
+preserve a false initialization success. Rust supervisor types, the fake,
+Python worker, tests, and generated schema move together. Unknown or incomplete
+old `initialized` responses are refused rather than translated.
+
+`worker/study_tts_worker/worker.py` and
+`schemas/worker-protocol-v1.schema.json` are declared worker-bundle inputs, so
+every worker-bundle hash moves. The input set and derivation stay unchanged,
+and `WORKER_BUNDLE_IDENTITY_VERSION` remains `e1-s1-v4`. Existing cache entries
+remain valid under their producing identity and are neither deleted nor
+re-keyed. The deterministic fake and its tests are not production bundle
+inputs and move no product synthesis identity.
+
+## What the sixteenth audit closed
+
+The fifteenth-audit contract test supplied the fake's fixed worker-bundle hash,
+so it did not expose that initialization echoed any caller-supplied hash while
+synthesis reported the fake's real fixed identity. The executable fake now
+refuses any other requested bundle with nonrecoverable `initialization_failed`.
+`t4_e1_fake_worker_passes_shared_protocol_contract` drives that mismatch and
+compares the model, tokenizer or codec, worker-bundle, and voice-profile
+identities reported at initialization with those reported by synthesis. Every
+response in both paths is still validated against the published schema.
+
+This closes a fake-only implementation and test gap without changing the wire
+contract or product worker. Protocol versions remain `e1.worker.1.0` and `1.1`.
+The fake, its tests, and these records are not worker-bundle manifest inputs, so
+the product worker-bundle identity does not move.
+
+## What the seventeenth audit closed
+
+This audit closed no defect. It answers a review of the E1-S1 baseline against
+`rust-review` and `ponytail`, and every item is scope, legibility, or governance
+debt rather than behavior. **No wire contract, schema, error variant, refusal
+message, or bundle input moved, and the verified bundle hash is unchanged at
+`6b0a3c1466bd1dc24202b913f8917a49bd0284b39a81807d030216efa8aa8d02`** — which is
+the evidence that it changed nothing that matters.
+
+**The environment check is now authorized rather than assumed.** ADR-0001 §12.5
+names the bundle-hash inputs exhaustively, and comparing the *installed*
+environment against `worker/requirements.lock` is not among them. It is a
+precondition on returning an identity, not an input to one, and E1-S1 task 6
+asks only for "deterministic worker-bundle hashing".
+[`ADR-0001-D004`](../adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md)
+records the gap it closes, its measured cost, the alternatives, and a rollback.
+The project owner approved it on 2026-08-29, so the check is governed scope
+rather than an unrecorded extension of §12.5.
+
+**The module now reads as the two things it does.**
+`crates/study-tts-runtime/src/worker_bundle.rs` was 4,119 lines covering both
+the §12.5 identity and the D004 precondition. The precondition moved to
+`crates/study-tts-runtime/src/worker_environment.rs`, which names D004 in
+return, so the boundary between what §12.5 requires and what D004 authorizes is
+now visible in the file tree. The split is deliberately line-neutral: it deletes nothing, and
+`worker_bundle` reaches the new module through exactly two crate-private
+functions, so no probe or lockfile type crosses the boundary.
+
+**The probe script is a Python file.** The ~180-line script was assembled by
+`concat!` of Rust string literals; it is now
+`crates/study-tts-runtime/src/runtime_probe.py`, loaded with `include_str!`. The
+executable code is byte-identical. `t4_e1_the_runtime_probe_script_compiles_as_python`
+is deleted rather than moved: `t4_e1_the_probe_reads_record_digests_from_a_real_interpreter`
+already runs the script on a real interpreter and strictly subsumes it, and
+`.github/workflows/ci.yml` now compiles the file directly.
+
+**Sixteen tests were misfiled by tier.** Every test in `worker_environment`
+resolves or spawns an interpreter, which `DELIVERY-PLAN.md` §3.2 puts at T4
+rather than T1's "pure deterministic functions". All sixteen are renamed
+`t1_e1_*` → `t4_e1_*`. None is named in `DELIVERY-PLAN.md`, so none is a
+contract; `t1_e1_worker_bundle_hash_changes_on_owned_runtime_input` and
+`t1_e1_worker_bundle_hash_ignores_unrelated_repository_files` are, and keep
+their names. The citations in this document moved with them; the superseded
+evidence records that also cite them were **not** edited, because they pin what
+they measured.
+
+**CI reports tier duration.** `DELIVERY-PLAN.md` §3.3 requires it and nothing
+implemented it. Every test carries a `t<tier>_e<epic>_` prefix, so the tier is a
+libtest filter over the binaries the suite already built. The report is
+visibility, not a gate. It is also why the rename above mattered: before it, T4's
+3.5 seconds of subprocess work billed against T1's 30-second budget.
+
 ## Impact of the two deliberately incomplete inputs
 
 Two ADR-0001 §12.5 inputs are present in the identity but not yet resolved to
@@ -866,10 +998,10 @@ it lands.
 Recorded here rather than left for a reader to discover:
 
 - **The worker has no speech backend.** `worker/study_tts_worker/worker.py`
-  answers `initialize`, `capabilities`, `health`, `cancel`, and `shutdown`, and
-  refuses `synthesize` with `initialization_failed` naming E1-S3. It does not
-  return a placeholder tone, because the cache would publish that under a key
-  claiming a real model produced it.
+  answers `capabilities`, `health`, `cancel`, and `shutdown`, and refuses both
+  `initialize` and `synthesize` with nonrecoverable `initialization_failed`
+  naming E1-S3. It does not return a placeholder identity or tone, because the
+  cache would publish that under a key claiming a real model produced it.
 - **The verification schema describes the identity, not the finding.** The
   transcript, comparison, and scored findings arrive with the ASR stack in
   E4-S1 as a compatible extension at `1.1`.
@@ -974,6 +1106,23 @@ thirteenth audit closed, and §What the fourteenth audit closed are folded into
 that still-Proposed v8 record; v8 is updated before approval rather than
 superseded as though it were already immutable evidence.
 
+§What the fifteenth audit closed and §What the sixteenth audit closed are folded
+into that same still-Proposed v8 record for the same reason. The fifteenth audit
+moves this document, the provisional contract, both worker implementations, the
+worker protocol type and generated schema, and the worker-bundle hash. The
+sixteenth moves only this document, the provisional contract, the fake, and its
+contract test; none is a product worker-bundle input. Neither audit amends any
+accepted evidence.
+
+§What the seventeenth audit closed is recorded in
+[`../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v9.md`](../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v9.md),
+which supersedes v8 rather than amending it. That audit moves this document,
+`WORKER-ENVIRONMENT.md`, `worker_bundle.rs`, `lib.rs`, and the two workflow
+files, and adds `worker_environment.rs`, `runtime_probe.py`, and `ADR-0001-D004`.
+It moves no bundle input and no wire shape. Superseded records that cite the
+sixteen renamed tests were left as written: they pin what they measured, which
+is what supersession is for.
+
 The fourteenth audit also moves `WALKING-SKELETON.md` to give the integrity
 walk its dedicated deadline. Four active older records pin the previous bytes;
 [`../../evidence/gates/g1/e1-s1/e1-s1-fourteenth-audit-provenance-reconciliation-v1.md`](../../evidence/gates/g1/e1-s1/e1-s1-fourteenth-audit-provenance-reconciliation-v1.md)
@@ -983,11 +1132,17 @@ record.
 ## Approval
 
 - Contract owner decision: identity baseline adopted before the eleventh audit;
-  breaking worker-frame baseline approved by the project owner on 2026-08-28
-- Worker-frame classification: approved as breaking at `e1.worker.1.0`
+  the fifteenth- and sixteenth-audit initialization corrections remain pending
+  review. The seventeenth audit changes no contract and asked for no contract
+  decision; the owner decision it did ask for,
+  [`ADR-0001-D004`](../adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md),
+  was approved on 2026-08-29
+- Worker-frame classification: breaking at `e1.worker.1.0`; the decision to
+  fold the initialization correction into that still-Proposed baseline remains
+  pending review
 - Engineering owner approval: approved on 2026-08-28 for the baseline through the
-  twelfth audit; the thirteenth-audit amendments are **not** covered by it and
-  remain `Pending review of the thirteenth-audit remediation` in
+  twelfth audit; later amendments are **not** covered by it and remain pending
+  in
   [`../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v8.md`](../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v8.md)
   §Review, together with the contract owner, worker/runtime owner, and
   affected-track reviews that record pins there. The approvals above are the

@@ -9,14 +9,19 @@ drift from them.
 
 | When | Load |
 |---|---|
-| Writing, generating, or editing **any Rust** in this workspace | `clean-code`, `ponytail`, `rust-review`, **and** `rust-comment` |
-| Auditing or reviewing a diff, file, module tree, or crate | `rust-review` and `ponytail`, with `clean-code` and `rust-comment` |
+| Writing, generating, or editing **any Rust** in this workspace | `clean-code`, `ponytail`, `rust-review`, `rust-comment`, **and** `rust-production` |
+| Writing or changing **any Rust test**, or any Rust change that needs one — under TDD that is nearly all of them | the Rust row above **and** `rust-testing` |
+| Auditing or reviewing a diff, file, module tree, or crate | `rust-review` and `ponytail`, with `clean-code` and `rust-comment`; add `rust-testing` when tests are in scope, `rust-production` when the diff spawns a process, writes durable state, computes an identity, or changes a published format |
 | Writing or editing any other code | `clean-code` **and** `ponytail` |
 
 Load them **before the first edit, not after**. These are binding standards for code written
 here, not advice to weigh: `rust-review` is what the code will be judged against and `ponytail`
 is what decides whether it should exist at all, so writing to them costs less than refactoring
 to them. Before reporting done, apply `rust-review`'s own severity scale to your own output.
+`rust-testing` carries its own Authority section listing where `crates/AGENTS.md` and
+`docs/testing/TEST-STRATEGY.md` already override it; read that before applying it here.
+`rust-production` codifies the OS-facing rules this tree already proves — subprocess supervision,
+durable publication, determinism, schema evolution — and cites the module behind each one.
 
 ## Conflict order
 

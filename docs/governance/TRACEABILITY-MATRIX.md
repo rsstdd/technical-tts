@@ -15,6 +15,7 @@ The Delivery Plan and GitHub stories contain the exhaustive named-test lists. Th
 | Canonical reviewed lesson only | E1-S2, E3-S3 | review-state rejection; display/spoken audit | G1/G3 |
 | Separate synthesis and verification identities | E1-S1, E4-S1 | field-sensitivity properties; ASR-only invalidation | G1/G3 |
 | Worker-bundle hash | E1-S1, E1-S3 | owned-input invalidation and reproducible bundle tests | G1 |
+| Worker environment matches the lock before an identity is returned | E1-S1 | ADR-0001-D004; the seventeen `worker_environment` T4 tests, sixteen pinning refusals and one driving the probe on a real interpreter | G1 |
 | Persistent single worker for MVP | E1-S3 | one-load-per-lifetime and protocol tests | G1 |
 | Atomic validated synthesis cache | E1-S3, E2-S1 | cache-hit validation, crash-boundary fault injection | G1/M2 |
 | Managed-path containment | E1-S3, E5-S4 | traversal, symlink, staging-escape tests | G1/M3 |

@@ -21,7 +21,7 @@ a cache that reuses such an entry ships audio its identity does not describe.
 | `schema_version` | Layout of the manifest itself; an unknown value is refused, never guessed at. |
 | `import_roots` | Package directories, relative to the repository root, whose modules are project-owned. |
 | `inputs` | Every file that belongs to the bundle, relative to the repository root. |
-| `python` | Interpreter implementation, version, ABI tag, and platform tag the bundle is resolved for. Checked against the interpreter at `worker/.venv/bin/python`, not trusted (`WORKER_INTERPRETER_PATH` in `crates/study-tts-runtime/src/worker_bundle.rs`). |
+| `python` | Interpreter implementation, version, ABI tag, and platform tag the bundle is resolved for. Checked against the interpreter at `worker/.venv/bin/python`, not trusted (`WORKER_INTERPRETER_PATH` in `crates/study-tts-runtime/src/worker_environment.rs`). |
 
 What the manifest does **not** decide is which of these fields, and which files, have to be there at
 all. That floor is the next section.
@@ -118,6 +118,14 @@ return.
 
 ### The installed environment is checked against the lock
 
+Everything in this section and the two after it is a **precondition** on returning a bundle
+identity, not an input to it. ADR-0001 §12.5 names the hash's inputs exhaustively and none of
+these is among them; the digest is bit-for-bit what §12.5 specifies whether or not the check runs.
+It is authorized by
+[`ADR-0001-D004`](../adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md), which
+names `crates/study-tts-runtime/src/worker_environment.rs` in return and records what the check
+costs, and which the project owner approved on 2026-08-29.
+
 The ABI answers which wheels *could* load, not which are there, and that is a different question.
 `requirements.lock` reaches the bundle identity as **bytes**, so hashing it proved what the file says
 and nothing about the environment it describes. A `torch` upgraded in place left every declared input
@@ -133,7 +141,7 @@ against the lock before returning a hash:
 | a governed source tree | `EnvironmentMismatch::FromIndex` when no PEP 610 record exists at all, `::WithoutRecordedRevision` when one exists but records a path rather than a revision, `::FromAnotherRevision` when it records a different one |
 
 Names are canonicalized on both sides — `packaging.utils.canonicalize_name` in the probe and
-`canonicalize_distribution_name` in `crates/study-tts-runtime/src/worker_bundle.rs`, which names this
+`canonicalize_distribution_name` in `crates/study-tts-runtime/src/worker_environment.rs`, which names this
 section in return — because a lock and a `pip freeze` routinely spell `hf-xet` and `hf_xet`
 differently and they are one distribution. That mapping is many-to-one, so the probe reports a
 **list** and the comparison refuses a repeated name as `EnvironmentMismatch::AmbiguousDistribution`.
@@ -182,7 +190,9 @@ does not.
 ### Nor are their bytes, nor the modules `site` imports by name
 
 A `.pth` was the first thing found that is not inert; it was not the last, and two more reach the
-same process by other routes.
+same process by other routes. Both are observed by
+`crates/study-tts-runtime/src/runtime_probe.py`, the script `worker_environment` embeds and runs
+under `python -I`, which names this section in return.
 
 **A pin is not a claim about content.** A version says which release was resolved and nothing about
 what the files hold now, so a module edited in place — or a `.pth` belonging to a *locked*
@@ -190,13 +200,22 @@ distribution, whose file name and owning distribution both stay correct while it
 left every version, every provenance record, and every declared input byte-identical. The probe
 therefore verifies each SHA-256-bearing `RECORD` entry beneath the distribution's site-package
 root, and `check_recorded_files_are_intact` in
-`crates/study-tts-runtime/src/worker_bundle.rs` turns the first fault into the refusal. Generated
-wheel scripts elsewhere in the same interpreter environment are not imported by
+`crates/study-tts-runtime/src/worker_environment.rs` turns the first fault into the refusal.
+Generated wheel scripts elsewhere in the same interpreter environment are not imported by
 `python -m study_tts_worker` and are not read. A non-printable or absolute path, a path escaping the
 interpreter environment, or a site-package symlink escaping its distribution root is refused
 before any read.
 Only locked distributions are inspected: an unlocked one is tolerated precisely because the
 worker does not load it, and the one part of it that is not inert is already refused by name.
+
+**This is the part of the check that costs something.** On the reference environment it reads
+1,263 MiB across 31,704 files, which is 1.50 s of the 3.4–3.6 s a whole `verified_hash` takes.
+That is paid once per build rather than once per segment — the bundle identity is one input to
+every cache key, derived once and reused — which is why it is affordable as written and nothing
+memoizes it.
+[`ADR-0001-D004`](../adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md) records
+the measurement, and `.github/workflows/qualification.yml` times the step on every qualification
+run so a drift from it is visible.
 
 | The fault | The refusal |
 |---|---|
@@ -235,7 +254,7 @@ the file where a reviewer sees it, and changing it changes the manifest, which i
 bundle input.
 
 A valid lock also states the two package indexes and its wheel/source policy exactly once, as
-`REQUIRED_LOCK_DIRECTIVES` in `crates/study-tts-runtime/src/worker_bundle.rs` requires. Every
+`REQUIRED_LOCK_DIRECTIVES` in `crates/study-tts-runtime/src/worker_environment.rs` requires. Every
 index-supplied pin carries exactly one SHA-256 artifact hash. The governed `chatterbox-tts` pin is
 the sole exception: it carries the adjacent commit marker instead because it is installed from
 that VCS revision rather than from a published artifact. An unknown or repeated directive, a
@@ -388,7 +407,7 @@ record naming another revision is the wrong clone.
 [The installed environment is checked against the lock](#the-installed-environment-is-checked-against-the-lock)
 applies it on every `verified_hash`, driven by the `# installed from a governed local source tree at
 commit ...` comment above the `chatterbox-tts` pin — `GOVERNED_SOURCE_MARKER` in
-`crates/study-tts-runtime/src/worker_bundle.rs`, which names this section in return.
+`crates/study-tts-runtime/src/worker_environment.rs`, which names this section in return.
 
 The comment and the pin it governs are required to stay adjacent, and the lock is refused as
 unreadable when they do not: a missing, blank-line-separated, doubled, or misattached comment
@@ -475,7 +494,7 @@ together.
 8. Keep the four resolution directives at the top of the file, byte for byte:
    `--index-url https://pypi.org/simple`, `--extra-index-url https://download.pytorch.org/whl/cpu`,
    `--only-binary=:all:`, and `--no-binary=s3tokenizer`. They are `REQUIRED_LOCK_DIRECTIVES` in
-   `crates/study-tts-runtime/src/worker_bundle.rs`, which names this section in return; the parser
+   `crates/study-tts-runtime/src/worker_environment.rs`, which names this section in return; the parser
    refuses a lock missing one, repeating one, or carrying a fifth.
 9. For every remaining index pin, use `pip download --isolated --no-deps` with those directives to
    acquire the artifact selected on the reference ABI, then run `pip hash <artifact>` and put that
@@ -508,11 +527,11 @@ Three things are checked together, and each closes what the others leave open:
 - **The governed commit** does the same job for `chatterbox-tts`, which has no published artifact
   to hash; PEP 610 provenance is checked before a bundle identity is returned.
 
-`parse_lockfile` in `crates/study-tts-runtime/src/worker_bundle.rs` refuses the lock when any of
+`parse_lockfile` in `crates/study-tts-runtime/src/worker_environment.rs` refuses the lock when any of
 the three is missing, malformed, or duplicated, and
-`t1_e1_every_index_pin_requires_one_artifact_hash` and
-`t1_e1_the_lock_records_its_package_sources_and_artifact_kinds` are what keep that refusal real,
-and `t1_e1_a_lockfile_fault_no_line_carries_names_no_line` is what keeps a whole-file refusal from
+`t4_e1_every_index_pin_requires_one_artifact_hash` and
+`t4_e1_the_lock_records_its_package_sources_and_artifact_kinds` are what keep that refusal real,
+and `t4_e1_a_lockfile_fault_no_line_carries_names_no_line` is what keeps a whole-file refusal from
 sending an operator to a line the lock does not have.
 
 What the hashes do **not** do is prove what is installed. Nothing this build can ask the

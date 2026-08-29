@@ -1,6 +1,6 @@
 ---
 name: rust-comment
-description: The commenting and rustdoc standard for this Rust workspace — why-not-what prose, `///` and `//!` doc comments, the `# Examples` / `# Errors` / `# Panics` / `# Safety` sections, `// SAFETY:` blocks, performance and algorithm notes, and `TODO`/`FIXME`/`#[deprecated]` debt markers. REQUIRED before writing, generating, or editing any Rust here, and used to review the comments in a diff, file, or crate.
+description: The commenting and rustdoc standard for this Rust workspace — why-not-what prose, `///` and `//!` doc comments, the `# Examples` / `# Errors` / `# Panics` / `# Safety` sections, two-sided coupling comments to governance documents, and `TODO`/`FIXME`/`#[deprecated]` debt markers. REQUIRED before writing, generating, or editing any Rust here, and used to review the comments in a diff, file, or crate.
 ---
 
 # Rust comments and doc comments in this workspace
@@ -8,9 +8,6 @@ description: The commenting and rustdoc standard for this Rust workspace — why
 Every comment is code that a compiler cannot check. It earns its line by carrying something the
 code cannot: intent, a trade-off, an invariant, a domain rule, a coupling to a ratified document.
 Anything else is future noise.
-
-Load `clean-code` for the style and structure rules and `rust-review` for the correctness
-standard. This skill is the comment layer of both; it adds constraints and changes neither.
 
 ## Authority
 
@@ -21,10 +18,16 @@ supersedes → `docs/adr/ADR-0001-production-rust-study-guide-tts.md` → `DELIV
 `AGENTS.md` → `crates/AGENTS.md` → `PRINCIPLES.md` → this skill. Flag a genuine conflict; never
 resolve one silently.
 
+Load `clean-code` (style and structure) and `rust-review` (the correctness standard and the
+severity scale, plus the conduct rules that bind every skill here). This is the comment layer of
+both; it adds constraints and changes neither.
+
 ## General
 
 - **Explain WHY, not WHAT.** Design trade-offs, safety invariants, domain rules, and the reason
-  an ordering or a deviation is load-bearing. A comment that restates the code is a finding.
+  an ordering or a deviation is load-bearing. A comment that restates the code is a finding, and
+  so is one that does not help its reader.
+- **Terse and dense.** Legible to a human skimming a diff and to an LLM reading it cold.
 - **Delete commented-out code.** Git tracks history; a commented block is noise that bit-rots.
 - **An outdated comment is a bug.** Update or delete it in the same commit as the code it
   describes — never in a follow-up.
@@ -32,21 +35,16 @@ resolve one silently.
   inline beside it. A comment far from what it explains stops being maintained.
 - Applies to code you write or touch, under the boy scout rule in `AGENTS.md`. It is not a
   mandate to retrofit untouched files.
-- **Maintain high information density**. The comments should be terse, informationally
-  dense, and easily legible for humans as well as LLMs.
-- **Comments should be useful.** If the comment does not help the user, it is a bug.
 
 ## Doc comments
 
-- `///` above every public item — type, function, trait, enum, field, const. This is not
-  optional here: `missing_docs = "warn"` is set in the workspace lint table and CI runs clippy
-  with `-D warnings`, so an undocumented public item blocks merge. `crates/AGENTS.md` states the
-  same rule in prose: one sentence, repetition over abstraction.
+- `///` above every public item — type, function, trait, enum, field, const. Not optional here:
+  `missing_docs = "warn"` in the workspace lint table plus CI's `-D warnings` makes an
+  undocumented public item a merge blocker. One sentence; repetition over abstraction.
 - `//!` at the top of a module or `lib.rs` for architecture and scope — what the module owns,
   what it deliberately does not, and which document governs it.
 - Idiomatic Markdown. Code blocks are compiled: ```` ```rust ````. Link items with
   ``[`CacheKey`]`` rather than naming them in plain prose.
-- Doc comments precede attributes (`crates/AGENTS.md` §3).
 
 ## rustdoc sections
 
@@ -59,9 +57,9 @@ Use them in this order, and only when they apply.
 | `# Panics` | Any path that can panic | The condition, and why no caller argument can reach it. |
 | `# Safety` | Every `unsafe fn` | The invariants the caller must uphold to avoid UB. |
 
-**`# Errors` in this repo names variants, not categories.** Error enums carry one variant per
-violated invariant so a test can assert the exact failure; the doc must let a caller map a
-condition to that variant. Where the error routes a refusal to a remedy owner per
+**`# Errors` names variants, not categories.** Error enums carry one variant per violated
+invariant so a test can assert the exact failure; the doc must let a caller map a condition to
+that variant. Where the error routes a refusal to a remedy owner per
 `docs/governance/ROUTING-TABLES.md`, say who.
 
 **`# Panics` must justify, not just disclose.** See `study-tts-core/src/plan.rs` — it documents
@@ -70,26 +68,19 @@ it. A bare "panics if serialization fails" is not enough on a library path; `rus
 requires the justification.
 
 **Doctests run in CI, not in the local test command.** `.github/workflows/ci.yml` runs
-`cargo test --offline --workspace --doc --locked` as its own step, but the command in
-`AGENTS.md` — `cargo test --workspace --all-targets --locked` — excludes doctests. Run
-`cargo test --workspace --doc` yourself after adding or editing an example, and do not claim it
-passed otherwise. Keep examples offline and free of external binaries: doctests run with cargo
-offline, and an example needing `ffmpeg` belongs in the T4 suite, not in rustdoc. Reach for
-`no_run` or `ignore` only with a comment saying why.
+`cargo test --offline --workspace --doc --locked` as its own step, but `AGENTS.md`'s
+`cargo test --workspace --all-targets --locked` excludes doctests. Run
+`cargo test --workspace --doc` yourself after adding or editing an example, and never claim it
+passed otherwise. Keep examples offline and free of external binaries — an example needing
+`ffmpeg` belongs in the T4 suite, not in rustdoc. Reach for `no_run` or `ignore` only with a
+comment saying why.
 
-## Unsafe and invariants
-
-`unsafe_code = "forbid"` is set workspace-wide in the root `Cargo.toml`. **There is no `unsafe`
-in this workspace and adding it is a Critical finding, not a comment problem** — it requires an
-ADR, not a `// SAFETY:` block.
-
-The rules below bind only if that forbid is ever lifted by an accepted ADR:
-
-- Precede every `unsafe` block with `// SAFETY:` explaining why the invariants hold at that
-  point — not what the code does.
-- Detail raw-pointer assumptions, memory layout, non-null and alignment guarantees, aliasing,
-  and thread-safety invariants.
-- Keep the block minimal, so the comment covers exactly the operations it justifies.
+**`# Safety` is currently unreachable.** `unsafe_code = "forbid"` is set workspace-wide in the
+root `Cargo.toml`: there is no `unsafe` here, and adding it is a Critical finding needing an ADR,
+not a `// SAFETY:` block. If an accepted ADR ever lifts the forbid, the rules written back here
+are: `// SAFETY:` above every block explaining why the invariants hold at that point; raw-pointer,
+layout, non-null, alignment, aliasing, and thread-safety assumptions spelled out; and the block
+kept minimal so the comment covers exactly what it justifies.
 
 ## Logic and performance
 
@@ -127,27 +118,16 @@ each other. `grep` is the discovery tool — anything implied only by git histor
   saying since when and why. The attribute is what callers see; the comment is what a maintainer
   needs.
 
-## Review checklist
+## Reviewing comments
 
-Run these against your own diff before reporting done, then map findings onto the `rust-review`
-severity scale.
+Run the sections above against your own diff before reporting done, and map what you find onto
+the `rust-review` severity scale:
 
-1. Does every public item have a `///`? Does every module that owns a concept have a `//!`?
-2. Does every public `Result` return document `# Errors` by variant?
-3. Is every reachable panic documented and justified?
-4. Does any comment restate the code, label a brace, or preserve dead code?
-5. Did any comment near the edited lines go stale with this change?
-6. Is every transcribed constant or table two-sided with its governing document?
-7. Does each `TODO` name an owner and an action?
-8. If an example was added or changed, did `cargo test --workspace --doc` actually run?
+- **Major** — a wrong or stale doc on a public item, an undocumented or unjustified panic on a
+  library path, a missing `# Safety`, or a one-sided coupling comment, whose other end then
+  drifts silently.
+- **Minor** — a missing `# Errors`, a comment that restates the code, an unowned `TODO`.
 
-Severity mapping: a wrong or stale doc on a public item, an undocumented panic on a library
-path, or a missing `# Safety` is **Major** — it misleads a caller. A missing `# Errors`, a
-restating comment, or an unowned `TODO` is **Minor**. A one-sided coupling comment is **Major**,
-because the other end silently drifts.
-
-## Non-negotiables
-
-- **Reviewing is not editing.** Report comment findings; apply them only when asked.
-- **Never commit, push, branch, merge, or open a pull request.**
-- **Do not claim a check passed unless it ran** — doctests included. State what is unverified.
+Two checks are not readable off the diff: `grep` the governing document for the code path before
+calling a coupling comment two-sided, and actually run `cargo test --workspace --doc` if an
+example changed.
