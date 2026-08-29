@@ -17,14 +17,14 @@ description = "Persistent NDJSON speech worker for technical-tts"
 requires-python = "==3.12.*"
 dependencies = [
   "chatterbox-tts==0.1.2",
-  "torch==2.6.0+cpu",
+  "torch==2.13.0",
   "torchaudio==2.6.0+cpu",
   "numpy==2.5.2",
   "soundfile==0.14.0",
 ]
 
 [build-system]
-requires = ["setuptools==78.1.0"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
