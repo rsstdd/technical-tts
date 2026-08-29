@@ -75,7 +75,9 @@
 //! the audio changed. So [`WorkerBundle::verified_hash`] asks the same
 //! interpreter what is installed beside it and compares that against the lock,
 //! including the PEP 610 provenance the lock records for the one distribution
-//! that must come from the governed source tree.
+//! that must come from the governed source tree and the per-file digests each
+//! locked distribution records. It also accounts for `.pth`, `sitecustomize`,
+//! and `usercustomize` startup code before returning an identity.
 //!
 //! What the walk cannot see is stated rather than implied: a module the worker
 //! loads from outside every declared import root is outside the identity. That
@@ -89,14 +91,14 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use study_tts_core::{CanonicalValue, WorkerBundleHash, canonical_digest};
 
 use crate::error::{
     EnvironmentMismatch, RuntimeIdentityMismatch, WorkerBundleError, WorkerLockfileErrorReason,
     WorkerLockfileLocus,
 };
-use crate::process::{self, CommandRunError, VERSION_PROBE_POLICY};
+use crate::process::{self, CommandRunError, WORKER_ENVIRONMENT_PROBE_POLICY};
 use crate::{
     BuildError, ManagedPathError, ToolInvocation, ToolOperation, io_error, managed, tools,
 };
@@ -118,8 +120,18 @@ pub const WORKER_BUNDLE_IDENTITY_VERSION: &str = "e1-s1-v4";
 /// the property this module exists to remove.
 pub const BUNDLE_MANIFEST_PATH: &str = "worker/bundle-manifest.json";
 
-/// Layout version this build accepts for a bundle manifest.
-pub const BUNDLE_MANIFEST_SCHEMA_VERSION: &str = "1.0";
+/// Layout version this build publishes for a bundle manifest.
+pub const BUNDLE_MANIFEST_SCHEMA_VERSION: &str = "1.1";
+
+/// Manifest layouts this build reads.
+///
+/// `1.1` adds `startup_modules` as an optional field. A `1.0` manifest remains
+/// readable and declares none, but its decoder still rejects the newer field;
+/// accepting a future declaration under an older version would make the
+/// version meaningless. A layout outside this list is refused rather than
+/// guessed at.
+const SUPPORTED_BUNDLE_MANIFEST_SCHEMA_VERSIONS: [&str; 2] =
+    ["1.0", BUNDLE_MANIFEST_SCHEMA_VERSION];
 
 /// Path of the resolved Python lockfile, relative to the repository root.
 pub const WORKER_LOCKFILE_PATH: &str = "worker/requirements.lock";
@@ -238,18 +250,32 @@ pub const WORKER_INTERPRETER_PATH: &str = "worker/.venv/bin/python";
 /// the distribution that owns it, from that distribution's own `RECORD`, and a
 /// hook the lock does not account for is a refusal.
 ///
+/// **A `.pth` is not the only thing that is not inert.** Two more reach the
+/// same process by other routes, and this script reports both.
+/// `docs/operations/WORKER-ENVIRONMENT.md` §Nor are their bytes, nor the
+/// modules `site` imports by name states the same rules in prose and names
+/// this file in return. A version is a claim about which release was resolved
+/// and not about what its files hold, so each *locked* distribution is
+/// compared against the per-file SHA-256 in its own `RECORD`. And `site`
+/// imports `sitecustomize` and `usercustomize` by name before any declared
+/// input is read, which no `.pth` rule could see.
+///
 /// Run under `-I`: isolated mode ignores `PYTHONPATH` and the user site
 /// directory, so a shadowing `packaging` on the environment cannot dictate the
 /// identity this build records — and so the site directories reported below are
-/// the ones the worker itself will process.
+/// the ones the worker itself will process. It settles `usercustomize` too, by
+/// clearing `ENABLE_USER_SITE`, which `site.main` gates `execusercustomize` on.
+/// It does not suppress `sitecustomize`, so whether each one executes is
+/// reported rather than assumed.
 const RUNTIME_PROBE_SCRIPT: &str = concat!(
     // `concat!` rather than a `\`-continued string literal, and that is not a
     // style choice: `\` at the end of a line skips the newline *and every
     // leading space on the next one*, so an indented Python block silently
     // arrives unindented. This script grew a `for` body and shipped an
     // `IndentationError` that only a restored environment could see.
-    "import json, os, site, sys\n",
+    "import base64, csv, hashlib, json, os, site, sys\n",
     "from importlib.metadata import distributions\n",
+    "from importlib.util import find_spec\n",
     "from packaging.tags import platform_tags, sys_tags\n",
     "from packaging.utils import canonicalize_name\n",
     "tag = next(iter(sys_tags()))\n",
@@ -262,8 +288,37 @@ const RUNTIME_PROBE_SCRIPT: &str = concat!(
     "    (name for name in platforms if not name.startswith('linux_')),\n",
     "    platforms[0],\n",
     ")\n",
+    // The lock's own names, passed as arguments rather than parsed here. Rust
+    // owns the lockfile grammar, and reading it twice in two languages is two
+    // grammars that drift. It also bounds the cost below: `RECORD`
+    // verification reads every file it lists, and the tolerated extras --
+    // this repository's pre-commit tooling among them -- are not what the
+    // worker loads.
+    "locked = set(sys.argv[1:])\n",
+    "environment_root = os.path.realpath(sys.prefix)\n",
     "installed = []\n",
     "owners = {}\n",
+    "claimed = {}\n",
+    "faults = []\n",
+    // Kept in step with `validate_record_digest`; the probe refuses the
+    // installed metadata and Serde refuses the manifest/report boundary.
+    "record_digest_length = 43\n",
+    "record_digest_alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-'\n",
+    "record_digest_final = 'AEIMQUYcgkosw048'\n",
+    "\n",
+    "def report_fault(fault):\n",
+    "    if not faults:\n",
+    "        faults.append(fault)\n",
+    "\n",
+    "def digest_of(path):\n",
+    // Chunked because a locked distribution ships weights-sized files, and
+    // reading one whole is a resident copy of it.
+    "    hasher = hashlib.sha256()\n",
+    "    with open(path, 'rb') as handle:\n",
+    "        for chunk in iter(lambda: handle.read(1 << 20), b''):\n",
+    "            hasher.update(chunk)\n",
+    "    return base64.urlsafe_b64encode(hasher.digest()).rstrip(b'=').decode()\n",
+    "\n",
     "for dist in distributions():\n",
     "    name = dist.metadata['Name']\n",
     "    if not name:\n",
@@ -287,6 +342,70 @@ const RUNTIME_PROBE_SCRIPT: &str = concat!(
     // Two distributions claiming one hook file leave it unowned rather than
     // attributed to whichever was walked last, so the ambiguity is refused.
     "        owners[hook] = None if hook in owners else canonical\n",
+    // `RECORD` is the distribution's own statement of which bytes it installed,
+    // so comparing the tree against it detects drift from that installed
+    // record. Checked only for the locked distributions: an
+    // unlocked one is tolerated precisely because the worker does not load it,
+    // and its `.pth` -- the one part of it that is not inert -- is already
+    // refused by name.
+    "    if canonical not in locked:\n",
+    "        continue\n",
+    "    listing = dist.read_text('RECORD')\n",
+    "    if listing is None:\n",
+    "        report_fault({'distribution': canonical, 'fault': 'unrecorded'})\n",
+    "        continue\n",
+    "    base = os.path.realpath(str(dist.locate_file('')))\n",
+    "    for row in csv.reader(listing.splitlines()):\n",
+    "        if not row:\n",
+    "            continue\n",
+    "        relative = row[0]\n",
+    "        recorded = row[1] if len(row) > 1 else ''\n",
+    "        if not relative.isprintable():\n",
+    "            report_fault({'distribution': canonical,\n",
+    "                          'fault': 'unsafe_record'})\n",
+    "            continue\n",
+    // `RECORD` lists itself with an empty hash, and an installer may leave a
+    // generated file unhashed. An entry that states no digest is a file the
+    // distribution declined to pin, not one this check may invent a digest
+    // for, so it is skipped rather than reported as a fault.
+    "        if not recorded.startswith('sha256='):\n",
+    "            continue\n",
+    "        digest = recorded[len('sha256='):]\n",
+    "        if (len(digest) != record_digest_length or\n",
+    "                any(character not in\n",
+    "                    record_digest_alphabet\n",
+    "                    for character in digest) or\n",
+    "                digest[-1] not in record_digest_final):\n",
+    "            report_fault({'distribution': canonical,\n",
+    "                          'fault': 'malformed_record'})\n",
+    "            continue\n",
+    "        target = os.path.abspath(os.path.join(base, relative))\n",
+    "        if (os.path.isabs(relative) or\n",
+    "                os.path.commonpath((environment_root, target)) != environment_root):\n",
+    "            report_fault({'distribution': canonical,\n",
+    "                          'fault': 'unsafe_record'})\n",
+    "            continue\n",
+    // Wheel scripts legitimately live under the environment's `bin`
+    // directory and do not run inside `python -m study_tts_worker`. Do not
+    // read them, but do refuse a site-package path whose symlink resolves out
+    // of the distribution tree.
+    "        if os.path.commonpath((base, target)) != base:\n",
+    "            continue\n",
+    "        target = os.path.realpath(target)\n",
+    "        if os.path.commonpath((base, target)) != base:\n",
+    "            report_fault({'distribution': canonical,\n",
+    "                          'fault': 'unsafe_record'})\n",
+    "            continue\n",
+    "        claimed[target] = canonical\n",
+    "        if faults:\n",
+    "            continue\n",
+    "        if not os.path.isfile(target):\n",
+    "            report_fault({'distribution': canonical, 'file': relative,\n",
+    "                          'fault': 'missing'})\n",
+    "            continue\n",
+    "        if digest_of(target) != digest:\n",
+    "            report_fault({'distribution': canonical, 'file': relative,\n",
+    "                          'fault': 'modified'})\n",
     "hooks = []\n",
     "for directory in site.getsitepackages():\n",
     "    if not os.path.isdir(directory):\n",
@@ -294,6 +413,34 @@ const RUNTIME_PROBE_SCRIPT: &str = concat!(
     "    for entry in sorted(os.listdir(directory)):\n",
     "        if entry.endswith('.pth'):\n",
     "            hooks.append({'file': entry, 'owner': owners.get(entry)})\n",
+    // `site` imports these by name as the interpreter starts, before anything
+    // this probe reports has been read. `-I` settles `usercustomize` -- it
+    // clears `ENABLE_USER_SITE`, and `site.main` calls `execusercustomize`
+    // only under it -- but nothing suppresses `sitecustomize`, so whether each
+    // one *executes* is reported rather than assumed.
+    "startup = []\n",
+    "for module, executes in (\n",
+    "    ('sitecustomize', True),\n",
+    "    ('usercustomize', bool(site.ENABLE_USER_SITE)),\n",
+    "):\n",
+    "    try:\n",
+    "        spec = find_spec(module)\n",
+    // A startup module whose own import machinery raises is reported as
+    // present and unowned rather than skipped: the failure says something is
+    // there, and silence would read as an empty environment.
+    "    except Exception:\n",
+    "        startup.append({'module': module, 'executes': executes,\n",
+    "                        'owner': None, 'digest': None})\n",
+    "        continue\n",
+    "    if spec is None or not spec.origin or spec.origin == 'built-in':\n",
+    "        continue\n",
+    "    origin = os.path.realpath(spec.origin)\n",
+    "    startup.append({\n",
+    "        'module': module,\n",
+    "        'executes': executes,\n",
+    "        'owner': claimed.get(origin),\n",
+    "        'digest': digest_of(origin) if os.path.isfile(origin) else None,\n",
+    "    })\n",
     "json.dump({\n",
     "    'runtime': {\n",
     "        'implementation': sys.implementation.name,\n",
@@ -303,6 +450,8 @@ const RUNTIME_PROBE_SCRIPT: &str = concat!(
     "    },\n",
     "    'distributions': installed,\n",
     "    'path_hooks': hooks,\n",
+    "    'integrity_faults': faults,\n",
+    "    'startup_modules': startup,\n",
     "}, sys.stdout)\n",
 );
 
@@ -315,6 +464,9 @@ const RUNTIME_PROBE_SCRIPT: &str = concat!(
 /// constant in return. The commit follows it on the same line, and the pin it
 /// governs is the line after.
 const GOVERNED_SOURCE_MARKER: &str = "# installed from a governed local source tree at commit ";
+
+/// Length of the full lowercase Git object ID the governed marker records.
+const GOVERNED_COMMIT_HEX_LENGTH: usize = 40;
 
 /// Resolution directives `worker/requirements.lock` must state for itself.
 ///
@@ -340,6 +492,12 @@ const ARTIFACT_HASH_PREFIX: &str = "--hash=sha256:";
 
 /// Length of the SHA-256 an artifact hash carries, as lowercase hexadecimal.
 const ARTIFACT_HASH_HEX_LENGTH: usize = 64;
+
+/// Length of an unpadded URL-safe base64 SHA-256 digest.
+const RECORD_SHA256_BASE64_LENGTH: usize = 43;
+
+/// Canonical final sextets for a 32-byte unpadded base64 value.
+const RECORD_SHA256_FINAL_BYTES: &[u8] = b"AEIMQUYcgkosw048";
 
 /// The one distribution this lock may satisfy from outside an index.
 ///
@@ -391,6 +549,25 @@ pub struct PythonRuntimeIdentity {
     pub platform_tag: String,
 }
 
+/// A module Python's `site` machinery can import during interpreter startup.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartupModuleName {
+    /// The machine-wide startup module.
+    Sitecustomize,
+    /// The user-site startup module.
+    Usercustomize,
+}
+
+impl fmt::Display for StartupModuleName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sitecustomize => formatter.write_str("sitecustomize"),
+            Self::Usercustomize => formatter.write_str("usercustomize"),
+        }
+    }
+}
+
 /// What one interpreter reports about itself and about what is installed
 /// beside it.
 ///
@@ -415,6 +592,64 @@ struct RuntimeProbe {
     distributions: Vec<InstalledDistribution>,
     /// Every `.pth` file in the interpreter's site directories.
     path_hooks: Vec<PathHook>,
+    /// First locked-distribution fault found while checking installed bytes.
+    ///
+    /// A version is a claim about which release was installed, never about what
+    /// the files hold now. `RECORD` is the installed distribution's per-file
+    /// digest, so this detects a file that drifted without its metadata
+    /// changing. The probe bounds this list to one because one refusal is
+    /// enough to stop the identity.
+    integrity_faults: Vec<IntegrityFault>,
+    /// `sitecustomize` and `usercustomize`, where the interpreter finds them.
+    startup_modules: Vec<StartupModule>,
+}
+
+/// How a locked distribution disagrees with its own `RECORD`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "fault")]
+enum IntegrityFault {
+    /// A file listed in `RECORD` is absent.
+    Missing { distribution: String, file: String },
+    /// A file listed in `RECORD` has different bytes.
+    Modified { distribution: String, file: String },
+    /// The distribution has no `RECORD` to compare against.
+    Unrecorded { distribution: String },
+    /// `RECORD` carries a malformed SHA-256 digest.
+    MalformedRecord { distribution: String },
+    /// `RECORD` points outside the distribution's installation root.
+    UnsafeRecord { distribution: String },
+}
+
+/// One interpreter startup module, as the interpreter resolves it.
+///
+/// `site` imports `sitecustomize` and `usercustomize` by name before anything
+/// the worker declares has been read, so either is arbitrary code running
+/// inside the process the bundle identity describes, arriving through a file no
+/// declared input covers. `.pth` files are the same class of hazard and were
+/// already refused; these two reach the interpreter by a different route and
+/// were not.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+struct StartupModule {
+    /// `sitecustomize` or `usercustomize`.
+    module: StartupModuleName,
+    /// Whether this interpreter would actually import it.
+    ///
+    /// `-I` clears `ENABLE_USER_SITE` and `site.main` calls
+    /// `execusercustomize` only under it, so a `usercustomize` resolvable on
+    /// `sys.path` still never runs. Reported rather than assumed: the flag is
+    /// what makes it inert, and a build that stopped passing `-I` would leave
+    /// this true with nothing else changing.
+    executes: bool,
+    /// Canonicalized name of the locked distribution whose `RECORD` claims the
+    /// file, when one does.
+    owner: Option<String>,
+    /// URL-safe unpadded base64 SHA-256, in `RECORD`'s own spelling.
+    ///
+    /// `None` when the module resolves to something that is not a readable
+    /// file, which is reported as unaccounted rather than guessed at.
+    #[serde(deserialize_with = "deserialize_optional_record_digest")]
+    digest: Option<String>,
 }
 
 /// One installed distribution, as `importlib.metadata` reports it.
@@ -510,6 +745,96 @@ pub struct BundleManifest {
     pub inputs: Vec<String>,
     /// Interpreter and platform the bundle is resolved for.
     pub python: PythonRuntimeIdentity,
+    /// Interpreter startup modules this machine carries that no locked
+    /// distribution owns, by `RECORD`-spelled digest.
+    ///
+    /// Added by manifest layout `1.1`, defaulting to empty so a `1.0` manifest
+    /// stays valid and declares nothing.
+    ///
+    /// The escape hatch a distribution-owned check cannot avoid needing. The
+    /// reference Ubuntu environment resolves `/etc/python3.12/sitecustomize.py`
+    /// before every site directory on `sys.path`, so it executes in the worker
+    /// and belongs to no distribution. Refusing it outright would ask an
+    /// operator to edit system Python; ignoring it would leave startup code
+    /// outside the identity. Declaring its digest here does neither: the file
+    /// is named where a reviewer sees it, and changing it changes this
+    /// manifest, which is itself a hashed input.
+    #[serde(default)]
+    pub startup_modules: Vec<DeclaredStartupModule>,
+}
+
+/// One startup module the manifest accounts for, by digest.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct DeclaredStartupModule {
+    /// `sitecustomize` or `usercustomize`.
+    pub module: StartupModuleName,
+    /// URL-safe unpadded base64 SHA-256 of the file, in `RECORD`'s spelling.
+    ///
+    /// The same spelling `RECORD` uses, so a declared digest and an owned one
+    /// are the same kind of value and a reviewer compares them by eye.
+    #[serde(deserialize_with = "deserialize_record_digest")]
+    pub digest: String,
+}
+
+fn deserialize_record_digest<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    validate_record_digest(String::deserialize(deserializer)?)
+}
+
+fn deserialize_optional_record_digest<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)?
+        .map(validate_record_digest)
+        .transpose()
+}
+
+fn validate_record_digest<E>(digest: String) -> Result<String, E>
+where
+    E: serde::de::Error,
+{
+    // Mirrors the three `record_digest_*` values in `RUNTIME_PROBE_SCRIPT`.
+    let valid = digest.len() == RECORD_SHA256_BASE64_LENGTH
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        && digest
+            .bytes()
+            .last()
+            .is_some_and(|byte| RECORD_SHA256_FINAL_BYTES.contains(&byte));
+    if valid {
+        Ok(digest)
+    } else {
+        Err(E::custom(
+            "expected a canonical unpadded URL-safe base64 SHA-256 digest",
+        ))
+    }
+}
+
+/// Manifest layout `1.0`, before startup modules could be declared.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+struct BundleManifestV1_0 {
+    schema_version: String,
+    import_roots: Vec<String>,
+    inputs: Vec<String>,
+    python: PythonRuntimeIdentity,
+}
+
+impl From<BundleManifestV1_0> for BundleManifest {
+    fn from(manifest: BundleManifestV1_0) -> Self {
+        Self {
+            schema_version: manifest.schema_version,
+            import_roots: manifest.import_roots,
+            inputs: manifest.inputs,
+            python: manifest.python,
+            startup_modules: Vec::new(),
+        }
+    }
 }
 
 /// Version-only view read before the manifest is held to a specific shape.
@@ -565,6 +890,7 @@ impl WorkerBundle {
                     abi_tag: String::new(),
                     platform_tag: String::new(),
                 },
+                startup_modules: Vec::new(),
             },
         };
 
@@ -576,7 +902,7 @@ impl WorkerBundle {
                 source,
             }
         })?;
-        if version.schema_version != BUNDLE_MANIFEST_SCHEMA_VERSION {
+        if !SUPPORTED_BUNDLE_MANIFEST_SCHEMA_VERSIONS.contains(&version.schema_version.as_str()) {
             return Err(WorkerBundleError::UnsupportedBundleManifest {
                 path: resolved,
                 declared: version.schema_version,
@@ -585,11 +911,13 @@ impl WorkerBundle {
             .into());
         }
 
-        let manifest: BundleManifest = serde_json::from_slice(&bytes).map_err(|source| {
-            WorkerBundleError::UnreadableBundleManifest {
-                path: resolved.clone(),
-                source,
-            }
+        let manifest = match version.schema_version.as_str() {
+            "1.0" => serde_json::from_slice::<BundleManifestV1_0>(&bytes).map(BundleManifest::from),
+            _ => serde_json::from_slice::<BundleManifest>(&bytes),
+        }
+        .map_err(|source| WorkerBundleError::UnreadableBundleManifest {
+            path: resolved.clone(),
+            source,
         })?;
 
         Ok(Self {
@@ -628,12 +956,25 @@ impl WorkerBundle {
     /// disagrees with the manifest,
     /// [`WorkerBundleError::UnreadableRuntimeIdentity`] when it answers with
     /// something this build cannot read,
+    /// [`WorkerBundleError::UnreadableWorkerLockfile`] when the lock cannot be
+    /// parsed, [`WorkerBundleError::EnvironmentDoesNotMatchLock`] when the
+    /// installed environment disagrees with it,
     /// [`crate::ToolError::MissingTool`] when nothing executable is at
     /// [`WORKER_INTERPRETER_PATH`], and whatever `WorkerBundle::hash` reports
     /// once the runtime agrees.
     pub fn verified_hash(&self) -> Result<WorkerBundleHash, BuildError> {
         let interpreter = self.root.join(WORKER_INTERPRETER_PATH);
-        let probe = probe_runtime(&interpreter)?;
+        // Located first, so a bundle missing both interpreter and lockfile
+        // still reports the interpreter: the tool gate precedes the work, and
+        // `t1_e1_an_absent_interpreter_is_refused_before_the_bundle_is_read`
+        // is what proves the ordering rather than assuming it.
+        let resolved = resolve_interpreter(&interpreter)?;
+        // Then the lock, because the probe is told which distributions to
+        // verify. Rust owns the lockfile grammar, and a probe that re-parsed it
+        // would be a second grammar to keep in step with this one.
+        let pins = self.locked_distributions()?;
+        let names: Vec<&str> = pins.iter().map(|pin| pin.name.as_str()).collect();
+        let probe = probe_runtime(&interpreter, &resolved, &names)?;
         if probe.runtime != self.manifest.python {
             return Err(WorkerBundleError::RuntimeIdentityMismatch {
                 mismatch: Box::new(RuntimeIdentityMismatch {
@@ -645,8 +986,29 @@ impl WorkerBundle {
             }
             .into());
         }
-        self.check_environment_matches_lock(&probe)?;
+        self.check_environment_matches_lock(&pins, &probe)?;
         self.hash()
+    }
+
+    /// Reads and parses `worker/requirements.lock` into its pins.
+    ///
+    /// # Errors
+    ///
+    /// [`WorkerBundleError::UnreadableWorkerLockfile`] when the file is not
+    /// UTF-8, a line is not an artifact-bound pin, a required resolution
+    /// directive is absent, or the governed pin and its provenance marker have
+    /// come apart. Otherwise the containment and size errors
+    /// [`WorkerBundle::hash`] documents for any declared input.
+    fn locked_distributions(&self) -> Result<Vec<LockedDistribution>, BuildError> {
+        let resolved = self.resolve(WORKER_LOCKFILE_PATH)?;
+        let bytes = self.read_bounded(WORKER_LOCKFILE_PATH, &resolved)?;
+        let lockfile = String::from_utf8(bytes).map_err(|_| {
+            unreadable_lockfile(
+                WorkerLockfileLocus::WholeFile,
+                WorkerLockfileErrorReason::InvalidUtf8,
+            )
+        })?;
+        parse_lockfile(&lockfile)
     }
 
     /// Refuses an environment that is not the one `worker/requirements.lock`
@@ -677,11 +1039,8 @@ impl WorkerBundle {
     ///
     /// # Errors
     ///
-    /// [`WorkerBundleError::UnreadableWorkerLockfile`] when a lock line is not
-    /// an artifact-bound pin, a required resolution directive is absent, or
-    /// the governed pin and its provenance marker have come apart, and
-    /// [`WorkerBundleError::EnvironmentDoesNotMatchLock`]
-    /// carrying the [`EnvironmentMismatch`] variant for the first fault found:
+    /// [`WorkerBundleError::EnvironmentDoesNotMatchLock`] carrying the
+    /// [`EnvironmentMismatch`] variant for the first fault found:
     /// [`EnvironmentMismatch::AmbiguousDistribution`] when two installs share
     /// a canonicalized name, then, per locked pin,
     /// [`EnvironmentMismatch::Absent`],
@@ -691,21 +1050,18 @@ impl WorkerBundle {
     /// [`EnvironmentMismatch::FromAnotherRevision`], then
     /// [`EnvironmentMismatch::UnownedPathHook`] or
     /// [`EnvironmentMismatch::UnlockedPathHook`] for a startup hook the lock
-    /// does not account for.
-    fn check_environment_matches_lock(&self, probe: &RuntimeProbe) -> Result<(), BuildError> {
-        let resolved = self.resolve(WORKER_LOCKFILE_PATH)?;
-        let bytes = self.read_bounded(WORKER_LOCKFILE_PATH, &resolved)?;
-        let lockfile = String::from_utf8(bytes).map_err(|_| {
-            unreadable_lockfile(
-                WorkerLockfileLocus::WholeFile,
-                WorkerLockfileErrorReason::InvalidUtf8,
-            )
-        })?;
-
+    /// does not account for, the `RECORD` integrity variants for an incomplete,
+    /// malformed, or modified install, or
+    /// [`EnvironmentMismatch::UnaccountedStartupModule`] for executable startup
+    /// code neither the lock nor manifest declares.
+    fn check_environment_matches_lock(
+        &self,
+        pins: &[LockedDistribution],
+        probe: &RuntimeProbe,
+    ) -> Result<(), BuildError> {
         let installed = installed_by_name(&probe.distributions)?;
-        let pins = parse_lockfile(&lockfile)?;
 
-        for locked in &pins {
+        for locked in pins {
             let Some(found) = installed.get(locked.name.as_str()) else {
                 return Err(mismatch(EnvironmentMismatch::Absent {
                     distribution: locked.name.clone(),
@@ -750,7 +1106,41 @@ impl WorkerBundle {
             }
         }
 
-        check_path_hooks_are_pinned(&pins, &probe.path_hooks)
+        check_path_hooks_are_pinned(pins, &probe.path_hooks)?;
+        check_recorded_files_are_intact(&probe.integrity_faults)?;
+        self.check_startup_modules_are_accounted(&probe.startup_modules)
+    }
+
+    /// Refuses a startup module nothing accounts for.
+    ///
+    /// A module is accounted for when a locked distribution's `RECORD` claims
+    /// the file, or when `worker/bundle-manifest.json` declares its digest. One
+    /// the interpreter would not import is ignored: under `-I` a resolvable
+    /// `usercustomize` never runs, and refusing a file that cannot execute
+    /// would refuse an environment that is not actually affected by it.
+    ///
+    /// # Errors
+    ///
+    /// [`EnvironmentMismatch::UnaccountedStartupModule`], wrapped in
+    /// [`WorkerBundleError::EnvironmentDoesNotMatchLock`].
+    fn check_startup_modules_are_accounted(
+        &self,
+        modules: &[StartupModule],
+    ) -> Result<(), BuildError> {
+        for module in modules {
+            if !module.executes || module.owner.is_some() {
+                continue;
+            }
+            let declared = self.manifest.startup_modules.iter().any(|entry| {
+                entry.module == module.module && Some(&entry.digest) == module.digest.as_ref()
+            });
+            if !declared {
+                return Err(mismatch(EnvironmentMismatch::UnaccountedStartupModule {
+                    module: module.module,
+                }));
+            }
+        }
+        Ok(())
     }
 
     /// Derives the bundle's identity from what the manifest declares.
@@ -1108,10 +1498,10 @@ fn check_path_hooks_are_pinned(
 ///
 /// Refuses, for the same reason, any lock in which the
 /// [`GOVERNED_SOURCE_MARKER`] and the [`GOVERNED_DISTRIBUTION_NAME`] pin have
-/// come apart: a missing, displaced, doubled, or misattached marker. A pin
-/// whose provenance is absent is a pin whose provenance is not compared, so a
-/// lock that has lost the pairing would pass while admitting the index install
-/// the marker exists to refuse.
+/// come apart: a malformed, missing, displaced, doubled, or misattached marker.
+/// A pin whose provenance is absent is a pin whose provenance is not compared,
+/// so a lock that has lost the pairing would pass while admitting the index
+/// install the marker exists to refuse.
 ///
 /// The refusal names the *locus* and not the line: the line number where one
 /// line is at fault, and the file where the invariant is the whole file's to
@@ -1130,6 +1520,17 @@ fn parse_lockfile(lockfile: &str) -> Result<Vec<LockedDistribution>, BuildError>
         let line = line.trim();
 
         if let Some(commit) = line.strip_prefix(GOVERNED_SOURCE_MARKER) {
+            let commit = commit.trim();
+            if commit.len() != GOVERNED_COMMIT_HEX_LENGTH
+                || !commit
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+            {
+                return Err(unreadable_lockfile_line(
+                    line_number,
+                    WorkerLockfileErrorReason::InvalidProvenance,
+                ));
+            }
             // A second marker before any pin leaves two provenance claims and
             // one distribution to attach them to.
             if pending_commit.is_some() {
@@ -1138,7 +1539,7 @@ fn parse_lockfile(lockfile: &str) -> Result<Vec<LockedDistribution>, BuildError>
                     WorkerLockfileErrorReason::InvalidProvenance,
                 ));
             }
-            pending_commit = Some((line_number, commit.trim().to_owned()));
+            pending_commit = Some((line_number, commit.to_owned()));
             continue;
         }
 
@@ -1371,23 +1772,74 @@ fn mismatch(mismatch: EnvironmentMismatch) -> BuildError {
     .into()
 }
 
-/// Asks one interpreter what runtime and platform ABI it actually is.
+/// Refuses a locked distribution that disagrees with its installed `RECORD`.
 ///
-/// Supervised through [`crate::process::run`] like every other child this
-/// build launches, so a hung or chatty interpreter is bounded rather than
-/// waited on. [`VERSION_PROBE_POLICY`] is reused deliberately: this is a
-/// version discovery probe, and giving it a second deadline would be a second
-/// ceiling to keep in step with
-/// `docs/architecture/WALKING-SKELETON.md` §Provisional resource ceilings.
+/// The probe compares each locked distribution's files against its own
+/// `RECORD`; this turns the first fault it reports into the refusal. First
+/// rather than all, because a partial uninstall of `torch` can contain
+/// thousands and a refusal is read in a terminal.
 ///
 /// # Errors
 ///
-/// [`crate::ToolError::MissingTool`] when nothing executable is at
-/// `interpreter`, [`WorkerBundleError::UnreadableRuntimeIdentity`] when it
-/// exits nonzero or answers with something other than the declared record, and
-/// whatever supervision reports for a probe that overruns its deadline or its
-/// output ceiling.
-fn probe_runtime(interpreter: &Path) -> Result<RuntimeProbe, BuildError> {
+/// [`EnvironmentMismatch::UnrecordedDistribution`] when a locked distribution
+/// ships no `RECORD`, [`EnvironmentMismatch::MissingDistributionFile`] when a
+/// recorded file is absent, and
+/// [`EnvironmentMismatch::ModifiedDistributionFile`] when one is present with
+/// other bytes. [`EnvironmentMismatch::MalformedDistributionRecord`] when the
+/// metadata states no valid SHA-256, and
+/// [`EnvironmentMismatch::UnsafeDistributionRecord`] when a recorded path
+/// escapes the interpreter environment or a site-package link escapes its
+/// distribution root. All wrapped in
+/// [`WorkerBundleError::EnvironmentDoesNotMatchLock`].
+fn check_recorded_files_are_intact(faults: &[IntegrityFault]) -> Result<(), BuildError> {
+    let Some(fault) = faults.first() else {
+        return Ok(());
+    };
+    Err(mismatch(match fault {
+        IntegrityFault::Missing { distribution, file } => {
+            EnvironmentMismatch::MissingDistributionFile {
+                distribution: distribution.clone(),
+                file: file.clone(),
+            }
+        }
+        IntegrityFault::Modified { distribution, file } => {
+            EnvironmentMismatch::ModifiedDistributionFile {
+                distribution: distribution.clone(),
+                file: file.clone(),
+            }
+        }
+        IntegrityFault::Unrecorded { distribution } => {
+            EnvironmentMismatch::UnrecordedDistribution {
+                distribution: distribution.clone(),
+            }
+        }
+        IntegrityFault::MalformedRecord { distribution } => {
+            EnvironmentMismatch::MalformedDistributionRecord {
+                distribution: distribution.clone(),
+            }
+        }
+        IntegrityFault::UnsafeRecord { distribution } => {
+            EnvironmentMismatch::UnsafeDistributionRecord {
+                distribution: distribution.clone(),
+            }
+        }
+    }))
+}
+
+/// Locates the worker interpreter without running it.
+///
+/// Separate from [`probe_runtime`] to keep an ordering the suite pins: the
+/// probe is told which distributions to verify, so the lockfile is read before
+/// it runs, and a bundle with neither interpreter nor lockfile would otherwise
+/// report the lockfile first.
+/// `t1_e1_an_absent_interpreter_is_refused_before_the_bundle_is_read` asserts
+/// the tool gate still comes first.
+///
+/// # Errors
+///
+/// [`crate::ToolError::MissingTool`] naming [`INTERPRETER_TOOL`] when no
+/// executable sits at `interpreter`.
+fn resolve_interpreter(interpreter: &Path) -> Result<PathBuf, BuildError> {
     // Deliberately not `tools::resolve_executable`, which canonicalizes. A
     // virtualenv's `bin/python` is a symlink chain to the base interpreter and
     // `worker/.venv` is itself a link on the reference machine, so resolving
@@ -1395,23 +1847,50 @@ fn probe_runtime(interpreter: &Path) -> Result<RuntimeProbe, BuildError> {
     // `sys.prefix` is `/usr` and which has none of the locked distributions.
     // Every answer then described an environment nobody restored, and the
     // check that exists to read the restored one could not reach it.
-    let resolved =
-        tools::executable_in_place(interpreter).ok_or_else(|| crate::ToolError::MissingTool {
+    tools::executable_in_place(interpreter).ok_or_else(|| {
+        crate::ToolError::MissingTool {
             tool: INTERPRETER_TOOL.to_owned(),
             requested: interpreter.to_path_buf(),
-        })?;
+        }
+        .into()
+    })
+}
 
-    let mut command = Command::new(&resolved);
+/// Asks one interpreter about its runtime ABI and installed environment.
+///
+/// Supervised through [`crate::process::run`] like every other child this build
+/// launches, so a hung or chatty interpreter is bounded rather than waited on.
+/// [`WORKER_ENVIRONMENT_PROBE_POLICY`] has its own ceiling because this probe
+/// reads every hashed file in the locked environment; version-only inspection
+/// does not.
+///
+/// # Errors
+///
+/// [`WorkerBundleError::UnreadableRuntimeIdentity`] when the interpreter exits
+/// nonzero or answers with something other than the declared record, and the
+/// process-supervision error when the probe exceeds its deadline or output
+/// ceiling.
+fn probe_runtime(
+    interpreter: &Path,
+    resolved: &Path,
+    locked: &[&str],
+) -> Result<RuntimeProbe, BuildError> {
+    let mut command = Command::new(resolved);
     command.args(["-I", "-c", RUNTIME_PROBE_SCRIPT]);
-    let invocation = ToolInvocation::new(INTERPRETER_TOOL, ToolOperation::VersionProbe, &resolved);
+    // `-c` puts `-c` itself in `sys.argv[0]`, so the names start at `[1:]`,
+    // which is where the script reads them.
+    command.args(locked);
+    let invocation = ToolInvocation::new(INTERPRETER_TOOL, ToolOperation::VersionProbe, resolved);
     let output =
-        process::run(invocation, command, VERSION_PROBE_POLICY).map_err(|error| match error {
-            CommandRunError::Start(source) => BuildError::from(crate::ToolError::InspectTool {
-                tool: INTERPRETER_TOOL.to_owned(),
-                executable: resolved.clone(),
-                source,
-            }),
-            CommandRunError::Supervision(error) => error.into(),
+        process::run(invocation, command, WORKER_ENVIRONMENT_PROBE_POLICY).map_err(|error| {
+            match error {
+                CommandRunError::Start(source) => BuildError::from(crate::ToolError::InspectTool {
+                    tool: INTERPRETER_TOOL.to_owned(),
+                    executable: resolved.to_path_buf(),
+                    source,
+                }),
+                CommandRunError::Supervision(error) => error.into(),
+            }
         })?;
 
     if !output.status.success() {
@@ -1430,9 +1909,19 @@ fn probe_runtime(interpreter: &Path) -> Result<RuntimeProbe, BuildError> {
 
 /// Builds the refusal for an interpreter whose answer this build cannot read.
 ///
-/// The detail is collapsed to one line because it can carry a Python traceback,
-/// and a refusal is read in a terminal beside other refusals.
+/// The detail is made terminal-safe and collapsed to one line because it can
+/// carry a Python traceback or other interpreter-controlled bytes.
 fn unreadable_runtime(interpreter: &Path, detail: &str) -> BuildError {
+    let detail: String = detail
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
     WorkerBundleError::UnreadableRuntimeIdentity {
         interpreter: interpreter.to_path_buf(),
         detail: detail.split_whitespace().collect::<Vec<_>>().join(" "),
@@ -1876,6 +2365,72 @@ mod tests {
             ),
             "an unknown manifest field must be refused"
         );
+
+        with_unknown_field
+            .as_object_mut()
+            .expect("the manifest is an object")
+            .remove("extra");
+        with_unknown_field["schema_version"] = serde_json::Value::String("1.0".to_owned());
+        fs::write(
+            &manifest,
+            serde_json::to_vec_pretty(&with_unknown_field).expect("the manifest serializes"),
+        )
+        .expect("the manifest is writable");
+        assert!(
+            matches!(
+                WorkerBundle::load(root.path()),
+                Err(BuildError::WorkerBundle(
+                    WorkerBundleError::UnreadableBundleManifest { .. }
+                ))
+            ),
+            "a 1.0 manifest must not accept the 1.1 startup-module field"
+        );
+
+        with_unknown_field
+            .as_object_mut()
+            .expect("the manifest is an object")
+            .remove("startup_modules");
+        fs::write(
+            &manifest,
+            serde_json::to_vec_pretty(&with_unknown_field).expect("the manifest serializes"),
+        )
+        .expect("the manifest is writable");
+        let legacy =
+            WorkerBundle::load(root.path()).expect("a strict 1.0 manifest remains readable");
+        assert!(
+            legacy.manifest().startup_modules.is_empty(),
+            "layout 1.0 declares no startup modules"
+        );
+
+        for startup_module in [
+            serde_json::json!({
+                "module": "arbitrary_startup_code",
+                "digest": "Q9gRJdkjdrGmnVOnESagQcyaGNgIDpLeoKKuI74Tix4",
+            }),
+            serde_json::json!({
+                "module": "sitecustomize",
+                "digest": "Q9gRJdkjdrGmnVOnESagQcyaGNgIDpLeoKKuI74Tix5",
+            }),
+        ] {
+            with_unknown_field["schema_version"] =
+                serde_json::Value::String(BUNDLE_MANIFEST_SCHEMA_VERSION.to_owned());
+            with_unknown_field["startup_modules"] = serde_json::json!([startup_module]);
+            fs::write(
+                &manifest,
+                serde_json::to_vec_pretty(&with_unknown_field).expect("the manifest serializes"),
+            )
+            .expect("the manifest is writable");
+
+            assert!(
+                matches!(
+                    WorkerBundle::load(root.path()),
+                    Err(BuildError::WorkerBundle(
+                        WorkerBundleError::UnreadableBundleManifest { .. }
+                    ))
+                ),
+                "a malformed startup-module declaration must be refused while parsing"
+            );
+        }
     }
 
     #[test]
@@ -2070,10 +2625,23 @@ mod tests {
         distributions: Vec<serde_json::Value>,
         path_hooks: Vec<serde_json::Value>,
     ) -> String {
+        answer_with(bundle, distributions, path_hooks, Vec::new(), Vec::new())
+    }
+
+    /// A probe answer with every reported list under the caller's control.
+    fn answer_with(
+        bundle: &WorkerBundle,
+        distributions: Vec<serde_json::Value>,
+        path_hooks: Vec<serde_json::Value>,
+        integrity_faults: Vec<serde_json::Value>,
+        startup_modules: Vec<serde_json::Value>,
+    ) -> String {
         serde_json::to_string(&serde_json::json!({
             "runtime": bundle.manifest().python,
             "distributions": distributions,
             "path_hooks": path_hooks,
+            "integrity_faults": integrity_faults,
+            "startup_modules": startup_modules,
         }))
         .expect("a probe answer serializes")
     }
@@ -2136,6 +2704,8 @@ mod tests {
             "runtime": resolved_runtime,
             "distributions": reported(matching_distributions(&root)),
             "path_hooks": [],
+            "integrity_faults": [],
+            "startup_modules": [],
         }))
         .expect("a probe answer serializes");
 
@@ -2200,6 +2770,8 @@ mod tests {
                 "runtime": observed,
                 "distributions": reported(matching_distributions(&root)),
                 "path_hooks": [],
+                "integrity_faults": [],
+                "startup_modules": [],
             }))
             .expect("a probe answer serializes");
             install_interpreter(&root, &probe_answer);
@@ -2264,6 +2836,67 @@ mod tests {
                 "the `{name}` answer produced the wrong error: {error:?}"
             );
         }
+
+        for startup_module in [
+            serde_json::json!({
+                "module": "arbitrary_startup_code",
+                "executes": true,
+                "owner": null,
+                "digest": "Q9gRJdkjdrGmnVOnESagQcyaGNgIDpLeoKKuI74Tix4",
+            }),
+            serde_json::json!({
+                "module": "sitecustomize",
+                "executes": true,
+                "owner": null,
+                "digest": "Q9gRJdkjdrGmnVOnESagQcyaGNgIDpLeoKKuI74Tix5",
+            }),
+        ] {
+            install_interpreter(
+                &root,
+                &answer_with(
+                    &bundle,
+                    reported(matching_distributions(&root)),
+                    Vec::new(),
+                    Vec::new(),
+                    vec![startup_module],
+                ),
+            );
+
+            assert!(
+                matches!(
+                    bundle.verified_hash(),
+                    Err(BuildError::WorkerBundle(
+                        WorkerBundleError::UnreadableRuntimeIdentity { .. }
+                    ))
+                ),
+                "a malformed startup-module report must be refused while parsing"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e1_runtime_probe_diagnostics_cannot_emit_terminal_controls() {
+        let root = bundle_copy();
+        let bundle = bundle(&root);
+        install_executable(
+            &root.path().join(WORKER_INTERPRETER_PATH),
+            "#!/bin/sh\nprintf '\\033[31mboom\\033[0m\\nsecond line' >&2\nexit 1\n".to_owned(),
+        );
+
+        let error = bundle
+            .verified_hash()
+            .expect_err("a failed runtime probe must not hash");
+        let BuildError::WorkerBundle(WorkerBundleError::UnreadableRuntimeIdentity {
+            detail, ..
+        }) = error
+        else {
+            panic!("a failed runtime probe produced the wrong error: {error:?}");
+        };
+
+        assert!(
+            !detail.chars().any(char::is_control),
+            "probe diagnostics must be safe to print in a terminal: {detail:?}"
+        );
     }
 
     /// The probe script is Python this interpreter compiles.
@@ -2410,6 +3043,12 @@ mod tests {
                 EnvironmentMismatch::UnownedPathHook { .. } => "unowned-path-hook",
                 EnvironmentMismatch::UnlockedPathHook { .. } => "unlocked-path-hook",
                 EnvironmentMismatch::AmbiguousDistribution { .. } => "ambiguous",
+                EnvironmentMismatch::ModifiedDistributionFile { .. } => "modified-file",
+                EnvironmentMismatch::MissingDistributionFile { .. } => "missing-file",
+                EnvironmentMismatch::UnrecordedDistribution { .. } => "unrecorded",
+                EnvironmentMismatch::MalformedDistributionRecord { .. } => "malformed-record",
+                EnvironmentMismatch::UnsafeDistributionRecord { .. } => "unsafe-record",
+                EnvironmentMismatch::UnaccountedStartupModule { .. } => "startup-module",
             };
             assert_eq!(named, expected, "wrong fault reported: {mismatch}");
 
@@ -2501,6 +3140,453 @@ mod tests {
         );
     }
 
+    /// Writes a `packaging` stand-in the probe's imports are satisfied by.
+    ///
+    /// The probe needs `packaging` for the ABI tag and for PEP 503
+    /// canonicalization. Installing the real one needs an index, and this test
+    /// is about `RECORD` verification rather than about tag derivation, so the
+    /// two functions it calls are stubbed. Offline, and it keeps the assertions
+    /// below independent of whichever wheel tags this machine reports.
+    fn install_packaging_stub(site_packages: &Path) {
+        let packaging = site_packages.join("packaging");
+        fs::create_dir_all(&packaging).expect("the stub package directory is creatable");
+        fs::write(packaging.join("__init__.py"), "").expect("the stub is writable");
+        fs::write(
+            packaging.join("tags.py"),
+            "class _Tag:\n    abi = 'cp312'\n\
+             def sys_tags():\n    return [_Tag()]\n\
+             def platform_tags():\n    return ['manylinux_2_39_x86_64']\n",
+        )
+        .expect("the tag stub is writable");
+        fs::write(
+            packaging.join("utils.py"),
+            "import re\n\
+             def canonicalize_name(name):\n\
+             \x20   return re.sub(r'[-_.]+', '-', name).lower()\n",
+        )
+        .expect("the canonicalization stub is writable");
+    }
+
+    #[test]
+    fn t4_e1_the_probe_reads_record_digests_from_a_real_interpreter() {
+        // Every other test here answers the probe with a shell script, which is
+        // right for them: they are about what this build does with an answer.
+        // It leaves the script itself -- the `RECORD` parse that decides
+        // whether an installed file still matches its `RECORD` -- run by
+        // nothing. This executes it against a real interpreter and a real
+        // `.dist-info`, so a mistake in the Python is a failure here rather
+        // than a check that silently reports no faults.
+        let workspace = TempDir::new().expect("a workspace is creatable");
+        let venv = workspace.path().join("venv");
+        let built = Command::new("python3")
+            .args(["-m", "venv", "--without-pip"])
+            .arg(&venv)
+            .status()
+            .expect("`python3` is on PATH; CI runs the worker suite with it");
+        assert!(
+            built.success(),
+            "`python3 -m venv` must create the interpreter this T4 test exercises"
+        );
+        let interpreter = venv.join("bin/python");
+        let site_packages = Command::new(&interpreter)
+            .args([
+                "-I",
+                "-c",
+                "import sysconfig; print(sysconfig.get_path('purelib'))",
+            ])
+            .output()
+            .expect("the created interpreter reports its site-packages path");
+        assert!(
+            site_packages.status.success(),
+            "the created interpreter must report its site-packages path"
+        );
+        let site_packages = PathBuf::from(
+            String::from_utf8(site_packages.stdout)
+                .expect("the site-packages path is UTF-8")
+                .trim(),
+        );
+        install_packaging_stub(&site_packages);
+
+        let module = site_packages.join("demo_pkg/__init__.py");
+        fs::create_dir_all(module.parent().expect("the module has a parent"))
+            .expect("the package directory is creatable");
+        let hook = site_packages.join("demo.pth");
+        let script = venv.join("bin/demo-script");
+        let module_bytes = b"VALUE = 1\n";
+        let hook_bytes = b"import demo_pkg\n";
+        let script_bytes = b"VALUE = 3\n";
+        let module_digest = "4T34xEr13qHkEkA5ELmcxaSPLMv2imazN01quc75_GU";
+        let hook_digest = "V6UDDbHUKAthplRMpaGJtrDMMFtHA9uoKffI4YAhCrE";
+        let script_digest = "tyhmdtRwizcrGqiSJFW5BwyoPVZRIK3RFs6206EnIxQ";
+        fs::write(&module, module_bytes).expect("the module is writable");
+        fs::write(&hook, hook_bytes).expect("the hook is writable");
+        fs::write(&script, script_bytes).expect("the environment script is writable");
+
+        let dist_info = site_packages.join("demo_pkg-1.0.dist-info");
+        fs::create_dir_all(&dist_info).expect("the dist-info directory is creatable");
+        fs::write(
+            dist_info.join("METADATA"),
+            "Metadata-Version: 2.1\nName: demo-pkg\nVersion: 1.0\n",
+        )
+        .expect("the metadata is writable");
+        let write_record = |module_digest: &str| {
+            fs::write(
+                dist_info.join("RECORD"),
+                format!(
+                    "demo_pkg/__init__.py,sha256={module_digest},{}\n\
+                     demo.pth,sha256={},{}\n\
+                     ../../../bin/demo-script,sha256={},{}\n\
+                     demo_pkg-1.0.dist-info/RECORD,,\n",
+                    module_bytes.len(),
+                    hook_digest,
+                    hook_bytes.len(),
+                    script_digest,
+                    script_bytes.len(),
+                ),
+            )
+            .expect("the record is writable");
+        };
+        write_record(module_digest);
+
+        let probe = |expected_faults: &[(&str, &str)], why: &str| {
+            let output = Command::new(&interpreter)
+                .args(["-I", "-c", RUNTIME_PROBE_SCRIPT, "demo-pkg"])
+                .output()
+                .expect("the probe runs");
+            assert!(
+                output.status.success(),
+                "the probe failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let answer: serde_json::Value =
+                serde_json::from_slice(&output.stdout).expect("the probe answers with JSON");
+            let faults = answer["integrity_faults"]
+                .as_array()
+                .expect("the answer carries a fault list");
+            let reported: Vec<(String, String)> = faults
+                .iter()
+                .map(|fault| {
+                    (
+                        fault["file"].as_str().unwrap_or_default().to_owned(),
+                        fault["fault"].as_str().unwrap_or_default().to_owned(),
+                    )
+                })
+                .collect();
+            let expected: Vec<(String, String)> = expected_faults
+                .iter()
+                .map(|(file, fault)| ((*file).to_owned(), (*fault).to_owned()))
+                .collect();
+            assert_eq!(reported, expected, "{why}");
+            answer
+        };
+
+        probe(&[], "an untouched install matches its own RECORD");
+
+        write_record("Q9gRJdkjdrGmnVOnESagQcyaGNgIDpLeoKKuI74Tix5");
+        probe(
+            &[("", "malformed_record")],
+            "a malformed recorded digest is metadata corruption, not content drift",
+        );
+        write_record(module_digest);
+
+        fs::write(&module, b"VALUE = 99\n").expect("the module is rewritable");
+        fs::write(&hook, b"import demo_pkg, os\n").expect("the hook is rewritable");
+        probe(
+            &[("demo_pkg/__init__.py", "modified")],
+            "the probe bounds its report to the first integrity fault",
+        );
+        fs::write(&module, module_bytes).expect("the module is restorable");
+        fs::write(&hook, hook_bytes).expect("the hook is restorable");
+
+        fs::write(
+            dist_info.join("RECORD"),
+            format!("demo_pkg/\u{1b}[31m.py,sha256={module_digest},10\n"),
+        )
+        .expect("the unsafe record is writable");
+        probe(
+            &[("", "unsafe_record")],
+            "a control-bearing RECORD path is refused without echoing it",
+        );
+        write_record(module_digest);
+
+        // `usercustomize` is the half `-I` settles: `site.main` calls
+        // `execusercustomize` only under `ENABLE_USER_SITE`, which `-I` clears.
+        fs::write(site_packages.join("usercustomize.py"), "VALUE = 2\n")
+            .expect("the startup module is writable");
+        let answer = probe(
+            &[],
+            "adding an inert startup module reports no integrity fault",
+        );
+        let modules = answer["startup_modules"]
+            .as_array()
+            .expect("the answer carries a startup-module list");
+        for module in modules {
+            if module["module"] == "usercustomize" {
+                assert_eq!(
+                    module["executes"], false,
+                    "`-I` must leave `usercustomize` inert"
+                );
+            }
+            // Whatever this machine resolves `sitecustomize` to -- Debian and
+            // Ubuntu ship one in the standard library directory, which precedes
+            // every site directory -- it runs, and nothing suppresses it.
+            if module["module"] == "sitecustomize" {
+                assert_eq!(
+                    module["executes"], true,
+                    "nothing this build passes suppresses `sitecustomize`"
+                );
+            }
+        }
+
+        // A `.pth` whose name and owner both stay correct while its lines
+        // change: the case the hook rule cannot see.
+        fs::write(&hook, b"import demo_pkg, os\n").expect("the hook is rewritable");
+        probe(
+            &[("demo.pth", "modified")],
+            "an edited startup hook is a modified recorded file",
+        );
+        fs::write(&hook, hook_bytes).expect("the hook is restorable");
+
+        fs::write(&module, b"VALUE = 99\n").expect("the module is rewritable");
+        probe(
+            &[("demo_pkg/__init__.py", "modified")],
+            "an edited module is reported against its recorded digest",
+        );
+
+        fs::remove_file(&module).expect("the module is removable");
+        probe(
+            &[("demo_pkg/__init__.py", "missing")],
+            "a recorded file that is gone is missing rather than modified",
+        );
+
+        std::os::unix::fs::symlink(&script, site_packages.join("demo_pkg/escaped.py"))
+            .expect("the escaping module link is creatable");
+        fs::write(
+            dist_info.join("RECORD"),
+            format!("demo_pkg/escaped.py,sha256={script_digest},10\n"),
+        )
+        .expect("the linked record is writable");
+        probe(
+            &[("", "unsafe_record")],
+            "a module symlink escaping its distribution root is refused",
+        );
+
+        fs::write(
+            dist_info.join("RECORD"),
+            format!("/tmp/outside-demo-package.py,sha256={module_digest},10\n"),
+        )
+        .expect("the unsafe record is writable");
+        probe(
+            &[("", "unsafe_record")],
+            "an absolute RECORD path is refused before it is read",
+        );
+
+        fs::remove_file(dist_info.join("RECORD")).expect("the record is removable");
+        probe(
+            &[("", "unrecorded")],
+            "a distribution with no RECORD states no digests to check",
+        );
+    }
+
+    #[test]
+    fn t1_e1_a_locked_distribution_whose_bytes_moved_is_refused() {
+        // The gap the version comparison leaves open, and the one a lockfile
+        // cannot close by itself. A pin proves which release was resolved and
+        // says nothing about what the files hold now, so a module edited in
+        // place -- or a `.pth` belonging to a locked distribution, whose name
+        // and owner both stay correct while its lines change -- left every
+        // version, every provenance record, and every declared input
+        // byte-identical while the code the worker imports changed.
+        let root = bundle_copy();
+        let bundle = bundle(&root);
+        let locked = governed_distribution(&root).0;
+
+        // Read off `EnvironmentMismatch`: each fault the probe can report, and
+        // the refusal it must become. A `match` rather than a list so a new
+        // fault kind is a compile error here rather than an untested one.
+        let cases = [
+            ("modified", Some("torch/_C.py"), "does not match the digest"),
+            // The `.pth` case: content the name and owner cannot see.
+            ("modified", Some("torch.pth"), "does not match the digest"),
+            ("missing", Some("torch/__init__.py"), "is absent"),
+            ("unrecorded", None, "without a `RECORD`"),
+            ("malformed_record", None, "malformed SHA-256"),
+            ("unsafe_record", None, "unsafe file path"),
+        ];
+
+        for (fault, file, expected) in cases {
+            let mut reported_fault = serde_json::json!({
+                "distribution": locked,
+                "fault": fault,
+            });
+            if let Some(file) = file {
+                reported_fault["file"] = serde_json::Value::String(file.to_owned());
+            }
+            install_interpreter(
+                &root,
+                &answer_with(
+                    &bundle,
+                    reported(matching_distributions(&root)),
+                    Vec::new(),
+                    vec![reported_fault],
+                    Vec::new(),
+                ),
+            );
+
+            let error = bundle
+                .verified_hash()
+                .expect_err("a distribution whose bytes moved must not hash");
+
+            let BuildError::WorkerBundle(WorkerBundleError::EnvironmentDoesNotMatchLock {
+                mismatch,
+            }) = &error
+            else {
+                panic!("an integrity fault produced the wrong error: {error:?}");
+            };
+            let message = mismatch.to_string();
+            assert!(
+                message.contains(expected),
+                "a `{fault:?}` fault must name its own remedy, got: {message}"
+            );
+            assert!(
+                message.contains(&locked),
+                "a refusal must name the distribution to reinstall, got: {message}"
+            );
+        }
+
+        for malformed in [
+            serde_json::json!({
+                "distribution": locked,
+                "fault": "modified",
+            }),
+            serde_json::json!({
+                "distribution": locked,
+                "file": "invented.py",
+                "fault": "unrecorded",
+            }),
+        ] {
+            install_interpreter(
+                &root,
+                &answer_with(
+                    &bundle,
+                    reported(matching_distributions(&root)),
+                    Vec::new(),
+                    vec![malformed],
+                    Vec::new(),
+                ),
+            );
+            assert!(
+                matches!(
+                    bundle.verified_hash(),
+                    Err(BuildError::WorkerBundle(
+                        WorkerBundleError::UnreadableRuntimeIdentity { .. }
+                    ))
+                ),
+                "an impossible integrity-fault shape must be refused at the probe boundary"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e1_an_unaccounted_startup_module_is_refused_and_an_inert_one_is_not() {
+        // `.pth` files were refused because they run at interpreter startup.
+        // `site` imports `sitecustomize` and `usercustomize` by name at the
+        // same moment and through a different route, so the hook rule never saw
+        // them: a file named neither by the lock nor by any `RECORD` executed
+        // in the process whose identity is supposed to describe it.
+        //
+        // `executes` is what separates the two. `-I` clears `ENABLE_USER_SITE`
+        // and `site.main` calls `execusercustomize` only under it, so a
+        // `usercustomize` resolvable on `sys.path` never runs -- and refusing a
+        // file that cannot execute would refuse an environment it does not
+        // affect.
+        let root = bundle_copy();
+        let bundle = bundle(&root);
+        let digest = "4T34xEr13qHkEkA5ELmcxaSPLMv2imazN01quc75_GU";
+
+        let module = |name: &str, executes: bool, owner: Option<&str>| {
+            serde_json::json!({
+                "module": name,
+                "executes": executes,
+                "owner": owner,
+                "digest": digest,
+            })
+        };
+        let install = |modules: Vec<serde_json::Value>| {
+            install_interpreter(
+                &root,
+                &answer_with(
+                    &bundle,
+                    reported(matching_distributions(&root)),
+                    Vec::new(),
+                    Vec::new(),
+                    modules,
+                ),
+            );
+        };
+
+        install(vec![module("sitecustomize", true, None)]);
+        let error = bundle
+            .verified_hash()
+            .expect_err("an unaccounted startup module must not hash");
+        let BuildError::WorkerBundle(WorkerBundleError::EnvironmentDoesNotMatchLock { mismatch }) =
+            &error
+        else {
+            panic!("an unaccounted startup module produced the wrong error: {error:?}");
+        };
+        assert!(
+            mismatch.to_string().contains("sitecustomize"),
+            "the refusal must name the module: {mismatch}"
+        );
+
+        // Resolvable but inert, which `-I` is what guarantees.
+        install(vec![module("usercustomize", false, None)]);
+        assert_environment_hashes(
+            &bundle,
+            "a startup module that cannot execute must not block the hash",
+        );
+
+        // Owned by a locked distribution, so the lock already accounts for it.
+        let locked = governed_distribution(&root).0;
+        install(vec![module("sitecustomize", true, Some(&locked))]);
+        assert_environment_hashes(
+            &bundle,
+            "a startup module a locked distribution owns is accounted for",
+        );
+
+        let mut manifest = bundle.manifest().clone();
+        manifest.startup_modules = vec![DeclaredStartupModule {
+            module: StartupModuleName::Sitecustomize,
+            digest: digest.to_owned(),
+        }];
+        write_manifest(&root, &manifest);
+        let declared_bundle =
+            WorkerBundle::load(root.path()).expect("the amended bundle manifest loads");
+        install_interpreter(
+            &root,
+            &answer_with(
+                &declared_bundle,
+                reported(matching_distributions(&root)),
+                Vec::new(),
+                Vec::new(),
+                vec![module("sitecustomize", true, None)],
+            ),
+        );
+        assert_environment_hashes(
+            &declared_bundle,
+            "a startup module the manifest declares by digest is accounted for",
+        );
+    }
+
+    /// Asserts `verified_hash` agrees with `hash` under the installed answer.
+    fn assert_environment_hashes(bundle: &WorkerBundle, why: &str) {
+        assert_eq!(
+            bundle.verified_hash().expect(why),
+            bundle.hash().expect("a complete bundle hashes"),
+            "{why}"
+        );
+    }
+
     #[test]
     fn t1_e1_a_startup_hook_the_lockfile_does_not_account_for_is_refused() {
         // The gap the distribution comparison alone leaves open. A `.pth` runs
@@ -2555,6 +3641,25 @@ mod tests {
             };
             assert_eq!(named, expected, "wrong fault reported: {mismatch}");
         }
+
+        install_interpreter(
+            &root,
+            &answer_with_path_hooks(
+                &bundle,
+                reported(matching_distributions(&root)),
+                vec![serde_json::json!({
+                    "file": "\u{1b}[31mhook.pth",
+                    "owner": "\u{1b}[31mowner",
+                })],
+            ),
+        );
+        let error = bundle
+            .verified_hash()
+            .expect_err("a control-bearing hook report must not hash");
+        assert!(
+            !error.to_string().chars().any(char::is_control),
+            "a hook refusal must be safe to print in a terminal: {error}"
+        );
 
         // A hook owned by a locked distribution still hashes, which is what
         // makes this a rule rather than a ban: `setuptools` is pinned and ships
@@ -2769,11 +3874,15 @@ mod tests {
             .to_owned();
         let spoil = |replacement: &str| original.replacen(&marker, replacement, 1);
 
-        let partings: [(&str, String); 4] = [
+        let partings: [(&str, String); 5] = [
             ("deleted", original.replacen(&format!("{marker}\n"), "", 1)),
             ("separated from its pin", spoil(&format!("{marker}\n"))),
             ("doubled", spoil(&format!("{marker}\n{marker}"))),
             ("naming no commit", spoil(GOVERNED_SOURCE_MARKER.trim_end())),
+            (
+                "naming a malformed commit",
+                spoil(&format!("{GOVERNED_SOURCE_MARKER}main")),
+            ),
             // A marker moved onto another distribution is covered by the
             // `doubled` and `separated` cases together: the claim either
             // reaches a pin that may not carry one, or reaches none.

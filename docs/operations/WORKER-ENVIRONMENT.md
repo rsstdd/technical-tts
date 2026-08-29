@@ -179,6 +179,61 @@ a hook at all. The rule is therefore what keeps the shared virtualenv defensible
 ends it — an extra install remains fine, and an extra install that reaches into interpreter startup
 does not.
 
+### Nor are their bytes, nor the modules `site` imports by name
+
+A `.pth` was the first thing found that is not inert; it was not the last, and two more reach the
+same process by other routes.
+
+**A pin is not a claim about content.** A version says which release was resolved and nothing about
+what the files hold now, so a module edited in place — or a `.pth` belonging to a *locked*
+distribution, whose file name and owning distribution both stay correct while its lines change —
+left every version, every provenance record, and every declared input byte-identical. The probe
+therefore verifies each SHA-256-bearing `RECORD` entry beneath the distribution's site-package
+root, and `check_recorded_files_are_intact` in
+`crates/study-tts-runtime/src/worker_bundle.rs` turns the first fault into the refusal. Generated
+wheel scripts elsewhere in the same interpreter environment are not imported by
+`python -m study_tts_worker` and are not read. A non-printable or absolute path, a path escaping the
+interpreter environment, or a site-package symlink escaping its distribution root is refused
+before any read.
+Only locked distributions are inspected: an unlocked one is tolerated precisely because the
+worker does not load it, and the one part of it that is not inert is already refused by name.
+
+| The fault | The refusal |
+|---|---|
+| a recorded file holds other bytes | `EnvironmentMismatch::ModifiedDistributionFile` |
+| a recorded file is absent | `EnvironmentMismatch::MissingDistributionFile` |
+| the distribution ships no `RECORD` | `EnvironmentMismatch::UnrecordedDistribution` |
+| a recorded digest is not canonical URL-safe base64 SHA-256 | `EnvironmentMismatch::MalformedDistributionRecord` |
+| a recorded path is non-printable or escapes its permitted root | `EnvironmentMismatch::UnsafeDistributionRecord` |
+
+**`sitecustomize` and `usercustomize` are not `.pth` files.** `site` imports both by name as the
+interpreter starts, before anything the worker declares has been read, so the hook rule never saw
+them. `-I` settles one of the two and not the other: it clears `ENABLE_USER_SITE`, and `site.main`
+calls `execusercustomize` only under it, so a `usercustomize` resolvable on `sys.path` never runs.
+Nothing suppresses `sitecustomize`. The probe therefore reports whether each one *executes* rather
+than assuming it, and one that executes must be accounted for — owned by a locked distribution's
+`RECORD`, or declared in `worker/bundle-manifest.json`. Otherwise
+`EnvironmentMismatch::UnaccountedStartupModule`.
+
+**Declaring one, when the machine leaves no choice.** The reference Ubuntu environment resolves
+`/etc/python3.12/sitecustomize.py` before every site directory on `sys.path`. It executes in the
+worker's interpreter and belongs to no distribution. Refusing it outright would ask an operator
+to edit system Python; ignoring it would leave startup code outside the identity. So manifest
+layout `1.1` adds `startup_modules`, and the operator records what the machine carries:
+
+```json
+"startup_modules": [
+  { "module": "sitecustomize", "digest": "<RECORD-spelled SHA-256 of the file>" }
+]
+```
+
+Read the digest from the refusal's own subject with
+`python3 -c "import hashlib,base64,sys;print(base64.urlsafe_b64encode(hashlib.sha256(open(sys.argv[1],'rb').read()).digest()).rstrip(b'=').decode())" /etc/python3.12/sitecustomize.py`.
+The field is optional and defaults to empty, so a `1.0` manifest stays valid and declares nothing —
+the same absent-is-the-default extension the lesson schema made at its own `1.1`. Declaring it puts
+the file where a reviewer sees it, and changing it changes the manifest, which is itself a hashed
+bundle input.
+
 A valid lock also states the two package indexes and its wheel/source policy exactly once, as
 `REQUIRED_LOCK_DIRECTIVES` in `crates/study-tts-runtime/src/worker_bundle.rs` requires. Every
 index-supplied pin carries exactly one SHA-256 artifact hash. The governed `chatterbox-tts` pin is

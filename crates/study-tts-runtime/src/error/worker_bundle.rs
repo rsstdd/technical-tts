@@ -5,7 +5,7 @@ use std::{fmt, path::PathBuf};
 use thiserror::Error;
 
 use super::{RemedyAdvice, RemedyOwner};
-use crate::worker_bundle::PythonRuntimeIdentity;
+use crate::worker_bundle::{PythonRuntimeIdentity, StartupModuleName};
 
 /// Why a worker bundle could not be identified.
 ///
@@ -135,23 +135,23 @@ pub enum WorkerBundleError {
         mismatch: Box<RuntimeIdentityMismatch>,
     },
 
-    /// The configured interpreter answered with something this build cannot
-    /// read as a runtime identity.
+    /// The configured interpreter answered with a runtime and environment
+    /// report this build cannot read.
     ///
     /// Separate from a mismatch because the remedies differ: a mismatch means
     /// the wrong environment is installed, while this means the probe did not
-    /// run — a missing `packaging`, a truncated answer, or an interpreter that
-    /// failed before printing one.
+    /// produce a valid report — a missing `packaging`, malformed boundary data,
+    /// a truncated answer, or an interpreter that failed before printing one.
     #[error(
-        "worker bundle interpreter `{interpreter}` did not report a runtime identity this build \
-         can read ({detail}); the worker/runtime owner must restore the locked environment per \
-         docs/operations/WORKER-ENVIRONMENT.md, because a bundle whose runtime cannot be observed \
-         has no identity this build may derive"
+        "worker bundle interpreter `{interpreter}` did not report runtime and environment data \
+         this build can read ({detail}); the worker/runtime owner must restore the locked \
+         environment per docs/operations/WORKER-ENVIRONMENT.md, because a bundle whose runtime \
+         cannot be observed has no identity this build may derive"
     )]
     UnreadableRuntimeIdentity {
         /// The interpreter that was probed.
         interpreter: PathBuf,
-        /// What the probe reported, redacted to a single line.
+        /// What the probe reported, sanitized to a single terminal-safe line.
         detail: String,
     },
 
@@ -170,7 +170,7 @@ pub enum WorkerBundleError {
          from a lockfile the installed environment does not match"
     )]
     EnvironmentDoesNotMatchLock {
-        /// Which distribution disagrees, and how.
+        /// Which installed-environment invariant failed.
         mismatch: Box<EnvironmentMismatch>,
     },
 
@@ -260,17 +260,15 @@ pub enum WorkerLockfileErrorReason {
     /// A directive outside the governed set is present.
     #[error("contains an unsupported resolution directive")]
     UnsupportedDirective,
-    /// The governed pin and its source revision are not adjacent and unique.
-    #[error("does not keep one governed-source provenance marker beside its governed pin")]
+    /// The governed pin lacks one well-formed adjacent source revision.
+    #[error("does not keep one full governed-source provenance commit beside its governed pin")]
     InvalidProvenance,
 }
 
-/// How one distribution disagrees with `worker/requirements.lock`.
+/// How the installed environment disagrees with `worker/requirements.lock`.
 ///
-/// One variant per operator action, because each of these is a different
-/// mistake with a different fix: reinstall the missing pin, undo an in-place
-/// upgrade, redo the install that the index silently satisfied, or point the
-/// governed install at the revision the lock records.
+/// One variant per operator action, so the refusal identifies whether the
+/// owner must restore a pin, provenance, installed bytes, or startup behavior.
 ///
 /// **No variant prints the recorded URL**, because the probe never reports one.
 /// PEP 610 records where a local install came from, and for `chatterbox-tts`
@@ -364,7 +362,7 @@ pub enum EnvironmentMismatch {
     /// by hand or left behind by an uninstall, and either way nothing accounts
     /// for it. An ambiguous hook, claimed by two distributions, is reported
     /// here too: it cannot be attributed, so it is not accounted for either.
-    #[error("carries the startup hook `{file}`, which no installed distribution claims")]
+    #[error("carries the startup hook {file:?}, which no installed distribution claims")]
     UnownedPathHook {
         /// File name within the site directory.
         file: String,
@@ -375,12 +373,104 @@ pub enum EnvironmentMismatch {
     /// Extra distributions are tolerated because the qualification virtualenv
     /// shares this repository's pre-commit tooling. That tolerance holds only
     /// while an extra install stays inert, and a startup hook is not inert.
-    #[error("carries the startup hook `{file}` from `{owner}`, which the lockfile does not pin")]
+    #[error("carries the startup hook {file:?} from {owner:?}, which the lockfile does not pin")]
     UnlockedPathHook {
         /// File name within the site directory.
         file: String,
         /// Canonicalized name of the distribution whose `RECORD` lists it.
         owner: String,
+    },
+
+    /// A locked distribution's file disagrees with its installed `RECORD`.
+    ///
+    /// The gap the version comparison leaves open. A pin proves which release
+    /// was resolved and says nothing about what the files hold now, so a module
+    /// edited in place left every version, every provenance record, and every
+    /// declared input byte-identical while the code the worker imports changed.
+    /// `RECORD` is the distribution's own per-file digest, and this is the
+    /// comparison against it. Remedy: reinstall the distribution from the
+    /// lockfile per `docs/operations/WORKER-ENVIRONMENT.md` §Restore the
+    /// environment; the worker/runtime owner in
+    /// `docs/governance/ROUTING-TABLES.md` owns a tree that keeps diverging.
+    #[error(
+        "installs `{distribution}` whose file {file:?} does not match the digest the \
+         distribution recorded for it"
+    )]
+    ModifiedDistributionFile {
+        /// Canonicalized distribution name.
+        distribution: String,
+        /// Path as `RECORD` spells it, relative to the site directory.
+        file: String,
+    },
+
+    /// A locked distribution's `RECORD` lists a file that is not there.
+    ///
+    /// Separate from [`EnvironmentMismatch::ModifiedDistributionFile`] because
+    /// a partial uninstall and an edited module are different accidents, and an
+    /// operator reading one refusal should not have to guess which happened.
+    #[error(
+        "installs `{distribution}` whose recorded file {file:?} is absent, so the install is \
+         incomplete"
+    )]
+    MissingDistributionFile {
+        /// Canonicalized distribution name.
+        distribution: String,
+        /// Path as `RECORD` spells it, relative to the site directory.
+        file: String,
+    },
+
+    /// A locked distribution ships no `RECORD`, so its files state no digests.
+    ///
+    /// Refused rather than tolerated: a distribution with no `RECORD` is one
+    /// the integrity comparison cannot make at all, and passing it would mean
+    /// the check reports success for exactly the install it cannot see.
+    #[error(
+        "installs `{distribution}` without a `RECORD`, so nothing states which bytes it installed"
+    )]
+    UnrecordedDistribution {
+        /// Canonicalized distribution name.
+        distribution: String,
+    },
+
+    /// A locked distribution's `RECORD` carries a malformed SHA-256 digest.
+    ///
+    /// Separate from [`EnvironmentMismatch::ModifiedDistributionFile`]: an
+    /// invalid digest states no expected bytes, so reporting content drift
+    /// would misdiagnose corrupt installed metadata as an edited module.
+    #[error("installs `{distribution}` whose `RECORD` contains a malformed SHA-256 digest")]
+    MalformedDistributionRecord {
+        /// Canonicalized distribution name.
+        distribution: String,
+    },
+
+    /// A locked distribution's `RECORD` contains an unsafe file path.
+    ///
+    /// `RECORD` is installed metadata, not a trusted path source. Refusing the
+    /// whole distribution without echoing the entry prevents traversal,
+    /// symlink escape, and terminal-control bytes in that entry from reaching
+    /// either the filesystem reader or the diagnostic.
+    #[error("installs `{distribution}` whose `RECORD` contains an unsafe file path")]
+    UnsafeDistributionRecord {
+        /// Canonicalized distribution name.
+        distribution: String,
+    },
+
+    /// An interpreter startup module the lock does not account for.
+    ///
+    /// `site` imports `sitecustomize` and `usercustomize` by name as the
+    /// interpreter starts, before the worker's own declared inputs are read.
+    /// Neither is a `.pth`, so [`EnvironmentMismatch::UnownedPathHook`] never
+    /// saw them, and both are the same hazard: arbitrary code inside the
+    /// process whose identity says nothing about it. A module owned by a locked
+    /// distribution is accounted for; one owned by nothing is not, and is
+    /// refused unless `worker/bundle-manifest.json` declares its digest.
+    #[error(
+        "resolves the startup module `{module}` from a file no locked distribution claims and \
+         the manifest does not declare"
+    )]
+    UnaccountedStartupModule {
+        /// `sitecustomize` or `usercustomize`.
+        module: StartupModuleName,
     },
 
     /// Two installs share one canonicalized name, so which is loaded is

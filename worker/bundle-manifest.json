@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "import_roots": ["worker/study_tts_worker"],
   "inputs": [
     "schemas/worker-protocol-v1.schema.json",
@@ -16,5 +16,11 @@
     "version": "3.12.3",
     "abi_tag": "cp312",
     "platform_tag": "manylinux_2_39_x86_64"
-  }
+  },
+  "startup_modules": [
+    {
+      "module": "sitecustomize",
+      "digest": "Q9gRJdkjdrGmnVOnESagQcyaGNgIDpLeoKKuI74Tix4"
+    }
+  ]
 }

@@ -102,8 +102,8 @@ hold:
 |---|---|
 | `docs/architecture/PROVISIONAL-CONTRACT-BASELINE.md` | `559593d42d5888649a76e3ecbbd12b091c2359132070cc83626bda719bcb3137` |
 | `docs/architecture/E0-S4-INTERFACE-CHANGE-001.md` | `e91244cf0dfb608dd0c0fb4207be9c4b1d209ddf2576d53c623020d8f160c4f1` |
-| `docs/architecture/E1-S1-INTERFACE-CHANGE-001.md` | `b8fcc9b18b53008b3c32e9387634b0d23ec81c74e8098f99d8eb78b6fbb4f3c9` |
-| `docs/architecture/WALKING-SKELETON.md` | `79bda366c253bec9ea3918920e9444cb50e30077076fac3948008cfcda268eac` |
+| `docs/architecture/E1-S1-INTERFACE-CHANGE-001.md` | `c8f5dd59c160d9992a5c26aba7e258c7172a8923b87d1d0a6e25d47be2109207` |
+| `docs/architecture/WALKING-SKELETON.md` | `3cf0bde8e50913d41df3faf680af9d3013585214830231ec886fa01fd54b76cc` |
 | `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` | `7367c36faea96c0bf18fb60b30ab23d6c994540f795c3f6963a1d8f86e981b53` |
 | `docs/testing/TEST-DATA-MANIFEST.md` | `ec658d4018a543bb1779c641f4a6a51486a25cb24c8722c4fa3d8b96ef75dd96` |
 
@@ -123,12 +123,13 @@ The changed implementation records are pinned separately:
 |---|---|
 | `crates/study-tts-runtime/src/worker_protocol.rs` | `18b7aacc7ab1ae2680efb68c61e1adce2f17191731b8c2c111479407f2fbebcb` |
 | `crates/study-tts-runtime/src/schemas.rs` | `67815bd15c8cacb3c3a2dcf0738caac00d702bfaf13fe356e683eee65c2d5c17` |
-| `crates/study-tts-runtime/src/worker_bundle.rs` | `9dc3257d7f82ec30a52d86a991fe2426f69ee72155ea43b57b23b3c486e20892` |
+| `crates/study-tts-runtime/src/worker_bundle.rs` | `5a73c048b8a5096163c721df115a02dac54d1d71a265ff6bd3a324898d339f2f` |
+| `crates/study-tts-runtime/src/process.rs` | `166687371829e2181e5bd969a7da4814decf58e72e01960960b3888f20f96a88` |
 | `crates/study-tts-testkit/src/bin/fake-ndjson-worker.rs` | `e6044c426b652e8699a8c613f9a1b6f1a722e680d4d622cc22cdb0caea1e90fa` |
 | `crates/study-tts-testkit/tests/worker_contract.rs` | `fe12a3ff542a6bb8721aea1c4e63a32090ebab0dbf8e4d95fb891114a9c931ac` |
 | `crates/study-tts-testkit/tests/provisional_contracts.rs` | `13db8042a1e889d30b83cbc4e62c8b779c6fed4082c357facab6bcfa65141044` |
 | `schemas/worker-protocol-v1.schema.json` | `d1e5f3fad5747c64129a77a8bb04f4d8d45c987ea402bbfe9315e5fd69a31f7b` |
-| `worker/bundle-manifest.json` | `8dc54edaa80bf9cae3e3800bf33bec4d3fa4bb1d9738b163abf044f0e9c58b3c` |
+| `worker/bundle-manifest.json` | `2135f785f47f6e9bc21ef6e9d95e8b67b990c7f689c9f32c01aace55a0dd46a4` |
 | `worker/study_tts_worker/__init__.py` | `ec6c3f2b5b286ce8a3845ea874536ccc9cf4cf490ac5cd38b9b3036a90ede19c` |
 | `worker/study_tts_worker/protocol.py` | `da7baa5c48d6038c3537e6414614de9beedcdf2098abd74d5a70d105814b4c98` |
 | `worker/study_tts_worker/worker.py` | `ce0d7fe4d24e6accc18ebe3d42ed4d3095093e8487653511241af06a4750eadf` |
@@ -137,17 +138,17 @@ The changed implementation records are pinned separately:
 | `fixtures/contracts/e1-s1-fake-worker-session.ndjson` | `a9f506941a72b6b3df7a02052550e59c81f1cc78563e495a2fb420466893ab9d` |
 | `fixtures/contracts/e1-s1-worker-protocol-cases.ndjson` | `5644a6b9ce17379ec4aacaeaf869ec25568b6a4d1507d5f47d742f53d0ca5cbb` |
 | `crates/study-tts-core/src/lesson.rs` | `b9370a7a08ef3bc1c1338a62e1126300cc0bb97a89d0a89c4d6dcfb7c88025d9` |
-| `crates/study-tts-runtime/src/error/worker_bundle.rs` | `1631f74eb29d954376cc50327d6ab590ac072ab3be96ff5bce19a119ce3f1b83` |
+| `crates/study-tts-runtime/src/error/worker_bundle.rs` | `d2e102a091a9610056d8378fa6e9ada7f294d47a4df3cb76c473ac9de8345fc6` |
 | `crates/study-tts-runtime/src/error/mod.rs` | `e0f305c82d6ffd5e33b0b66ccd30ee7d8e040158a8125095db1e9700c2eba094` |
-| `crates/study-tts-runtime/src/lib.rs` | `1125ad302012532a693a12b9734c3db5b6539ad4f86fa1f53fbdad932b9f0792` |
-| `docs/operations/WORKER-ENVIRONMENT.md` | `2402f2c25436bb7e62dc6999f8f2740358e4f820dad343e359661e3a89eb955c` |
+| `crates/study-tts-runtime/src/lib.rs` | `c07430c0669e01444d856f8e56d7ae6ba3d4acfd489a6336e5f3194eab1d8958` |
+| `docs/operations/WORKER-ENVIRONMENT.md` | `298c4f7a7ec3cb1ff9fc7d5f366a45aa5bc3446902f4fdf1add06f9a4d7ac2eb` |
 
 ## Verification run
 
-Ubuntu 24.04 under WSL2 on 2026-08-28, cargo 1.97.1, CPython 3.12.3, and
+Ubuntu 24.04 under WSL2 on 2026-08-29, cargo 1.97.1, CPython 3.12.3, and
 FFmpeg 6.1.1 on `PATH`:
 
-- `cargo test --offline --workspace --all-targets --locked` — pass, 275 tests,
+- `cargo test --offline --workspace --all-targets --locked` — pass, 279 tests,
   including `t3_e1_both_protocol_ends_decide_the_committed_cases_alike` over 31
   shared cases and the schema's active-ID boundary decisions,
   `t4_e1_fake_worker_passes_shared_protocol_contract` over all six methods,
@@ -155,6 +156,15 @@ FFmpeg 6.1.1 on `PATH`:
   malformed-lock reason tests,
   `t1_e1_a_lockfile_fault_no_line_carries_names_no_line` over the three
   whole-file lock faults,
+  `t1_e0_external_tool_supervision_policies_are_pinned` over the distinct
+  version-only and worker-environment deadlines,
+  `t4_e1_the_probe_reads_record_digests_from_a_real_interpreter` over valid
+  wheel scripts, bounded first-fault reporting, malformed digests, modified
+  and missing files, absent `RECORD`, control-bearing and absolute paths, and
+  site-package symlink escape,
+  the startup-module boundary cases over closed module names and canonical
+  digest spelling, and
+  `t1_e1_runtime_probe_diagnostics_cannot_emit_terminal_controls`,
   `t3_e0_registered_fixture_checksums_match_test_data_manifest` over the moved
   fixtures, and
   `t1_e0_governed_remedy_mappings_are_exhaustive` over the four worker-bundle
@@ -193,6 +203,25 @@ It replaces the pre-thirteenth-audit value in this proposed v8 draft,
 `8339a5b425781965527e299591a445a1c4452ecdbeea6756fa82fd401b8d508a`.
 The Python protocol and worker modules are declared bundle inputs and both
 moved. Their input paths and the derivation are unchanged, so
+`WORKER_BUNDLE_IDENTITY_VERSION` remains `e1-s1-v4`.
+
+**Superseded by the fourteenth audit and re-measured on the developer
+environment.** That audit moved `worker/bundle-manifest.json` to layout `1.1`
+and declared the digest of the `sitecustomize` this Ubuntu interpreter executes.
+The manifest is itself a declared bundle input, so the value above no longer
+describes the checked-in bundle. The verified bundle now hashes to:
+
+```text
+92bd4e442ed1caf2897660d57be580796d4f88a558ad65d45983f66336db16a3
+```
+
+`cargo run --offline --locked --package study-tts-runtime --example
+worker-bundle-hash` returned that value twice against the restored locked
+environment, in 4.62 and 3.78 seconds. The worker-environment probe inspected
+1.58 GB across 43,828 site-package files under its new two-minute ceiling. This
+is a developer-machine `verified_hash` run, not the protected reference-machine
+reproduction; the worker/runtime owner's pending review in §Review therefore
+still applies. The input paths and the derivation are unchanged, so
 `WORKER_BUNDLE_IDENTITY_VERSION` remains `e1-s1-v4`.
 
 Every plan hash built against this worker identity moves with it. Cache entries

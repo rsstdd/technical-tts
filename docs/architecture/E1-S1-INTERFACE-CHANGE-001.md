@@ -758,6 +758,91 @@ The input set and derivation are unchanged, so
 remain valid under their producing identity and are neither deleted nor
 re-keyed.
 
+## What the fourteenth audit closed
+
+The environment comparison held a locked distribution to its name, version, and
+PEP 610 provenance, and held the site directories to their `.pth` files. None of
+the three reads a byte of what is installed, so a Python dependency could change
+while the bundle identity stood still. Editing an installed `torch` module in
+place, or editing the *contents* of a `.pth` belonging to a locked distribution
+— its file name and owning distribution both staying correct — left every
+version, every provenance record, and every declared input byte-identical, and
+`verified_hash` returned the value it returned before.
+
+`site` also imports `sitecustomize` and `usercustomize` by name as the
+interpreter starts, before any declared input is read. Neither is a `.pth`, so
+the startup-hook rule never saw them, and the tolerance for unlocked
+distributions — which rests on an extra install being inert — did not hold for
+either. `-I` settles exactly one of the two: it clears `ENABLE_USER_SITE`, which
+`site.main` gates `execusercustomize` on, and nothing suppresses `sitecustomize`.
+
+The runtime probe now verifies each SHA-256-bearing `RECORD` entry beneath a
+locked distribution's site-package root, and reports both startup modules with
+whether the interpreter would actually import them. Generated wheel scripts
+elsewhere in the interpreter environment are not imported by
+`python -m study_tts_worker` and are not read. Non-printable paths, absolute
+paths, paths outside the interpreter environment, and site-package symlinks
+escaping their distribution root are refused before any read. Six refusals
+follow:
+`EnvironmentMismatch::ModifiedDistributionFile`,
+`MissingDistributionFile`, `UnrecordedDistribution`,
+`MalformedDistributionRecord`, `UnsafeDistributionRecord`, and
+`UnaccountedStartupModule`. Malformed recorded digests are refused as metadata
+corruption rather than misreported as content drift. A startup module is
+accounted for when a locked distribution's `RECORD` claims its file or when the
+manifest declares its digest; one that cannot execute is ignored, because
+refusing a file the interpreter will not import would refuse an environment it
+does not affect.
+
+This is not a version-only probe. The restored environment holds 1.58 GB across
+43,828 site-package files, so the five-second `VERSION_PROBE_POLICY` timed out
+before the integrity walk could finish. `WORKER_ENVIRONMENT_PROBE_POLICY` gives
+that walk its own two-minute security ceiling, mirrored in
+`WALKING-SKELETON.md` §Provisional resource ceilings. The same command completed
+in 4.62 and 3.78 seconds on the recorded developer environment; two minutes is
+a bound for cold local-Linux storage, not a performance claim.
+
+`t4_e1_the_probe_reads_record_digests_from_a_real_interpreter` runs the probe
+script itself against a real interpreter and a real `.dist-info`, rather than
+against the shell-script answer the other cases use, because the `RECORD` parse
+is the part a canned answer cannot exercise.
+
+### Version and compatibility
+
+`worker/bundle-manifest.json` moves from layout `1.0` to `1.1`, adding
+`startup_modules`. The field is optional and defaults to empty, so a `1.0`
+manifest remains valid and declares nothing — the same absent-is-the-default
+extension the lesson document made at its own `1.1`. A strict `1.0` decoder
+rejects the newer field even when it is empty, so the declared version still
+determines the accepted shape. Both layouts are accepted;
+`SUPPORTED_BUNDLE_MANIFEST_SCHEMA_VERSIONS` is the list, and a layout outside
+it is still refused. The change is therefore compatible rather than breaking.
+
+### Identity impact
+
+`worker/bundle-manifest.json` is a declared bundle input, so every worker-bundle
+hash moves from
+`5d77a5a6a520466043cb6a67ae805b148104d74d8c91fe85932b31d782d8b0af` to
+`92bd4e442ed1caf2897660d57be580796d4f88a558ad65d45983f66336db16a3`.
+The checked-in manifest declares the observed digest of the developer
+environment's `/etc/python3.12/sitecustomize.py`, and `verified_hash` reproduced
+that value twice against the restored locked environment. It has **not** been
+reproduced on the protected reference machine, and
+[`../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v8.md`](../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v8.md)
+§Worker-bundle hash records that reproduction as still pending. The input set
+and derivation are unchanged, so `WORKER_BUNDLE_IDENTITY_VERSION` remains
+`e1-s1-v4`. Existing cache entries remain valid under their producing identity
+and are neither deleted nor re-keyed.
+
+### What it does not close
+
+The comparison reads the distributions the lock names. An unlocked distribution
+is still tolerated and still unread, which stays affordable only because the two
+ways it could reach interpreter startup — a `.pth`, and a startup module — are
+both now refused unless something accounts for them. A dedicated worker-only
+environment enforcing an exact installed set would remove the tolerance itself,
+and is not in this change.
+
 ## Impact of the two deliberately incomplete inputs
 
 Two ADR-0001 §12.5 inputs are present in the identity but not yet resolved to
@@ -884,15 +969,29 @@ construction boundary, and the CLI status boundary; v6 is therefore superseded b
 protocol, the published worker-protocol schema, and the bundle hash; v7 is
 therefore superseded by
 [`../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v8.md`](../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v8.md).
-§What the eleventh and twelfth audits closed are folded into that still-Proposed
-v8 record; v8 is updated before approval rather than superseded as though it
-were already immutable evidence.
+§What the eleventh audit closed, §What the twelfth audit closed, §What the
+thirteenth audit closed, and §What the fourteenth audit closed are folded into
+that still-Proposed v8 record; v8 is updated before approval rather than
+superseded as though it were already immutable evidence.
+
+The fourteenth audit also moves `WALKING-SKELETON.md` to give the integrity
+walk its dedicated deadline. Four active older records pin the previous bytes;
+[`../../evidence/gates/g1/e1-s1/e1-s1-fourteenth-audit-provenance-reconciliation-v1.md`](../../evidence/gates/g1/e1-s1/e1-s1-fourteenth-audit-provenance-reconciliation-v1.md)
+accounts for those exact record/path pairs without amending any accepted
+record.
 
 ## Approval
 
 - Contract owner decision: identity baseline adopted before the eleventh audit;
   breaking worker-frame baseline approved by the project owner on 2026-08-28
 - Worker-frame classification: approved as breaking at `e1.worker.1.0`
-- Engineering owner approval: approved on 2026-08-28
+- Engineering owner approval: approved on 2026-08-28 for the baseline through the
+  twelfth audit; the thirteenth-audit amendments are **not** covered by it and
+  remain `Pending review of the thirteenth-audit remediation` in
+  [`../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v8.md`](../../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v8.md)
+  §Review, together with the contract owner, worker/runtime owner, and
+  affected-track reviews that record pins there. The approvals above are the
+  scope this document claims; v8's table is the authority on what is still open,
+  and this record must not be read as approving past it.
 - Affected-track approvals: deferred to the G1 fake/real parity review
 - Effective version and date: provisional `e1.tts-executor.1.0`, 2026-08-26

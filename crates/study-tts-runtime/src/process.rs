@@ -1,4 +1,4 @@
-//! Bounded supervision for every FFmpeg-family child process.
+//! Bounded supervision for external child processes.
 //!
 //! This module owns deadlines, concurrent pipe capture, and process-tree
 //! cleanup. Callers retain launch and nonzero-exit error ownership so their
@@ -35,6 +35,11 @@ const TOOL_OUTPUT_LIMIT_BYTES: usize = 1024 * 1024;
 /// Version discovery deadline mirrored by
 /// `docs/architecture/WALKING-SKELETON.md` §Provisional resource ceilings.
 pub(crate) const VERSION_PROBE_POLICY: CommandPolicy = CommandPolicy::new(Duration::from_secs(5));
+
+/// Worker-environment integrity deadline mirrored by
+/// `docs/architecture/WALKING-SKELETON.md` §Provisional resource ceilings.
+pub(crate) const WORKER_ENVIRONMENT_PROBE_POLICY: CommandPolicy =
+    CommandPolicy::new(Duration::from_secs(2 * 60));
 
 /// Encoded-output deadline mirrored by
 /// `docs/architecture/WALKING-SKELETON.md` §Provisional resource ceilings.
@@ -1234,7 +1239,8 @@ mod tests {
 
     use super::{
         CaptureEvent, CommandPolicy, CommandRunError, FFMPEG_ENCODE_POLICY, FFPROBE_POLICY,
-        VERSION_PROBE_POLICY, run, run_with_capture_spawner, spawn_capture_pipe,
+        VERSION_PROBE_POLICY, WORKER_ENVIRONMENT_PROBE_POLICY, run, run_with_capture_spawner,
+        spawn_capture_pipe,
     };
     use crate::{ToolError, ToolInvocation, ToolOperation, ToolOutputStream};
 
@@ -1331,9 +1337,10 @@ mod tests {
     }
 
     #[test]
-    fn t1_e0_ffmpeg_family_supervision_policies_are_pinned() {
+    fn t1_e0_external_tool_supervision_policies_are_pinned() {
         for (policy, deadline) in [
             (VERSION_PROBE_POLICY, Duration::from_secs(5)),
+            (WORKER_ENVIRONMENT_PROBE_POLICY, Duration::from_secs(2 * 60)),
             (FFPROBE_POLICY, Duration::from_secs(30)),
             (FFMPEG_ENCODE_POLICY, Duration::from_secs(30 * 60)),
         ] {
