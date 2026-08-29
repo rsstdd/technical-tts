@@ -462,8 +462,8 @@ pub enum EnvironmentMismatch {
     /// Neither is a `.pth`, so [`EnvironmentMismatch::UnownedPathHook`] never
     /// saw them, and both are the same hazard: arbitrary code inside the
     /// process whose identity says nothing about it. A module owned by a locked
-    /// distribution is accounted for; one owned by nothing is not, and is
-    /// refused unless `worker/bundle-manifest.json` declares its digest.
+    /// distribution is accounted for; one without a locked owner is not, and
+    /// is refused unless `worker/bundle-manifest.json` declares its digest.
     #[error(
         "resolves the startup module `{module}` from a file no locked distribution claims and \
          the manifest does not declare"

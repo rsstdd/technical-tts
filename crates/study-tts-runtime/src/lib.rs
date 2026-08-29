@@ -24,6 +24,7 @@ mod synthesis;
 mod tools;
 mod voice_gate;
 mod worker_bundle;
+mod worker_environment;
 mod worker_protocol;
 
 pub use cache::ValidatedCachedArtifact;
@@ -62,14 +63,16 @@ pub use worker_bundle::{
     BUNDLE_MANIFEST_PATH, BUNDLE_MANIFEST_SCHEMA_VERSION, BundleManifest, DeclaredStartupModule,
     MAX_BUNDLE_INPUT_BYTES, PythonRuntimeIdentity, REQUIRED_BUNDLE_INPUTS, REQUIRED_IMPORT_ROOT,
     StartupModuleName, WORKER_BUNDLE_IDENTITY_VERSION, WORKER_ENTRYPOINT_PATH,
-    WORKER_INTERPRETER_PATH, WORKER_LAUNCHER_PATH, WORKER_LOCKFILE_PATH, WORKER_PACKAGE_ROOT,
-    WORKER_PROTOCOL_SCHEMA_PATH, WorkerBundle,
+    WORKER_LAUNCHER_PATH, WORKER_LOCKFILE_PATH, WORKER_PACKAGE_ROOT, WORKER_PROTOCOL_SCHEMA_PATH,
+    WorkerBundle,
 };
+pub use worker_environment::WORKER_INTERPRETER_PATH;
 pub use worker_protocol::{
     InitializeParameters, MAX_WORKER_FRAME_BYTES, MAX_WORKER_REQUEST_ID_BYTES, TraceContext,
     WORKER_PROTOCOL_EXTENSION_VERSION, WORKER_PROTOCOL_VERSION, WorkerCapabilities,
-    WorkerFailureCode, WorkerFrame, WorkerFrameError, WorkerRequestFrame, WorkerResponseFrame,
-    WorkerSynthesisParameters, parse_worker_request, parse_worker_response,
+    WorkerFailureCode, WorkerFrame, WorkerFrameError, WorkerInitializationIdentities,
+    WorkerRequestFrame, WorkerResponseFrame, WorkerSynthesisParameters, parse_worker_request,
+    parse_worker_response,
 };
 
 /// Re-exported at the root so every module keeps constructing these the same
