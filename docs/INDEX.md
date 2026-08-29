@@ -33,7 +33,7 @@ evidence. Documents below explain execution without superseding either authority
 | Worker bundle manifest, lock procedure, and offline behavior | [`operations/WORKER-ENVIRONMENT.md`](operations/WORKER-ENVIRONMENT.md) |
 | E0-S3 G0 feasibility decision | [`../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v3.md`](../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v3.md) |
 | E0-S4 provisional contract evidence | [`../evidence/gates/g0/e0-s4/e0-s4-provisional-contract-baseline-v2.md`](../evidence/gates/g0/e0-s4/e0-s4-provisional-contract-baseline-v2.md) (v1 retained as historical provenance) |
-| E1-S1 controlled-record digests, superseding the E0-S4 table | [`../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v5.md`](../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v5.md), which supersedes [`…-v4.md`](../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v4.md) and through it v3, v2, and v1 for the table, verification run, and worker-bundle hash |
+| E1-S1 controlled-record digests, superseding the E0-S4 table | [`../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v10.md`](../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v10.md), which supersedes [`…-v9.md`](../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v9.md) and through it v8 down to v1 for the table and verification run. v10 is the accepted record and corrects a false statement v9 carried about three ADR statuses. Three provenance-reconciliation records sit beside them and account for named digest movements the superseded drafts pin |
 | Upgrade and compatibility procedure | [`operations/UPGRADE-RUNBOOK.md`](operations/UPGRADE-RUNBOOK.md) |
 | Release, recovery, and rollback | [`operations/RELEASE-AND-ROLLBACK.md`](operations/RELEASE-AND-ROLLBACK.md) |
 | Threat model | [`security/THREAT-MODEL.md`](security/THREAT-MODEL.md) |
@@ -46,6 +46,7 @@ evidence. Documents below explain execution without superseding either authority
 | [`ADR-0001-D001`](adr/deviations/ADR-0001-D001-asr-release-condition.md) | Approved amendment | ASR triage is required; failed calibration keeps ASR advisory rather than blocking release |
 | [`ADR-0001-D002`](adr/deviations/ADR-0001-D002-constrained-development-performance-gate.md) | Approved amendment | Constrained-development performance waiver expires before G3 |
 | [`ADR-0001-D003`](adr/deviations/ADR-0001-D003-single-instructor-fallback.md) | Approved amendment | Version 1 selects the approved owner-recorded single-instructor configuration |
+| [`ADR-0001-D004`](adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md) | Approved amendment | Environment-lock verification is a precondition on the worker-bundle identity, not an input to it |
 | [`ADR-0002`](adr/ADR-0002-model-hardware-voice-format-qualification.md) | Accepted with scoped waiver | Full-box performance qualification before G3 |
 | [`ADR-0003`](adr/ADR-0003-production-audio-quality-profile.md) | Proposed evidence record | Audio calibration and listener approval |
 | [`ADR-0004`](adr/ADR-0004-voice-content-and-retention-policy.md) | Proposed evidence record | Rights, consent, and retention approval |
