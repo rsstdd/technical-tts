@@ -1,0 +1,39 @@
+{
+  "schema_version": "0.2-skeleton",
+  "release_status": "private_preview",
+  "lesson_id": "e0-s0-walking-skeleton",
+  "plan_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+  "segments": [
+    {
+      "segment_id": "seg-0001",
+      "cache_key": "2222222222222222222222222222222222222222222222222222222222222AAA",
+      "audio_blake3": "3333333333333333333333333333333333333333333333333333333333333333",
+      "frames": 24000,
+      "pause_after_ms": 400
+    }
+  ],
+  "artifacts": {
+    "master_wav": {
+      "path": "master.wav",
+      "blake3": "4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    "m4a": {
+      "path": "lesson.m4a",
+      "blake3": "5555555555555555555555555555555555555555555555555555555555555555"
+    }
+  },
+  "tools": {
+    "ffmpeg": {
+      "resolved_executable": "/usr/bin/ffmpeg",
+      "version": "6.1.1",
+      "arguments": ["-hide_banner"],
+      "argument_profile_blake3": "6666666666666666666666666666666666666666666666666666666666666666"
+    },
+    "ffprobe": {
+      "resolved_executable": "/usr/bin/ffprobe",
+      "version": "6.1.1",
+      "arguments": ["-hide_banner"],
+      "argument_profile_blake3": "7777777777777777777777777777777777777777777777777777777777777777"
+    }
+  }
+}

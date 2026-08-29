@@ -28,9 +28,12 @@ evidence. Documents below explain execution without superseding either authority
 | Executable E0-S0 integration order and provisional seams | [`architecture/WALKING-SKELETON.md`](architecture/WALKING-SKELETON.md) |
 | E0-S4 provisional contract IDs, fakes, suites, and stabilization | [`architecture/PROVISIONAL-CONTRACT-BASELINE.md`](architecture/PROVISIONAL-CONTRACT-BASELINE.md) |
 | E0-S4 cache/package audit amendment | [`architecture/E0-S4-INTERFACE-CHANGE-001.md`](architecture/E0-S4-INTERFACE-CHANGE-001.md) |
+| E1-S1 synthesis and verification identity amendment | [`architecture/E1-S1-INTERFACE-CHANGE-001.md`](architecture/E1-S1-INTERFACE-CHANGE-001.md) |
 | Reference-machine qualification record | [`operations/REFERENCE-ENVIRONMENT.md`](operations/REFERENCE-ENVIRONMENT.md) |
+| Worker bundle manifest, lock procedure, and offline behavior | [`operations/WORKER-ENVIRONMENT.md`](operations/WORKER-ENVIRONMENT.md) |
 | E0-S3 G0 feasibility decision | [`../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v3.md`](../evidence/gates/g0/e0-s3/e0-s3-g0-qualification-decision-v3.md) |
 | E0-S4 provisional contract evidence | [`../evidence/gates/g0/e0-s4/e0-s4-provisional-contract-baseline-v2.md`](../evidence/gates/g0/e0-s4/e0-s4-provisional-contract-baseline-v2.md) (v1 retained as historical provenance) |
+| E1-S1 controlled-record digests, superseding the E0-S4 table | [`../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v13.md`](../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v13.md), which supersedes [`…-v12.md`](../evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v12.md) and through it v11 down to v1 for the table and verification run. v13 is the accepted current record; it carries the audit 21 remediation — an unhashable frame method refused instead of crashing the parser, provenance accounting restricted to reconciliation records — and corrects two false statements the accepted chain carried, including v12's own stale controlled-record table. Provenance reconciliation sits beside it in [`…-reconciliation-v2.md`](../evidence/gates/g1/e1-s1/e1-s1-evidence-provenance-reconciliation-v2.md), which supersedes v1 and accounts for the named digest movements the superseded drafts pin |
 | Upgrade and compatibility procedure | [`operations/UPGRADE-RUNBOOK.md`](operations/UPGRADE-RUNBOOK.md) |
 | Release, recovery, and rollback | [`operations/RELEASE-AND-ROLLBACK.md`](operations/RELEASE-AND-ROLLBACK.md) |
 | Threat model | [`security/THREAT-MODEL.md`](security/THREAT-MODEL.md) |
@@ -43,6 +46,8 @@ evidence. Documents below explain execution without superseding either authority
 | [`ADR-0001-D001`](adr/deviations/ADR-0001-D001-asr-release-condition.md) | Approved amendment | ASR triage is required; failed calibration keeps ASR advisory rather than blocking release |
 | [`ADR-0001-D002`](adr/deviations/ADR-0001-D002-constrained-development-performance-gate.md) | Approved amendment | Constrained-development performance waiver expires before G3 |
 | [`ADR-0001-D003`](adr/deviations/ADR-0001-D003-single-instructor-fallback.md) | Approved amendment | Version 1 selects the approved owner-recorded single-instructor configuration |
+| [`ADR-0001-D004`](adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md) | Approved amendment | Environment-lock verification is a precondition on the worker-bundle identity, not an input to it |
+| [`ADR-0001-D005`](adr/deviations/ADR-0001-D005-prefreeze-breaking-correction-retains-version.md) | Approved amendment | A pre-G1 breaking correction to an unreleased seam version may retain that version instead of incrementing the major; expires at G1 |
 | [`ADR-0002`](adr/ADR-0002-model-hardware-voice-format-qualification.md) | Accepted with scoped waiver | Full-box performance qualification before G3 |
 | [`ADR-0003`](adr/ADR-0003-production-audio-quality-profile.md) | Proposed evidence record | Audio calibration and listener approval |
 | [`ADR-0004`](adr/ADR-0004-voice-content-and-retention-policy.md) | Proposed evidence record | Rights, consent, and retention approval |

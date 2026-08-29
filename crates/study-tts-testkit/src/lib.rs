@@ -5,6 +5,9 @@
 //! depend on this crate only from tests.
 
 mod contracts;
+mod json_schema;
+
+pub use json_schema::validate_against_schema;
 
 pub use contracts::{
     FakeCachePublisher, FakeJobCall, FakePackageCall, FakePackageWriter, InMemoryJobRepository,
@@ -14,6 +17,7 @@ pub use contracts::{
 };
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     f32::consts::TAU,
     future::Future,
     path::{Path, PathBuf},
@@ -24,11 +28,38 @@ use std::{
     },
 };
 
-use study_tts_core::{CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_RATE};
+use study_tts_core::{
+    CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_RATE, DeterminismClass,
+    LanguageTag,
+};
 use study_tts_runtime::{
     BackendDescriptor, BackendError, SynthesisReport, SynthesisRequest,
     TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, validate_executor_request,
 };
+
+/// Bundle identity the deterministic tone executor reports.
+///
+/// A fixed well-formed digest rather than a hash of anything: this executor has
+/// no Python bundle to hash, and a constant keeps its cache keys stable across
+/// runs while staying distinct from any real bundle's.
+pub const DETERMINISTIC_TONE_BUNDLE_HASH: &str =
+    "0000000000000000000000000000000000000000000000000000000000000001";
+
+/// Voice-profile identity the deterministic tone executor reports.
+///
+/// Fixed synthetic bytes for the same reason as the bundle hash: this executor
+/// resolves no voice profile, and a constant keeps what it reports stable while
+/// staying distinct from any real profile's.
+pub const DETERMINISTIC_TONE_VOICE_PROFILE_HASH: &str =
+    "0000000000000000000000000000000000000000000000000000000000000002";
+
+/// The one language the deterministic tone executor declares.
+///
+/// English-only, matching ADR-0002's qualified baseline. The tone carries no
+/// speech at all, so declaring more would be a claim nothing backs — and the
+/// point of a declared capability is that a request outside it is refused
+/// before synthesis rather than answered with confident nonsense.
+pub const DETERMINISTIC_TONE_LANGUAGE: &str = "en";
 
 /// Frames in every synthetic tone this crate writes: one tenth of a second.
 ///
@@ -87,9 +118,21 @@ impl TtsExecutor for FakeTtsExecutor {
     fn descriptor(&self) -> BackendDescriptor {
         BackendDescriptor {
             contract_version: TTS_EXECUTOR_CONTRACT_VERSION.to_owned(),
-            synthesis_identity: "deterministic-tone-worker-v1".to_owned(),
+            // Fixed, well-formed stand-ins for the real bundle and model
+            // identities. The fake synthesizes a tone rather than loading a
+            // model, so these exist to make its keys stable and distinct from
+            // any real backend's, not to describe an artifact on disk.
+            worker_bundle_hash: DETERMINISTIC_TONE_BUNDLE_HASH
+                .parse()
+                .expect("the fake bundle hash is a well-formed digest"),
+            model_repository: "study-tts/deterministic-tone".to_owned(),
+            model_revision: "v1".parse().expect("`v1` is a revision"),
+            tokenizer_revision: "none".parse().expect("`none` is a revision"),
+            languages: BTreeSet::from([tone_language()]),
+            determinism_class: DeterminismClass::Reproducible,
+            seed: 0,
+            generation_parameters: BTreeMap::new(),
             max_text_bytes: 64 * 1024,
-            deterministic_seed: true,
         }
     }
 
@@ -171,6 +214,7 @@ impl FakeTtsExecutor {
                 message: error.to_string(),
             })?;
 
+        let language = request.language.clone();
         self.synthesized_texts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -187,14 +231,37 @@ impl FakeTtsExecutor {
             channels: CANONICAL_CHANNELS,
             frames: TONE_FRAMES,
             backend_revision: "deterministic-tone-v1".to_owned(),
-            worker_bundle_hash: blake3::hash(b"deterministic-tone-worker-v1")
-                .to_hex()
-                .to_string(),
-            voice_profile_hash: blake3::hash(b"synthetic-test-voice-v1")
-                .to_hex()
-                .to_string(),
+            // Built from this executor's own descriptor and the request it was
+            // handed, which is what a real worker does: it reports the inputs
+            // it loaded, not the ones it was told about. Reporting anything
+            // else here — as an earlier version of this fake did, with a bundle
+            // hash unrelated to its descriptor's — is exactly the drift the
+            // cache's identity gate refuses, so a fake that did it could never
+            // publish and would stop being a usable double.
+            // No conditioning artifact, because this executor resolves no
+            // voice profile: an empty map serializes as an absent input, which
+            // is the same thing planning supplies until E1-S2 resolves voice
+            // references. A hash invented here would name a cache entry no
+            // voice produced.
+            context: self
+                .descriptor()
+                .synthesis_context(language, BTreeMap::new()),
+            voice_profile_hash: DETERMINISTIC_TONE_VOICE_PROFILE_HASH
+                .parse()
+                .expect("the fake voice profile hash is a well-formed digest"),
         })
     }
+}
+
+/// The language [`FakeTtsExecutor`] declares and reports.
+///
+/// Parsed once here rather than at each use so the constant and the tag cannot
+/// disagree; `DETERMINISTIC_TONE_LANGUAGE` is checked to be well formed by the
+/// same parse every lesson goes through.
+fn tone_language() -> LanguageTag {
+    DETERMINISTIC_TONE_LANGUAGE
+        .parse()
+        .expect("the fake executor language is a well-formed tag")
 }
 
 /// Backward-compatible test name for the deterministic E0 fake executor.

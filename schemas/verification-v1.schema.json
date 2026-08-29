@@ -1,0 +1,197 @@
+{
+  "$defs": {
+    "AsrConversionIdentity": {
+      "additionalProperties": false,
+      "description": "How audio was converted before it reached the decoder.\n\nADR-0001 §12.5 names \"FFmpeg version and effective arguments\" specifically:\nresampling to the decoder's rate is lossy, so a conversion change can move a\ntranscript without anything else having changed.",
+      "properties": {
+        "arguments": {
+          "description": "The effective argument vector, in the order it was passed.\n\nOrdered rather than a set: argument order changes FFmpeg's behavior.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ffmpeg_version": {
+          "description": "FFmpeg version string that performed the conversion.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ffmpeg_version",
+        "arguments"
+      ],
+      "type": "object"
+    },
+    "AsrStackIdentity": {
+      "additionalProperties": false,
+      "description": "The pinned ASR stack a verification result was produced by.\n\nADR-0001 §17 requires the whole native stack to be pinned, not just the\nmodel: `whisper-rs` binds `whisper.cpp`, whose build features change decoder\nbehavior, so a result produced under different features is a different\nresult even for identical audio.",
+      "properties": {
+        "compilation_features": {
+          "description": "Compilation features the native stack was built with.\n\nA set, so the identity does not depend on the order a build system\nhappened to list them in.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "execution_device": {
+          "description": "Device the decoder executed on.",
+          "type": "string"
+        },
+        "model_identity": {
+          "description": "Identity of the ASR model weights.",
+          "type": "string"
+        },
+        "whisper_cpp_revision": {
+          "description": "Revision of the bound `whisper.cpp` source.",
+          "type": "string"
+        },
+        "whisper_rs_sys_version": {
+          "description": "`whisper-rs-sys` crate version.",
+          "type": "string"
+        },
+        "whisper_rs_version": {
+          "description": "`whisper-rs` crate version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "whisper_rs_version",
+        "whisper_rs_sys_version",
+        "whisper_cpp_revision",
+        "model_identity",
+        "compilation_features",
+        "execution_device"
+      ],
+      "type": "object"
+    },
+    "AudioDigest": {
+      "description": "BLAKE3 over a cached audio artifact's bytes, as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "VerificationContext": {
+      "additionalProperties": false,
+      "description": "Every verification-affecting input that is not the audio itself.\n\nDeliberately holds nothing that appears in [`crate::SynthesisContext`].\n`t2_e1_a_verification_input_never_changes_the_synthesis_key` is what keeps\nthat true as both types grow.",
+      "properties": {
+        "comparison_normalizer_hash": {
+          "$ref": "#/$defs/VerificationProfileHash",
+          "description": "Hash of the comparison normalizer applied before scoring."
+        },
+        "conversion": {
+          "$ref": "#/$defs/AsrConversionIdentity",
+          "description": "The audio conversion applied before decoding."
+        },
+        "decoder_parameters": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Every decoder parameter, by name, in its exact configured spelling.\n\nSpellings rather than parsed numbers, for the reason given on\n[`crate::SynthesisContext::generation_parameters`]: these are floating\npoint, and over-invalidating is the safe direction.",
+          "type": "object"
+        },
+        "expected_pattern_profile_hash": {
+          "$ref": "#/$defs/VerificationProfileHash",
+          "description": "Hash of the approved expected-ASR pattern profile."
+        },
+        "stack": {
+          "$ref": "#/$defs/AsrStackIdentity",
+          "description": "The pinned ASR stack."
+        },
+        "thread_count": {
+          "description": "Thread count the decoder ran with, which can change its output.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "threshold_profile_hash": {
+          "$ref": "#/$defs/VerificationProfileHash",
+          "description": "Hash of the threshold profile a finding is scored against."
+        }
+      },
+      "required": [
+        "stack",
+        "conversion",
+        "decoder_parameters",
+        "thread_count",
+        "expected_pattern_profile_hash",
+        "comparison_normalizer_hash",
+        "threshold_profile_hash"
+      ],
+      "type": "object"
+    },
+    "VerificationKey": {
+      "description": "BLAKE3 over the canonical serialization of every verification-affecting input (ADR-0001 12.5), as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "VerificationProfileHash": {
+      "description": "BLAKE3 over an approved profile a verification result was scored against, as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "VerificationSubject": {
+      "additionalProperties": false,
+      "description": "The audio and text one verification result is about.",
+      "properties": {
+        "audio_blake3": {
+          "$ref": "#/$defs/AudioDigest",
+          "description": "Checksum of the cached audio being verified."
+        },
+        "spoken_text": {
+          "description": "The exact text that audio is supposed to speak.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "audio_blake3",
+        "spoken_text"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://schemas.study-tts.example/verification-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The durable record of one verification identity.\n\n**This is the identity, not yet the finding.** ADR-0001 §12.5 separates the\ntwo deliberately — the identity says which inputs a verification was run\nunder, and re-running ASR under a new decoder must not re-run synthesis.\nE1-S1 owns the identity, so that is what this document records; the\ntranscript, the expected-pattern comparison, and the scored findings arrive\nwith the ASR stack in E4-S1. They are additive optional fields, so they are\na compatible extension under\n`docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` and will land as\n`1.1` rather than as a second document.\n\nRecording the identity now is what makes that later addition cheap: a\nfinding written against a key this build already produces can be matched to\nthe audio it was about, whereas a finding written beside no identity could\nonly ever be matched by re-deriving one.",
+  "properties": {
+    "$schema": {
+      "description": "Published schema this document links to; absent is its declared default.",
+      "oneOf": [
+        {
+          "const": "https://schemas.study-tts.example/verification-v1.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "context": {
+      "$ref": "#/$defs/VerificationContext",
+      "description": "Every verification-affecting input that is not the audio itself."
+    },
+    "schema_version": {
+      "description": "Schema this document claims, as authored text.",
+      "enum": [
+        "1.0"
+      ],
+      "type": "string"
+    },
+    "subject": {
+      "$ref": "#/$defs/VerificationSubject",
+      "description": "The audio and text this verification was about."
+    },
+    "verification_key": {
+      "$ref": "#/$defs/VerificationKey",
+      "description": "The identity derived from `subject` and `context`."
+    }
+  },
+  "required": [
+    "schema_version",
+    "verification_key",
+    "subject",
+    "context"
+  ],
+  "title": "VerificationIdentityRecord",
+  "type": "object"
+}

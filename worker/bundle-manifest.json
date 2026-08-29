@@ -1,0 +1,252 @@
+{
+  "schema_version": "1.2",
+  "import_roots": ["worker/study_tts_worker"],
+  "inputs": [
+    "schemas/worker-protocol-v1.schema.json",
+    "worker/bundle-manifest.json",
+    "worker/launcher.json",
+    "worker/pyproject.toml",
+    "worker/requirements.lock",
+    "worker/study_tts_worker/__init__.py",
+    "worker/study_tts_worker/protocol.py",
+    "worker/study_tts_worker/worker.py"
+  ],
+  "python": {
+    "implementation": "cpython",
+    "version": "3.12.3",
+    "abi_tag": "cp312",
+    "platform_tag": "manylinux_2_39_x86_64"
+  },
+  "startup_modules": [
+    {
+      "module": "sitecustomize",
+      "digest": "Q9gRJdkjdrGmnVOnESagQcyaGNgIDpLeoKKuI74Tix4"
+    }
+  ],
+  "record_digests": [
+    {
+      "distribution": "audioread",
+      "digest": "0Fux-HPb0QKVc5yvfhyAsBNt_wByiZ0kWSebuYKPlxY"
+    },
+    {
+      "distribution": "certifi",
+      "digest": "t6zavL9hBTyl2SWBbGCoeoEQ4Cst5xEqxs-_89jdKJw"
+    },
+    {
+      "distribution": "cffi",
+      "digest": "nrkXzHcW-SqebHZsRci-GGLZPHGaArBMAQBa7aWQfdM"
+    },
+    {
+      "distribution": "charset-normalizer",
+      "digest": "FFNUON1-mlNz3Pe8KGZtrWeZNQfX8g1QyJ8Se99s4i4"
+    },
+    {
+      "distribution": "chatterbox-tts",
+      "digest": "6gXHIZHO914EgABjZ_2a72bY2qgAo4Qb4XX0F9wijqQ"
+    },
+    {
+      "distribution": "conformer",
+      "digest": "BwsqpMi54KGZla1oFRQzWfF1tNjrxH6-aoy4QhgGrSc"
+    },
+    {
+      "distribution": "decorator",
+      "digest": "d8mp_L_6oHUL6jt1Y2nEhM8stvJQO5RHhqcXb759l78"
+    },
+    {
+      "distribution": "diffusers",
+      "digest": "tFLCKLvEqpQlZfbM3uN27q7FZUaejobE1YWoss-5CA8"
+    },
+    {
+      "distribution": "einops",
+      "digest": "LZF1QjwRSjIygEeLPdnwyDOghk62lwPCJPukszwNtqg"
+    },
+    {
+      "distribution": "filelock",
+      "digest": "vxFq7GUu7aD8W1DpO2qsuCjlBExIBaLt929LKR9hAKg"
+    },
+    {
+      "distribution": "fsspec",
+      "digest": "iNvRNQXaMMEP40y3zu4f_Ct1GGK6DDYHYWOGRNPHoog"
+    },
+    {
+      "distribution": "hf-xet",
+      "digest": "HQ8cgyhMoxG2OxlWU_V86Syx_A6eqlxCw7fULIvshvc"
+    },
+    {
+      "distribution": "huggingface-hub",
+      "digest": "lbeqjWJNGElCgT586nBpyCYYs6uMaNRfYSSj8sRi84A"
+    },
+    {
+      "distribution": "idna",
+      "digest": "IA-wGceloCFVrbIua2-LxsFGZPvx77vV1tKb99jwi-c"
+    },
+    {
+      "distribution": "importlib-metadata",
+      "digest": "9TZNNM9BkhIwDOEXsfkHY6WwDzi3WIeMnlc2_sC-EnM"
+    },
+    {
+      "distribution": "jinja2",
+      "digest": "CR8NTw1XBdP6sdR1tLMLkVqsoWBzsra37gIvPEs9NB4"
+    },
+    {
+      "distribution": "joblib",
+      "digest": "vB0AnWuWNTnfrtl9Ddi3h8bKkyLYk8O5B5bRQQNAI3w"
+    },
+    {
+      "distribution": "lazy-loader",
+      "digest": "6MPXUmHN-KRcLKfJBf3sdnwcRFU4_gp5OfDr4EoSA-0"
+    },
+    {
+      "distribution": "librosa",
+      "digest": "1HRLsBp-k8Onb3tMN6yRbSYSlXz0D7bxFCxposYbBzk"
+    },
+    {
+      "distribution": "llvmlite",
+      "digest": "GGS4rXOxp26KDmgdN0bzPoD4Z6yi966Y8uGrzOMxvAQ"
+    },
+    {
+      "distribution": "markupsafe",
+      "digest": "Vnrj8nyLk5WBdgi_FLwZjip4vVZcJJPvMlPX3oaxW1I"
+    },
+    {
+      "distribution": "ml-dtypes",
+      "digest": "tSx5HNTj95lppxwBKuQawiza0BM3RMr6U-gQcetObjs"
+    },
+    {
+      "distribution": "mpmath",
+      "digest": "ueU894IayeK9GCc-_7SRCheX0tZfheNYoyhlNRwdS7M"
+    },
+    {
+      "distribution": "msgpack",
+      "digest": "lfsYftt1awKZzz98kBCsJCqFr5bgi2Wo5vmotjEsERk"
+    },
+    {
+      "distribution": "narwhals",
+      "digest": "elJfa1vgU2PNNvbgGSC4PqkavI6lQc-4K3IzjEXFM4Y"
+    },
+    {
+      "distribution": "networkx",
+      "digest": "q5NmOV5XR702i5Tl6CpYN90GY5_ncnYIMWxHskus06g"
+    },
+    {
+      "distribution": "numba",
+      "digest": "MTvhNa-0GxE-1JbY_aJwXPbi_0-zVpkaclEceQXVxGY"
+    },
+    {
+      "distribution": "numpy",
+      "digest": "bKgjl85k1oCLCrMQObADvBTi-Oko3PfzReVUPWAkGvc"
+    },
+    {
+      "distribution": "onnx",
+      "digest": "TQvgDBt8Pu1QKS3w36tm0ZxzwWnJ-iVMz5sOaSZaAiI"
+    },
+    {
+      "distribution": "packaging",
+      "digest": "vy2QOB-ruhBynGqRqV0I39Fxy7ahIFwhQQOmxUonhK4"
+    },
+    {
+      "distribution": "pillow",
+      "digest": "YCOc-bloFMgjl6JGHxtyeSB-W5KrX4UPmXJHOcddhDo"
+    },
+    {
+      "distribution": "platformdirs",
+      "digest": "Z7gfWGA-U6u2Bmlb_WLJXZRq6sTxsPhJBSH1rB47mnA"
+    },
+    {
+      "distribution": "pooch",
+      "digest": "E54Dnd9X9XjdYOoALdxs7TCCMSOPUFYUWoLu4wOCLYs"
+    },
+    {
+      "distribution": "protobuf",
+      "digest": "R9eLTHrDhhOOBqcNFXpKuoFpa2UxEzLIWfs5ut8Asc8"
+    },
+    {
+      "distribution": "pycparser",
+      "digest": "ChbUMgVPCIQ0P6O-pX8_B_C040GJB-TNOP-nPvbgjcw"
+    },
+    {
+      "distribution": "pyyaml",
+      "digest": "vEDRn6XQZq3ql3FQMdipQQWHAV9C8JJWNfgbU-LDuzo"
+    },
+    {
+      "distribution": "regex",
+      "digest": "p_tvU-Y7Jo7rIflODVYK6Ofs1tYa-jyADZOJHkx2Yp8"
+    },
+    {
+      "distribution": "requests",
+      "digest": "M_r1eGY_7rMDGsIXeMLIy9zmpFuUrZsBaGVxNxeUALA"
+    },
+    {
+      "distribution": "resemble-perth",
+      "digest": "ARG5ZDX2s_-XSCvIXW-J8oGhXqvPQo9lMAZXRSA3l-U"
+    },
+    {
+      "distribution": "s3tokenizer",
+      "digest": "XC4b4DvmQCrUxCIL--R8VDv5lPxMH-AZaaxN5LTjEf0"
+    },
+    {
+      "distribution": "safetensors",
+      "digest": "wz3Seex7iSyN8BTC39XBA5iRUYUAg7mRDIQ8BXZEP08"
+    },
+    {
+      "distribution": "scikit-learn",
+      "digest": "KqbZOATa_GiSzHv9vGjS_KIE48dFLSPcDpzOVZK8XrM"
+    },
+    {
+      "distribution": "scipy",
+      "digest": "pDD_tNpeqiltc8svxdTEEFBKrNcBmm8h_Fv_agazCcQ"
+    },
+    {
+      "distribution": "setuptools",
+      "digest": "Cv4aKsOg0LUgltxXZ4LNt5qvLubC6VCIHtk0VRKudgA"
+    },
+    {
+      "distribution": "soundfile",
+      "digest": "7oQ6OcJf5LCbuXd_aduIrgFYjAPor63mwU-J_KEUx8g"
+    },
+    {
+      "distribution": "soxr",
+      "digest": "_ps_56O3rd_AuMGbPuBb0c1qxFXuQh274hMVNRvNVsY"
+    },
+    {
+      "distribution": "sympy",
+      "digest": "unXXZ7bY4cPcvJPL3_3zXa0akn3gcKzROZRPWIY24-w"
+    },
+    {
+      "distribution": "threadpoolctl",
+      "digest": "OLq795PZkhBHkJNL6bzqDBXVh_zQ4OnP6LzceZeLzqY"
+    },
+    {
+      "distribution": "tokenizers",
+      "digest": "rxPkA2rfT6KnnoAz0h1LvE6XX9TeBDoOhXCex7a2BfA"
+    },
+    {
+      "distribution": "torch",
+      "digest": "v9Ou7WxllFjAuoTZtTPokG3xhY0GRTkwtackM12uSt4"
+    },
+    {
+      "distribution": "torchaudio",
+      "digest": "TQa1kNqYbvx3f3fefjY7wXlG7mFGLo11w_Pyhxqvc40"
+    },
+    {
+      "distribution": "tqdm",
+      "digest": "H6nVAZLZhfLhK3HMb0ase-uJGjzvJeyGD3zS5CSijnc"
+    },
+    {
+      "distribution": "transformers",
+      "digest": "H_el-xvAxVrNTcWv-7OZ-ulHNge3FHFWqoR9-FtO5as"
+    },
+    {
+      "distribution": "typing-extensions",
+      "digest": "RFNlPMqjQu95HoqvKZI_JVZ-Xmy_PwZ-zeduXj01fqE"
+    },
+    {
+      "distribution": "urllib3",
+      "digest": "VCI-sJqrYcaRhlfUSt65H6dj2FM-a_rxItewk9MjAHE"
+    },
+    {
+      "distribution": "zipp",
+      "digest": "G8gdkpjMyZV2jbRIuvBcmYNRrE7gdh2VcHufFgIeMjk"
+    }
+  ]
+}

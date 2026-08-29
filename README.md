@@ -5,7 +5,7 @@
 The project targets software-engineering education, technical interview preparation, and repeated listening. It uses Rust for every durable decision, Chatterbox for speech synthesis, an in-process Whisper verifier for post-render text-integrity triage, and FFmpeg for final audio processing.
 
 > [!IMPORTANT]
-> This repository contains the tested E0-S0 walking skeleton. It uses a deterministic tone synthesizer, not Chatterbox, to exercise lesson loading, planning, validated WAV caching, Rust PCM assembly, real FFmpeg M4A export, and a minimal private-preview manifest. The Chatterbox worker, production schemas, hardened recovery, and product CLI are not implemented. Planned commands and behavior remain architectural intent rather than completed functionality.
+> This repository contains the tested E0-S0 walking skeleton and the E1-S1 contract baseline. It uses a deterministic tone synthesizer, not Chatterbox, to exercise lesson loading, planning, validated WAV caching, Rust PCM assembly, real FFmpeg M4A export, and a minimal private-preview manifest. On top of that E1-S1 added the published versioned schemas, the synthesis and verification identities, the worker-bundle identity, and the locked Python worker environment. The Chatterbox worker, hardened recovery, the complete output package, and the product CLI are not implemented. Planned commands and behavior remain architectural intent rather than completed functionality.
 
 ## Goals
 
@@ -23,14 +23,16 @@ The priority order is technical correctness, comfortable listening, retention va
 
 | Area | Status |
 |---|---|
-| Architecture | Accepted in [ADR-0001](docs/adr/ADR-0001-production-rust-study-guide-tts.md), as amended by [ADR-0001-D001](docs/adr/deviations/ADR-0001-D001-asr-release-condition.md), [ADR-0001-D002](docs/adr/deviations/ADR-0001-D002-constrained-development-performance-gate.md), and [ADR-0001-D003](docs/adr/deviations/ADR-0001-D003-single-instructor-fallback.md) |
+| Architecture | Accepted in [ADR-0001](docs/adr/ADR-0001-production-rust-study-guide-tts.md), as amended by [ADR-0001-D001](docs/adr/deviations/ADR-0001-D001-asr-release-condition.md), [ADR-0001-D002](docs/adr/deviations/ADR-0001-D002-constrained-development-performance-gate.md), [ADR-0001-D003](docs/adr/deviations/ADR-0001-D003-single-instructor-fallback.md), and [ADR-0001-D004](docs/adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md) |
 | Delivery backlog | Approved in [DELIVERY-PLAN.md](DELIVERY-PLAN.md) |
-| Rust workspace | Four-crate workspace with a tested end-to-end skeleton |
+| Rust workspace | Four-crate workspace with a tested end-to-end skeleton and the E1-S1 contract baseline |
 | Model and voice qualification | E0-S2 rights prerequisites and E0-S3 qualification complete; full-box performance qualification remains required before G3 |
-| Chatterbox worker | Not started |
+| Chatterbox worker | Not started. The locked Python environment, the worker protocol, and an executable protocol fake exist; the speech backend lands in E1-S3 |
 | ASR verifier | Not started |
 | CLI | Product commands not implemented |
-| Schemas and fixtures | Two-segment skeleton fixture present; production schemas not implemented |
+| Schemas and fixtures | Seven published versioned schemas under `schemas/`, generated from the Rust types and checked against the checked-in files; skeleton, contract, and deterministic-audio fixtures present |
+| Identities | Canonical serialization and the BLAKE3 synthesis and verification identities implemented; the worker-bundle identity is derived mechanically, with the environment precondition [ADR-0001-D004](docs/adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md) authorizes |
+| Continuous integration | Fast offline pull-request checks with tier-duration reporting, separated from a dispatch-only reference-machine qualification workflow |
 | Production qualification | Not started |
 
 The first delivery target is a private, human-reviewed MVP. It will accept canonical lesson JSON with hand-authored spoken text, use a single persistent Chatterbox worker, produce the complete audio package and run report, and record immutable human approval. It will remain mechanically marked as `private_preview`; ASR integration follows M2, and production publication stays disabled until the production verification, loudness, licensing, recovery, and long-form qualification gates pass.
@@ -202,6 +204,11 @@ technical-tts/
 │   ├── study-tts-runtime/
 │   └── study-tts-testkit/
 ├── worker/
+│   ├── bundle-manifest.json
+│   ├── launcher.json
+│   ├── pyproject.toml
+│   ├── requirements.lock
+│   └── study_tts_worker/
 ├── schemas/
 ├── fixtures/
 ├── docs/
@@ -213,7 +220,11 @@ technical-tts/
 - `study-tts-core` will own lesson types, normalization, planning, and cache identities without depending on Python, FFmpeg, or a model SDK.
 - `study-tts-runtime` will own filesystem state, worker processes, ASR, PCM handling, recovery, and FFmpeg adapters.
 - `study-tts-testkit` will provide the fake worker, deterministic audio, fixtures, and fault injection.
-- `worker` will contain one production Chatterbox adapter and its locked Python environment.
+- `worker` contains the persistent NDJSON worker package, its locked Python environment, and the
+  bundle manifest that declares which of its files are synthesis-key inputs. The Chatterbox backend
+  itself lands in E1-S3; this build refuses `synthesize` rather than returning placeholder audio.
+- `schemas` contains the seven versioned JSON Schemas, generated from the Rust types that define
+  each format by `cargo run --package study-tts-runtime --example generate-schemas`.
 - `data` will contain local runtime artifacts and will not be committed.
 
 ## Delivery roadmap
@@ -285,7 +296,7 @@ These capabilities require measured evidence and a separate decision record. The
 - [Development workflow](docs/operations/DEVELOPMENT-WORKFLOW.md) — implementation and pull-request workflow
 - [AGENTS.md](AGENTS.md) — repository implementation rules and source-of-truth routing
 
-ADR-0002 through ADR-0005 now exist as proposed evidence records. They remain unaccepted until their required measurements and approvals are complete.
+ADR-0002 was accepted on 2026-08-26 with a constrained-development performance waiver. ADR-0003 through ADR-0005 remain proposed and unaccepted until their required measurements and approvals are complete.
 
 ## License status
 

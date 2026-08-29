@@ -17,6 +17,7 @@ test = true
 # licensed, and carried in Cargo.lock.
 [dependencies]
 blake3 = "1.8.6"
+schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"

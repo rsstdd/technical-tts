@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schemas.study-tts.example/verification-v1.schema.json",
+  "schema_version": "1.0",
+  "verification_key": "ea7a148accc81ba37226d6c0a348d1e960b5faa3d811ec4acc587bee3f553cbf",
+  "subject": {
+    "audio_blake3": "09268d8d94086394c19bd47b77f8732c663955b111d795c5f2609bf6a23759da",
+    "spoken_text": "The build refuses rather than guesses."
+  },
+  "context": {
+    "stack": {
+      "whisper_rs_version": "0.14.4",
+      "whisper_rs_sys_version": "0.14.4",
+      "whisper_cpp_revision": "b4785",
+      "model_identity": "ggml-base.en-q5_1",
+      "compilation_features": [
+        "openblas"
+      ],
+      "execution_device": "cpu"
+    },
+    "conversion": {
+      "ffmpeg_version": "6.1.1",
+      "arguments": [
+        "-ar",
+        "16000",
+        "-ac",
+        "1"
+      ]
+    },
+    "decoder_parameters": {
+      "temperature": "0"
+    },
+    "thread_count": 4,
+    "expected_pattern_profile_hash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "comparison_normalizer_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "threshold_profile_hash": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+  }
+}

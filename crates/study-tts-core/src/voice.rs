@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::digest::is_blake3_hex;
+use crate::digest::{blake3_newtype, is_blake3_hex, json_schema_as_string};
 
 /// Schema version this module accepts for `profile.json` and `consent.json`.
 ///
@@ -173,6 +173,97 @@ pub struct VoiceProfile {
     pub approval: RightsDecision,
 }
 
+/// The deterministic identity of one voice-profile record.
+///
+/// A value object rather than a `String` for the reason [`crate::CacheKey`] is
+/// one: it reaches a durable record — a worker reports it on the protocol
+/// channel and the cache writes it into `artifact.json` — and a digest typed as
+/// a string is one any caller can set to anything.
+///
+/// Distinct from [`VoiceProfile::conditionals_blake3`], which is the synthesis
+/// identity of the conditioning artifact. This names the *record* that artifact
+/// was resolved through, which is what traces an unexpected voice back to a
+/// consent decision.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct VoiceProfileHash(String);
+
+impl VoiceProfileHash {
+    /// The hash as it is written into a frame and a cache artifact.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+blake3_newtype!(VoiceProfileHash, MalformedVoiceProfileHash);
+
+/// Remedy routing: `docs/governance/ROUTING-TABLES.md` routes a voice checksum
+/// fault to the project owner and refuses the profile load. The message names
+/// recomputing the digest from the profile record, and never deleting the voice
+/// artifact — `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` keeps voice
+/// references under a managed root that this build does not prune.
+#[derive(Debug, Error)]
+#[error(
+    "voice profile hash `{0}` is not a BLAKE3 digest in lowercase hexadecimal; recompute it \
+     from the voice profile record rather than editing the recorded value, and refer the \
+     profile to the project owner rather than removing it"
+)]
+pub struct MalformedVoiceProfileHash(String);
+
+json_schema_as_string!(
+    VoiceProfileHash,
+    "VoiceProfileHash",
+    "BLAKE3 over the voice-profile record a conditioning artifact was resolved \
+     through (ADR-0001 5.2), as 64 lowercase hexadecimal characters.",
+    pattern = crate::digest::BLAKE3_HEX_PATTERN,
+);
+
+/// BLAKE3 digest of the voice-conditioning artifact a segment was rendered
+/// with.
+///
+/// Distinct from [`VoiceProfileHash`], and the distinction is the one
+/// [`VoiceProfile`] draws between its two checksums: this is the synthesis
+/// identity of `conditionals.pt`, while a profile hash names the *record* that
+/// artifact was resolved through. ADR-0001 §12.5 makes this one a synthesis-key
+/// input, so it reaches every cache key a speaker's segments are stored under.
+///
+/// A value object because of where it travels rather than where it is read:
+/// [`crate::SynthesisContext`] holds one per speaker and hashes them into the
+/// key, and a `String` there let a malformed digest produce a well-formed cache
+/// key naming audio no conditioning artifact could have produced.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct VoiceConditioningHash(String);
+
+impl VoiceConditioningHash {
+    /// The digest as it is written into a cache artifact record.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+blake3_newtype!(VoiceConditioningHash, MalformedVoiceConditioningHash);
+
+/// Remedy routing: the conditioning artifact is kept under the managed voice
+/// root `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` governs, so the
+/// message names recomputing the digest from that artifact and never removing
+/// it.
+#[derive(Debug, Error)]
+#[error(
+    "voice conditioning hash `{0}` is not a BLAKE3 digest in lowercase hexadecimal; recompute it \
+     from the conditioning artifact rather than editing the recorded value, and refer the profile \
+     to the project owner rather than removing the artifact"
+)]
+pub struct MalformedVoiceConditioningHash(String);
+
+json_schema_as_string!(
+    VoiceConditioningHash,
+    "VoiceConditioningHash",
+    "BLAKE3 over the voice-conditioning artifact used for synthesis \
+     (ADR-0001 5.2), as 64 lowercase hexadecimal characters.",
+    pattern = crate::digest::BLAKE3_HEX_PATTERN,
+);
+
 /// Why a voice record was refused.
 #[derive(Debug, Error)]
 pub enum VoiceError {
@@ -258,9 +349,12 @@ impl VoiceProfile {
     ///
     /// # Errors
     ///
-    /// [`VoiceError::InvalidJson`] when the bytes are not this record's shape,
-    /// otherwise whichever variant [`VoiceProfile::validate`] returns.
+    /// [`VoiceError::UnsupportedSchema`] when the record declares a version
+    /// this build cannot read, [`VoiceError::InvalidJson`] when the bytes are
+    /// not this record's shape, otherwise whichever variant
+    /// [`VoiceProfile::validate`] returns.
     pub fn from_json(bytes: &[u8]) -> Result<Self, VoiceError> {
+        check_voice_schema_version(bytes)?;
         let profile: Self = serde_json::from_slice(bytes)?;
         profile.validate()?;
         Ok(profile)
@@ -280,8 +374,8 @@ impl VoiceProfile {
         if self.schema_version != VOICE_SCHEMA_VERSION {
             return Err(VoiceError::UnsupportedSchema(self.schema_version.clone()));
         }
-        require("profile_id", &self.profile_id)?;
-        require("extractor_identity", &self.extractor_identity)?;
+        require_non_blank("profile_id", &self.profile_id)?;
+        require_non_blank("extractor_identity", &self.extractor_identity)?;
         require_blake3_hex("reference_wav_blake3", &self.reference_wav_blake3)?;
         require_blake3_hex("conditionals_blake3", &self.conditionals_blake3)?;
         Ok(())
@@ -293,9 +387,12 @@ impl VoiceConsent {
     ///
     /// # Errors
     ///
-    /// [`VoiceError::InvalidJson`] when the bytes are not this record's shape,
-    /// otherwise whichever variant [`VoiceConsent::validate`] returns.
+    /// [`VoiceError::UnsupportedSchema`] when the record declares a version
+    /// this build cannot read, [`VoiceError::InvalidJson`] when the bytes are
+    /// not this record's shape, otherwise whichever variant
+    /// [`VoiceConsent::validate`] returns.
     pub fn from_json(bytes: &[u8]) -> Result<Self, VoiceError> {
+        check_voice_schema_version(bytes)?;
         let consent: Self = serde_json::from_slice(bytes)?;
         consent.validate()?;
         Ok(consent)
@@ -314,9 +411,9 @@ impl VoiceConsent {
         if self.schema_version != VOICE_SCHEMA_VERSION {
             return Err(VoiceError::UnsupportedSchema(self.schema_version.clone()));
         }
-        require("declaration", &self.declaration)?;
-        require("created", &self.created)?;
-        require("rights_record_id", &self.rights_record_id)?;
+        require_non_blank("declaration", &self.declaration)?;
+        require_non_blank("created", &self.created)?;
+        require_non_blank("rights_record_id", &self.rights_record_id)?;
         require_blake3_hex("reference_wav_blake3", &self.reference_wav_blake3)?;
         if self.permitted_use.is_empty() {
             return Err(VoiceError::MissingField("permitted_use"));
@@ -406,7 +503,7 @@ fn recorded_scope(consent: &VoiceConsent) -> String {
 
 /// Rejects a blank required field, naming it so the owner knows what to fill
 /// in.
-fn require(field: &'static str, value: &str) -> Result<(), VoiceError> {
+fn require_non_blank(field: &'static str, value: &str) -> Result<(), VoiceError> {
     if value.trim().is_empty() {
         return Err(VoiceError::MissingField(field));
     }
@@ -416,12 +513,28 @@ fn require(field: &'static str, value: &str) -> Result<(), VoiceError> {
 /// A recorded digest must be exactly the form `blake3::Hash::to_hex` produces,
 /// because that is what the runtime compares it against byte for byte.
 fn require_blake3_hex(field: &'static str, value: &str) -> Result<(), VoiceError> {
-    require(field, value)?;
+    require_non_blank(field, value)?;
     if !is_blake3_hex(value) {
         return Err(VoiceError::MalformedChecksum {
             field,
             value: value.to_owned(),
         });
+    }
+    Ok(())
+}
+
+/// Refuses an unsupported record version before strict shape parsing.
+fn check_voice_schema_version(bytes: &[u8]) -> Result<(), VoiceError> {
+    #[derive(Deserialize)]
+    struct VersionHeader {
+        schema_version: String,
+    }
+
+    let Ok(header) = serde_json::from_slice::<VersionHeader>(bytes) else {
+        return Ok(());
+    };
+    if header.schema_version != VOICE_SCHEMA_VERSION {
+        return Err(VoiceError::UnsupportedSchema(header.schema_version));
     }
     Ok(())
 }
@@ -479,6 +592,30 @@ mod tests {
         let consent = parse_consent(&consent_value()).expect("valid consent must parse");
         validate_profile_for_use(&profile, &consent, VoiceUse::PrivateSynthesis)
             .expect("granted, approved, in-scope profile is usable");
+    }
+
+    #[test]
+    fn t1_e0_voice_record_versions_are_read_before_fields_they_added() {
+        let mut profile = profile_value();
+        profile["schema_version"] = Value::String("9.9-future".to_owned());
+        profile["future_profile_field"] = Value::Bool(true);
+
+        let mut consent = consent_value();
+        consent["schema_version"] = Value::String("9.9-future".to_owned());
+        consent["future_consent_field"] = Value::Bool(true);
+
+        for error in [
+            parse_profile(&profile).expect_err("a future profile must be refused"),
+            parse_consent(&consent).expect_err("a future consent record must be refused"),
+        ] {
+            assert!(
+                matches!(
+                    error,
+                    VoiceError::UnsupportedSchema(ref version) if version == "9.9-future"
+                ),
+                "a future record must be refused by version before its new fields: {error}"
+            );
+        }
     }
 
     /// One way to make a record structurally invalid: a label, and the edit

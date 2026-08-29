@@ -265,19 +265,6 @@ pub enum DurableStateError {
         required: String,
     },
 
-    /// A package manifest plan hash is not a lowercase BLAKE3 digest.
-    #[error(
-        "package manifest `{}` records malformed plan hash `{value}`; preserve the package for \
-         runtime reconciliation",
-        path.display()
-    )]
-    MalformedPackagePlanHash {
-        /// Manifest carrying the malformed value.
-        path: PathBuf,
-        /// Value found where a digest is required.
-        value: String,
-    },
-
     /// A package manifest segment has no stable identity.
     #[error(
         "package manifest `{}` contains a segment with an empty identity; preserve the package for \
@@ -287,19 +274,6 @@ pub enum DurableStateError {
     EmptyPackageSegmentId {
         /// Manifest carrying the invalid segment.
         path: PathBuf,
-    },
-
-    /// A package manifest segment checksum is malformed.
-    #[error(
-        "package manifest `{}` records malformed segment checksum `{value}`; preserve the package \
-         for runtime reconciliation",
-        path.display()
-    )]
-    MalformedPackageSegmentChecksum {
-        /// Manifest carrying the malformed checksum.
-        path: PathBuf,
-        /// Value found where a digest is required.
-        value: String,
     },
 
     /// A package manifest segment declares no audio frames.
@@ -330,21 +304,6 @@ pub enum DurableStateError {
         required: &'static str,
     },
 
-    /// A package artifact record contains a malformed checksum.
-    #[error(
-        "package manifest `{}` records malformed checksum `{value}` for artifact `{artifact}`; \
-         preserve the package for runtime reconciliation",
-        manifest.display()
-    )]
-    MalformedPackageArtifactChecksum {
-        /// Manifest carrying the malformed checksum.
-        manifest: PathBuf,
-        /// Artifact whose checksum is malformed.
-        artifact: &'static str,
-        /// Value found where a digest is required.
-        value: String,
-    },
-
     /// A package artifact no longer matches its manifest checksum.
     #[error(
         "package artifact `{}` hashes to `{found}`, not recorded checksum `{expected}`; preserve \
@@ -371,21 +330,6 @@ pub enum DurableStateError {
         path: PathBuf,
         /// Tool whose executed argument list is absent.
         tool: &'static str,
-    },
-
-    /// A package manifest records a malformed normalized tool profile identity.
-    #[error(
-        "package manifest `{}` records malformed normalized profile `{value}` for `{tool}`; \
-         preserve the package for runtime reconciliation",
-        path.display()
-    )]
-    MalformedPackageToolProfile {
-        /// Manifest carrying the malformed profile identity.
-        path: PathBuf,
-        /// Tool whose profile identity is malformed.
-        tool: &'static str,
-        /// Value found where a digest is required.
-        value: String,
     },
 
     /// A manifest file no longer matches the selecting record's checksum.
@@ -521,15 +465,11 @@ impl DurableStateError {
             | Self::UnsupportedPackageManifest { .. }
             | Self::PackageReleaseStatusMismatch { .. }
             | Self::PackageLessonMismatch { .. }
-            | Self::MalformedPackagePlanHash { .. }
             | Self::EmptyPackageSegmentId { .. }
-            | Self::MalformedPackageSegmentChecksum { .. }
             | Self::EmptyPackageSegmentAudio { .. }
             | Self::UnexpectedPackageArtifactPath { .. }
-            | Self::MalformedPackageArtifactChecksum { .. }
             | Self::PackageArtifactChecksumMismatch { .. }
             | Self::MissingPackageToolArguments { .. }
-            | Self::MalformedPackageToolProfile { .. }
             | Self::PackageManifestChecksumMismatch { .. }
             | Self::MalformedDurableDigest { .. }
             | Self::MissingCurrentPreview { .. }

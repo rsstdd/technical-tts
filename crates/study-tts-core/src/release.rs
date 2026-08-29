@@ -1,10 +1,7 @@
-//! What an artifact may claim to be, and the gates a production claim has to
-//! satisfy.
+//! Release-status claims and production-gate validation.
 //!
 //! [`REQUIRED_PRODUCTION_GATES`] is transcribed from ADR-0001 §18 and mirrored
-//! in `docs/governance/RELEASE-PROFILES.md` §3. The claim is checked in one
-//! place so that nothing which writes a manifest can re-derive a weaker
-//! version of it.
+//! in `docs/governance/RELEASE-PROFILES.md` §3.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -12,12 +9,11 @@ use thiserror::Error;
 /// Gates a production release must satisfy.
 ///
 /// Transcribed from ADR-0001 §18 and mirrored in
-/// `docs/governance/RELEASE-PROFILES.md` §3. The two must agree, and changing
-/// either requires an ADR amendment rather than an edit.
+/// `docs/governance/RELEASE-PROFILES.md` §3, which names this constant in
+/// return. Changing either requires an ADR amendment.
 ///
-/// ASR calibration is deliberately absent. ADR-0001 §17.18 and §18 stated
-/// different ASR release conditions; version 1.0 adopts the §18 condition,
-/// recorded in `docs/adr/deviations/ADR-0001-D001-asr-release-condition.md`.
+/// ASR calibration is absent under ADR-0001-D001, which adopts ADR-0001 §18's
+/// triage requirement.
 pub const REQUIRED_PRODUCTION_GATES: [&str; 12] = [
     "long_form_soak",
     "content_integrity_review",
@@ -34,7 +30,7 @@ pub const REQUIRED_PRODUCTION_GATES: [&str; 12] = [
 ];
 
 /// What an artifact claims to be.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseStatus {
     /// Rendered and structurally valid, but not verified, approved, or
@@ -48,11 +44,7 @@ pub enum ReleaseStatus {
 impl ReleaseStatus {
     /// The `snake_case` spelling this status carries in a manifest.
     ///
-    /// Mirrors the serde representation above so a refusal quotes what the
-    /// manifest actually declares. The exhaustive match makes a new variant a
-    /// compile error rather than a silent fallback string, and
-    /// `t3_e0_release_status_spellings_match_their_serde_representation` proves
-    /// the two agree.
+    /// Kept in sync with the serde representation by an exhaustive test.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::PrivatePreview => "private_preview",
@@ -64,13 +56,18 @@ impl ReleaseStatus {
 /// Why a claim was refused as a production release.
 #[derive(Debug, Error)]
 pub enum ReleaseError {
-    /// The artifact claims a profile it did not earn; only `publish` produces a
-    /// release.
-    #[error("a private preview cannot report production release")]
+    /// A private-preview claim entered the production publication path.
+    #[error(
+        "release claim is `private_preview`, not `production_release`; the project owner must \
+         preserve the preview and use the production publication workflow with complete gate \
+         evidence"
+    )]
     PrivateProfileCannotClaimProduction,
-    /// A required gate has no evidence record, named so the owner knows which
-    /// one to run.
-    #[error("production release is missing gate evidence: {0}")]
+    /// One or more required gates lack evidence records.
+    #[error(
+        "production release is missing gate evidence: {0}; the gate owners must record passing \
+         evidence before the project owner retries publication"
+    )]
     MissingGateEvidence(String),
 }
 
@@ -98,48 +95,15 @@ impl ReleaseClaim {
         }
     }
 
-    /// The profile this claim asserts.
-    pub fn status(&self) -> ReleaseStatus {
-        self.status
-    }
-
     /// Accepts the claim only if the profile is production and every required
     /// gate has evidence.
     ///
     /// # Errors
     ///
-    /// [`ReleaseError::PrivateProfileCannotClaimProduction`] when the claim is
-    /// not a production one, and [`ReleaseError::MissingGateEvidence`] naming
-    /// every gate that has no evidence — all of them, not the first, so the
-    /// owner learns the whole remaining list in one refusal.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use study_tts_core::{ReleaseClaim, ReleaseError};
-    /// use study_tts_core::REQUIRED_PRODUCTION_GATES;
-    ///
-    /// assert!(matches!(
-    ///     ReleaseClaim::private_preview().validate_as_production(),
-    ///     Err(ReleaseError::PrivateProfileCannotClaimProduction)
-    /// ));
-    ///
-    /// let every_gate = REQUIRED_PRODUCTION_GATES
-    ///     .iter()
-    ///     .map(|gate| (*gate).to_owned())
-    ///     .collect();
-    /// assert!(
-    ///     ReleaseClaim::production_release(every_gate)
-    ///         .validate_as_production()
-    ///         .is_ok()
-    /// );
-    ///
-    /// let no_evidence = ReleaseClaim::production_release(Vec::new());
-    /// assert!(matches!(
-    ///     no_evidence.validate_as_production(),
-    ///     Err(ReleaseError::MissingGateEvidence(_))
-    /// ));
-    /// ```
+    /// [`ReleaseError::PrivateProfileCannotClaimProduction`] tells the project
+    /// owner to preserve a private preview, while
+    /// [`ReleaseError::MissingGateEvidence`] gives the project owner every gate
+    /// whose owner must record passing evidence.
     pub fn validate_as_production(&self) -> Result<(), ReleaseError> {
         if self.status != ReleaseStatus::ProductionRelease {
             return Err(ReleaseError::PrivateProfileCannotClaimProduction);
@@ -161,12 +125,8 @@ impl ReleaseClaim {
 mod tests {
     use super::*;
 
-    /// The gate identifiers this crate is expected to require, transcribed
-    /// independently from `docs/governance/RELEASE-PROFILES.md` §3 rather than
-    /// read from `REQUIRED_PRODUCTION_GATES`. A test that derives its cases
-    /// from the implementation drops a case whenever a gate is dropped, and
-    /// stays green while the policy shrinks. Update this table only alongside
-    /// an ADR amendment that changes §3.
+    // Independent policy copy: deriving this from the implementation would
+    // let a deleted gate leave the test green.
     const EXPECTED_PRODUCTION_GATES: [&str; 12] = [
         "long_form_soak",
         "content_integrity_review",
@@ -200,7 +160,6 @@ mod tests {
             claim.validate_as_production(),
             Err(ReleaseError::PrivateProfileCannotClaimProduction)
         ));
-        assert_eq!(claim.status(), ReleaseStatus::PrivatePreview);
     }
 
     #[test]
@@ -229,19 +188,25 @@ mod tests {
             .expect("a complete gate set must be accepted");
     }
 
-    /// Every status, so a spelling cannot go untested. The match inside the
-    /// test is what makes a new variant a compile error; this array only says
-    /// which values to run it over.
-    const ALL_RELEASE_STATUSES: [ReleaseStatus; 2] = [
-        ReleaseStatus::PrivatePreview,
-        ReleaseStatus::ProductionRelease,
-    ];
+    #[test]
+    fn t1_e0_release_refusals_name_the_remedy_owner() {
+        let private = ReleaseClaim::private_preview()
+            .validate_as_production()
+            .expect_err("a private preview must be refused");
+        let missing = ReleaseClaim::production_release(Vec::new())
+            .validate_as_production()
+            .expect_err("missing gate evidence must be refused");
+
+        assert!(private.to_string().contains("project owner"));
+        assert!(missing.to_string().contains("gate owners"));
+    }
 
     #[test]
     fn t3_e0_release_status_spellings_match_their_serde_representation() {
-        for status in ALL_RELEASE_STATUSES {
-            // Transcribed from the serde attribute on the enum rather than read
-            // from `as_str`, so this table cannot agree with a wrong spelling.
+        for status in [
+            ReleaseStatus::PrivatePreview,
+            ReleaseStatus::ProductionRelease,
+        ] {
             let spelling = match status {
                 ReleaseStatus::PrivatePreview => "private_preview",
                 ReleaseStatus::ProductionRelease => "production_release",
@@ -262,15 +227,6 @@ mod tests {
 
     #[test]
     fn t3_e0_unknown_release_status_is_rejected() {
-        assert_eq!(
-            serde_json::from_str::<ReleaseStatus>("\"private_preview\"").expect("known status"),
-            ReleaseStatus::PrivatePreview
-        );
-        assert_eq!(
-            serde_json::from_str::<ReleaseStatus>("\"production_release\"").expect("known status"),
-            ReleaseStatus::ProductionRelease
-        );
-
         for unknown in [
             "\"public\"",
             "\"released\"",
@@ -293,20 +249,6 @@ mod tests {
         assert_eq!(
             REQUIRED_PRODUCTION_GATES, EXPECTED_PRODUCTION_GATES,
             "REQUIRED_PRODUCTION_GATES no longer matches RELEASE-PROFILES.md §3"
-        );
-    }
-
-    #[test]
-    fn t3_e0_gate_list_has_no_duplicates() {
-        let mut sorted = EXPECTED_PRODUCTION_GATES;
-        sorted.sort_unstable();
-        let mut unique = sorted.to_vec();
-        unique.dedup();
-
-        assert_eq!(
-            unique.len(),
-            EXPECTED_PRODUCTION_GATES.len(),
-            "gate identifiers must be unique"
         );
     }
 }

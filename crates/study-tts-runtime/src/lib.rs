@@ -19,9 +19,12 @@ mod package_port;
 mod pipeline;
 mod preview;
 mod process;
+mod schemas;
 mod synthesis;
 mod tools;
 mod voice_gate;
+mod worker_bundle;
+mod worker_environment;
 mod worker_protocol;
 
 pub use cache::ValidatedCachedArtifact;
@@ -30,9 +33,11 @@ pub use cache_port::{
     FileSystemCachePublisher, StagedAudioProducer,
 };
 pub use error::{
-    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, DurableStateError, IoError,
-    ManagedPathError, PackageArtifactMismatch, PublicationError, RemedyAdvice, RemedyOwner,
-    RightsError, ToolError, ToolInvocation, ToolOperation, ToolOutputStream, VoiceProfileError,
+    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, DurableStateError,
+    EnvironmentMismatch, IoError, ManagedPathError, PackageArtifactMismatch, PublicationError,
+    RemedyAdvice, RemedyOwner, RightsError, RuntimeIdentityMismatch, ToolError, ToolInvocation,
+    ToolOperation, ToolOutputStream, VoiceProfileError, WorkerBundleError,
+    WorkerLockfileErrorReason, WorkerLockfileLocus,
 };
 pub use job_repository::{
     FileSystemJobRepository, JOB_STATE_CONTRACT_VERSION, JobOwnership, JobRepository,
@@ -46,13 +51,26 @@ pub use pipeline::{
     BuildRequest, BuildResult, PreviewServiceBundle, build_preview, build_preview_with_services,
     publish, validate_encoded_output, validate_production_manifest,
 };
+pub use schemas::{
+    JOB_SCHEMA_VERSION, MANIFEST_SCHEMA_VERSION, PUBLISHED_SCHEMAS, PublishedSchema,
+    SCHEMA_DIRECTORY, WORKER_PROTOCOL_SCHEMA_VERSION,
+};
 pub use synthesis::{
     BackendDescriptor, BackendError, BackendValidationError, SynthesisReport, SynthesisRequest,
     TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, validate_executor_request,
 };
+pub use worker_bundle::{
+    BUNDLE_MANIFEST_PATH, BUNDLE_MANIFEST_SCHEMA_VERSION, BundleManifest, DeclaredStartupModule,
+    MAX_BUNDLE_INPUT_BYTES, PythonRuntimeIdentity, REQUIRED_BUNDLE_INPUTS, REQUIRED_IMPORT_ROOT,
+    StartupModuleName, WORKER_BUNDLE_IDENTITY_VERSION, WORKER_ENTRYPOINT_PATH,
+    WORKER_LAUNCHER_PATH, WORKER_LOCKFILE_PATH, WORKER_PACKAGE_ROOT, WORKER_PROTOCOL_SCHEMA_PATH,
+    WorkerBundle,
+};
+pub use worker_environment::WORKER_INTERPRETER_PATH;
 pub use worker_protocol::{
-    InitializeParameters, MAX_WORKER_FRAME_BYTES, TraceContext, WORKER_PROTOCOL_EXTENSION_VERSION,
-    WORKER_PROTOCOL_VERSION, WorkerCapabilities, WorkerFailureCode, WorkerFrameError,
+    InitializeParameters, MAX_WORKER_FRAME_BYTES, MAX_WORKER_REQUEST_ID_BYTES, TraceContext,
+    WORKER_PROTOCOL_EXTENSION_VERSION, WORKER_PROTOCOL_VERSION, WorkerCapabilities,
+    WorkerFailureCode, WorkerFrame, WorkerFrameError, WorkerInitializationIdentities,
     WorkerRequestFrame, WorkerResponseFrame, WorkerSynthesisParameters, parse_worker_request,
     parse_worker_response,
 };

@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "device": "cpu",
+  "threads": 4,
+  "offline_environment": {
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+    "HF_HUB_DISABLE_PROGRESS_BARS": "1"
+  },
+  "local_files_only": true,
+  "model_root_environment_variable": "STUDY_TTS_MODEL_ROOT"
+}

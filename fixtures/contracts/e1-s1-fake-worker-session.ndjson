@@ -1,0 +1,6 @@
+{"method":"initialize","parameters":{"threads":1,"worker_bundle_hash":"0000000000000000000000000000000000000000000000000000000000000001"},"protocol_version":"e1.worker.1.0","request_id":"session-1"}
+{"method":"capabilities","protocol_version":"e1.worker.1.0","request_id":"session-2"}
+{"method":"health","protocol_version":"e1.worker.1.0","request_id":"session-3"}
+{"method":"synthesize","parameters":{"output":"segment.wav","seed":0,"style":"calm_explanatory","take":0,"text":"A cache stores reusable work.","voice":"synthetic-test-voice-v1"},"protocol_version":"e1.worker.1.0","request_id":"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"}
+{"active_request_id":"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr","method":"cancel","protocol_version":"e1.worker.1.0","request_id":"session-5"}
+{"method":"shutdown","protocol_version":"e1.worker.1.0","request_id":"session-6"}

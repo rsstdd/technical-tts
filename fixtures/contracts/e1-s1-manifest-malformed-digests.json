@@ -1,0 +1,43 @@
+{
+  "schema_version": "0.2-skeleton",
+  "release_status": "private_preview",
+  "lesson_id": "e0-s0-walking-skeleton",
+  "plan_hash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "segments": [
+    {
+      "segment_id": "seg-0001",
+      "cache_key": "2222222222222222222222222222222222222222222222222222222222222222",
+      "audio_blake3": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "frames": 24000,
+      "pause_after_ms": 400
+    }
+  ],
+  "artifacts": {
+    "master_wav": {
+      "path": "master.wav",
+      "blake3": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+    },
+    "m4a": {
+      "path": "lesson.m4a",
+      "blake3": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+  },
+  "tools": {
+    "ffmpeg": {
+      "resolved_executable": "/usr/bin/ffmpeg",
+      "version": "6.1.1",
+      "arguments": [
+        "-hide_banner"
+      ],
+      "argument_profile_blake3": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "ffprobe": {
+      "resolved_executable": "/usr/bin/ffprobe",
+      "version": "6.1.1",
+      "arguments": [
+        "-hide_banner"
+      ],
+      "argument_profile_blake3": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+    }
+  }
+}

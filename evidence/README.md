@@ -28,3 +28,40 @@ result is not a criterion, because a bar set afterwards cannot fail.
 Evidence is committed to Git. `docs/governance/RISK-OPEN-QUESTIONS-DESCOPE.md` OQ-02 proposes a
 single-machine, local-filesystem scope, and OQ-06 leaves the backup and recovery plan open until
 before M3, so until that plan exists, committing evidence is what protects it from machine loss.
+
+## Provenance
+
+A digest inside a record names the exact bytes a conclusion was reached against. Revising a cited
+document does not invalidate the record — `git show` still produces what the approver read — but
+it does mean the record can no longer be checked against the working tree, and nobody can tell a
+routine revision from a rewritten control without reading both versions.
+
+So editing a governed document obliges you to say what happened to every accepted record pinning
+it: recompute and supersede, or write a record showing the conclusion stands.
+`scripts/check-evidence-provenance.py` enforces this over every unsuperseded record — an
+unapproved draft included, per the last paragraph below — and is wired into
+the `lint` job of `.github/workflows/ci.yml`. A mismatch can be suppressed only by an exact row
+under `## Accounted provenance mismatches` in an accepted reconciliation record. A proposed
+record, an unapproved superseding record, or a prose mention has no effect. Nothing inside a
+record declares its kind, so a reconciliation record is one carrying `reconciliation` as a
+hyphen-separated word in its record ID; a baseline record's own accounting section grants
+nothing, however it is worded. The reconciliation this repository carries today is
+`gates/g1/e1-s1/e1-s1-evidence-provenance-reconciliation-v2.md`, which is accepted, supersedes
+`-v1`, and names that script in return.
+
+New records declare acceptance with an exact `- Status: Accepted` field and supersession with
+``- Supersedes: `<record-id>` ``. Immutable legacy records without a status field remain readable
+through their completed Review/Approval table or checked rights decision; a table containing a
+Pending or Proposed decision is not accepted.
+
+Superseded records are not checked, and must not be. They pin what they measured; that is what
+supersession is for. Supersession is read from a `- Supersedes:` metadata line, so every new
+record must carry one; prose alone does not remove a record from checking. Records accepted
+before that rule are listed under `## Superseded without supersession metadata` in an accepted
+reconciliation record, because adding the line to them would be the in-place amendment forbidden
+above.
+
+Acceptance decides who may *grant* — supersede a record, or account for a mismatch — not who is
+*checked*. A record that declares no status is checked rather than skipped, because the reverse
+fails open: the records least likely to declare a status are the oldest, whose cited documents
+have had the longest to move.

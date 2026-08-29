@@ -1,0 +1,833 @@
+{
+  "$defs": {
+    "InitializeParameters": {
+      "additionalProperties": false,
+      "description": "Parameters that initialize one persistent worker.",
+      "properties": {
+        "threads": {
+          "description": "Maximum native threads assigned to this worker.\n\nFixed-width rather than `usize`, which is the pointer width of whoever\ncompiled the reader: a 32-bit build and a 64-bit build would accept\ndifferent frames under one protocol version. The `maximum` the published\nschema carries for it comes from that width, in\n[`crate::schemas::PublishedSchema::generate`].\n\nNon-zero because zero is not a smaller allowance but an unanswerable\ninstruction: no thread count means the worker cannot run at all, and\nboth ends and the published schema accepted it while nothing yet reads\nthe value. Applying it is E1-S3's; refusing a value no application\ncould honor is this boundary's, and refusing it now costs nothing\nbecause no conforming frame carries one. `NonZeroU32` rather than a\nhand-written check, so the refusal is `serde`'s at the parse and the\npublished `minimum` follows from the type.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "worker_bundle_hash": {
+          "$ref": "#/$defs/WorkerBundleHash",
+          "description": "Immutable worker-bundle identity."
+        }
+      },
+      "required": [
+        "worker_bundle_hash",
+        "threads"
+      ],
+      "type": "object"
+    },
+    "TraceContext": {
+      "additionalProperties": false,
+      "description": "Optional correlation metadata added by worker protocol 1.1.",
+      "properties": {
+        "trace_id": {
+          "description": "Opaque local trace identifier; never source text or a voice path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trace_id"
+      ],
+      "type": "object"
+    },
+    "VoiceProfileHash": {
+      "description": "BLAKE3 over the voice-profile record a conditioning artifact was resolved through (ADR-0001 5.2), as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "WorkerBundleHash": {
+      "description": "BLAKE3 over the worker bundle's declared inputs and runtime ABI (ADR-0001 12.5), as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "WorkerCapabilities": {
+      "additionalProperties": false,
+      "description": "Backend capabilities returned after initialization.",
+      "properties": {
+        "channels": {
+          "description": "Canonical output channel count.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deterministic_seed": {
+          "description": "Whether a fixed seed is characterized as deterministic.",
+          "type": "boolean"
+        },
+        "device": {
+          "description": "Selected execution device.",
+          "type": "string"
+        },
+        "languages": {
+          "description": "Supported language identifiers.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_text_bytes": {
+          "description": "Maximum accepted text bytes per request.\n\nFixed-width for the reason [`InitializeParameters::threads`] is.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sample_format": {
+          "description": "Canonical output sample format.",
+          "type": "string"
+        },
+        "sample_rate": {
+          "description": "Canonical output sample rate.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "styles": {
+          "description": "Supported style identifiers.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "voices": {
+          "description": "Supported voice profile identifiers.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "languages",
+        "max_text_bytes",
+        "voices",
+        "styles",
+        "sample_rate",
+        "channels",
+        "sample_format",
+        "deterministic_seed",
+        "device"
+      ],
+      "type": "object"
+    },
+    "WorkerFailureCode": {
+      "description": "Stable worker failure vocabulary carried on the protocol channel.",
+      "oneOf": [
+        {
+          "const": "invalid_request",
+          "description": "Request parameters failed backend validation.",
+          "type": "string"
+        },
+        {
+          "const": "initialization_failed",
+          "description": "Model or voice initialization failed.",
+          "type": "string"
+        },
+        {
+          "const": "synthesis_failed",
+          "description": "Synthesis failed after request acceptance.",
+          "type": "string"
+        },
+        {
+          "const": "output_failed",
+          "description": "Assigned staging output could not be written.",
+          "type": "string"
+        },
+        {
+          "const": "timeout",
+          "description": "Active work exceeded its deadline.",
+          "type": "string"
+        },
+        {
+          "const": "cancellation_failed",
+          "description": "Cancellation could not complete safely.",
+          "type": "string"
+        },
+        {
+          "const": "resource_exhausted",
+          "description": "Worker resources were exhausted.",
+          "type": "string"
+        },
+        {
+          "const": "internal",
+          "description": "Worker internal state became unusable.",
+          "type": "string"
+        }
+      ]
+    },
+    "WorkerInitializationIdentities": {
+      "additionalProperties": false,
+      "description": "Immutable identities loaded by a successfully initialized worker.",
+      "properties": {
+        "model_revision": {
+          "description": "Pinned model revision loaded by the worker.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[\\x21-\\x7E]+$(?![\\s\\S])",
+          "type": "string"
+        },
+        "tokenizer_revision": {
+          "description": "Pinned tokenizer or codec revision loaded by the worker.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[\\x21-\\x7E]+$(?![\\s\\S])",
+          "type": "string"
+        },
+        "voice_profile_hashes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/VoiceProfileHash"
+          },
+          "description": "Loaded voice profiles keyed by their stable profile identifiers.",
+          "minProperties": 1,
+          "type": "object"
+        },
+        "worker_bundle_hash": {
+          "$ref": "#/$defs/WorkerBundleHash",
+          "description": "Identity of the executable worker bundle."
+        }
+      },
+      "required": [
+        "model_revision",
+        "tokenizer_revision",
+        "worker_bundle_hash",
+        "voice_profile_hashes"
+      ],
+      "type": "object"
+    },
+    "WorkerRequestFrame": {
+      "description": "Requests Rust may send to one worker process.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Load immutable model, voice, and device state.",
+          "properties": {
+            "method": {
+              "const": "initialize",
+              "type": "string"
+            },
+            "parameters": {
+              "$ref": "#/$defs/InitializeParameters",
+              "description": "Initialization parameters."
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "method",
+            "protocol_version",
+            "request_id",
+            "parameters"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Query the backend's supported request envelope.",
+          "properties": {
+            "method": {
+              "const": "capabilities",
+              "type": "string"
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "method",
+            "protocol_version",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Report readiness and model-resource residency.",
+          "properties": {
+            "method": {
+              "const": "health",
+              "type": "string"
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "method",
+            "protocol_version",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Render one approved segment.",
+          "properties": {
+            "method": {
+              "const": "synthesize",
+              "type": "string"
+            },
+            "parameters": {
+              "$ref": "#/$defs/WorkerSynthesisParameters",
+              "description": "Backend synthesis parameters."
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "method",
+            "protocol_version",
+            "request_id",
+            "parameters"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Request cancellation of the active synthesis.",
+          "properties": {
+            "active_request_id": {
+              "description": "Active synthesis request to cancel.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            },
+            "method": {
+              "const": "cancel",
+              "type": "string"
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "method",
+            "protocol_version",
+            "request_id",
+            "active_request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Unload the worker and exit cleanly.",
+          "properties": {
+            "method": {
+              "const": "shutdown",
+              "type": "string"
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "method",
+            "protocol_version",
+            "request_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WorkerResponseFrame": {
+      "description": "Responses and events one worker may emit on protocol-only stdout.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Initialization completed successfully.",
+          "properties": {
+            "event": {
+              "const": "initialized",
+              "type": "string"
+            },
+            "identities": {
+              "$ref": "#/$defs/WorkerInitializationIdentities",
+              "description": "Immutable backend identities loaded by the worker."
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "protocol_version",
+            "request_id",
+            "identities"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Capability discovery completed successfully.",
+          "properties": {
+            "capabilities": {
+              "$ref": "#/$defs/WorkerCapabilities",
+              "description": "Supported backend envelope."
+            },
+            "event": {
+              "const": "capabilities",
+              "type": "string"
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "protocol_version",
+            "request_id",
+            "capabilities"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Worker readiness and model-resource residency were reported.",
+          "properties": {
+            "event": {
+              "const": "health",
+              "type": "string"
+            },
+            "model_loaded": {
+              "description": "Whether the speech model currently occupies worker resources.",
+              "type": "boolean"
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "ready": {
+              "description": "Whether this process can accept a synthesis request.",
+              "type": "boolean"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "protocol_version",
+            "request_id",
+            "ready",
+            "model_loaded"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "An active synthesis reported bounded progress.",
+          "properties": {
+            "event": {
+              "const": "progress",
+              "type": "string"
+            },
+            "progress": {
+              "description": "Completion fraction from zero through one.\n\nThe range is published as well as parsed: [`parse_worker_response`]\nrefuses anything outside it, and a schema that did not say so would\nlet an author's editor pass a frame this build drops.",
+              "format": "float",
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "protocol_version",
+            "request_id",
+            "progress"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Synthesis completed and staged audio is ready for Rust validation.",
+          "properties": {
+            "channels": {
+              "description": "Reported channel count.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "codec_revision": {
+              "description": "Tokenizer or codec revision used for synthesis.",
+              "type": "string"
+            },
+            "event": {
+              "const": "synthesis_succeeded",
+              "type": "string"
+            },
+            "frames": {
+              "description": "Reported frame count.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "model_revision": {
+              "description": "Model revision used for synthesis.",
+              "type": "string"
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            },
+            "sample_rate": {
+              "description": "Reported sample rate.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "voice_profile_hash": {
+              "$ref": "#/$defs/VoiceProfileHash",
+              "description": "Voice-profile identity used for synthesis."
+            },
+            "worker_bundle_hash": {
+              "$ref": "#/$defs/WorkerBundleHash",
+              "description": "Worker-bundle identity used for synthesis."
+            }
+          },
+          "required": [
+            "event",
+            "protocol_version",
+            "request_id",
+            "sample_rate",
+            "channels",
+            "frames",
+            "model_revision",
+            "codec_revision",
+            "worker_bundle_hash",
+            "voice_profile_hash"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Cancellation completed for the active request.",
+          "properties": {
+            "active_request_id": {
+              "description": "Active synthesis request that was cancelled.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            },
+            "event": {
+              "const": "cancelled",
+              "type": "string"
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "protocol_version",
+            "request_id",
+            "active_request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Shutdown completed and no model remains loaded.",
+          "properties": {
+            "event": {
+              "const": "shutdown",
+              "type": "string"
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "protocol_version",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The worker refused or failed the correlated request.",
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/WorkerFailureCode",
+              "description": "Stable failure classification."
+            },
+            "event": {
+              "const": "failure",
+              "type": "string"
+            },
+            "message": {
+              "description": "Redacted diagnostic without source text or voice paths.",
+              "type": "string"
+            },
+            "protocol_version": {
+              "description": "Worker protocol version.",
+              "enum": [
+                "e1.worker.1.0",
+                "e1.worker.1.1"
+              ],
+              "type": "string"
+            },
+            "recoverable": {
+              "description": "Whether a bounded retry may be attempted.",
+              "type": "boolean"
+            },
+            "request_id": {
+              "description": "Request correlation identity.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[\\x00-\\x7F]+$(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "protocol_version",
+            "request_id",
+            "code",
+            "message",
+            "recoverable"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WorkerSynthesisParameters": {
+      "additionalProperties": false,
+      "description": "Parameters for a synthesis request.",
+      "properties": {
+        "output": {
+          "description": "Managed relative output path assigned by Rust.",
+          "type": "string"
+        },
+        "seed": {
+          "description": "Deterministic seed when the backend supports one.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "style": {
+          "description": "Delivery style.",
+          "type": "string"
+        },
+        "take": {
+          "description": "Take number within the synthesis base identity.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "description": "Exact reviewed text to synthesize.",
+          "type": "string"
+        },
+        "trace_context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TraceContext"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional 1.1 trace extension; absent means no trace correlation."
+        },
+        "voice": {
+          "description": "Voice-profile identity, never a raw reference path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "voice",
+        "style",
+        "seed",
+        "take",
+        "output"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://schemas.study-tts.example/worker-protocol-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/WorkerRequestFrame",
+      "description": "A frame Rust sends to the worker."
+    },
+    {
+      "$ref": "#/$defs/WorkerResponseFrame",
+      "description": "A frame the worker sends back."
+    }
+  ],
+  "description": "Either direction of the worker protocol, for the published schema.\n\nThe channel carries requests one way and responses the other, but a schema\ndescribes *a frame* — and a reader validating a captured NDJSON stream has\nlines of both kinds. `untagged` because each frame already carries its own\ndiscriminator (`method` or `event`), so a wrapper tag would describe a\nwire shape neither side writes.\n\nDeserialization goes through [`parse_worker_request`] and\n[`parse_worker_response`], which know which direction they are reading and\ntherefore give a far better message than an untagged union can. This type\nexists to be described, not to be parsed.",
+  "title": "WorkerFrame"
+}

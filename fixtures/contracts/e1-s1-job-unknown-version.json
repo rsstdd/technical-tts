@@ -1,0 +1,10 @@
+{
+  "schema_version": "e0.job-state.0.2",
+  "job_id": "e0-s0-walking-skeleton",
+  "plan_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "stage": "package_selected",
+  "selected_package": {
+    "package_id": "9999999999999999999999999999999999999999999999999999999999999999",
+    "manifest_blake3": "8888888888888888888888888888888888888888888888888888888888888888"
+  }
+}

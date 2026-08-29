@@ -46,6 +46,30 @@ pub enum AudioError {
         written_frames: u32,
     },
 
+    /// The identities the worker reports do not name the audio's cache key.
+    ///
+    /// A separate refusal from [`AudioError::SynthesizerReportMismatch`]
+    /// because the two are different failures with different owners: that one
+    /// says the worker miscounted its own frames, this one says the worker
+    /// synthesized under inputs the plan did not ask for. Publishing anyway
+    /// would put audio under a key describing a different model, bundle, voice,
+    /// or language — the one thing a content-addressed cache must never do,
+    /// because every later reuse would be silently wrong.
+    #[error(
+        "segment `{segment_id}` was planned under synthesis key `{planned}` but the worker \
+         reports inputs whose key is `{reported}`; the worker is synthesizing under different \
+         model, bundle, voice, or language identities than it was asked for, and the \
+         worker/runtime owner must correct it before this build is rerun"
+    )]
+    SynthesizerIdentityMismatch {
+        /// The segment whose provenance disagreed.
+        segment_id: String,
+        /// Synthesis key the plan derived and the entry would be published as.
+        planned: study_tts_core::CacheKey,
+        /// Synthesis key recomputed from what the worker reports it used.
+        reported: study_tts_core::CacheKey,
+    },
+
     /// A segment's trailing pause is too long to express as a frame count.
     ///
     /// This defensive variant protects the frame-counter field width even
@@ -111,6 +135,11 @@ impl AudioError {
             Self::SynthesizerReportMismatch { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::WorkerRuntime,
                 "correct the worker report before rerunning the build",
+                Some("Worker protocol or containment failure"),
+            )),
+            Self::SynthesizerIdentityMismatch { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::WorkerRuntime,
+                "correct the worker's synthesis identities before rerunning the build",
                 Some("Worker protocol or containment failure"),
             )),
             Self::AssembledLengthMismatch { .. } => Some(RemedyAdvice::new(

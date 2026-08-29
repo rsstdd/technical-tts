@@ -35,22 +35,11 @@ pub struct ContractVersion {
     pub patch: u16,
 }
 
-impl ContractVersion {
-    /// Creates a semantic contract version.
-    pub const fn new(major: u16, minor: u16, patch: u16) -> Self {
-        Self {
-            major,
-            minor,
-            patch,
-        }
-    }
-}
-
 /// The declared meaning of a contract descriptor relative to its predecessor.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContractChange {
-    /// The initial descriptor or an exact unchanged copy.
+    /// The initial descriptor for a contract.
     Baseline,
     /// Diagnostics changed without changing durable bytes or behavior.
     DiagnosticPatch,
@@ -58,7 +47,8 @@ pub enum ContractChange {
     CompatibleExtension,
     /// A required field, semantic rule, or frame shape changed.
     Breaking,
-    /// An authority or architecture boundary changed under an accepted ADR.
+    /// An authority or architecture boundary change that requires an accepted
+    /// ADR.
     Architectural,
 }
 
@@ -72,7 +62,7 @@ pub struct ContractDescriptor {
     pub version: ContractVersion,
     /// Compatibility claim relative to the prior descriptor.
     pub change: ContractChange,
-    /// Default applied for every optional compatible extension.
+    /// Declared default for an optional compatible extension.
     pub extension_default: Option<String>,
     /// Whether fields outside the declared representation are rejected.
     pub rejects_unknown_fields: bool,
@@ -103,38 +93,31 @@ impl ContractDescriptor {
         if !successor.rejects_unknown_fields {
             return Err(ContractVersionError::UnknownFieldsMustBeRejected);
         }
-        if successor == self {
-            return Ok(SuccessorCompatibility::Unchanged);
-        }
         if successor.change == ContractChange::CompatibleExtension
             && successor.extension_default.is_none()
         {
             return Err(ContractVersionError::MissingExtensionDefault);
         }
+        if successor == self {
+            return Ok(SuccessorCompatibility::Unchanged);
+        }
 
         let represented_semantics_unchanged = successor.extension_default == self.extension_default
             && successor.rejects_unknown_fields == self.rejects_unknown_fields;
-        let compatibility = if successor.change == ContractChange::DiagnosticPatch
-            && successor.version == self.version
-            && represented_semantics_unchanged
-        {
-            Some(SuccessorCompatibility::DiagnosticPatch)
-        } else if successor.change == ContractChange::CompatibleExtension
-            && successor.version.major == self.version.major
-            && successor.version.minor > self.version.minor
-            && successor.version.patch == 0
-        {
-            Some(SuccessorCompatibility::CompatibleExtension)
-        } else if matches!(
-            successor.change,
-            ContractChange::Breaking | ContractChange::Architectural
-        ) && successor.version.major > self.version.major
-            && successor.version.minor == 0
-            && successor.version.patch == 0
-        {
-            Some(SuccessorCompatibility::Breaking)
-        } else {
-            None
+        let compatibility = match successor.change {
+            ContractChange::Baseline => None,
+            ContractChange::DiagnosticPatch => (successor.version == self.version
+                && represented_semantics_unchanged)
+                .then_some(SuccessorCompatibility::DiagnosticPatch),
+            ContractChange::CompatibleExtension => (successor.version.major == self.version.major
+                && successor.version.minor > self.version.minor
+                && successor.version.patch == 0)
+                .then_some(SuccessorCompatibility::CompatibleExtension),
+            ContractChange::Breaking | ContractChange::Architectural => (successor.version.major
+                > self.version.major
+                && successor.version.minor == 0
+                && successor.version.patch == 0)
+                .then_some(SuccessorCompatibility::Breaking),
         };
 
         compatibility.ok_or(ContractVersionError::VersionClassMismatch {
@@ -148,7 +131,7 @@ impl ContractDescriptor {
 /// Compatibility established for a valid successor descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SuccessorCompatibility {
-    /// The descriptor is byte-for-byte equivalent in meaning and version.
+    /// The successor descriptor is identical to its predecessor.
     Unchanged,
     /// Only diagnostics changed while the represented contract stayed fixed.
     DiagnosticPatch,
@@ -162,7 +145,10 @@ pub enum SuccessorCompatibility {
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum ContractVersionError {
     /// A descriptor attempted to become a different contract.
-    #[error("contract changed from {previous:?} to {successor:?}; amend each contract separately")]
+    #[error(
+        "contract changed from {previous:?} to {successor:?}; the engineering owner must amend \
+         each contract separately"
+    )]
     ContractChanged {
         /// Contract governed by the previous descriptor.
         previous: ContractId,
@@ -170,15 +156,21 @@ pub enum ContractVersionError {
         successor: ContractId,
     },
     /// A compatible extension did not state its default.
-    #[error("a compatible extension must declare the default used by older consumers")]
+    #[error(
+        "a compatible extension omits the default used by older consumers; the engineering owner \
+         must declare it in the contract descriptor"
+    )]
     MissingExtensionDefault,
     /// A project-owned boundary attempted to ignore unknown fields.
-    #[error("project-owned contract formats must reject unknown fields")]
+    #[error(
+        "the contract descriptor permits unknown fields in a project-owned format; the \
+         engineering owner must restore strict deserialization"
+    )]
     UnknownFieldsMustBeRejected,
     /// The semantic increment does not match the declared change class.
     #[error(
-        "contract version {previous:?} cannot become {successor:?} as {change:?}; use the \
-         change-control version assigned to that class"
+        "contract version {previous:?} cannot become {successor:?} as {change:?}; the engineering \
+         owner must use the change-control version assigned to that class"
     )]
     VersionClassMismatch {
         /// Version being amended.
@@ -188,4 +180,58 @@ pub enum ContractVersionError {
         /// Compatibility class the successor claims.
         change: ContractChange,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn t1_e0_a_compatible_extension_always_declares_its_default() {
+        let extension = ContractDescriptor {
+            contract_id: ContractId::WorkerFrames,
+            version: ContractVersion {
+                major: 0,
+                minor: 1,
+                patch: 0,
+            },
+            change: ContractChange::CompatibleExtension,
+            extension_default: None,
+            rejects_unknown_fields: true,
+        };
+
+        assert_eq!(
+            extension.assess_successor(&extension),
+            Err(ContractVersionError::MissingExtensionDefault)
+        );
+    }
+
+    #[test]
+    fn t1_e0_contract_refusals_name_the_engineering_owner() {
+        let version = ContractVersion {
+            major: 0,
+            minor: 1,
+            patch: 0,
+        };
+        let errors = [
+            ContractVersionError::ContractChanged {
+                previous: ContractId::WorkerFrames,
+                successor: ContractId::CachePublication,
+            },
+            ContractVersionError::MissingExtensionDefault,
+            ContractVersionError::UnknownFieldsMustBeRejected,
+            ContractVersionError::VersionClassMismatch {
+                previous: version,
+                successor: version,
+                change: ContractChange::Breaking,
+            },
+        ];
+
+        for error in errors {
+            assert!(
+                error.to_string().contains("engineering owner"),
+                "`{error}` omits its remedy owner"
+            );
+        }
+    }
 }

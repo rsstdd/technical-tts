@@ -2,13 +2,13 @@
 
 ## Codebase
 
-This is the four-crate Rust workspace for a local-first WSL2 CLI that converts reviewed technical lessons into long-form study-guide audio: `study-tts-core` owns durable domain decisions, `study-tts-runtime` owns the render pipeline through FFmpeg, `study-tts-cli` is the binary (currently a stub; product commands begin at G1), and `study-tts-testkit` holds shared test helpers plus the end-to-end suite.
+This is the four-crate Rust workspace for a local-first WSL2 CLI that converts reviewed technical lessons into long-form study-guide audio: `study-tts-core` owns durable domain decisions, `study-tts-runtime` owns the render pipeline through FFmpeg, `study-tts-cli` reports the current baseline until product commands begin at E1-S5, and `study-tts-testkit` holds shared test helpers plus the end-to-end suite.
 
 The root `AGENTS.md` governs the whole repository; this file adds the rules and routing for work inside `crates/`.
 
 ## Rules
 
-- Load `.claude/skills/rust-review/SKILL.md`, `.claude/skills/clean-code/SKILL.md`, and `.claude/skills/rust-comment/SKILL.md` before writing, generating, or editing anything in this tree. The review standard governs generation, not only review: writing to it costs less than being refactored to it. Before reporting done, run its review sections and severity scale against your own diff.
+- Load `.claude/skills/rust-review/SKILL.md`, `.claude/skills/clean-code/SKILL.md`, `.claude/skills/ponytail/SKILL.md`, `.claude/skills/rust-comment/SKILL.md`, `.claude/skills/rust-testing/SKILL.md`, and `.claude/skills/rust-production/SKILL.md` before writing, generating, auditing, or editing anything in this tree. They are binding standards here, not advice to weigh. The review standard governs generation, not only review: writing to it costs less than being refactored to it. Before reporting done, run its review sections and severity scale against your own diff.
 - Test-driven development: write the failing test before the production change. Name tests `t<tier>_e<epic>_<behavior_sentence>` (for example `t1_e0_duplicate_segment_id_is_rejected`); the tier definitions are in `docs/testing/TEST-STRATEGY.md`. The test is the documentation of intended behavior and lets the change be validated without a human in the loop.
 - One-sentence `///` doc comment on every public type, function, and module. Cheap grounding context for whoever touches nearby code next; repetition over abstraction.
 - Document non-trivial cross-file and code-to-document coupling in the code, on both sides, at the point of coupling. Grep is the practical discovery tool; anything only implied by git history or convention is invisible. The load-bearing example: `study-tts-core/src/release.rs` (`REQUIRED_PRODUCTION_GATES`) must mirror `docs/governance/RELEASE-PROFILES.md` §3 — a comment at each end must name the other.
@@ -29,8 +29,16 @@ The root `AGENTS.md` governs the whole repository; this file adds the rules and 
 | Test tiers, strategy, fixture manifest | `docs/testing/` |
 | Decision, work, failure, and artifact routing | `docs/governance/ROUTING-TABLES.md` |
 | Evidence filing rules | `evidence/README.md` |
+| Document version rule (major refused, older minor accepted) | `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` ↔ `study-tts-core/src/schema.rs` (must agree) |
 | Lesson schema and validation | `study-tts-core/src/lesson.rs` |
+| BCP 47 language tag, checked and case-normalized | `study-tts-core/src/language.rs` |
+| Explicit take selection document | `study-tts-core/src/takes.rs` |
 | Render planning and cache identity | `study-tts-core/src/plan.rs` |
+| Canonical bytes every identity is hashed from | `study-tts-core/src/canonical.rs` |
+| Synthesis-key inputs and worker-bundle identity type | `study-tts-core/src/identity.rs` |
+| Verification-key inputs, kept separate from synthesis | `study-tts-core/src/verification.rs` |
+| Worker bundle manifest, import-root declaration, and hashing | `docs/operations/WORKER-ENVIRONMENT.md` ↔ `study-tts-runtime/src/worker_bundle.rs` (must agree) |
+| Published JSON Schema catalogue and generation | `study-tts-runtime/src/schemas.rs` ↔ `schemas/` |
 | Release status and gate identifiers | `study-tts-core/src/release.rs` |
 | Pipeline orchestration (build, validate, publish) | `study-tts-runtime/src/pipeline.rs` |
 | WAV cache validation and reuse | `study-tts-runtime/src/cache.rs` |
@@ -40,6 +48,9 @@ The root `AGENTS.md` governs the whole repository; this file adds the rules and 
 | External-tool preflight (`ffmpeg`, `ffprobe`) | `study-tts-runtime/src/tools.rs` |
 | Output manifest shape | `study-tts-runtime/src/manifest.rs` |
 | End-to-end walking-skeleton tests | `study-tts-testkit/tests/walking_skeleton.rs` |
+| Published-schema and version-gate tests | `study-tts-testkit/tests/schemas.rs` |
+| Bounded JSON Schema validator, tests only | `study-tts-testkit/src/json_schema.rs` |
+| Production Python worker and its locked environment | `worker/AGENTS.md` |
 | Safe lesson/audio/pronunciation fixtures | `fixtures/` |
 | Documentation index | `docs/INDEX.md` |
 

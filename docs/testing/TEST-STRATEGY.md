@@ -19,9 +19,21 @@ Deterministic product behavior follows red-green-refactor. Write the smallest fa
 
 - Keep pure tests beside their owning module.
 - Put shared fixtures, fake workers, fault injection, and audio helpers in `study-tts-testkit`.
-- Use the Delivery Plan names unchanged: `t<tier>_<epic>_<behavior>`.
+- Name every test `t<tier>_e<epic>_<behavior>`, as in `t3_e1_unknown_major_version_is_rejected`.
 - Name evidence `evidence_<epic>_<claim>` and store its protocol separately from its result.
 - Give every regression a name describing the externally meaningful invariant.
+
+**A name in the Delivery Plan is a contract.** Copy it character for character and never rename
+it: the plan, the traceability matrix, and the evidence records all look it up literally. A helper
+test the plan does not name is free to rename. `grep DELIVERY-PLAN.md` before claiming either.
+
+**The tier prefix must match what the test does**, not where it happens to live. Spawning or
+resolving an interpreter is T4 whether or not the test is colocated with its module; T1 is for
+pure deterministic functions. This is now load-bearing rather than cosmetic: the tier prefix is
+the filter `.github/workflows/ci.yml` §Report tier durations runs the suite under, so a
+mislabelled test bills its time against the wrong budget above and makes the report say something
+untrue. That report is what satisfies `DELIVERY-PLAN.md` §3.3, "CI reports tier duration so a
+budget regression is visible."
 
 ## Required suites
 

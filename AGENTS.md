@@ -4,7 +4,7 @@ A Rust workspace for a local-first WSL2 CLI that converts reviewed technical les
 
 These instructions apply to the whole repository. A nested `AGENTS.md` in a subdirectory overrides only for that tree.
 
-**State.** E0-S0 walking skeleton is complete: two-segment fixture load/validate, provisional render plan, deterministic fake-tone synthesizer, cached-WAV reuse, Rust PCM+silence assembly, real FFmpeg M4A, minimal private-preview manifest. E0-S3 qualification is complete under accepted ADR-0002's constrained-development performance waiver; the disposable Chatterbox spike is evidence, not a product worker. Product CLI commands, production schemas, Chatterbox integration, hardened recovery, and the complete output package are **not** implemented. Do not describe planned commands, schemas, workers, or audio behavior as present until they exist and are verified.
+**State.** E0-S0 walking skeleton is complete: two-segment fixture load/validate, provisional render plan, deterministic fake-tone synthesizer, cached-WAV reuse, Rust PCM+silence assembly, real FFmpeg M4A, minimal private-preview manifest. E0-S3 qualification is complete under accepted ADR-0002's constrained-development performance waiver; the disposable Chatterbox spike is evidence, not a product worker. E0-S4 provisional seams and the E1-S1 contract baseline are complete: seven published versioned schemas under `schemas/` generated from the Rust types, canonical serialization, the BLAKE3 synthesis and verification identities, the mechanically derived worker-bundle identity with the ADR-0001-D004 environment precondition, the locked Python worker environment, an executable protocol fake, and split pull-request and reference-machine workflows. Product CLI commands, Chatterbox integration, hardened recovery, and the complete output package are **not** implemented; the product worker refuses `initialize` and `synthesize` until E1-S3. Do not describe planned commands, schemas, workers, or audio behavior as present until they exist and are verified.
 
 **Sources of truth (conflict order).** Newest accepted ADR that explicitly supersedes → `docs/adr/ADR-0001-production-rust-study-guide-tts.md` (architecture, scope, production invariants) → `DELIVERY-PLAN.md` (milestones, backlog, tests, evidence, sign-off) → this file → nested `AGENTS.md`. Proposed ADRs do not authorize scope.
 
@@ -108,13 +108,16 @@ Approved target. Create incrementally. Absent paths are planned, not missing wor
 | Voice consent / watermark       | `docs/adr/ADR-0004-voice-content-and-retention-policy.md`                 | Proposed until rights records + retention approved                                      |
 | ASR verification                | `docs/adr/ADR-0005-asr-calibration-and-release-control.md`                | Proposed until identities, corpus, decoder, patterns, gates measured                    |
 | Domain / planning               | `crates/study-tts-core/`                                                  | Rust types + checked-in schemas                                                         |
-| Worker contract                 | `schemas/worker-v1.schema.json`, `worker/`                                | Versioned protocol + shared contract tests                                              |
+| Worker contract                 | `schemas/worker-protocol-v1.schema.json`, `worker/`                       | Versioned protocol + shared contract tests                                              |
 | Configuration                   | `crates/study-tts-cli/`                                                   | Parsed types + documented precedence                                                    |
 | Job / cache / recovery          | `crates/study-tts-runtime/`                                               | Runtime, manifest schemas, recovery tests                                               |
 | External-process safety         | `crates/study-tts-runtime/`                                               | Pool + FFmpeg adapters + containment tests; ASR in-process                              |
 | Test patterns                   | `crates/study-tts-testkit/`, colocated tests                              | Fake-worker, property, contract, recovery tests                                         |
-| Code review standard            | `.claude/skills/rust-review/SKILL.md`                                     | This file + `PRINCIPLES.md`; review reports, never edits unless asked                   |
-| Code style rules                | `.claude/skills/clean-code/SKILL.md`                                      | Applies to all code; this file, `PRINCIPLES.md`, and accepted ADRs win on conflict      |
+| Code review standard            | `.claude/skills/rust-review/SKILL.md`, `.claude/skills/ponytail/SKILL.md` | This file + `PRINCIPLES.md`; review reports, never edits unless asked                   |
+| Code style rules                | `.claude/skills/clean-code/SKILL.md`, `.claude/skills/ponytail/SKILL.md`  | Binding on all code; this file, `PRINCIPLES.md`, and accepted ADRs win on conflict      |
+| Production Rust craft standard  | `.claude/skills/rust-production/SKILL.md`                                 | Process, durability, determinism, and schema-evolution rules, each citing the module in this tree that proves it |
+| Rust test standard              | `.claude/skills/rust-testing/SKILL.md`                                   | `docs/testing/TEST-STRATEGY.md` owns tiers and budgets; the skill owns how a test is written |
+| Comment content standard        | `.claude/skills/rust-comment/SKILL.md`                                    | Binding on all Rust; `crates/AGENTS.md` §3 owns comment mechanics                       |
 | TDD / tiers                     | `docs/testing/TEST-STRATEGY.md`                                           | Delivery Plan named tests + tier policy                                                 |
 | Qualification evidence          | `docs/testing/EVIDENCE-AND-QUALIFICATION.md`                              | Immutable reports + governed raw artifacts                                              |
 | Test-data provenance            | `docs/testing/TEST-DATA-MANIFEST.md`                                      | IDs, checksums, rights, sensitivity, retention, owner                                   |
@@ -126,7 +129,7 @@ Approved target. Create incrementally. Absent paths are planned, not missing wor
 
 Run from the repo root on Ubuntu 24.04 / WSL2. Check `Cargo.toml`, worker lockfiles, scripts, and CI before extending this table.
 
-Current tree: E0-S0 library skeleton + non-product status executable. Product commands below are authoritative **only** when the referenced behavior, files, and targets exist. Do not invent options. If a command fails because the phase is not implemented, report the exact gap.
+Current tree: E1-S1 tested contract baseline + non-product status executable. Product commands below are authoritative **only** when the referenced behavior, files, and targets exist. Do not invent options. If a command fails because the phase is not implemented, report the exact gap.
 
 | Purpose             | Command                                                                                        |
 | ------------------- | ---------------------------------------------------------------------------------------------- |
@@ -138,12 +141,13 @@ Current tree: E0-S0 library skeleton + non-product status executable. Product co
 | Tests               | `cargo test --workspace --all-targets --locked`                                                |
 | Lint                | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`                |
 | Rust conventions    | `python3 scripts/check-rust-conventions.py`                                                    |
+| Evidence provenance | `python3 scripts/check-evidence-provenance.py`                                                 |
 | Fmt check           | `cargo fmt --all -- --check`                                                                   |
 | Fmt apply           | `cargo fmt --all`                                                                              |
 | CLI help            | `cargo run -p study-tts-cli -- --help`                                                         |
 | Doctor              | `cargo run -p study-tts-cli -- doctor`                                                         |
 | Validate lesson     | `cargo run -p study-tts-cli -- lesson validate <lesson.json>`                                  |
-| Worker tests        | Command defined by `worker/pyproject.toml` + lockfile; do not invent a runner.                 |
+| Worker tests        | Environment restored per `docs/operations/WORKER-ENVIRONMENT.md`; do not invent a runner.       |
 | Schemas / generated | Checked-in repo task or CI once created; no ad-hoc generator.                                  |
 
 ## Verification
@@ -183,7 +187,8 @@ Spoken-output changes: automated checks are necessary but not sufficient. Listen
 
 ## Coding conventions
 
-- **Style.** Load `.claude/skills/clean-code/SKILL.md` before writing or editing any code, and `.claude/skills/rust-review/SKILL.md` as well before any Rust — the review standard governs generation, not just review, so write to it rather than refactoring to it later. Both are guidance, not authority: this file, `PRINCIPLES.md`, and the accepted ADRs win on any genuine conflict, and the settled conflicts are tabulated in the clean-code file. Flag a new conflict; do not resolve it silently. `CLAUDE.md` carries the same table for agents that read it first.
+- **Style.** Load `.claude/skills/clean-code/SKILL.md` and `.claude/skills/ponytail/SKILL.md` before writing or editing any code, and `.claude/skills/rust-review/SKILL.md`, `.claude/skills/rust-comment/SKILL.md`, `.claude/skills/rust-testing/SKILL.md`, and `.claude/skills/rust-production/SKILL.md` as well before any Rust — the review standard governs generation, not just review, so write to it rather than refactoring to it later. They are binding standards for how code is written here, not advice to weigh. They are not architectural authority: this file, `PRINCIPLES.md`, and the accepted ADRs win on any genuine conflict, and the settled conflicts are tabulated in the clean-code file. Flag a new conflict; do not resolve it silently. `CLAUDE.md` carries the same table for agents that read it first.
+- **Rust audits and edits.** `.claude/skills/ponytail/SKILL.md` is required before auditing or editing an existing Rust file, not only before writing a new one. `rust-review` finds what is wrong; ponytail finds what should not exist at all, and an audit that skips it leaves the tree longer than it needs to be.
 - **Naming.** `study-tts-*` crates; stable lowercase kebab-case CLI names; versioned schemas (`lesson-v1`); segment IDs independent of mutable display text.
 - **Errors.** Typed internal errors + source-aware user diagnostics. Distinct classes: invalid input, missing dependency, incompatible environment, worker failure, audio-quality failure, cancellation, resource exhaustion, integrity failure, internal error. Never silently fall back to another model or device.
 - **Logging.** Structured `tracing` with `job_id`, stage, segment ID, attempt, worker/model identity, duration, error class. Concise terminal. Worker stdout is protocol-only.
@@ -234,7 +239,8 @@ Do not copy a root rule into a nested file unless the local rule changes or clar
 - Doc routing: `docs/INDEX.md`
 - Execution: `docs/governance/PROJECT-EXECUTION-CHARTER.md`
 - Contribution: `CONTRIBUTING.md`, `.github/PULL_REQUEST_TEMPLATE.md`
-- Style: rustfmt 2024 defaults + Clippy when configured, plus `.claude/skills/clean-code/SKILL.md`
-- Review: `.claude/skills/rust-review/SKILL.md` (`.claude/skills/react-review/SKILL.md` is held for a frontend that ADR-0001 has not authorized)
-- Python worker: `worker/pyproject.toml` + lockfile when created
+- Style: rustfmt 2024 defaults + Clippy when configured, plus `.claude/skills/clean-code/SKILL.md`, plus `.claude/skills/ponytail/SKILL.md`, plus `.claude/skills/rust-production/SKILL.md`
+- Review: `.claude/skills/rust-review/SKILL.md`, plus `.claude/skills/ponytail/SKILL.md`
+- Comments: `.claude/skills/rust-comment/SKILL.md`
+- Python worker: `docs/operations/WORKER-ENVIRONMENT.md`, `worker/bundle-manifest.json`, `worker/pyproject.toml`, `worker/requirements.lock`
 - Operations: `docs/operations/`

@@ -111,7 +111,7 @@ pub(crate) fn inspect(tool: &str, requested: &Path) -> Result<ToolIdentity, Buil
 ///
 /// A request carrying any path separator is taken literally, so an operator who
 /// names an exact binary gets that one rather than whichever `PATH` prefers.
-fn resolve_executable(requested: &Path) -> Option<PathBuf> {
+pub(crate) fn resolve_executable(requested: &Path) -> Option<PathBuf> {
     if requested.components().count() > 1 {
         return executable_file(requested);
     }
@@ -122,11 +122,40 @@ fn resolve_executable(requested: &Path) -> Option<PathBuf> {
         .find_map(|candidate| executable_file(&candidate))
 }
 
-/// Accepts a candidate only if it is a file this process could execute.
+/// Accepts a candidate only if it is a file this process could execute,
+/// answering with the path it was asked about.
+///
+/// The counterpart of [`resolve_executable`] for a binary whose *path is the
+/// point*. Canonicalizing is right for a tool discovered on `PATH`, where the
+/// real path is the stable identity, and wrong for a virtualenv interpreter: a
+/// venv's `bin/python` is a symlink chain ending at the base interpreter, so
+/// resolving it hands back `/usr/bin/python3.12`, whose `sys.prefix` is the
+/// system rather than the environment. `worker/.venv` is itself a link on the
+/// reference machine, so canonicalizing resolved away the very environment the
+/// bundle check exists to read, and every probe answered for a system Python
+/// that has none of the locked distributions installed.
+///
+/// `docs/operations/WORKER-ENVIRONMENT.md` §The declared runtime is checked too
+/// names this function in return.
+pub(crate) fn executable_in_place(candidate: &Path) -> Option<PathBuf> {
+    is_executable_file(candidate).then(|| candidate.to_path_buf())
+}
+
+/// Accepts a candidate only if it is a file this process could execute,
+/// answering with what it really is.
 fn executable_file(candidate: &Path) -> Option<PathBuf> {
-    let metadata = fs::metadata(candidate).ok()?;
+    is_executable_file(candidate)
+        .then(|| fs::canonicalize(candidate).ok())
+        .flatten()
+}
+
+/// Whether a candidate is a file this process could execute.
+fn is_executable_file(candidate: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(candidate) else {
+        return false;
+    };
     if !metadata.is_file() {
-        return None;
+        return false;
     }
 
     // ADR-0001 targets WSL2, so the executable bit is the meaningful check.
@@ -136,9 +165,9 @@ fn executable_file(candidate: &Path) -> Option<PathBuf> {
     {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o111 == 0 {
-            return None;
+            return false;
         }
     }
 
-    fs::canonicalize(candidate).ok()
+    true
 }

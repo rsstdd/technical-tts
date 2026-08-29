@@ -12,6 +12,6 @@ workspace = true
 # them lands, not in advance: an unused dependency is still audited,
 # licensed, and carried in Cargo.lock.
 #
-# This crate is a placeholder binary until the product CLI at G1 (ADR-0001
-# §7.3), so it has no dependencies at all — not even the workspace crates.
+# This crate reports E1-S1 status until product commands land at E1-S5, so it
+# has no dependencies at all — not even the workspace crates.
 [dependencies]

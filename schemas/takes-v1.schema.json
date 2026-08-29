@@ -1,0 +1,100 @@
+{
+  "$defs": {
+    "AudioDigest": {
+      "description": "BLAKE3 over a cached audio artifact's bytes, as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "CacheKey": {
+      "description": "BLAKE3 over the canonical serialization of every speech-affecting input (ADR-0001 12.5), as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "SelectedTake": {
+      "additionalProperties": false,
+      "description": "One segment's recorded take selection, in the ADR-0001 §12.2 shape.",
+      "properties": {
+        "audio_blake3": {
+          "$ref": "#/$defs/AudioDigest",
+          "description": "Digest of the audio that was approved."
+        },
+        "segment_id": {
+          "description": "Segment this selection belongs to.\n\nHeld to the same rule `crate::lesson` applies, through\n[`validate_segment_id`]: a selection naming an identity no lesson can\ncarry approves a segment that cannot exist.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*$(?![\\s\\S])",
+          "type": "string"
+        },
+        "selected_cache_key": {
+          "$ref": "#/$defs/CacheKey",
+          "description": "Synthesis identity of the chosen take, which names its cache entry."
+        },
+        "selected_take": {
+          "description": "Take the human chose.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "synthesis_base_key": {
+          "$ref": "#/$defs/CacheKey",
+          "description": "Synthesis base key — the segment's take-zero identity — this selection\nwas made against.\n\nPresent so a later build can refuse a selection whose base key no longer\nmatches the current plan, rather than applying an approval given for\ndifferent words."
+        }
+      },
+      "required": [
+        "segment_id",
+        "synthesis_base_key",
+        "selected_take",
+        "selected_cache_key",
+        "audio_blake3"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://schemas.study-tts.example/takes-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A takes document as it is written on disk and before validation.",
+  "properties": {
+    "$schema": {
+      "description": "Published schema this document links to; absent is its declared default.",
+      "oneOf": [
+        {
+          "const": "https://schemas.study-tts.example/takes-v1.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lesson_id": {
+      "description": "Lesson these selections belong to.\n\nHeld to the same rule `crate::lesson` applies to that identity, through\n[`validate_lesson_id`]: a document naming a lesson no lesson file can\ncarry records approvals for a lesson that cannot exist.",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*$(?![\\s\\S])",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Schema this document claims, as authored text.",
+      "enum": [
+        "1.0"
+      ],
+      "type": "string"
+    },
+    "selections": {
+      "description": "One selection per segment, in the lesson's speaking order.\n\nBounded by the lesson's own segment ceiling: ADR-0001 §12.2 requires one\nselection per segment, so a document carrying more selections than any\nlesson can have segments describes no lesson this build could plan.",
+      "items": {
+        "$ref": "#/$defs/SelectedTake"
+      },
+      "maxItems": 4096,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "lesson_id",
+    "selections"
+  ],
+  "title": "TakesDocument",
+  "type": "object"
+}

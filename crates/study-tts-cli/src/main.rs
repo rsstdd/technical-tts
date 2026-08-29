@@ -1,11 +1,11 @@
-//! Placeholder binary for the E0-S0 walking skeleton.
+//! Non-product status executable for the E1-S1 contract baseline.
 //!
-//! ADR-0001 §1 puts the product CLI at G1; until then the tested library is the
-//! deliverable and this exists so the workspace builds a binary target.
+//! `DELIVERY-PLAN.md` E1-S5 owns product commands; this binary only reports the
+//! tested baseline that currently exists.
 
 fn main() {
     println!(
-        "study-tts E0-S0: the tested library walking skeleton is available; \
-         product CLI commands begin at G1"
+        "study-tts E1-S1: tested contract baseline available; \
+         product CLI commands begin at E1-S5"
     );
 }

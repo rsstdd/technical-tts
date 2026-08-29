@@ -1,0 +1,100 @@
+{
+  "$defs": {
+    "CacheKey": {
+      "description": "BLAKE3 over the canonical serialization of every speech-affecting input (ADR-0001 12.5), as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "PlanHash": {
+      "description": "BLAKE3 over the canonical serialization of a render plan's resolved segments, as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "PlannedSegment": {
+      "additionalProperties": false,
+      "description": "One segment with its synthesis identity resolved.\n\nContains synthesis inputs, their derived cache identity, and the timeline\nmetadata needed after synthesis. `speaker`, `spoken_text`, `style`, and\n`take` affect the cache key; `id` and `pause_after_ms` affect only the plan\nidentity. Display-only lesson metadata remains absent so presentation edits\nchange neither identity.\n\nSerialized, never deserialized, for the reason given on [`RenderPlan`].\n`plan_hash` is derived separately by `plan_digest`, which keeps serde\ndocument-layout details out of the identity — and which destructures this\ntype without `..`, so a field added here stops compiling until somebody has\ndecided whether it belongs in the plan's identity.",
+      "properties": {
+        "cache_key": {
+          "$ref": "#/$defs/CacheKey",
+          "description": "This segment's synthesis identity, which names its cache entry."
+        },
+        "id": {
+          "description": "Identity of the segment within its lesson.",
+          "type": "string"
+        },
+        "pause_after_ms": {
+          "description": "Silence written after this segment, in milliseconds.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "speaker": {
+          "description": "Which voice speaks this segment.",
+          "type": "string"
+        },
+        "spoken_text": {
+          "description": "The exact text to speak.",
+          "type": "string"
+        },
+        "style": {
+          "description": "Delivery style requested of the voice.",
+          "type": "string"
+        },
+        "take": {
+          "description": "Which take of this segment the plan selects.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "speaker",
+        "spoken_text",
+        "style",
+        "pause_after_ms",
+        "take",
+        "cache_key"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://schemas.study-tts.example/plan-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A lesson resolved into exactly what will be synthesized, derived\ndeterministically from it.\n\nProduced only by [`RenderPlan::for_lesson`] and never read back, so it does\nnot derive `Deserialize`. Adding one now would publish an unversioned parse\nboundary that accepts unknown fields and that no caller exercises; ADR-0001\n§12.2 puts persisted plans at E2, and the loader that story needs is where a\nfail-closed boundary belongs.",
+  "properties": {
+    "lesson_id": {
+      "description": "The lesson this plan was derived from.",
+      "type": "string"
+    },
+    "plan_hash": {
+      "$ref": "#/$defs/PlanHash",
+      "description": "Identity of the plan as a whole, so a rebuild can be recognized as the\nsame plan."
+    },
+    "schema_version": {
+      "description": "Layout version of this document.\n\nFirst field because it is the first thing a reader of `plan.json` needs\nand the first thing the E2 loader will read. Typed rather than authored\ntext, unlike a lesson's: nothing hand-writes a plan, so there is no\nauthoring mistake to report against the original spelling.\n\nOutside [`RenderPlan::plan_hash`] on purpose. That hash names the\nsegments to be synthesized, and a document layout is not one of them: a\nplan whose version moved while its segments did not is the same plan,\nand must not invalidate a cache.",
+      "enum": [
+        "1.0"
+      ],
+      "type": "string"
+    },
+    "segments": {
+      "description": "The segments to synthesize, in speaking order.",
+      "items": {
+        "$ref": "#/$defs/PlannedSegment"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "lesson_id",
+    "plan_hash",
+    "segments"
+  ],
+  "title": "RenderPlan",
+  "type": "object"
+}

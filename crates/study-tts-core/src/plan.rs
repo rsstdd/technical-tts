@@ -7,17 +7,30 @@
 //!
 //! Plans are serialized and never read back. ADR-0001 §12.2 puts persisted
 //! plans at E2, where a versioned fail-closed loader gives a parse boundary
-//! something to mean.
-
-use std::{fmt, str::FromStr};
+//! something to mean. They carry their document version regardless: a plan is
+//! written to disk as `plan.json` and a document with no version is a document
+//! that cannot be refused later, so the loader E2 adds would arrive at files
+//! that never said what they were.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    ValidatedLesson,
-    digest::{BLAKE3_HEX_LENGTH, is_blake3_hex},
+    CanonicalValue, SchemaVersion, ValidatedLesson, canonical_digest,
+    digest::{BLAKE3_HEX_LENGTH, blake3_newtype, json_schema_as_string},
+    identity::{SynthesisContext, synthesis_digest},
 };
+
+/// Version of the render-plan document this build writes.
+///
+/// `1.0` because `plan.json` has never been written: ADR-0001 §12.2 persists
+/// plans at E2, and this is the shape that story will write. A schema may be
+/// published before its writer exists; a *version* claiming history it does not
+/// have may not.
+pub const PLAN_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(1, 0);
+
+/// File-name and URI stem of the published render-plan schema.
+pub const PLAN_SCHEMA_STEM: &str = "plan";
 
 /// The one sample rate this project renders, caches, assembles, and exports at,
 /// in hertz.
@@ -97,48 +110,7 @@ impl CacheKey {
     }
 }
 
-/// Produces a key without validation, because a fresh digest cannot fail the
-/// check.
-///
-/// This is the only infallible constructor, and it takes the hash itself rather
-/// than a string, so the definition in ADR-0001 §12.5 is the one route into the
-/// type that no caller can shortcut.
-impl From<blake3::Hash> for CacheKey {
-    fn from(hash: blake3::Hash) -> Self {
-        Self(hash.to_hex().to_string())
-    }
-}
-
-impl From<CacheKey> for String {
-    fn from(key: CacheKey) -> Self {
-        key.0
-    }
-}
-
-impl TryFrom<String> for CacheKey {
-    type Error = MalformedCacheKey;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        if is_blake3_hex(&value) {
-            return Ok(Self(value));
-        }
-        Err(MalformedCacheKey(value))
-    }
-}
-
-impl FromStr for CacheKey {
-    type Err = MalformedCacheKey;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::try_from(value.to_owned())
-    }
-}
-
-impl fmt::Display for CacheKey {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
+blake3_newtype!(CacheKey, MalformedCacheKey);
 
 /// Remedy routing: a plan or manifest is regenerated from its lesson, never
 /// hand-corrected, so the message names rebuilding rather than editing the
@@ -151,19 +123,32 @@ impl fmt::Display for CacheKey {
 )]
 pub struct MalformedCacheKey(String);
 
+json_schema_as_string!(
+    CacheKey,
+    "CacheKey",
+    "BLAKE3 over the canonical serialization of every speech-affecting input \
+     (ADR-0001 12.5), as 64 lowercase hexadecimal characters.",
+    pattern = crate::digest::BLAKE3_HEX_PATTERN,
+);
+
 /// Identity of a whole render plan: BLAKE3 over its serialized segments.
 ///
 /// A value object rather than a `String` because it is a digest that reaches a
 /// manifest, and a digest typed as a string is one a caller can set to
-/// anything. `From<blake3::Hash>` is the only constructor, so a plan hash
-/// cannot exist without a plan having been hashed.
+/// anything. `From<blake3::Hash>` is the only infallible constructor, so a plan
+/// hash cannot be *derived* without a plan having been hashed.
 ///
-/// Deliberately not parseable. Nothing reads a plan back yet, and a `TryFrom`
-/// or `Deserialize` here would be a boundary with no traffic and no test. The
-/// story that persists `plan.json` (ADR-0001 §12.2) adds them with the
-/// versioned, fail-closed loader that gives them meaning.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(into = "String")]
+/// Parseable because it is read back: `manifest.json` records it and
+/// `study-tts-runtime`'s package reconciliation compares the recorded value
+/// against the plan the current build derived, and a job snapshot carries it
+/// across a restart. A recorded value that is not a digest at all has to be
+/// reported as malformed rather than as a mismatch — the first sends an
+/// operator to the record, the second sends them looking for a lesson change
+/// that never happened. `plan.json` itself is still not persisted; ADR-0001
+/// §12.2 puts that at E2, and this boundary is the manifest's rather than that
+/// file's.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct PlanHash(String);
 
 impl PlanHash {
@@ -173,23 +158,25 @@ impl PlanHash {
     }
 }
 
-impl From<blake3::Hash> for PlanHash {
-    fn from(hash: blake3::Hash) -> Self {
-        Self(hash.to_hex().to_string())
-    }
-}
+blake3_newtype!(PlanHash, MalformedPlanHash);
 
-impl From<PlanHash> for String {
-    fn from(hash: PlanHash) -> Self {
-        hash.0
-    }
-}
+/// Remedy routing: a plan hash is derived from the lesson the plan was built
+/// from, so the message names rebuilding rather than editing the record.
+#[derive(Debug, Error)]
+#[error(
+    "plan hash `{0}` is not a BLAKE3 digest in lowercase hexadecimal; ADR-0001 §12.2 derives it \
+     from the plan's resolved segments; preserve the package it was recorded in and rebuild the \
+     plan from its lesson rather than editing the recorded value"
+)]
+pub struct MalformedPlanHash(String);
 
-impl fmt::Display for PlanHash {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
+json_schema_as_string!(
+    PlanHash,
+    "PlanHash",
+    "BLAKE3 over the canonical serialization of a render plan's resolved \
+     segments, as 64 lowercase hexadecimal characters.",
+    pattern = crate::digest::BLAKE3_HEX_PATTERN,
+);
 
 /// A lesson resolved into exactly what will be synthesized, derived
 /// deterministically from it.
@@ -199,8 +186,22 @@ impl fmt::Display for PlanHash {
 /// boundary that accepts unknown fields and that no caller exercises; ADR-0001
 /// §12.2 puts persisted plans at E2, and the loader that story needs is where a
 /// fail-closed boundary belongs.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct RenderPlan {
+    /// Layout version of this document.
+    ///
+    /// First field because it is the first thing a reader of `plan.json` needs
+    /// and the first thing the E2 loader will read. Typed rather than authored
+    /// text, unlike a lesson's: nothing hand-writes a plan, so there is no
+    /// authoring mistake to report against the original spelling.
+    ///
+    /// Outside [`RenderPlan::plan_hash`] on purpose. That hash names the
+    /// segments to be synthesized, and a document layout is not one of them: a
+    /// plan whose version moved while its segments did not is the same plan,
+    /// and must not invalidate a cache.
+    #[schemars(schema_with = "schema_version_json_schema")]
+    pub schema_version: SchemaVersion,
     /// The lesson this plan was derived from.
     pub lesson_id: String,
     /// Identity of the plan as a whole, so a rebuild can be recognized as the
@@ -212,14 +213,19 @@ pub struct RenderPlan {
 
 /// One segment with its synthesis identity resolved.
 ///
-/// Carries only speech-affecting fields plus the identity derived from them;
-/// display-only lesson metadata is deliberately absent, because anything here
-/// would change the cache key.
+/// Contains synthesis inputs, their derived cache identity, and the timeline
+/// metadata needed after synthesis. `speaker`, `spoken_text`, `style`, and
+/// `take` affect the cache key; `id` and `pause_after_ms` affect only the plan
+/// identity. Display-only lesson metadata remains absent so presentation edits
+/// change neither identity.
 ///
-/// Serialized, never deserialized, for the reason given on [`RenderPlan`]. Its
-/// serialization is load-bearing: `plan_hash` is BLAKE3 over exactly these
-/// bytes.
-#[derive(Clone, Debug, Serialize)]
+/// Serialized, never deserialized, for the reason given on [`RenderPlan`].
+/// `plan_hash` is derived separately by `plan_digest`, which keeps serde
+/// document-layout details out of the identity — and which destructures this
+/// type without `..`, so a field added here stops compiling until somebody has
+/// decided whether it belongs in the plan's identity.
+#[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct PlannedSegment {
     /// Identity of the segment within its lesson.
     pub id: String,
@@ -231,118 +237,122 @@ pub struct PlannedSegment {
     pub style: String,
     /// Silence written after this segment, in milliseconds.
     pub pause_after_ms: u32,
+    /// Which take of this segment the plan selects.
+    pub take: u32,
     /// This segment's synthesis identity, which names its cache entry.
     pub cache_key: CacheKey,
 }
 
-/// Every speech-affecting input, named field by field.
+/// Take used by every planned segment.
 ///
-/// A derived hash over `LessonSegment` would silently absorb each future field
-/// and let the exclusion property regress without a compile error, so the list
-/// is explicit. `identity_version` is the single lever for invalidating every
-/// cache entry when this definition changes.
-#[derive(Serialize)]
-struct SynthesisIdentity<'a> {
-    identity_version: &'static str,
-    synthesizer: &'a str,
-    speaker: &'a str,
-    spoken_text: &'a str,
-    style: &'a str,
-    sample_rate: u32,
-    channels: u16,
-    sample_format: &'static str,
-}
+/// ADR-0001 §12.2: "Take zero is the synthesis default." A planned segment's
+/// cache key is therefore that segment's *synthesis base key*, and selecting
+/// any other take is the takes file's decision rather than the planner's.
+pub const BASE_TAKE: u32 = 0;
 
 impl RenderPlan {
-    /// Derives the plan for a lesson under a given synthesizer identity.
+    /// Derives the plan for a lesson under a given synthesis context.
     ///
-    /// Deterministic: the same lesson and the same synthesizer always produce
-    /// the same plan hash and the same cache keys, which is what makes a
-    /// rebuild reuse its cache.
+    /// Deterministic: the same lesson and the same context always produce the
+    /// same plan hash and the same cache keys, which is what makes a rebuild
+    /// reuse its cache.
     ///
     /// # Examples
     ///
-    /// Authored data cannot be planned before validation:
+    /// Authored data cannot be planned before validation, because this
+    /// function accepts only a [`ValidatedLesson`]:
     ///
     /// ```compile_fail
-    /// use study_tts_core::{AuthoredLesson, RenderPlan};
+    /// use study_tts_core::{AuthoredLesson, RenderPlan, SynthesisContext};
     ///
-    /// let authored = AuthoredLesson {
-    ///     schema_version: "0.1-skeleton".to_owned(),
-    ///     lesson_id: "unvalidated".to_owned(),
-    ///     title: "Unvalidated".to_owned(),
-    ///     segments: vec![],
-    /// };
-    /// RenderPlan::for_lesson(&authored, "fake-tone-v1");
+    /// fn plan(authored: &AuthoredLesson, context: &SynthesisContext) {
+    ///     RenderPlan::for_lesson(authored, context);
+    /// }
     /// ```
-    ///
-    /// # Panics
-    ///
-    /// If serializing a synthesis identity or the segment list fails, which
-    /// no argument to this function can cause. `serde_json` reports failure
-    /// for a `Serialize` implementation that returns an error, a map key
-    /// that serializes to neither a string nor a number, or a writer that
-    /// returns an I/O error. Both structures derive `Serialize` over
-    /// `String`s and integers plus a [`CacheKey`] that serializes through an
-    /// infallible `Into<String>`, neither holds a map, and `to_vec` writes
-    /// into a `Vec<u8>`. A field whose type reintroduces any of the three is
-    /// what makes this reachable, so the panic messages name the shape that
-    /// must hold rather than the call that failed.
-    ///
-    /// Panicking rather than returning an error is the choice, not the
-    /// leftover. These bytes *are* the identity: they are hashed into a
-    /// cache key and a plan hash, so the only alternative to stopping is
-    /// hashing different bytes, which names a cache entry holding audio the
-    /// identity does not describe. Silent misidentification is the failure
-    /// this project is least able to detect later. A typed variant would
-    /// also oblige every caller to handle a case no input can produce and no
-    /// test could assert.
-    pub fn for_lesson(lesson: &ValidatedLesson, synthesizer_identity: &str) -> Self {
+    pub fn for_lesson(lesson: &ValidatedLesson, context: &SynthesisContext) -> Self {
         let segments = lesson
             .segments()
             .iter()
-            .map(|segment| {
-                let identity = SynthesisIdentity {
-                    identity_version: "e0-s0-v1",
-                    synthesizer: synthesizer_identity,
-                    speaker: &segment.speaker,
-                    spoken_text: &segment.spoken_text,
-                    style: &segment.style,
-                    sample_rate: CANONICAL_SAMPLE_RATE,
-                    channels: CANONICAL_CHANNELS,
-                    sample_format: CANONICAL_SAMPLE_FORMAT,
-                };
-                let identity_bytes = serde_json::to_vec(&identity)
-                    .expect("a synthesis identity of strings and integers serializes");
-
-                PlannedSegment {
-                    id: segment.id.clone(),
-                    speaker: segment.speaker.clone(),
-                    spoken_text: segment.spoken_text.clone(),
-                    style: segment.style.clone(),
-                    pause_after_ms: segment.pause_after_ms,
-                    cache_key: blake3::hash(&identity_bytes).into(),
-                }
+            .map(|segment| PlannedSegment {
+                id: segment.id.clone(),
+                speaker: segment.speaker.clone(),
+                spoken_text: segment.spoken_text.clone(),
+                style: segment.style.clone(),
+                pause_after_ms: segment.pause_after_ms,
+                take: BASE_TAKE,
+                cache_key: synthesis_digest(context, segment, BASE_TAKE).into(),
             })
             .collect::<Vec<_>>();
-        let plan_hash = blake3::hash(
-            &serde_json::to_vec(&segments)
-                .expect("a segment list of strings and integers serializes"),
-        )
-        .into();
 
         Self {
+            schema_version: PLAN_SCHEMA_VERSION,
             lesson_id: lesson.lesson_id().to_owned(),
-            plan_hash,
+            plan_hash: plan_digest(&segments).into(),
             segments,
         }
     }
 }
 
+/// Publishes the versions of this document a build reads, rather than any
+/// well-formed version string.
+///
+/// [`SchemaVersion`]'s own schema is a pattern, which is right for a value that
+/// may be any version; this field may be one of the versions this build writes,
+/// which is what [`crate::schema::accepted_versions_json_schema`] lists.
+fn schema_version_json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    crate::schema::accepted_versions_json_schema(PLAN_SCHEMA_VERSION)
+}
+
+/// Derives the identity of a whole plan from its resolved segments.
+///
+/// Hashes the canonical byte form rather than a `Serialize` output, so the
+/// bytes are defined by [`crate::canonical_bytes`] instead of by serde's field
+/// order. Nothing on that path can fail, which is why neither this function nor
+/// [`RenderPlan::for_lesson`] carries a `# Panics` section.
+///
+/// The mapping below *is* the plan's identity, and it is held to
+/// [`PlannedSegment`] by the destructure rather than by anyone remembering;
+/// that type names this function in return.
+fn plan_digest(segments: &[PlannedSegment]) -> blake3::Hash {
+    canonical_digest(&CanonicalValue::array(segments.iter().map(|segment| {
+        // Without `..`, so a field added to `PlannedSegment` is a compile error
+        // here until it is either hashed or deliberately left out. Omitting one
+        // silently is a plan whose identity stops describing it.
+        let PlannedSegment {
+            id,
+            speaker,
+            spoken_text,
+            style,
+            pause_after_ms,
+            take,
+            cache_key,
+        } = segment;
+
+        CanonicalValue::object([
+            ("id", id.as_str().into()),
+            ("speaker", speaker.as_str().into()),
+            ("spoken_text", spoken_text.as_str().into()),
+            ("style", style.as_str().into()),
+            ("pause_after_ms", (*pause_after_ms).into()),
+            ("take", (*take).into()),
+            ("cache_key", cache_key.as_str().into()),
+        ])
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{digest::is_blake3_hex, identity::sample_context};
     use serde_json::Value;
+
+    /// The reviewed two-segment lesson every property below plans.
+    fn fixture_lesson() -> ValidatedLesson {
+        ValidatedLesson::from_json(include_bytes!(
+            "../../../fixtures/lessons/e0-s0-two-segment.json"
+        ))
+        .expect("fixture should be valid")
+    }
 
     #[test]
     fn t1_e0_cache_keys_that_cannot_name_a_shard_directory_are_rejected() {
@@ -381,11 +391,8 @@ mod tests {
 
     #[test]
     fn t1_e0_a_planned_cache_key_is_recorded_as_a_plain_string() {
-        let lesson = ValidatedLesson::from_json(include_bytes!(
-            "../../../fixtures/lessons/e0-s0-two-segment.json"
-        ))
-        .expect("fixture should be valid");
-        let plan = RenderPlan::for_lesson(&lesson, "fake-tone-v1");
+        let lesson = fixture_lesson();
+        let plan = RenderPlan::for_lesson(&lesson, &sample_context());
         let cache_key = &plan.segments[0].cache_key;
 
         // Manifests and cache artifacts already on disk hold the key as a bare
@@ -401,11 +408,8 @@ mod tests {
 
     #[test]
     fn t1_e0_a_plan_hash_is_a_digest_recorded_as_a_plain_string() {
-        let lesson = ValidatedLesson::from_json(include_bytes!(
-            "../../../fixtures/lessons/e0-s0-two-segment.json"
-        ))
-        .expect("fixture should be valid");
-        let plan = RenderPlan::for_lesson(&lesson, "fake-tone-v1");
+        let lesson = fixture_lesson();
+        let plan = RenderPlan::for_lesson(&lesson, &sample_context());
 
         // `From<blake3::Hash>` is the only constructor, so the recorded value
         // is a digest by construction rather than by a check someone has to
@@ -425,25 +429,28 @@ mod tests {
 
     #[test]
     fn t1_e0_plan_is_stable_for_identical_inputs() {
-        let lesson = ValidatedLesson::from_json(include_bytes!(
-            "../../../fixtures/lessons/e0-s0-two-segment.json"
-        ))
-        .expect("fixture should be valid");
+        let lesson = fixture_lesson();
 
-        let first = RenderPlan::for_lesson(&lesson, "fake-tone-v1");
-        let second = RenderPlan::for_lesson(&lesson, "fake-tone-v1");
+        let first = RenderPlan::for_lesson(&lesson, &sample_context());
+        let second = RenderPlan::for_lesson(&lesson, &sample_context());
 
+        // Pinned so an accidental change to the identity definition or the
+        // canonical byte form is a failure here rather than a silent cache-wide
+        // invalidation. These moved from their E0 values when E1-S1 adopted the
+        // complete ADR-0001 §12.5 input set, and again within E1-S1 when the
+        // cache artifact gained its provenance record and
+        // `CACHE_SCHEMA_VERSION` — itself a key input — moved to `1.0`.
         assert_eq!(
             first.plan_hash.as_str(),
-            "d3c7ca8938293d0e07bced0bb05ace32413ac084a2e156f7cdc91ca34db756ff"
+            "eaac5a9c480376062a9b4d5c779884fff44356e7351b4ee87ecc8eed468e1501"
         );
         assert_eq!(
             first.segments[0].cache_key.as_str(),
-            "e39181e902fc3de24aa6bc6fb4be39c616f7976dcd422b792e7d4164abfb8562"
+            "bf7b27ab8ec9607f9c34ce5e96af4b4ff4645de9ca114c66d0351b7ed3eaa603"
         );
         assert_eq!(
             first.segments[1].cache_key.as_str(),
-            "6a122ef2b0f9b890d14dedc9fd9fc915da10723ea30617e3146ddd4aa422933f"
+            "ef7fe5ff9625cce6e03a278cec269b419047b00272e4e12b995f70aad41a3cb0"
         );
 
         assert_eq!(first.plan_hash, second.plan_hash);
@@ -452,15 +459,40 @@ mod tests {
 
     #[test]
     fn t1_e0_synthesizer_identity_participates_in_the_cache_key() {
-        let lesson = ValidatedLesson::from_json(include_bytes!(
-            "../../../fixtures/lessons/e0-s0-two-segment.json"
-        ))
-        .expect("fixture should be valid");
+        let lesson = fixture_lesson();
 
-        let first = RenderPlan::for_lesson(&lesson, "fake-tone-v1");
-        let second = RenderPlan::for_lesson(&lesson, "fake-tone-v2");
+        // The synthesizer's identity is no longer one opaque string: ADR-0001
+        // §12.5 names the bundle, model, and tokenizer separately, and each has
+        // to reach the key on its own.
+        let baseline = sample_context();
+        let mut rebuilt_worker = baseline.clone();
+        rebuilt_worker.worker_bundle_hash =
+            "3".repeat(64).parse().expect("a digest of threes parses");
+        let mut newer_model = baseline.clone();
+        newer_model.model_revision = "fedcba9876543210fedcba9876543210fedcba98"
+            .parse()
+            .expect("a hex revision parses");
+        let mut newer_tokenizer = baseline.clone();
+        newer_tokenizer.tokenizer_revision = "tokenizer-2026-02"
+            .parse()
+            .expect("a dated tokenizer revision parses");
 
-        assert_ne!(first.segments[0].cache_key, second.segments[0].cache_key);
-        assert_ne!(first.plan_hash, second.plan_hash);
+        let first = RenderPlan::for_lesson(&lesson, &baseline);
+        for (input, changed) in [
+            ("worker_bundle_hash", rebuilt_worker),
+            ("model_revision", newer_model),
+            ("tokenizer_revision", newer_tokenizer),
+        ] {
+            let second = RenderPlan::for_lesson(&lesson, &changed);
+
+            assert_ne!(
+                first.segments[0].cache_key, second.segments[0].cache_key,
+                "changing `{input}` must change the segment's cache key"
+            );
+            assert_ne!(
+                first.plan_hash, second.plan_hash,
+                "changing `{input}` must change the plan hash"
+            );
+        }
     }
 }

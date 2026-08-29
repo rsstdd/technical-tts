@@ -5,7 +5,7 @@
 
 # Python worker environments and caches
 /.venv/
-/worker/.venv/
+/worker/.venv
 **/__pycache__/
 *.py[cod]
 *.pyd
@@ -76,3 +76,8 @@ flamegraph.svg
 
 # Keep dependency lockfiles tracked for reproducible builds.
 # Cargo.lock and worker lockfiles must not be ignored.
+
+# Local agent configuration
+.agents
+.claude
+.codex

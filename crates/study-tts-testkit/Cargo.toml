@@ -14,6 +14,20 @@ workspace = true
 [dependencies]
 blake3 = "1.8.6"
 hound = "3.5.1"
+# Not an ADR-0001 §7.2 candidate, and admitted under §7.2's own test — a
+# crate is added when it removes more risk than it introduces. `pattern`
+# in JSON Schema 2020-12 is an ECMA-262 regular expression, and a
+# hand-rolled engine that quietly accepts what it did not understand
+# agrees with every pattern including a wrong one. Four transitive crates,
+# no network, and this crate never reaches a production path.
+regex = "1.13.1"
+# `regex`'s own parser, already in the tree beneath it, so naming it directly
+# adds no crate. It answers whether a pattern is anchored on every alternation
+# branch, which reading the first and last character cannot: `^a|b$` begins and
+# ends with the two anchors and constrains neither side, and `^price\$` ends
+# with an escaped literal rather than an anchor. Both would have passed a
+# textual check as fully anchored.
+regex-syntax = "0.8.11"
 serde_json = "1.0.151"
 sha2 = "0.10.9"
 study-tts-core = { version = "0.1.0", path = "../study-tts-core" }

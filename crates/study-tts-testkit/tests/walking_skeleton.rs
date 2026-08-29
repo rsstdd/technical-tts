@@ -290,6 +290,42 @@ fn t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest() {
 }
 
 #[test]
+fn t4_e1_the_published_manifest_schema_describes_what_a_package_writes() {
+    // `manifest.json` is written and read entirely inside `study-tts-runtime`
+    // through private functions, so there is no parser this crate can call and
+    // no point committing a manifest fixture beside one: the document that
+    // matters is the one a real package build produces, and a transcribed copy
+    // would drift from it silently.
+    //
+    // This is the manifest half of the format-coverage table in
+    // `crates/study-tts-testkit/tests/schemas.rs`, whose `CHECKED_ELSEWHERE`
+    // names this test in return. It lives here rather than there because
+    // producing the document needs real FFmpeg, which is a T4 dependency.
+    let (_workspace, result, _worker) = run_skeleton();
+
+    let manifest: Value = serde_json::from_slice(
+        &std::fs::read(&result.manifest).expect("the written manifest is readable"),
+    )
+    .expect("the written manifest is JSON");
+    let schema: Value = serde_json::from_slice(
+        &std::fs::read(
+            repository_root()
+                .join(study_tts_runtime::SCHEMA_DIRECTORY)
+                .join("manifest-v0.schema.json"),
+        )
+        .expect("the published manifest schema is readable"),
+    )
+    .expect("the published manifest schema is JSON");
+
+    if let Err(violations) = study_tts_testkit::validate_against_schema(&schema, &manifest) {
+        panic!(
+            "a package build writes a manifest its own published schema refuses:\n  {}",
+            violations.join("\n  ")
+        );
+    }
+}
+
+#[test]
 fn t4_e0_skeleton_runs_without_model_artifacts() {
     let workspace = TempDir::new().expect("create isolated no-model workspace");
     let worker = DeterministicToneWorker::default();
@@ -1232,7 +1268,7 @@ fn t3_e0_registered_fixture_checksums_match_test_data_manifest() {
     let manifest =
         std::fs::read_to_string(repository_root.join("docs/testing/TEST-DATA-MANIFEST.md"))
             .expect("read test-data manifest");
-    let fixture_directories = ["fixtures/lessons", "fixtures/contracts"];
+    let fixture_directories = ["fixtures/audio", "fixtures/lessons", "fixtures/contracts"];
 
     // Every committed lesson and contract fixture is discovered rather than
     // listed, so a new fixture cannot be added without a manifest row.
@@ -1267,8 +1303,8 @@ fn t3_e0_registered_fixture_checksums_match_test_data_manifest() {
 
     // Guards against a misresolved path making the loop vacuous.
     assert!(
-        checked >= 12,
-        "expected at least twelve committed lesson and contract fixtures, checked {checked}"
+        checked >= 20,
+        "expected at least twenty committed audio, lesson, and contract fixtures, checked {checked}"
     );
 }
 
