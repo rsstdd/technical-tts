@@ -157,7 +157,7 @@ jobs:
                 "RUSTUP_HOME=$RUSTUP_HOME" \
                 "PATH=$PATH" \
                 "TEST_BINARIES=$TEST_BINARIES" \
-                timeout --signal=TERM 120s \
+                timeout --signal=TERM 60s \
                 bash -euo pipefail -c '\''
                   while IFS= read -r test_binary; do
                     "$test_binary"

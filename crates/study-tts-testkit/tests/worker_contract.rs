@@ -9,9 +9,11 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::Write,
+    io::{self, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, ChildStdin, Command, Output, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 use serde_json::Value;
@@ -25,6 +27,9 @@ use study_tts_runtime::{
 use study_tts_testkit::{DETERMINISTIC_TONE_BUNDLE_HASH, DETERMINISTIC_TONE_VOICE_PROFILE_HASH};
 use study_tts_testkit::{FakeTtsExecutor, validate_against_schema, walking_skeleton_fixture};
 use tempfile::TempDir;
+
+const FAKE_SESSION_DEADLINE: Duration = Duration::from_secs(2);
+const FAKE_SESSION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 fn repository_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -365,6 +370,38 @@ fn t4_e1_fake_worker_passes_shared_protocol_contract() {
     );
 }
 
+#[test]
+fn t4_e1_fake_worker_contract_deadline_kills_and_reaps_a_hung_worker() {
+    let staging = TempDir::new().expect("create a worker staging directory");
+    let session = serde_json::json!({
+        "method": "health",
+        "protocol_version": WORKER_PROTOCOL_VERSION,
+        "request_id": "hung-worker",
+    })
+    .to_string();
+    let mut worker =
+        FakeWorkerChild::spawn(&staging, &["hang"]).expect("the hanging fake worker starts");
+    let worker_id = worker.id();
+    worker
+        .write_session(&session)
+        .expect("the session is writable to the hanging worker");
+
+    let started = Instant::now();
+    let error = worker
+        .wait_with_output_until_deadline()
+        .expect_err("the hanging fake worker must time out");
+
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(
+        started.elapsed() < FAKE_SESSION_DEADLINE + Duration::from_secs(1),
+        "timeout cleanup must finish within one second of the fake-session deadline"
+    );
+    assert!(
+        !Path::new("/proc").join(worker_id.to_string()).exists(),
+        "the timed-out fake worker must be reaped, not left as process {worker_id}"
+    );
+}
+
 fn parse_schema_validated_response(schema: &Value, line: &str) -> WorkerResponseFrame {
     assert!(
         line.len() <= MAX_WORKER_FRAME_BYTES,
@@ -380,26 +417,101 @@ fn parse_schema_validated_response(schema: &Value, line: &str) -> WorkerResponse
 
 /// Runs the fake worker in `staging` over `session` and returns its stdout.
 fn drive(staging: &TempDir, arguments: &[&str], session: &str) -> String {
-    let mut worker = Command::new(fake_worker())
-        .args(arguments)
-        .current_dir(staging.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("the fake worker starts");
+    let mut worker = FakeWorkerChild::spawn(staging, arguments).expect("the fake worker starts");
     worker
-        .stdin
-        .take()
-        .expect("the fake worker takes stdin")
-        .write_all(session.as_bytes())
+        .write_session(session)
         .expect("the session is writable to the worker");
-    let output = worker.wait_with_output().expect("the fake worker exits");
+    let output = worker
+        .wait_with_output_until_deadline()
+        .expect("the fake worker exits before the session deadline");
     assert!(
         output.status.success(),
         "the fake worker must exit cleanly, got {}",
         output.status
     );
     String::from_utf8(output.stdout).expect("worker stdout is UTF-8")
+}
+
+struct FakeWorkerChild {
+    child: Option<Child>,
+}
+
+impl FakeWorkerChild {
+    fn spawn(staging: &TempDir, arguments: &[&str]) -> io::Result<Self> {
+        let child = Command::new(fake_worker())
+            .args(arguments)
+            .current_dir(staging.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?;
+        Ok(Self { child: Some(child) })
+    }
+
+    fn id(&self) -> u32 {
+        self.child
+            .as_ref()
+            .expect("a live fake-worker guard owns a child")
+            .id()
+    }
+
+    fn write_session(&mut self, session: &str) -> io::Result<()> {
+        let mut stdin = self.take_stdin()?;
+        stdin.write_all(session.as_bytes())
+    }
+
+    fn wait_with_output_until_deadline(mut self) -> io::Result<Output> {
+        let deadline = Instant::now() + FAKE_SESSION_DEADLINE;
+        loop {
+            if self.child_mut().try_wait()?.is_some() {
+                return self
+                    .child
+                    .take()
+                    .expect("an exited fake-worker guard owns a child")
+                    .wait_with_output();
+            }
+            if Instant::now() >= deadline {
+                self.kill_and_reap()?;
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "fake worker exceeded the two-second session deadline",
+                ));
+            }
+            thread::sleep(FAKE_SESSION_POLL_INTERVAL);
+        }
+    }
+
+    fn take_stdin(&mut self) -> io::Result<ChildStdin> {
+        self.child_mut().stdin.take().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "fake worker has no open stdin")
+        })
+    }
+
+    fn child_mut(&mut self) -> &mut Child {
+        self.child
+            .as_mut()
+            .expect("a live fake-worker guard owns a child")
+    }
+
+    fn kill_and_reap(&mut self) -> io::Result<()> {
+        let child = self.child_mut();
+        match child.kill() {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
+            Err(error) => return Err(error),
+        }
+        child.wait()?;
+        self.child.take();
+        Ok(())
+    }
+}
+
+impl Drop for FakeWorkerChild {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 fn request_request_id(frame: &WorkerRequestFrame) -> &str {
