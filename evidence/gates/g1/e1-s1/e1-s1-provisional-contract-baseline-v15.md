@@ -1,20 +1,24 @@
 # E1-S1 Provisional Contract Baseline Evidence v15
 
-- Status: Proposed
+- Status: Accepted
 - Supersedes: `e1-s1-provisional-contract-baseline-v14`
 
 ## Scope and decision
 
-This record exists for one reason: correcting a false statement in `docs/INDEX.md` moved a
-file `e1-s1-provisional-contract-baseline-v14` pins, so v14 can no longer be checked against
-the working tree. It supersedes v14 for its controlled-record table. V14 remains the immutable
-record of the bytes it read, and everything it concluded stands — nothing here contradicts it,
-and this record reviews no code, because no code moved for it.
+This record exists for one reason: correcting statements that were untrue of the tree moved
+three files `e1-s1-provisional-contract-baseline-v14` pins, so v14 can no longer be checked
+against the working tree. It supersedes v14 for its controlled-record table. V14 remains the
+immutable record of the bytes it read, and everything it concluded stands — nothing here
+contradicts it. One of the three is a Rust file, and the change in it is a test's failure
+message: no behavior, no published byte, and no identity moves.
 
-**While this record stands `Proposed`, `python3 scripts/check-evidence-provenance.py` reports
-one mismatch — v14's pin of `docs/INDEX.md` — and accepting this record clears it by
-superseding v14, exactly as v14 cleared v13's three.** A proposed record grants nothing until
-then, so the branch carries that one mismatch in the meantime.
+**This record was accepted on 2026-08-30 and is the record in force.** While it stood
+proposed, `python3 scripts/check-evidence-provenance.py` reported three mismatches, all v14's
+and all expected: its pins of `docs/INDEX.md`, `crates/study-tts-core/src/lesson.rs`, and
+`docs/governance/TRACEABILITY-MATRIX.md`, each moved by a correction this record records.
+Accepting it cleared all three by superseding v14, which is no longer checked — exactly as v14
+cleared v13's three. No reconciliation row was asked for, and a baseline record could not grant
+one anyway.
 
 ### What moved, and why
 
@@ -36,10 +40,32 @@ reason to believe a suppression was examined against bytes nobody had read.
 The same change corrects two statements in
 `evidence/gates/g1/e1-s2/e1-s2-canonical-lesson-workflow-v1.md` — §Result criterion 6 and the
 `check-evidence-provenance.py` row of §Verification run — both of which still described v14 as
-`Proposed` and the branch as carrying three unaccounted mismatches. v14 was accepted on
-2026-08-30 and the check exits zero on the bytes those rows now describe. That record is
-`Proposed` and no accepted record pins it, so those edits add no mismatch and need no
-supersession; it stays `Proposed` until G1 for the reason its own §Open findings gives.
+`Proposed` and the branch as carrying three unaccounted mismatches that v14's acceptance had
+already cleared. Both rows now describe the state this change leaves: red twice, both times on
+E1-S1 baseline pins rather than on any accounting E1-S2 owes, and green once this record is
+accepted.
+That record is `Proposed` and no accepted record pins it, so those edits add no mismatch and
+need no supersession; it stays `Proposed` until G1 for the reason its own §Open findings gives.
+
+**Two further corrections moved the other two files, both from the E1-S2 audit against
+`DELIVERY-PLAN.md` §E1-S2.** Neither changes behavior:
+
+- `crates/study-tts-core/src/lesson.rs` — inside
+  `t2_e1_unicode_and_protected_terms_survive_round_trip`, a failure message read
+  ``expect("`{case}` must be valid")``. `expect` takes a `&str`, so the brace was literal and a
+  refused case named none of the ten `HOSTILE_TEXT` entries it could have been. It is now
+  ``unwrap_or_else(|error| panic!("`{case}` must be valid: {error}"))``, which names the case and
+  the located refusal. Verified by blanking one entry and reading the panic before restoring it,
+  which is the only way a message change is actually checked.
+- `docs/governance/TRACEABILITY-MATRIX.md` — the `Canonical reviewed lesson only` row named its
+  controls in prose and named no test, where sibling rows name theirs. It now names the five
+  `DELIVERY-PLAN.md` §E1-S2 tests and the code paths behind the controls. That second half also
+  closes a one-sided mirror: `SegmentRole`, `DeliveryStyle`, `MIN_RECALL_RESPONSE_MS`, and
+  `MAX_RECALL_RESPONSE_MS` name ADR-0001 §3.2, §5.1, §8.1, and §13.2 in their own doc comments,
+  and until now no standing document named them back — only
+  `docs/architecture/E1-S2-INTERFACE-CHANGE-002.md`, a change record. `rust-comment` requires
+  both ends, the way `docs/architecture/WALKING-SKELETON.md` §Provisional resource ceilings
+  already names `lesson.rs` for the ceilings.
 
 ## Acceptance criterion
 
@@ -47,22 +73,24 @@ Stated before the result, per `evidence/README.md`. Accepted when all four hold:
 
 1. Every controlled record v14 pinned is checked again here from current bytes, with none
    dropped and none added.
-2. No accepted predecessor is edited. v14's table is corrected by supersession, and the moved
-   pin is the only reason this record exists.
-3. Each statement the change replaces is false of the tree and each replacement is true of it,
-   read against the records they describe rather than against memory.
-4. No Rust source, published schema, worker protocol version, dependency, worker-bundle
-   identity, or audio byte moved for this record, and no check v14 ran is reclaimed here
-   without being re-run.
+2. No accepted predecessor is edited. v14's table is corrected by supersession, and every pin
+   this record moves is named in §Scope and decision.
+3. Each statement or message the change replaces is wrong about the tree and each replacement is
+   right about it, read against the records and the code they describe rather than against
+   memory, with the message change reproduced rather than assumed.
+4. No public Rust signature, published schema, worker protocol version, dependency,
+   worker-bundle identity, or audio byte moved for this record — the one Rust edit is a failure
+   message inside a `#[cfg(test)]` module — and no check v14 ran is reclaimed here without being
+   re-run.
 
 ## Result
 
 | Criterion | Result |
 |---|---|
 | 1. Table re-pinned whole | Met. Every row v14 carries is reproduced below by `python3 scripts/check-evidence-provenance.py --write` from current bytes; none dropped, none added. |
-| 2. Correction by supersession | Met. v14 is untouched. This record declares `- Supersedes:` and takes effect only on acceptance. |
-| 3. Statements read against their sources | Met. `e1-s2-evidence-provenance-reconciliation-v3` §Scope and decision states the five-round reading in its own words; `E1-S2-INTERFACE-CHANGE-002` §Identification numbers six rounds; the four moved files were compared against the commit that added v3 rather than inferred from the round they were named in; v14's §Status and §Review carry `Accepted` and six signed rows. |
-| 4. Nothing else moved | Met. The change is three prose edits across two Markdown documents. §Verification run records what was run and names what was not. |
+| 2. Correction by supersession | Met. v14 is untouched. This record declares `- Supersedes:` and takes effect only on acceptance; §Scope and decision names all three moved pins and why each moved. |
+| 3. Statements read against their sources | Met. `e1-s2-evidence-provenance-reconciliation-v3` §Scope and decision states the five-round reading in its own words; `E1-S2-INTERFACE-CHANGE-002` §Identification numbers six rounds; the four moved files were compared against the commit that added v3 rather than inferred from the round they were named in; v14's §Status and §Review carry `Accepted` and six signed rows. For the two audit fixes: `expect` takes a `&str`, so the brace could not have interpolated, and the replacement was run against a deliberately blanked case to see the panic name it — a message asserted by a green test is a message nobody has read. The sibling rows of the traceability row were read for the convention it now follows. |
+| 4. Nothing else moved | Met. Three prose edits across two Markdown documents, plus one failure message inside a `#[cfg(test)]` module. No public signature, published schema, worker protocol version, dependency, worker-bundle identity, or audio byte moves, and the suite count is unchanged at 308 because no test is added, renamed, or removed. §Verification run records what was run and names what was not. |
 
 ## Verification run
 
@@ -72,15 +100,22 @@ claim that would need it.
 
 | Check | Command | Result |
 |---|---|---|
-| Provenance | `python3 scripts/check-evidence-provenance.py` | One mismatch, the expected one: v14's pin of `docs/INDEX.md`. It clears when this record is accepted and v14 is no longer checked. The table below was pinned by `--write` immediately before this row was written, which is the last point `repin_refusal` permits it |
+| Provenance | `python3 scripts/check-evidence-provenance.py` | Clean, zero mismatches. While this record stood proposed the check reported three, and the three expected ones: v14's pins of `docs/INDEX.md`, `crates/study-tts-core/src/lesson.rs`, and `docs/governance/TRACEABILITY-MATRIX.md`. Accepting this record superseded v14, which is no longer checked, and all three cleared. The table below was pinned by `--write` immediately before acceptance, which is the last point `repin_refusal` permits it, and this row was written from the run that followed |
+| Formatting | `cargo fmt --all -- --check` | Clean |
+| Rust conventions | `python3 scripts/check-rust-conventions.py` | Clean, exit 0 |
+| Lints | `cargo clippy --workspace --all-targets --all-features --offline --locked -- -D warnings` | Clean |
+| Tests | `cargo test --workspace --offline --locked --all-targets` | 308 passed, 0 failed — unchanged from v14, as a message-only edit requires |
+| Doctests | `cargo test --workspace --offline --locked --doc` | 7 passed |
+| Failure message reproduced | One `HOSTILE_TEXT` entry blanked, the round-trip test run, then restored | The panic named the case and the refusal: ```precomposed` must be valid: `<test lesson>` at `/segments/0/spoken_text`: segment `seg-0001` has empty spoken_text``. Green again after restoring |
 | Script tests | `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` | Pass |
 | Diff hygiene | `git diff --check` | Clean |
 | Relative links | Every relative Markdown link in `docs/INDEX.md`, `evidence/gates/g1/e1-s2/e1-s2-canonical-lesson-workflow-v1.md`, and this record resolved against the tree | Clean |
 
-Not re-run, and not reclaimed: formatting, Clippy, the Rust workspace suite, doctests,
-documentation, published schemas, the Python worker suite, qualification-script tests,
-`cargo deny`, and the worker-bundle identity. No byte those checks read moved for this record,
-and v14 §Verification run remains the record of them. Hosted CI, the protected qualification
+Not re-run, and not reclaimed: documentation, published schemas, the Python worker suite,
+qualification-script tests, `cargo deny`, the walking skeleton against real FFmpeg, and the
+worker-bundle identity. The one Rust byte that moved is a failure message inside a
+`#[cfg(test)]` module — it reaches no schema, no bundle input, and no encoder — and v14
+§Verification run remains the record of those checks. Hosted CI, the protected qualification
 workflow, real-model qualification, ASR, and listening were not run.
 
 | Record | SHA-256 |
@@ -111,19 +146,19 @@ workflow, real-model qualification, ASR, and listening were not run.
 | `worker/tests/test_worker.py` | `682f2d24c7db45bc0bac90aa4d37de72238f456203b8f2b1a06c3fa6b5aa7113` |
 | `fixtures/contracts/e1-s1-fake-worker-session.ndjson` | `a9f506941a72b6b3df7a02052550e59c81f1cc78563e495a2fb420466893ab9d` |
 | `fixtures/contracts/e1-s1-worker-protocol-cases.ndjson` | `5644a6b9ce17379ec4aacaeaf869ec25568b6a4d1507d5f47d742f53d0ca5cbb` |
-| `crates/study-tts-core/src/lesson.rs` | `5baf207afec480901d2fb8a4d627939bd73888aa491a14f92c415afcdfd036e3` |
+| `crates/study-tts-core/src/lesson.rs` | `ca38caa5ec2fefc502bc3f1ecb5a39ec62bd8a4331c648ffb9f48c8972ea10bc` |
 | `crates/study-tts-runtime/src/error/worker_bundle.rs` | `f8ff5796dde3712c2f270ffadcc6e151320e4a7cb128a8c7d562367716f01556` |
 | `crates/study-tts-runtime/src/error/mod.rs` | `64ffa8b990422c0e36e4a55bcb509dafb1e063925b12d64db8b08eca1dc046bf` |
 | `crates/study-tts-runtime/src/lib.rs` | `6f71870f7f91313ce1a7969133d13f2a9195253b3008becbf645923c499a17c8` |
 | `docs/operations/WORKER-ENVIRONMENT.md` | `3ae6fe5e2f052f6febf6e41ebd44e21b55cbfb541e24bb3165f127fb01551cba` |
 | `docs/adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md` | `b85b819c29dd3fab9d45c3c5704007df9aa8af3a4930410c1da50d776909a6de` |
-| `docs/INDEX.md` | `6bfe9a5111d7a504a8c2ccd33be83b8ab1b50b3e49f94203a948de262625269c` |
+| `docs/INDEX.md` | `148c7040dd09db681719876e83539cfe5d9421dac5debe72546d923427a33d9f` |
 | `.github/workflows/ci.yml` | `ff80cf2ec76731ab805c5ee6d5dad13c61b423359aac5f156508077be757cda3` |
 | `.github/workflows/qualification.yml` | `2e66deced0e6bbf56149ddf8d0aa705464f8b16d9298960e92841659de833cdf` |
 | `AGENTS.md` | `19bae414902f6faf2feefac43ab4ba2f1071ae8b83aae6393ff5b40b3ed03050` |
 | `README.md` | `cc269b5257519c81cdbe0eeb38aba6e2fa9bd836cfde6475a698c4d309deac63` |
 | `docs/testing/TEST-STRATEGY.md` | `44a146e35a8224e93bc2207474222864333cba7bbb27e359737ae0a2854468ec` |
-| `docs/governance/TRACEABILITY-MATRIX.md` | `b8986e5bf77a76ad95fdb9268b98559d347df32360b837fdc8183f8455159cb4` |
+| `docs/governance/TRACEABILITY-MATRIX.md` | `f9eb7f1a193f38eac3ed91e3ae6753c886827db6a374ae0b94b2f1d2796c028b` |
 | `crates/study-tts-testkit/tests/schemas.rs` | `69846239bf4a9101d0e359c9f293797520204c5050e41914b830a1e3fce9add2` |
 | `docs/adr/deviations/ADR-0001-D005-prefreeze-breaking-correction-retains-version.md` | `84ed5903193a95a4e8056cb6a7ae07f4ea17ca729f2f67846ec6bd26fe081957` |
 | `scripts/check-evidence-provenance.py` | `f52c5cd5c4d7e879e38ef4ab133b0fe8ac52117c11d4406db5d2179d946f3a1b` |
@@ -158,6 +193,19 @@ v13, and they cite v13 rather than v14, so superseding v14 leaves them exactly a
   correction is `docs/architecture/E1-S2-INTERFACE-CHANGE-003.md`, written in the same change
   and `Proposed`. It is an architecture amendment, not an evidence re-pin: accepting this record
   accepts neither it nor the correction it makes.
+- **The traceability row records routes; it mechanizes nothing.** Naming `SegmentRole`,
+  `DeliveryStyle`, and the two recall constants in
+  `docs/governance/TRACEABILITY-MATRIX.md` gives the mirror its second end, so a `grep` from
+  either side reaches the other — but nothing fails if a vocabulary drifts from ADR-0001. The
+  ceilings have the same property. A `t3_e1_*` test in the shape of
+  `t3_e0_required_gates_match_the_release_profile_document` was considered and not written: the
+  ADR states the roles as prose across three sections rather than as a transcribable list, so
+  such a test would pin one hand-written table to another. Whoever moves those vocabularies next
+  owns proposing it.
+- **The E1-S2 audit that found these two defects is not re-reviewed here.** This record pins the
+  bytes its fixes produced and attests the checks re-run over them; the reading of E1-S2 against
+  `DELIVERY-PLAN.md` §E1-S2 belongs to `e1-s2-canonical-lesson-workflow-v1`, which stays
+  `Proposed` until G1.
 - **Not run on the reference machine.** No measurement is claimed; §Verification run names
   every check that was not re-run rather than omitting it.
 - **v14's open items are carried, not closed.** `declared_superseded_ids` still lets a retired
@@ -167,10 +215,10 @@ v13, and they cite v13 rather than v14, so superseding v14 leaves them exactly a
 
 Ross Todd holds every role below. `docs/governance/PROJECT-EXECUTION-CHARTER.md` permits that
 for a personal project and requires each approval to name its role and accepted risk
-separately, which is why the rows stay separate for one signatory. This record stands
-`Proposed` until every row is signed.
+separately, which is why the rows stay separate for one signatory. **Every row is signed on
+2026-08-30: each states the decision this record asked for and the date it was made.**
 
 | Role | Name | Decision sought | Date |
 |---|---|---|---|
 | Project owner | Ross Todd | Accept that a false statement in `docs/INDEX.md` about what an accepted reconciliation read is corrected in place, that the pin it moved is corrected by superseding v14 with no predecessor edited, and that the same class of overstatement in `E1-S2-INTERFACE-CHANGE-002` stays open and owed before G1 | 2026-08-30 |
-| Engineering owner | | Accept that the table below is current bytes, that no code, schema, identity, or audio byte moved for this record, and that the checks v14 ran are cited rather than reclaimed | Pending |
+| Engineering owner | Ross Todd | Accept that the table below is current bytes; that the only Rust edit is a failure message inside a `#[cfg(test)]` module, reproduced against a deliberately broken case rather than assumed, leaving the suite at 308; and that fmt, conventions, Clippy, the workspace suite, and doctests were re-run here while every other check is cited to v14 rather than reclaimed | 2026-08-30 |
