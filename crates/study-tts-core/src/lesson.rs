@@ -2247,6 +2247,66 @@ mod tests {
     }
 
     #[test]
+    fn t3_e1_recall_response_interval_matches_adr() {
+        assert_eq!(
+            (MIN_RECALL_RESPONSE_MS, MAX_RECALL_RESPONSE_MS),
+            (1_500, 4_000)
+        );
+    }
+
+    #[test]
+    fn t3_e1_provisional_lesson_resource_ceilings_match_walking_skeleton_document() {
+        const CASES: [(&str, usize, usize); 10] = [
+            (
+                "canonical lesson JSON",
+                MAX_LESSON_JSON_BYTES,
+                16 * 1024 * 1024,
+            ),
+            ("segments per lesson", MAX_LESSON_SEGMENTS, 4_096),
+            (
+                "learning objectives per lesson",
+                MAX_LEARNING_OBJECTIVES,
+                64,
+            ),
+            (
+                "one learning objective",
+                MAX_LEARNING_OBJECTIVE_BYTES,
+                4 * 1024,
+            ),
+            (
+                "references per lesson source record",
+                MAX_LESSON_REFERENCES,
+                256,
+            ),
+            (
+                "one lesson source reference",
+                MAX_LESSON_REFERENCE_BYTES,
+                4 * 1024,
+            ),
+            (
+                "display/spoken text per segment",
+                MAX_SEGMENT_TEXT_BYTES,
+                64 * 1024,
+            ),
+            (
+                "source references per segment",
+                MAX_SOURCE_REFS_PER_SEGMENT,
+                256,
+            ),
+            ("one source reference", MAX_SOURCE_REF_BYTES, 4 * 1024),
+            (
+                "aggregate authored text",
+                MAX_AUTHORED_TEXT_BYTES,
+                16 * 1024 * 1024,
+            ),
+        ];
+
+        for (resource, actual, expected) in CASES {
+            assert_eq!(actual, expected, "{resource}");
+        }
+    }
+
+    #[test]
     fn t3_e0_authored_lesson_serialization_preserves_the_fixture_shape() {
         let expected = fixture();
         let authored: AuthoredLesson =
