@@ -48,8 +48,8 @@ flowchart LR
 
 | Boundary | Current owner | Stabilization point |
 |---|---|---|
-| Lesson parsing and validation | `study-tts-core::{AuthoredLesson, ValidatedLesson}` | E1-S1 and E1-S2 schemas |
-| Render planning and synthesis identity | `study-tts-core::RenderPlan` | E1-S1 identity contracts |
+| Lesson parsing and validation | `study-tts-core::{AuthoredLesson, ValidatedLesson, LessonDiagnostic}` | Stabilized by E1-S2: lesson `3.1` declares voices, carries ADR-0001 §8.1's objectives and source record, closes the role and style vocabularies, and names every refusal's document, segment, and field path |
+| Render planning and synthesis identity | `study-tts-core::RenderPlan` | E1-S1 identity contracts, extended by E1-S2's resolved voice-conditioning input |
 | Synthesis port | `study-tts-runtime::TtsExecutor` | E1-S3 real worker parity, then G1 freeze |
 | Deterministic tone implementation | `study-tts-testkit::FakeTtsExecutor` (`DeterministicToneWorker` test alias) | Shared with the real-worker contract suite at E1-S3 |
 | Durable filesystem primitives | `study-tts-runtime::durable` | Extended, not replaced, by E2-S1 job state and E5 containment |
@@ -76,6 +76,10 @@ assigned to E5.
 | --- | ---: |
 | Canonical lesson JSON | 16 MiB UTF-8 bytes |
 | Segments per lesson | 4,096 |
+| Learning objectives per lesson | 64 |
+| One learning objective | 4 KiB UTF-8 bytes |
+| References per lesson source record | 256 |
+| One lesson source reference | 4 KiB UTF-8 bytes |
 | `display_text` per segment | 64 KiB UTF-8 bytes |
 | `spoken_text` per segment | 64 KiB UTF-8 bytes |
 | Source references per segment | 256 |
@@ -95,7 +99,11 @@ assigned to E5.
 | One numeric literal in a worker frame | 32 characters |
 
 The lesson values mirror the constants in
-`crates/study-tts-core/src/lesson.rs`; its public
+`crates/study-tts-core/src/lesson.rs`. Neither `speakers` nor `editorial` adds a ceiling: only the
+speakers a segment actually names are resolved, and speaker names and voice-profile identities are
+counted into the aggregate authored-text total the table already bounds. The lesson `3.1` records
+above are counted into that total as well. Neither `role` nor `style` is, since lesson `3.0` closed
+both to fixed vocabularies whose spellings a document cannot grow. Its public
 `MAX_LESSON_JSON_BYTES` is also imported by
 `crates/study-tts-runtime/src/pipeline.rs::read_lesson`. That reader performs a
 nonblocking Unix open, requires the opened descriptor to be a regular file,
@@ -202,7 +210,7 @@ boundaries and retain their T4 names and budget.
 
 The word provisional is material. Lock, journal, and selection records use distinct internal `0.1-skeleton-*` versions with unknown-field rejection, and none can be mistaken for the complete job, manifest, or publication schemas accepted in ADR-0001. Later stories may version or replace these contracts, but they must preserve this test path or update it in the same change so the end-to-end integration order remains executable.
 
-The lesson fixture is no longer among them. E1-S1 published the lesson schema at `schemas/lesson-v1.schema.json` and moved the fixture to `1.1`, so `0.1-skeleton` is now refused as a malformed version rather than accepted as an old one; [`E1-S1-INTERFACE-CHANGE-001.md`](E1-S1-INTERFACE-CHANGE-001.md) records why the increment was a major followed by a minor.
+The lesson fixture is no longer among them. E1-S1 published the lesson schema and moved the fixture to `1.1`, so `0.1-skeleton` is now refused as a malformed version rather than accepted as an old one; [`E1-S1-INTERFACE-CHANGE-001.md`](E1-S1-INTERFACE-CHANGE-001.md) records why the increment was a major followed by a minor. E1-S2 repeated that shape twice. First to `2.x`, where `2.0` made `speakers` required and `2.1` added the optional `editorial` flag; [`E1-S2-INTERFACE-CHANGE-001.md`](E1-S2-INTERFACE-CHANGE-001.md) records that increment, the `SYNTHESIS_IDENTITY_VERSION` move to `e1-s2-v1` that resolving voice references forced, and the required `voice_conditioning_hash` on `SynthesisRequest` that came with it. Then to `3.x`, published at `schemas/lesson-v3.schema.json`, where `3.0` closed the `role` and `style` vocabularies, bounded a recall prompt's pause to ADR-0001 §13.2's range, and refuses a `speakers` object binding one name twice, and `3.1` added the optional `learning_objectives` and `source` records; [`E1-S2-INTERFACE-CHANGE-002.md`](E1-S2-INTERFACE-CHANGE-002.md) records that increment, and is `Proposed` and unsigned. Every `1.x` and `2.x` document is now refused as a different major.
 
 New minimal preview manifests use `0.2-skeleton`, which requires normalized tool argument-profile identities. Reconciliation still accepts strict legacy `0.1-skeleton` manifests without those fields, but cannot reuse them as a matching tool-profile generation.
 

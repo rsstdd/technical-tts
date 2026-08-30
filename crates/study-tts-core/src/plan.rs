@@ -16,18 +16,24 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    CanonicalValue, SchemaVersion, ValidatedLesson, canonical_digest,
+    CanonicalValue, DeliveryStyle, SchemaVersion, ValidatedLesson, canonical_digest,
     digest::{BLAKE3_HEX_LENGTH, blake3_newtype, json_schema_as_string},
     identity::{SynthesisContext, synthesis_digest},
 };
 
 /// Version of the render-plan document this build writes.
 ///
-/// `1.0` because `plan.json` has never been written: ADR-0001 §12.2 persists
-/// plans at E2, and this is the shape that story will write. A schema may be
-/// published before its writer exists; a *version* claiming history it does not
-/// have may not.
-pub const PLAN_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(1, 0);
+/// Version `1.0` was E1-S1's published shape. Version `2.0` makes
+/// [`PlannedSegment::display_text`] required and narrows `style` from a free
+/// string to the closed [`DeliveryStyle`] vocabulary, both of which
+/// `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` §Change classes
+/// puts under **Breaking contract**. `ADR-0001-D005` does not permit either to
+/// retain its version: that deviation's condition 2 needs the version to have
+/// been introduced by an unreleased breaking move *within the same story*, and
+/// `1.0` came from E1-S1. That no `plan.json` has ever been written makes the
+/// migration trivial, not the increment optional. The change is recorded in
+/// `docs/architecture/E1-S2-INTERFACE-CHANGE-002.md`.
+pub const PLAN_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(2, 0);
 
 /// File-name and URI stem of the published render-plan schema.
 pub const PLAN_SCHEMA_STEM: &str = "plan";
@@ -214,10 +220,11 @@ pub struct RenderPlan {
 /// One segment with its synthesis identity resolved.
 ///
 /// Contains synthesis inputs, their derived cache identity, and the timeline
-/// metadata needed after synthesis. `speaker`, `spoken_text`, `style`, and
-/// `take` affect the cache key; `id` and `pause_after_ms` affect only the plan
-/// identity. Display-only lesson metadata remains absent so presentation edits
-/// change neither identity.
+/// and transcript metadata needed after synthesis. `speaker`, `spoken_text`,
+/// `style`, and `take` affect the cache key; `id`, `display_text`, and
+/// `pause_after_ms` affect only the plan identity. The remaining lesson
+/// metadata — role, citations, review state — reaches neither, because nothing
+/// downstream of planning reads it.
 ///
 /// Serialized, never deserialized, for the reason given on [`RenderPlan`].
 /// `plan_hash` is derived separately by `plan_digest`, which keeps serde
@@ -231,16 +238,57 @@ pub struct PlannedSegment {
     pub id: String,
     /// Which voice speaks this segment.
     pub speaker: String,
+    /// Text as a reviewer reads it, carried so the package a build writes can
+    /// hold the transcript for the audio it selected.
+    ///
+    /// ADR-0001 §8.3 keeps this apart from `spoken_text` so a pronunciation
+    /// edit cannot hide a semantic one, and §12.5 keeps it out of the cache
+    /// key: correcting a transcript must not re-synthesize identical audio. It
+    /// is inside the plan hash all the same, because a package whose
+    /// transcript changed is a different package, and a plan identity that
+    /// ignored it would let the corrected text be reconciled away as already
+    /// selected.
+    pub display_text: String,
     /// The exact text to speak.
     pub spoken_text: String,
-    /// Delivery style requested of the voice.
-    pub style: String,
+    /// Delivery requested of the voice.
+    ///
+    /// The lesson's own closed vocabulary rather than its spelling, so the
+    /// published plan schema names the four styles a build can render and a
+    /// caller cannot introduce a fifth between validation and synthesis.
+    pub style: DeliveryStyle,
     /// Silence written after this segment, in milliseconds.
     pub pause_after_ms: u32,
     /// Which take of this segment the plan selects.
     pub take: u32,
     /// This segment's synthesis identity, which names its cache entry.
     pub cache_key: CacheKey,
+}
+
+/// Why a validated lesson could not be planned.
+///
+/// One variant, because planning has exactly one precondition its input type
+/// cannot express: [`ValidatedLesson`] guarantees every segment names a
+/// declared speaker, but not that the caller resolved that speaker's voice.
+#[derive(Debug, Error)]
+pub enum PlanError {
+    /// A segment's speaker has no resolved voice-conditioning artifact.
+    ///
+    /// ADR-0001 §12.5 makes that artifact a synthesis-key input.
+    /// [`CanonicalValue::optional`] would serialize the absent case as `null`
+    /// and produce a well-formed key — one naming audio no voice could have
+    /// produced — so planning refuses instead of deriving it.
+    #[error(
+        "segment `{segment_id}` speaks as `{speaker}`, whose voice profile was not resolved; \
+         every speaker's conditioning artifact is an ADR-0001 §12.5 synthesis-key input, so the \
+         lesson's declared profiles must be resolved before its plan is derived"
+    )]
+    UnresolvedSpeaker {
+        /// Segment whose speaker is unresolved.
+        segment_id: String,
+        /// Speaker the segment names.
+        speaker: String,
+    },
 }
 
 /// Take used by every planned segment.
@@ -257,6 +305,13 @@ impl RenderPlan {
     /// same plan hash and the same cache keys, which is what makes a rebuild
     /// reuse its cache.
     ///
+    /// # Errors
+    ///
+    /// [`PlanError::UnresolvedSpeaker`] when `context` carries no conditioning
+    /// artifact for a speaker some segment names. This is the one precondition
+    /// [`ValidatedLesson`] cannot carry, because resolving a profile is
+    /// filesystem work `study-tts-core` does not do.
+    ///
     /// # Examples
     ///
     /// Authored data cannot be planned before validation, because this
@@ -269,27 +324,41 @@ impl RenderPlan {
     ///     RenderPlan::for_lesson(authored, context);
     /// }
     /// ```
-    pub fn for_lesson(lesson: &ValidatedLesson, context: &SynthesisContext) -> Self {
+    pub fn for_lesson(
+        lesson: &ValidatedLesson,
+        context: &SynthesisContext,
+    ) -> Result<Self, PlanError> {
         let segments = lesson
             .segments()
             .iter()
-            .map(|segment| PlannedSegment {
-                id: segment.id.clone(),
-                speaker: segment.speaker.clone(),
-                spoken_text: segment.spoken_text.clone(),
-                style: segment.style.clone(),
-                pause_after_ms: segment.pause_after_ms,
-                take: BASE_TAKE,
-                cache_key: synthesis_digest(context, segment, BASE_TAKE).into(),
+            .map(|segment| {
+                // Checked before the digest rather than after, so an
+                // unresolved speaker can never produce a key at all.
+                if context.voice_conditioning_for(&segment.speaker).is_none() {
+                    return Err(PlanError::UnresolvedSpeaker {
+                        segment_id: segment.id.clone(),
+                        speaker: segment.speaker.clone(),
+                    });
+                }
+                Ok(PlannedSegment {
+                    id: segment.id.clone(),
+                    speaker: segment.speaker.clone(),
+                    display_text: segment.display_text.clone(),
+                    spoken_text: segment.spoken_text.clone(),
+                    style: segment.style,
+                    pause_after_ms: segment.pause_after_ms,
+                    take: BASE_TAKE,
+                    cache_key: synthesis_digest(context, segment, BASE_TAKE).into(),
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
 
-        Self {
+        Ok(Self {
             schema_version: PLAN_SCHEMA_VERSION,
             lesson_id: lesson.lesson_id().to_owned(),
             plan_hash: plan_digest(&segments).into(),
             segments,
-        }
+        })
     }
 }
 
@@ -321,6 +390,7 @@ fn plan_digest(segments: &[PlannedSegment]) -> blake3::Hash {
         let PlannedSegment {
             id,
             speaker,
+            display_text,
             spoken_text,
             style,
             pause_after_ms,
@@ -331,6 +401,7 @@ fn plan_digest(segments: &[PlannedSegment]) -> blake3::Hash {
         CanonicalValue::object([
             ("id", id.as_str().into()),
             ("speaker", speaker.as_str().into()),
+            ("display_text", display_text.as_str().into()),
             ("spoken_text", spoken_text.as_str().into()),
             ("style", style.as_str().into()),
             ("pause_after_ms", (*pause_after_ms).into()),
@@ -348,9 +419,10 @@ mod tests {
 
     /// The reviewed two-segment lesson every property below plans.
     fn fixture_lesson() -> ValidatedLesson {
-        ValidatedLesson::from_json(include_bytes!(
-            "../../../fixtures/lessons/e0-s0-two-segment.json"
-        ))
+        ValidatedLesson::from_json(
+            "fixtures/lessons/e0-s0-two-segment.json",
+            include_bytes!("../../../fixtures/lessons/e0-s0-two-segment.json"),
+        )
         .expect("fixture should be valid")
     }
 
@@ -392,7 +464,8 @@ mod tests {
     #[test]
     fn t1_e0_a_planned_cache_key_is_recorded_as_a_plain_string() {
         let lesson = fixture_lesson();
-        let plan = RenderPlan::for_lesson(&lesson, &sample_context());
+        let plan = RenderPlan::for_lesson(&lesson, &sample_context())
+            .expect("the fixture context resolves every speaker");
         let cache_key = &plan.segments[0].cache_key;
 
         // Manifests and cache artifacts already on disk hold the key as a bare
@@ -409,7 +482,8 @@ mod tests {
     #[test]
     fn t1_e0_a_plan_hash_is_a_digest_recorded_as_a_plain_string() {
         let lesson = fixture_lesson();
-        let plan = RenderPlan::for_lesson(&lesson, &sample_context());
+        let plan = RenderPlan::for_lesson(&lesson, &sample_context())
+            .expect("the fixture context resolves every speaker");
 
         // `From<blake3::Hash>` is the only constructor, so the recorded value
         // is a digest by construction rather than by a check someone has to
@@ -431,26 +505,39 @@ mod tests {
     fn t1_e0_plan_is_stable_for_identical_inputs() {
         let lesson = fixture_lesson();
 
-        let first = RenderPlan::for_lesson(&lesson, &sample_context());
-        let second = RenderPlan::for_lesson(&lesson, &sample_context());
+        let first = RenderPlan::for_lesson(&lesson, &sample_context())
+            .expect("the fixture context resolves every speaker");
+        let second = RenderPlan::for_lesson(&lesson, &sample_context())
+            .expect("the fixture context resolves every speaker");
 
         // Pinned so an accidental change to the identity definition or the
         // canonical byte form is a failure here rather than a silent cache-wide
         // invalidation. These moved from their E0 values when E1-S1 adopted the
-        // complete ADR-0001 §12.5 input set, and again within E1-S1 when the
-        // cache artifact gained its provenance record and
-        // `CACHE_SCHEMA_VERSION` — itself a key input — moved to `1.0`.
+        // complete ADR-0001 §12.5 input set, again within E1-S1 when the cache
+        // artifact gained its provenance record and `CACHE_SCHEMA_VERSION` —
+        // itself a key input — moved to `1.0`, and again when E1-S2 resolved
+        // voice references and moved `SYNTHESIS_IDENTITY_VERSION` to
+        // `e1-s2-v1`. The second segment's key and the plan hash moved once
+        // more within E1-S2, when `sample_context` gained the second speaker
+        // `RenderPlan::for_lesson` now requires resolved; that is a fixture
+        // change, not a production identity change. Each move recomputed these
+        // values rather than relaxing the assertion.
+        //
+        // The plan hash moved once more when `PlannedSegment` began carrying
+        // `display_text`; the two cache keys below deliberately did not, which
+        // is the separation ADR-0001 §8.3 and §12.5 ask for and the reason a
+        // transcript correction reuses every cached segment.
         assert_eq!(
             first.plan_hash.as_str(),
-            "eaac5a9c480376062a9b4d5c779884fff44356e7351b4ee87ecc8eed468e1501"
+            "1a997b0b84cfc40b5f3bc2ee31273f9a464a0c0f094cdd5264a69337605061c5"
         );
         assert_eq!(
             first.segments[0].cache_key.as_str(),
-            "bf7b27ab8ec9607f9c34ce5e96af4b4ff4645de9ca114c66d0351b7ed3eaa603"
+            "1354a4708035551584c1f2d425605f8d804056156200aa800250c10b6d24fe55"
         );
         assert_eq!(
             first.segments[1].cache_key.as_str(),
-            "ef7fe5ff9625cce6e03a278cec269b419047b00272e4e12b995f70aad41a3cb0"
+            "d10e6f7fd16d38f7dda782256c619be2f5c05c8d08acdad80f4b5b75e69aa6c1"
         );
 
         assert_eq!(first.plan_hash, second.plan_hash);
@@ -477,13 +564,15 @@ mod tests {
             .parse()
             .expect("a dated tokenizer revision parses");
 
-        let first = RenderPlan::for_lesson(&lesson, &baseline);
+        let first = RenderPlan::for_lesson(&lesson, &baseline)
+            .expect("the fixture context resolves every speaker");
         for (input, changed) in [
             ("worker_bundle_hash", rebuilt_worker),
             ("model_revision", newer_model),
             ("tokenizer_revision", newer_tokenizer),
         ] {
-            let second = RenderPlan::for_lesson(&lesson, &changed);
+            let second = RenderPlan::for_lesson(&lesson, &changed)
+                .expect("the fixture context resolves every speaker");
 
             assert_ne!(
                 first.segments[0].cache_key, second.segments[0].cache_key,
@@ -492,6 +581,164 @@ mod tests {
             assert_ne!(
                 first.plan_hash, second.plan_hash,
                 "changing `{input}` must change the plan hash"
+            );
+        }
+    }
+
+    #[test]
+    fn t2_e1_plan_is_stable_for_identical_lesson_input() {
+        // `DELIVERY-PLAN.md` E1-S2. Two documents carrying the same lesson
+        // must plan to the same identities however they were written, or a
+        // reformatting pass would invalidate every cache entry the lesson
+        // owns. `AuthoredLesson` holds `speakers` in a `BTreeMap` for exactly
+        // this reason, and the plan hash is derived from the canonical byte
+        // form rather than from serde's output; neither claim is checkable
+        // without a differently written copy of one lesson to compare against.
+        let document: Value = serde_json::from_slice(include_bytes!(
+            "../../../fixtures/lessons/e0-s0-two-segment.json"
+        ))
+        .expect("the fixture parses as JSON");
+        assert!(
+            !document["segments"]
+                .as_array()
+                .expect("the fixture has segments")
+                .is_empty(),
+            "a lesson with no segments would make every assertion below vacuous"
+        );
+
+        let planned = |bytes: &[u8], expectation: &str| {
+            let lesson =
+                ValidatedLesson::from_json("fixtures/lessons/e0-s0-two-segment.json", bytes)
+                    .expect(expectation);
+            RenderPlan::for_lesson(&lesson, &sample_context())
+                .expect("the fixture context resolves every speaker")
+        };
+
+        let rewritten = reversed_key_order(&document);
+        // Without this the property is vacuous: two identical byte strings
+        // plan identically for reasons that have nothing to do with the claim.
+        assert_ne!(
+            rewritten.as_bytes(),
+            include_bytes!("../../../fixtures/lessons/e0-s0-two-segment.json").as_slice(),
+            "the rewritten document must actually be written differently"
+        );
+
+        let first = planned(
+            include_bytes!("../../../fixtures/lessons/e0-s0-two-segment.json"),
+            "the fixture is valid",
+        );
+        let second = planned(rewritten.as_bytes(), "the reordered fixture is valid");
+
+        assert_eq!(first.plan_hash, second.plan_hash);
+        for (left, right) in first.segments.iter().zip(&second.segments) {
+            assert_eq!(left.id, right.id, "segment order must be preserved");
+            assert_eq!(
+                left.cache_key, right.cache_key,
+                "`{}` must keep its cache entry across a rewrite",
+                left.id
+            );
+        }
+    }
+
+    /// Re-emits a document with every object's keys written in reverse order.
+    ///
+    /// `serde_json::Value` holds an object's keys sorted, so serializing one
+    /// cannot produce a differently ordered document; this is what lets the
+    /// property above hand the parser the same lesson written another way.
+    /// Arrays keep their order, because a lesson's segment order is its
+    /// speaking order rather than a spelling.
+    fn reversed_key_order(value: &Value) -> String {
+        match value {
+            Value::Object(fields) => {
+                let entries: Vec<String> = fields
+                    .iter()
+                    .rev()
+                    .map(|(key, field)| {
+                        let key = Value::String(key.clone());
+                        format!("{key}:{}", reversed_key_order(field))
+                    })
+                    .collect();
+                format!("{{{}}}", entries.join(","))
+            }
+            Value::Array(items) => {
+                let entries: Vec<String> = items.iter().map(reversed_key_order).collect();
+                format!("[{}]", entries.join(","))
+            }
+            scalar => scalar.to_string(),
+        }
+    }
+
+    #[test]
+    fn t1_e1_a_speaker_without_a_resolved_voice_cannot_be_planned() {
+        // ADR-0001 §12.5 makes the conditioning artifact a synthesis-key
+        // input, and `CanonicalValue::optional` would have serialized its
+        // absence into a perfectly well-formed key — one naming audio no voice
+        // produced. Refusing is the only outcome that leaves no such key for a
+        // later build to publish under.
+        let lesson = fixture_lesson();
+        let mut unresolved = sample_context();
+        unresolved.voice_conditioning_hashes.remove("nadia");
+
+        let error = RenderPlan::for_lesson(&lesson, &unresolved)
+            .expect_err("a speaker with no resolved voice must not be planned");
+
+        assert!(
+            matches!(
+                &error,
+                PlanError::UnresolvedSpeaker { segment_id, speaker }
+                    if segment_id == "seg-0001" && speaker == "nadia"
+            ),
+            "expected an unresolved-speaker refusal, got {error}"
+        );
+        // The same lesson under the complete context plans, which is what
+        // proves the missing artifact is the only thing wrong with it.
+        RenderPlan::for_lesson(&lesson, &sample_context())
+            .expect("only the unresolved voice may refuse this lesson");
+    }
+
+    #[test]
+    fn t1_e1_display_text_reaches_the_plan_without_reaching_a_cache_key() {
+        // `DELIVERY-PLAN.md` E1-S2 task 4 asks for display text to be
+        // preserved separately, and the package writer is handed the plan and
+        // the cached audio and nothing else — so a plan that dropped it would
+        // leave nothing downstream able to write a transcript.
+        //
+        // The two identities must move differently: correcting a transcript is
+        // a new package (the plan hash moves) rendered from the same audio
+        // (every cache key stands), which is ADR-0001 §8.3 and §12.5 read
+        // together. An assertion on either one alone would pass for a plan
+        // that put display text in both or in neither.
+        let context = sample_context();
+        let baseline = RenderPlan::for_lesson(&fixture_lesson(), &context)
+            .expect("the fixture context resolves every speaker");
+
+        let mut document: Value = serde_json::from_slice(include_bytes!(
+            "../../../fixtures/lessons/e0-s0-two-segment.json"
+        ))
+        .expect("fixture JSON should parse");
+        document["segments"][0]["display_text"] =
+            Value::String("A cache stores work you can reuse.".to_owned());
+        let corrected = ValidatedLesson::from_json(
+            "<corrected transcript>",
+            &serde_json::to_vec(&document).expect("the corrected lesson serializes"),
+        )
+        .expect("only the display text changed");
+        let corrected = RenderPlan::for_lesson(&corrected, &context)
+            .expect("the fixture context resolves every speaker");
+
+        assert_eq!(
+            corrected.segments[0].display_text,
+            "A cache stores work you can reuse."
+        );
+        assert_ne!(
+            corrected.plan_hash, baseline.plan_hash,
+            "a corrected transcript must be a different package"
+        );
+        for (segment, unchanged) in corrected.segments.iter().zip(&baseline.segments) {
+            assert_eq!(
+                segment.cache_key, unchanged.cache_key,
+                "a corrected transcript must reuse the audio for `{}`",
+                segment.id
             );
         }
     }

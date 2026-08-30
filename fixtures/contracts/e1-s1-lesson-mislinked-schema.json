@@ -1,9 +1,17 @@
 {
   "$schema": "https://schemas.study-tts.example/takes-v1.schema.json",
-  "schema_version": "1.1",
+  "schema_version": "3.1",
   "lesson_id": "e1-s1-lesson-mislinked-schema",
   "title": "Mislinked Schema",
   "language": "en",
+  "speakers": {
+    "nadia": {
+      "voice_profile": "synthetic-test-voice-v1"
+    },
+    "tom": {
+      "voice_profile": "synthetic-test-voice-v2"
+    }
+  },
   "segments": [
     {
       "id": "seg-0001",

@@ -1,6 +1,7 @@
 //! Tier 3 and 4 tests for the E0-S4 provisional contract baseline.
 
 use std::{
+    collections::BTreeMap,
     future::Future,
     io::Write,
     path::{Path, PathBuf},
@@ -12,7 +13,7 @@ use serde_json::Value;
 use study_tts_core::{
     CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, ContractDescriptor,
     ContractVersionError, ProvisionalJobSnapshot, RenderPlan, SuccessorCompatibility,
-    ValidatedLesson,
+    ValidatedLesson, VoiceConditioningHash,
 };
 use study_tts_runtime::{
     BackendDescriptor, BackendError, BackendValidationError, BuildError, CacheResolveRequest,
@@ -24,11 +25,11 @@ use study_tts_runtime::{
     parse_worker_request, parse_worker_response, validate_executor_request,
 };
 use study_tts_testkit::{
-    FakeCachePublisher, FakeJobCall, FakePackageCall, FakePackageWriter, FakeTtsExecutor,
-    InMemoryJobRepository, RecordingCachePublisher, RecordingJobRepository, RecordingPackageWriter,
-    RecordingTtsExecutor, SeamEventLog, run_cache_contract_scenario,
+    FIXTURE_VOICE_PROFILES, FakeCachePublisher, FakeJobCall, FakePackageCall, FakePackageWriter,
+    FakeTtsExecutor, InMemoryJobRepository, RecordingCachePublisher, RecordingJobRepository,
+    RecordingPackageWriter, RecordingTtsExecutor, SeamEventLog, run_cache_contract_scenario,
     run_job_repository_contract_scenario, run_package_writer_contract_scenario,
-    run_tts_executor_contract_scenario, walking_skeleton_fixture,
+    run_tts_executor_contract_scenario, walking_skeleton_fixture, write_voice_profile_root,
 };
 use tempfile::TempDir;
 
@@ -48,9 +49,29 @@ fn descriptor(name: &str) -> ContractDescriptor {
 
 fn lesson_fixture() -> ValidatedLesson {
     ValidatedLesson::from_json(
+        &walking_skeleton_fixture().display().to_string(),
         &std::fs::read(walking_skeleton_fixture()).expect("read lesson fixture"),
     )
     .expect("validate lesson fixture")
+}
+
+/// The conditioning artifact every speaker in the fixture resolves to.
+///
+/// A stand-in for what the voice gate loads. The seam scenarios exercise the
+/// executor contract rather than the rights gate, so any well-formed digest
+/// serves — as long as the plan and the request carry the same one, which is
+/// what the cache's identity gate compares.
+fn fixture_conditioning() -> BTreeMap<String, VoiceConditioningHash> {
+    lesson_fixture()
+        .speakers()
+        .keys()
+        .map(|speaker| {
+            (
+                speaker.clone(),
+                blake3::hash(b"seam-contract-conditioning").into(),
+            )
+        })
+        .collect()
 }
 
 fn validated_plan(executor: &FakeTtsExecutor) -> RenderPlan {
@@ -59,8 +80,9 @@ fn validated_plan(executor: &FakeTtsExecutor) -> RenderPlan {
         &lesson,
         &executor
             .descriptor()
-            .synthesis_context(lesson.language().clone(), std::collections::BTreeMap::new()),
+            .synthesis_context(lesson.language().clone(), fixture_conditioning()),
     )
+    .expect("the seam context resolves every speaker the fixture declares")
 }
 
 fn synthesis_request(plan: &RenderPlan) -> SynthesisRequest {
@@ -70,7 +92,10 @@ fn synthesis_request(plan: &RenderPlan) -> SynthesisRequest {
         segment_id: segment.id.clone(),
         spoken_text: segment.spoken_text.clone(),
         voice: segment.speaker.clone(),
-        style: segment.style.clone(),
+        voice_conditioning_hash: fixture_conditioning()
+            .remove(segment.speaker.as_str())
+            .expect("the fixture declares every speaker it uses"),
+        style: segment.style.as_str().to_owned(),
         language: lesson_fixture().language().clone(),
         take: segment.take,
         cache_key: segment.cache_key.clone(),
@@ -80,13 +105,18 @@ fn synthesis_request(plan: &RenderPlan) -> SynthesisRequest {
     }
 }
 
+/// The profile root sits beside the workspace rather than inside it, because
+/// `t4_e0_executor_validation_precedes_tools_and_durable_state` asserts the
+/// workspace was never created.
 fn build_request(workspace: &Path) -> study_tts_runtime::BuildRequest {
+    let voice_profile_root = workspace.with_file_name("voices");
+    write_voice_profile_root(&voice_profile_root, &FIXTURE_VOICE_PROFILES);
     study_tts_runtime::BuildRequest {
         lesson_path: walking_skeleton_fixture(),
         workspace: workspace.to_path_buf(),
         ffmpeg_executable: "ffmpeg".into(),
         ffprobe_executable: "ffprobe".into(),
-        voice_profile_dir: None,
+        voice_profile_root,
     }
 }
 

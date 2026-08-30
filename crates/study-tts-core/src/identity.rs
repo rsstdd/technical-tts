@@ -34,9 +34,12 @@ use crate::{
 ///
 /// The single lever that invalidates every cache entry when the list of inputs
 /// below changes. It moved from `e0-s0-v1` when E1-S1 replaced the six-field
-/// walking-skeleton identity with the complete ADR-0001 §12.5 input set; the
-/// reasoning is recorded in `docs/architecture/E1-S1-INTERFACE-CHANGE-001.md`.
-pub const SYNTHESIS_IDENTITY_VERSION: &str = "e1-s1-v1";
+/// walking-skeleton identity with the complete ADR-0001 §12.5 input set, and
+/// again when E1-S2 resolved voice references so `voice_conditioning_hash`
+/// stopped serializing as absent for every speaker. The reasoning is recorded
+/// in `docs/architecture/E1-S1-INTERFACE-CHANGE-001.md` and
+/// `docs/architecture/E1-S2-INTERFACE-CHANGE-001.md`.
+pub const SYNTHESIS_IDENTITY_VERSION: &str = "e1-s2-v1";
 
 /// Version of the cache-entry record format.
 ///
@@ -255,8 +258,8 @@ pub enum MalformedRevision {
 ///
 /// Every field is an ADR-0001 §12.5 synthesis-key input. Nothing display-only
 /// belongs here: the lesson title, source formatting, and a segment's
-/// `display_text`, `role`, `source_refs`, and `pause_after_ms` are all excluded
-/// by construction because this type cannot see them.
+/// `display_text`, `role`, `source_refs`, `editorial`, and `pause_after_ms` are
+/// all excluded by construction because this type cannot see them.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SynthesisContext {
     /// Identity of the executable worker bundle that will synthesize.
@@ -296,10 +299,11 @@ pub struct SynthesisContext {
     pub generation_parameters: BTreeMap<String, String>,
     /// Voice-conditioning artifact hash for each speaker, by speaker name.
     ///
-    /// Absent for a speaker whose voice profile has not been resolved, which is
-    /// every speaker until E1-S2 resolves voice references. Absent and empty
-    /// serialize differently, so resolving a profile changes the key rather
-    /// than silently matching an unresolved one.
+    /// Populated from the lesson's `speakers` declarations by
+    /// `study-tts-runtime`'s voice gate, which resolves each one before
+    /// planning. Absent for a speaker the map does not carry, and absent and
+    /// empty serialize differently, so an unresolved speaker can never
+    /// silently match a resolved one.
     ///
     /// Typed for the reason [`SynthesisContext::worker_bundle_hash`] is, and
     /// the consequence here is the same: these reach the key, so a `String`
@@ -325,12 +329,17 @@ impl SynthesisContext {
     /// # Examples
     ///
     /// ```rust
-    /// # use study_tts_core::{RenderPlan, SynthesisContext, ValidatedLesson};
-    /// fn reproducible(lesson: &ValidatedLesson, context: &SynthesisContext) {
-    ///     let plan = RenderPlan::for_lesson(lesson, context);
+    /// # use study_tts_core::{PlanError, RenderPlan, SynthesisContext};
+    /// # use study_tts_core::ValidatedLesson;
+    /// fn reproducible(
+    ///     lesson: &ValidatedLesson,
+    ///     context: &SynthesisContext,
+    /// ) -> Result<(), PlanError> {
+    ///     let plan = RenderPlan::for_lesson(lesson, context)?;
     ///     for segment in &plan.segments {
     ///         assert_eq!(&context.key_for(segment), &segment.cache_key);
     ///     }
+    ///     Ok(())
     /// }
     /// ```
     pub fn key_for(&self, segment: &PlannedSegment) -> CacheKey {
@@ -338,7 +347,7 @@ impl SynthesisContext {
             self,
             &segment.speaker,
             &segment.spoken_text,
-            &segment.style,
+            segment.style.as_str(),
             segment.take,
         )
         .into()
@@ -363,7 +372,7 @@ pub(crate) fn synthesis_digest(
         context,
         &segment.speaker,
         &segment.spoken_text,
-        &segment.style,
+        segment.style.as_str(),
         take,
     )
 }
@@ -386,10 +395,10 @@ pub(crate) fn synthesis_digest(
 ///   calls the target intermediate sample format. ADR-0001 §13.1 defines the
 ///   canonical intermediate as all four together, and an integer stream of the
 ///   same width is not the same format.
-/// - `speaker` is here because `voice_conditioning_hash` is `None` for every
-///   speaker until E1-S2 resolves voice references. Without it, two speakers
-///   reading identical text in one style share a key, and whichever voice
-///   synthesized first is served for both.
+/// - `speaker` is here even though `voice_conditioning_hash` now resolves,
+///   because two speakers may lawfully share one voice profile. Without it
+///   they would share a key, and a later story that gives one of them its own
+///   profile would find the other's audio already published under it.
 fn segment_digest(
     context: &SynthesisContext,
     speaker: &str,
@@ -418,6 +427,11 @@ fn segment_digest(
             "tokenizer_revision",
             context.tokenizer_revision.as_str().into(),
         ),
+        // Still optional, though `RenderPlan::for_lesson` refuses to derive a
+        // key without it: `key_for` recomputes an *executor's* reported
+        // identity, and a report that dropped the artifact must produce a key
+        // that differs rather than a panic. Absent and empty serialize
+        // differently, so the mismatch is what the cache sees.
         (
             "voice_conditioning_hash",
             CanonicalValue::optional(
@@ -470,10 +484,20 @@ pub(crate) fn sample_context() -> SynthesisContext {
             ("cfg_weight".to_owned(), "0.5".to_owned()),
             ("exaggeration".to_owned(), "0.5".to_owned()),
         ]),
-        voice_conditioning_hashes: BTreeMap::from([(
-            "nadia".to_owned(),
-            "2".repeat(64).parse().expect("a digest of twos parses"),
-        )]),
+        // Both speakers the committed lesson fixtures declare, because
+        // `RenderPlan::for_lesson` now refuses a lesson whose speaker this map
+        // does not carry. Distinct digests, so a test comparing two speakers'
+        // keys is comparing two voices rather than one repeated.
+        voice_conditioning_hashes: BTreeMap::from([
+            (
+                "nadia".to_owned(),
+                "2".repeat(64).parse().expect("a digest of twos parses"),
+            ),
+            (
+                "tom".to_owned(),
+                "3".repeat(64).parse().expect("a digest of threes parses"),
+            ),
+        ]),
     }
 }
 
@@ -483,20 +507,21 @@ pub(crate) fn sample_segment() -> LessonSegment {
     LessonSegment {
         id: "seg-0001".to_owned(),
         speaker: "nadia".to_owned(),
-        role: "explanation".to_owned(),
+        role: crate::SegmentRole::Explanation,
         source_refs: vec!["block-001".to_owned()],
         display_text: "A cache stores reusable work.".to_owned(),
         spoken_text: "A cache stores reusable work.".to_owned(),
-        style: "calm_explanatory".to_owned(),
+        style: crate::DeliveryStyle::CalmExplanatory,
         pause_after_ms: 75,
         review_status: crate::ReviewStatus::Approved,
+        editorial: false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BASE_TAKE, ReviewStatus};
+    use crate::{BASE_TAKE, DeliveryStyle, ReviewStatus, SegmentRole};
 
     /// One named change to a synthesis input, for the sensitivity property.
     type ContextMutation = (&'static str, fn(&mut SynthesisContext));
@@ -583,6 +608,7 @@ mod tests {
             style: _,
             pause_after_ms: _,
             review_status: _,
+            editorial: _,
         } = sample_segment();
 
         let baseline = synthesis_digest(&sample_context(), &sample_segment(), BASE_TAKE);
@@ -645,7 +671,7 @@ mod tests {
                 segment.spoken_text = "A cache stores reusable work".to_owned();
             }),
             ("style", |segment| {
-                segment.style = "emphatic".to_owned();
+                segment.style = DeliveryStyle::Emphatic;
             }),
         ];
 
@@ -676,7 +702,7 @@ mod tests {
                 segment.id = "seg-9999".to_owned();
             }),
             ("role", |segment| {
-                segment.role = "recap".to_owned();
+                segment.role = SegmentRole::Recap;
             }),
             ("source_refs", |segment| {
                 segment.source_refs = vec!["block-002".to_owned()];

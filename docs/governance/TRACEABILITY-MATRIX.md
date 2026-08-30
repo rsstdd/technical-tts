@@ -12,7 +12,7 @@ The Delivery Plan and GitHub stories contain the exhaustive named-test lists. Th
 | Full-box Chatterbox performance | E0-S3, E5-S2, E6-S4 | single-worker RTF and 60-minute projection on the named deployment configuration | G3/M3 |
 | Synthesis determinism characterization | E0-S3 | `evidence_e0_fixed_seed_synthesis_determinism_is_characterized` | G0 |
 | Replaceable versioned worker seam | E0-S4, E1-S1, E1-S3 | shared fake/real contract suite | G0/G1 |
-| Canonical reviewed lesson only | E1-S2, E3-S3 | review-state rejection; display/spoken audit | G1/G3 |
+| Canonical reviewed lesson only | E1-S2, E3-S3 | review-state rejection; declared-voice resolution; one voice per declared speaker; closed role and style vocabularies; recall-prompt response interval; display/spoken audit carried into the plan; located diagnostics | G1/G3 |
 | Separate synthesis and verification identities | E1-S1, E4-S1 | field-sensitivity properties; ASR-only invalidation | G1/G3 |
 | Worker-bundle hash | E1-S1, E1-S3 | owned-input invalidation and reproducible bundle tests | G1 |
 | Worker environment matches the lock before an identity is returned | E1-S1 | ADR-0001-D004; the seventeen `worker_environment` T4 tests, sixteen pinning refusals and one driving the probe on a real interpreter | G1 |

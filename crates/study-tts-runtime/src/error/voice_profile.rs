@@ -34,6 +34,62 @@ pub enum VoiceProfileError {
         record: &'static str,
     },
 
+    /// The lesson names a voice profile that the voice-profile root does not
+    /// hold.
+    ///
+    /// Distinct from [`VoiceProfileError::MissingVoiceRecord`], which is a
+    /// profile that exists but is incomplete: this one was never installed, so
+    /// the remedy is to install it rather than to repair it.
+    #[error(
+        "voice profile `{profile_id}` is refused: `{root}` holds no directory for it; the \
+         project owner must install the profile, or the lesson's author must name one that \
+         exists"
+    )]
+    MissingVoiceProfileDirectory {
+        /// The voice-profile root the build was given.
+        root: PathBuf,
+        /// The profile the lesson declared.
+        profile_id: String,
+    },
+
+    /// The voice-profile root holds an entry for the profile that is not a
+    /// directory.
+    ///
+    /// Distinct from [`VoiceProfileError::MissingVoiceProfileDirectory`]: the
+    /// name is taken, so installing the profile is not the remedy. A symlink
+    /// lands here too, and is refused for the reason `voice_gate::record_path`
+    /// gives one level down — the gate would otherwise read and hash the same
+    /// artifacts through the link and agree with itself about a voice the
+    /// consent record never covered.
+    #[error(
+        "voice profile `{profile_id}` is refused: `{root}` holds an entry of that name that is \
+         not a directory; the project owner must remove or replace it before the profile is used"
+    )]
+    VoiceProfileNotDirectory {
+        /// The voice-profile root the build was given.
+        root: PathBuf,
+        /// The profile the lesson declared.
+        profile_id: String,
+    },
+
+    /// A profile record names an identity other than the directory it was
+    /// resolved through.
+    ///
+    /// Fails closed because the recorded identity is what reaches a manifest
+    /// and a worker frame: accepting the mismatch would attribute one voice's
+    /// consent record to another voice's audio.
+    #[error(
+        "voice profile `{declared}` is refused: the record in that directory calls itself \
+         `{recorded}`; the project owner must correct the record or the directory name before \
+         the profile is used"
+    )]
+    VoiceProfileIdMismatch {
+        /// The profile identity the lesson declared and the directory carries.
+        declared: String,
+        /// The identity the record claims for itself.
+        recorded: String,
+    },
+
     /// A profile file no longer hashes to what its record says.
     #[error(
         "voice profile at `{profile_dir}` is refused: `{path}` does not match its recorded \
@@ -54,6 +110,9 @@ impl VoiceProfileError {
         match self {
             Self::MissingVoiceRecord { .. }
             | Self::VoiceRecordNotRegularFile { .. }
+            | Self::MissingVoiceProfileDirectory { .. }
+            | Self::VoiceProfileNotDirectory { .. }
+            | Self::VoiceProfileIdMismatch { .. }
             | Self::VoiceChecksumMismatch { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::ProjectOwner,
                 "supply or correct the voice profile record before use",

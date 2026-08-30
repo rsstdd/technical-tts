@@ -428,6 +428,13 @@ fn synthesize_transaction(
     // Recomputing the whole key from the reported inputs is deliberate: a
     // field-by-field comparison would stop covering any input added later,
     // whereas a key that does not match cannot name this audio at all.
+    //
+    // It is only as strong as the report is independent. Since E1-S2 the
+    // voice-conditioning artifact reaches the key, and the only executor in
+    // the tree echoes the requested one back rather than loading a profile;
+    // `docs/architecture/E1-S2-INTERFACE-CHANGE-001.md` §Limits this change
+    // does not close records that, and E1-S3 owns making the report an
+    // account of what the worker read.
     let reported_key = report.context.key_for(segment);
     if reported_key != segment.cache_key {
         let error = AudioError::SynthesizerIdentityMismatch {
@@ -872,8 +879,9 @@ mod tests {
         PlannedSegment {
             id: "seg-0001".to_owned(),
             speaker: "nadia".to_owned(),
+            display_text: "Same speech.".to_owned(),
             spoken_text: "Same speech.".to_owned(),
-            style: "calm".to_owned(),
+            style: study_tts_core::DeliveryStyle::Calm,
             pause_after_ms: 75,
             take: study_tts_core::BASE_TAKE,
             cache_key: key(cache_key),

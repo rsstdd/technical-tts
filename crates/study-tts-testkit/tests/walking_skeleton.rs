@@ -23,7 +23,8 @@ use study_tts_runtime::{
     validate_production_manifest,
 };
 use study_tts_testkit::{
-    DeterministicToneWorker, cache_identity_fixture, walking_skeleton_fixture,
+    DeterministicToneWorker, FIXTURE_VOICE_PROFILES, cache_identity_fixture,
+    walking_skeleton_fixture, write_voice_profile_root,
 };
 use tempfile::TempDir;
 
@@ -77,13 +78,50 @@ fn find_cache_entry_dir(cache_root: &Path, cache_key: &CacheKey) -> std::path::P
     panic!("no cache entry declares `{cache_key}`");
 }
 
+/// Distinguishes the profile root each [`build_request`] installs.
+///
+/// Not shared state between tests: it only makes a name unique. Two builds in
+/// one workspace must not install into one root, because installing rewrites
+/// `reference.wav` while the other build is hashing it — which is a checksum
+/// mismatch reported against a profile nobody tampered with. The concurrent
+/// tests below are what found that.
+static VOICE_ROOT_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
+/// A build request whose voices resolve, with every other field left at what
+/// the skeleton uses.
+///
+/// The profile root lives beneath the test's own workspace so one `TempDir`
+/// guard still cleans up everything the test wrote; a build never writes into
+/// it, and installing operator-supplied profiles there is what lets these
+/// tests keep one temporary root each. Each request gets its own root, for the
+/// reason [`VOICE_ROOT_SEQUENCE`] gives; the profiles are byte-identical, so
+/// two builds still derive the same conditioning hash and share a cache.
 fn build_request(lesson_path: &Path, workspace: &Path) -> BuildRequest {
+    let sequence = VOICE_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    build_request_with_voices(
+        lesson_path,
+        workspace,
+        &workspace.join(format!("voices-{sequence}")),
+    )
+}
+
+/// The same request with the profile root somewhere other than the workspace.
+///
+/// The tests that prove a refusal precedes workspace creation need it: writing
+/// the profiles into the workspace would create the very directory they assert
+/// was never made.
+fn build_request_with_voices(
+    lesson_path: &Path,
+    workspace: &Path,
+    voice_profile_root: &Path,
+) -> BuildRequest {
+    write_voice_profile_root(voice_profile_root, &FIXTURE_VOICE_PROFILES);
     BuildRequest {
         lesson_path: lesson_path.to_path_buf(),
         workspace: workspace.to_path_buf(),
         ffmpeg_executable: "ffmpeg".into(),
         ffprobe_executable: "ffprobe".into(),
-        voice_profile_dir: None,
+        voice_profile_root: voice_profile_root.to_path_buf(),
     }
 }
 
@@ -347,6 +385,10 @@ fn t4_e0_skeleton_runs_without_model_artifacts() {
         })
         .collect::<Vec<_>>();
     entries.sort();
+    // A `voices-<n>` root is operator-supplied input this test installed
+    // before the build, not something the build wrote; dropping it keeps the
+    // assertion exact about what the build itself creates.
+    entries.retain(|name| !name.starts_with("voices-"));
     assert_eq!(entries, ["cache", "jobs", "previews", "quarantine"]);
     assert_eq!(worker.synthesis_count(), 2);
 }
@@ -1004,8 +1046,9 @@ fn t4_e0_lesson_id_cannot_escape_the_workspace() {
         let error = build_preview(build_request(&lesson, &workspace), &worker)
             .expect_err("unsafe lesson ID must be rejected");
         assert!(matches!(
-            error,
-            BuildError::Lesson(LessonError::InvalidLessonId(_))
+            &error,
+            BuildError::Lesson(diagnostic)
+                if matches!(diagnostic.error(), LessonError::InvalidLessonId(_))
         ));
     }
 
@@ -1100,8 +1143,9 @@ fn t4_e0_unapproved_content_fails_before_tools_and_synthesis() {
     let error = build_preview(request, &worker).expect_err("unapproved lesson must fail");
 
     assert!(matches!(
-        error,
-        BuildError::Lesson(LessonError::UnapprovedSegment(_))
+        &error,
+        BuildError::Lesson(diagnostic)
+            if matches!(diagnostic.error(), LessonError::UnapprovedSegment(_))
     ));
     assert_eq!(worker.synthesis_count(), 0);
 }
@@ -1113,16 +1157,19 @@ fn t4_e0_oversized_lesson_fails_before_tools_workspace_and_synthesis() {
     std::fs::write(&lesson, vec![b'{'; MAX_LESSON_JSON_BYTES + 1]).expect("write oversized lesson");
     let workspace = root.path().join("workspace");
     let worker = DeterministicToneWorker::default();
-    let mut request = build_request(&lesson, &workspace);
+    let mut request = build_request_with_voices(&lesson, &workspace, &root.path().join("voices"));
     request.ffmpeg_executable = "study-tts-missing-ffmpeg".into();
     request.ffprobe_executable = "study-tts-missing-ffprobe".into();
 
     let error = build_preview(request, &worker).expect_err("oversized lesson must fail");
 
     assert!(matches!(
-        error,
-        BuildError::Lesson(LessonError::LessonJsonTooLarge { max_bytes })
-            if max_bytes == MAX_LESSON_JSON_BYTES
+        &error,
+        BuildError::Lesson(diagnostic)
+            if matches!(
+                diagnostic.error(),
+                LessonError::LessonJsonTooLarge { max_bytes } if *max_bytes == MAX_LESSON_JSON_BYTES
+            )
     ));
     assert_eq!(worker.synthesis_count(), 0);
     assert!(!workspace.exists());
@@ -1138,7 +1185,7 @@ fn t4_e0_lesson_fifo_fails_before_tools_workspace_and_synthesis() {
     mkfifoat(CWD, &lesson, Mode::RUSR | Mode::WUSR).expect("create lesson FIFO");
     let workspace = root.path().join("workspace");
     let worker = DeterministicToneWorker::default();
-    let mut request = build_request(&lesson, &workspace);
+    let mut request = build_request_with_voices(&lesson, &workspace, &root.path().join("voices"));
     request.ffmpeg_executable = "study-tts-missing-ffmpeg".into();
     request.ffprobe_executable = "study-tts-missing-ffprobe".into();
 

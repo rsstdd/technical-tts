@@ -1,8 +1,16 @@
 {
-  "schema_version": "2.0",
-  "lesson_id": "e1-s1-unknown-major",
-  "title": "Unknown Major",
+  "schema_version": "3.0",
+  "lesson_id": "e1-s2-prior-minor",
+  "title": "Prior Minor",
   "language": "en",
+  "speakers": {
+    "nadia": {
+      "voice_profile": "synthetic-test-voice-v1"
+    },
+    "tom": {
+      "voice_profile": "synthetic-test-voice-v2"
+    }
+  },
   "segments": [
     {
       "id": "seg-0001",

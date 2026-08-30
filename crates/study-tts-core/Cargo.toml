@@ -20,4 +20,16 @@ blake3 = "1.8.6"
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# `DELIVERY-PLAN.md` E1-S2 requires a lesson refusal to name its source,
+# segment, and field path. Every invariant this crate checks itself is located
+# by `lesson::field_of`, but a refusal `serde` raises first — an unknown field,
+# a wrong type, a value outside a closed vocabulary such as `review_status` —
+# carries only a line and column, and `serde_json` exposes no path. Locating
+# those by hand means a second copy of the document shape in this crate, which
+# drifts from the types the moment a field is added; this crate is the shape,
+# and a hand-written locator would be a rule with no compiler behind it. The
+# risk removed is a wrong location, not a missing convenience. One dependency,
+# no transitive dependency beyond `serde`, MIT OR Apache-2.0, by serde's own
+# author.
+serde_path_to_error = "0.1.20"
 thiserror = "2.0.20"

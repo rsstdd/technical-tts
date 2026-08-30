@@ -21,18 +21,18 @@ use std::{
 use serde::Deserialize;
 use serde_json::Value;
 use study_tts_core::{
-    CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, LanguageTag,
-    MAX_LESSON_JSON_BYTES, ProvisionalJobSnapshot, ProvisionalJobStage, ReleaseClaim,
-    ReleaseStatus, RenderPlan, RightsDecision, SourceRightsDeclaration, ValidatedLesson,
-    VoiceError, VoiceUse, validate_lesson_id,
+    CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, LessonDiagnostic,
+    MAX_LESSON_JSON_BYTES, PlanError, ProvisionalJobSnapshot, ProvisionalJobStage, ReleaseClaim,
+    ReleaseStatus, RenderPlan, RightsDecision, SourceRightsDeclaration, SynthesisContext,
+    ValidatedLesson, VoiceConditioningHash, VoiceError, VoiceUse, validate_lesson_id,
 };
 
 use crate::{
-    BackendError, BuildError, CachePublisher, CacheResolveRequest, FileSystemCachePublisher,
-    FileSystemJobRepository, FileSystemPackageWriter, IoError, JobRepository,
-    PackagePreflightRequest, PackagePrepareRequest, PackageWriteRequest, PackageWriter,
-    PublicationError, RightsError, SynthesisRequest, TtsExecutor, export, io_error, tools,
-    voice_gate,
+    BackendDescriptor, BackendError, BuildError, CachePublisher, CacheResolveRequest,
+    FileSystemCachePublisher, FileSystemJobRepository, FileSystemPackageWriter, IoError,
+    JobRepository, PackagePreflightRequest, PackagePrepareRequest, PackageWriteRequest,
+    PackageWriter, PublicationError, RightsError, SynthesisRequest, TtsExecutor, export, io_error,
+    tools, voice_gate,
 };
 
 /// Everything one preview build needs, named explicitly rather than read from
@@ -50,11 +50,14 @@ pub struct BuildRequest {
     pub ffmpeg_executable: PathBuf,
     /// ffprobe to validate the encoded output with, on the same terms.
     pub ffprobe_executable: PathBuf,
-    /// Voice profile directory in the ADR-0001 §12.1 layout, gated fail-closed
-    /// before any tool or synthesis work. `None` is valid only while the
-    /// deterministic skeleton worker is the backend; the real-worker story
-    /// (E0-S3/E1) makes a profile mandatory.
-    pub voice_profile_dir: Option<PathBuf>,
+    /// Root holding one ADR-0001 §12.1 profile directory per voice profile a
+    /// lesson may name, gated fail-closed before any tool or synthesis work.
+    ///
+    /// Required rather than optional since E1-S2: the conditioning artifact
+    /// under each profile is a §12.5 synthesis-key input, so a build with
+    /// nowhere to resolve one would derive cache keys for voices it never
+    /// loaded.
+    pub voice_profile_root: PathBuf,
 }
 
 /// What a successful preview build wrote.
@@ -107,33 +110,64 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 ///
 /// [`IoError::ReadFile`] when the lesson cannot be opened or read and
 /// [`IoError::LessonNotRegularFile`] when the opened descriptor is not a
-/// regular file. Lesson parsing and validation return
-/// [`study_tts_core::LessonError::InvalidJson`],
-/// [`study_tts_core::LessonError::UnsupportedSchema`],
-/// [`study_tts_core::LessonError::MissingLessonId`],
+/// regular file. The document's own shape returns
+/// [`study_tts_core::LessonError::InvalidJson`], together with
+/// [`study_tts_core::LessonError::UnsupportedSchema`] and
+/// [`study_tts_core::LessonError::UnexpectedSchemaLink`]. A value outside one
+/// of the three closed vocabularies returns that vocabulary's own refusal —
+/// [`study_tts_core::LessonError::UnknownSegmentRole`],
+/// [`study_tts_core::LessonError::UnknownDeliveryStyle`], or
+/// [`study_tts_core::LessonError::UnknownReviewStatus`] — and a segment
+/// declaring none at all returns
+/// [`study_tts_core::LessonError::MissingSegmentRole`],
+/// [`study_tts_core::LessonError::MissingDeliveryStyle`], or
+/// [`study_tts_core::LessonError::MissingReviewStatus`], which are separate
+/// because an absent field is one to add where an unrecognized value is one to
+/// correct. Lesson identity and
+/// provenance return [`study_tts_core::LessonError::MissingLessonId`],
 /// [`study_tts_core::LessonError::InvalidLessonId`],
-/// [`study_tts_core::LessonError::MissingSegments`],
+/// [`study_tts_core::LessonError::MalformedLanguage`],
+/// [`study_tts_core::LessonError::EmptyLearningObjective`], or
+/// [`study_tts_core::LessonError::EmptyLessonReference`]. Speaker declarations
+/// return [`study_tts_core::LessonError::MissingVoiceProfile`],
+/// [`study_tts_core::LessonError::InvalidVoiceProfile`], or
+/// [`study_tts_core::LessonError::DuplicateSpeaker`] when the document binds
+/// one speaker twice, which the parsed lesson can no longer show because a
+/// `BTreeMap` has kept one of the two. Segment validation
+/// returns [`study_tts_core::LessonError::MissingSegments`],
 /// [`study_tts_core::LessonError::MissingSegmentId`],
 /// [`study_tts_core::LessonError::InvalidSegmentId`],
 /// [`study_tts_core::LessonError::DuplicateSegmentId`],
 /// [`study_tts_core::LessonError::MissingSpokenText`],
 /// [`study_tts_core::LessonError::MissingDisplayText`],
-/// [`study_tts_core::LessonError::MissingRole`],
 /// [`study_tts_core::LessonError::MissingSourceRefs`],
 /// [`study_tts_core::LessonError::EmptySourceRef`],
 /// [`study_tts_core::LessonError::UnapprovedSegment`],
 /// [`study_tts_core::LessonError::MissingSpeaker`],
-/// [`study_tts_core::LessonError::MissingStyle`], or
-/// [`study_tts_core::LessonError::PauseOutOfRange`]. Resource refusal returns
+/// [`study_tts_core::LessonError::UndeclaredSpeaker`],
+/// [`study_tts_core::LessonError::PauseOutOfRange`],
+/// [`study_tts_core::LessonError::RecallPromptWithoutResponseInterval`], or
+/// [`study_tts_core::LessonError::RecallPromptResponseIntervalTooLong`] — the
+/// two ends of ADR-0001 §13.2's recall range, separate because one is answered
+/// by lengthening the pause and the other by shortening it.
+/// Resource refusal returns
 /// [`study_tts_core::LessonError::LessonJsonTooLarge`],
 /// [`study_tts_core::LessonError::TooManySegments`],
 /// [`study_tts_core::LessonError::SpokenTextTooLong`],
 /// [`study_tts_core::LessonError::DisplayTextTooLong`],
 /// [`study_tts_core::LessonError::TooManySourceRefs`],
-/// [`study_tts_core::LessonError::SourceRefTooLong`], or
+/// [`study_tts_core::LessonError::SourceRefTooLong`],
+/// [`study_tts_core::LessonError::TooManyLearningObjectives`],
+/// [`study_tts_core::LessonError::LearningObjectiveTooLong`],
+/// [`study_tts_core::LessonError::TooManyLessonReferences`],
+/// [`study_tts_core::LessonError::LessonReferenceTooLong`], or
 /// [`study_tts_core::LessonError::AuthoredTextTooLarge`].
 ///
-/// Voice gating returns [`crate::VoiceProfileError::MissingVoiceRecord`],
+/// Voice gating returns
+/// [`crate::VoiceProfileError::MissingVoiceProfileDirectory`],
+/// [`crate::VoiceProfileError::VoiceProfileNotDirectory`],
+/// [`crate::VoiceProfileError::VoiceProfileIdMismatch`],
+/// [`crate::VoiceProfileError::MissingVoiceRecord`],
 /// [`crate::VoiceProfileError::VoiceRecordNotRegularFile`],
 /// [`crate::VoiceProfileError::VoiceChecksumMismatch`],
 /// [`study_tts_core::VoiceError::InvalidJson`],
@@ -144,6 +178,11 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`study_tts_core::VoiceError::ProfileNotApproved`],
 /// [`study_tts_core::VoiceError::ConsentScopeExcluded`], or
 /// [`study_tts_core::VoiceError::ConsentChecksumDisagreement`].
+///
+/// Planning returns [`study_tts_core::PlanError::UnresolvedSpeaker`] when the
+/// voice gate above returned no conditioning artifact for a speaker some
+/// segment names. The lesson is valid in that case, which is why the refusal
+/// is its own category rather than a lesson diagnostic.
 ///
 /// Tool work returns [`crate::ToolError::MissingTool`],
 /// [`crate::ToolError::InspectTool`], [`crate::ToolError::ToolProbeFailed`],
@@ -179,6 +218,7 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`crate::CacheError::PackageArtifactPlanMismatch`],
 /// [`crate::AudioError::UnusableAudio`],
 /// [`crate::AudioError::SynthesizerReportMismatch`],
+/// [`crate::AudioError::SynthesizerIdentityMismatch`],
 /// [`crate::AudioError::PauseFrameOverflow`],
 /// [`crate::AudioError::PlannedLengthOverflow`],
 /// [`crate::AudioError::AssembledLengthOverflow`],
@@ -255,27 +295,22 @@ pub fn build_preview_with_services(
     services: PreviewServiceBundle<'_>,
 ) -> Result<BuildResult, BuildError> {
     let lesson_bytes = read_lesson(&request.lesson_path)?;
-    let lesson = ValidatedLesson::from_json(&lesson_bytes)?;
-    let descriptor = services.executor.descriptor();
-    // No voice-conditioning hashes yet: the profile gate below runs after
-    // planning and its identity is not consumed until the real worker lands.
-    // The absent case is recorded as absent rather than as an empty string, so
-    // resolving a profile in E1-S2 changes the key instead of silently matching
-    // an unresolved one.
-    let plan = RenderPlan::for_lesson(
+    let lesson =
+        ValidatedLesson::from_json(&request.lesson_path.display().to_string(), &lesson_bytes)?;
+
+    // Rights precede work, and now precede planning too: the conditioning
+    // artifact each profile carries is an ADR-0001 §12.5 synthesis-key input,
+    // so a plan derived before this gate would name cache entries for voices
+    // nobody resolved. A refused voice still performs no observable work.
+    let voice_conditioning_hashes = voice_gate::resolve_speakers(
+        &request.voice_profile_root,
         &lesson,
-        &descriptor.synthesis_context(lesson.language().clone(), BTreeMap::new()),
-    );
+        VoiceUse::PrivateSynthesis,
+    )?;
 
-    // Rights precede work: the profile gate runs before tool preflight and
-    // synthesis, so a refused voice performs no observable work. The loaded
-    // identity is unused by the skeleton worker; the real-worker story consumes
-    // it and records the ADR-0001 §15.3 per-build audit event.
-    if let Some(dir) = &request.voice_profile_dir {
-        let _profile = voice_gate::load_profile(dir, VoiceUse::PrivateSynthesis)?;
-    }
-
-    let synthesis_requests = synthesis_requests(&plan, lesson.language());
+    let descriptor = services.executor.descriptor();
+    let (plan, synthesis_requests) =
+        plan_requests(&lesson, &descriptor, voice_conditioning_hashes)?;
     for synthesis_request in &synthesis_requests {
         services.executor.validate(synthesis_request)?;
     }
@@ -346,21 +381,65 @@ pub fn build_preview_with_services(
     })
 }
 
-fn synthesis_requests(plan: &RenderPlan, language: &LanguageTag) -> Vec<SynthesisRequest> {
+/// Derives the plan and the backend requests for one validated lesson.
+///
+/// Pure: no filesystem, no process, no clock. That is what lets the ordering
+/// guarantees above be asserted without a workspace — an unreviewed lesson
+/// never reaches here, and nothing display-only can leave here, because
+/// [`RenderPlan`] is the only thing this reads.
+fn plan_requests(
+    lesson: &ValidatedLesson,
+    descriptor: &BackendDescriptor,
+    voice_conditioning_hashes: BTreeMap<String, VoiceConditioningHash>,
+) -> Result<(RenderPlan, Vec<SynthesisRequest>), BuildError> {
+    let context =
+        descriptor.synthesis_context(lesson.language().clone(), voice_conditioning_hashes);
+    let plan = RenderPlan::for_lesson(lesson, &context)?;
+    let requests = synthesis_requests(&plan, &context)?;
+    Ok((plan, requests))
+}
+
+/// Maps each planned segment onto the backend request that must reproduce its
+/// cache key.
+///
+/// Takes the whole [`SynthesisContext`] rather than only the language because
+/// the request carries the resolved conditioning artifact too, and both come
+/// from the same context the plan was keyed with — two sources could disagree.
+///
+/// # Errors
+///
+/// [`study_tts_core::PlanError::UnresolvedSpeaker`], the same refusal
+/// [`RenderPlan::for_lesson`] makes. Reachable only if a caller pairs a plan
+/// with a context that did not derive it; expressing it costs one `?` and is
+/// what keeps a panic out of a path that reaches the worker.
+fn synthesis_requests(
+    plan: &RenderPlan,
+    context: &SynthesisContext,
+) -> Result<Vec<SynthesisRequest>, PlanError> {
     plan.segments
         .iter()
-        .map(|segment| SynthesisRequest {
-            request_id: format!("e0-{}-{}", segment.cache_key, segment.id),
-            segment_id: segment.id.clone(),
-            spoken_text: segment.spoken_text.clone(),
-            voice: segment.speaker.clone(),
-            style: segment.style.clone(),
-            language: language.clone(),
-            take: segment.take,
-            cache_key: segment.cache_key.clone(),
-            sample_rate: CANONICAL_SAMPLE_RATE,
-            channels: CANONICAL_CHANNELS,
-            sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
+        .map(|segment| {
+            let voice_conditioning_hash = context
+                .voice_conditioning_for(&segment.speaker)
+                .ok_or_else(|| PlanError::UnresolvedSpeaker {
+                    segment_id: segment.id.clone(),
+                    speaker: segment.speaker.clone(),
+                })?
+                .clone();
+            Ok(SynthesisRequest {
+                request_id: format!("e0-{}-{}", segment.cache_key, segment.id),
+                segment_id: segment.id.clone(),
+                spoken_text: segment.spoken_text.clone(),
+                voice: segment.speaker.clone(),
+                voice_conditioning_hash,
+                style: segment.style.as_str().to_owned(),
+                language: context.language.clone(),
+                take: segment.take,
+                cache_key: segment.cache_key.clone(),
+                sample_rate: CANONICAL_SAMPLE_RATE,
+                channels: CANONICAL_CHANNELS,
+                sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
+            })
         })
         .collect()
 }
@@ -451,10 +530,7 @@ fn read_lesson_from_reader(
     advertised_bytes: u64,
 ) -> Result<Vec<u8>, BuildError> {
     if advertised_bytes > MAX_LESSON_JSON_BYTES as u64 {
-        return Err(study_tts_core::LessonError::LessonJsonTooLarge {
-            max_bytes: MAX_LESSON_JSON_BYTES,
-        }
-        .into());
+        return Err(lesson_too_large(path));
     }
 
     let initial_capacity = usize::try_from(advertised_bytes)
@@ -473,12 +549,23 @@ fn read_lesson_from_reader(
         })?;
 
     if bytes.len() > MAX_LESSON_JSON_BYTES {
-        return Err(study_tts_core::LessonError::LessonJsonTooLarge {
-            max_bytes: MAX_LESSON_JSON_BYTES,
-        }
-        .into());
+        return Err(lesson_too_large(path));
     }
     Ok(bytes)
+}
+
+/// The size refusal this reader raises, located in the file it was reading.
+///
+/// Raised here rather than by the parser because the whole point of the
+/// bounded reader is that oversized bytes never reach one.
+fn lesson_too_large(path: &Path) -> BuildError {
+    LessonDiagnostic::about(
+        &path.display().to_string(),
+        study_tts_core::LessonError::LessonJsonTooLarge {
+            max_bytes: MAX_LESSON_JSON_BYTES,
+        },
+    )
+    .into()
 }
 
 /// Preflights ffprobe and requires the encoded artifact to be a single mono AAC
@@ -703,7 +790,8 @@ pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
     // Through the lesson rule rather than a blank check: this identifier names
     // the same output directory a lesson's does, so a manifest must not name
     // what a lesson could not.
-    validate_lesson_id(&manifest.lesson_id)?;
+    validate_lesson_id(&manifest.lesson_id)
+        .map_err(|error| LessonDiagnostic::about("manifest.json", error))?;
 
     // An absent section and an empty one are the same claim: nothing was
     // declared. Both sections are held to it, because a production lesson
@@ -766,9 +854,12 @@ mod tests {
         thread,
     };
 
-    use study_tts_core::{LessonError, MAX_LESSON_JSON_BYTES, RenderPlan, ValidatedLesson};
+    use study_tts_core::{
+        LessonError, MAX_LESSON_JSON_BYTES, RenderPlan, ReviewStatus, SynthesisContext,
+        ValidatedLesson, VoiceConditioningHash,
+    };
 
-    use super::{block_on, read_lesson_from_reader, synthesis_requests};
+    use super::{block_on, plan_requests, read_lesson_from_reader, synthesis_requests};
     use crate::BuildError;
 
     struct PendingThenReady {
@@ -797,24 +888,28 @@ mod tests {
             .expect_err("a stream that grows beyond its advertised size must be refused");
 
         assert!(matches!(
-            error,
-            BuildError::Lesson(LessonError::LessonJsonTooLarge { max_bytes })
-                if max_bytes == MAX_LESSON_JSON_BYTES
+            &error,
+            BuildError::Lesson(diagnostic)
+                if matches!(
+                    diagnostic.error(),
+                    LessonError::LessonJsonTooLarge { max_bytes }
+                        if *max_bytes == MAX_LESSON_JSON_BYTES
+                )
         ));
     }
 
-    /// A two-segment lesson and the plan derived from it.
+    /// A two-segment lesson document, with one field replaced.
     ///
-    /// Shared by the two request-mapping tests so each states only what it
-    /// asserts; both need a plan with more than one segment and neither cares
-    /// how it was authored.
-    fn planned_lesson() -> (ValidatedLesson, RenderPlan) {
-        let lesson = ValidatedLesson::from_json(
+    /// The tests below all need a document that differs from a valid one in
+    /// exactly one way, so each says only what it is about.
+    fn lesson_document(edit: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
+        let mut document: serde_json::Value = serde_json::from_slice(
             br#"{
-                "schema_version":"1.1",
+                "schema_version":"3.1",
                 "lesson_id":"request-id-test",
                 "title":"Request IDs",
                 "language":"en",
+                "speakers":{"voice-a":{"voice_profile":"synthetic-test-voice-v1"}},
                 "segments":[
                     {
                         "id":"segment-a",
@@ -841,21 +936,124 @@ mod tests {
                 ]
             }"#,
         )
-        .expect("validate the request-mapping lesson");
-        let plan = RenderPlan::for_lesson(
-            &lesson,
-            &crate::synthesis::sample_descriptor()
-                .synthesis_context(lesson.language().clone(), std::collections::BTreeMap::new()),
+        .expect("the request-mapping lesson parses as JSON");
+        edit(&mut document);
+        serde_json::to_vec(&document).expect("the edited lesson serializes")
+    }
+
+    /// What a refusal in these tests names as the document it came from.
+    const DOCUMENT: &str = "<pipeline test lesson>";
+
+    /// The conditioning artifact the tests' single speaker resolves to.
+    ///
+    /// A stand-in for what the voice gate loads: planning needs a hash for
+    /// every speaker, and any well-formed digest proves the mapping without
+    /// touching a profile directory.
+    fn sample_conditioning() -> std::collections::BTreeMap<String, VoiceConditioningHash> {
+        std::collections::BTreeMap::from([(
+            "voice-a".to_owned(),
+            blake3::hash(b"pipeline-test-conditioning").into(),
+        )])
+    }
+
+    /// A two-segment lesson, the context it is keyed with, and its plan.
+    ///
+    /// Shared by the request-mapping tests so each states only what it
+    /// asserts; both need a plan with more than one segment and neither cares
+    /// how it was authored.
+    fn planned_lesson() -> (SynthesisContext, RenderPlan) {
+        let lesson = ValidatedLesson::from_json(DOCUMENT, &lesson_document(|_| {}))
+            .expect("validate the request-mapping lesson");
+        let context = crate::synthesis::sample_descriptor()
+            .synthesis_context(lesson.language().clone(), sample_conditioning());
+        let plan = RenderPlan::for_lesson(&lesson, &context)
+            .expect("the sample context resolves the test lesson's speaker");
+        (context, plan)
+    }
+
+    /// The plan and requests a document produces once it is accepted.
+    ///
+    /// Pure by construction: [`plan_requests`] reaches no filesystem and starts
+    /// no process, which is what lets the two ordering tests below be T1.
+    fn requests_for(document: &[u8]) -> Result<Vec<crate::SynthesisRequest>, BuildError> {
+        let lesson = ValidatedLesson::from_json(DOCUMENT, document)?;
+        let descriptor = crate::synthesis::sample_descriptor();
+        Ok(plan_requests(&lesson, &descriptor, sample_conditioning())?.1)
+    }
+
+    #[test]
+    fn t1_e1_unreviewed_lesson_fails_before_worker_start() {
+        let unreviewed = lesson_document(|document| {
+            document["segments"][1]["review_status"] = serde_json::json!("draft");
+        });
+
+        let error = requests_for(&unreviewed).expect_err("an unreviewed lesson must be refused");
+
+        assert!(
+            matches!(
+                &error,
+                BuildError::Lesson(diagnostic)
+                    if matches!(
+                        diagnostic.error(),
+                        LessonError::UnapprovedSegment(id) if id == "segment-b"
+                    )
+            ),
+            "expected an unapproved-segment refusal, got {error}"
         );
 
-        (lesson, plan)
+        // The refusal precedes the worker because no `SynthesisRequest` exists
+        // to send one: `plan_requests` accepts only a `ValidatedLesson`, and
+        // validation is what did not return. Correcting the one field the
+        // document is wrong about is what proves it — a lesson refused for
+        // some unrelated reason would still be refused here.
+        let reviewed = lesson_document(|document| {
+            document["segments"][1]["review_status"] = serde_json::json!(ReviewStatus::Approved);
+        });
+        assert_eq!(
+            requests_for(&reviewed)
+                .expect("only the review state may refuse this document")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn t1_e1_display_text_never_enters_synthesis_request() {
+        // ADR-0001 §8.3 keeps the two texts apart so a pronunciation edit
+        // cannot hide a semantic one, and `AGENTS.md` §Architectural
+        // invariants keeps display-only metadata out of the backend entirely.
+        // A marker no other field carries is what makes "never entered"
+        // checkable rather than assumed.
+        const MARKER: &str = "DISPLAY-ONLY-MARKER";
+        let document = lesson_document(|document| {
+            for segment in document["segments"]
+                .as_array_mut()
+                .expect("the fixture has segments")
+            {
+                segment["display_text"] = serde_json::json!(format!("{MARKER} reads differently."));
+            }
+        });
+
+        let requests = requests_for(&document).expect("the marked lesson is otherwise valid");
+
+        for request in &requests {
+            let sent = format!("{request:?}");
+            assert!(
+                !sent.contains(MARKER),
+                "display text reached the synthesis request for `{}`: {sent}",
+                request.segment_id
+            );
+            assert_eq!(request.spoken_text, "Same speech.");
+        }
+        assert_eq!(requests.len(), 2);
     }
 
     #[test]
     fn t1_e0_synthesis_request_ids_include_segment_identity() {
-        let (lesson, plan) = planned_lesson();
+        let (context, plan) = planned_lesson();
 
-        let requests = synthesis_requests(&plan, lesson.language());
+        let requests = synthesis_requests(&plan, &context)
+            .expect("the sample context resolves every planned speaker");
 
         assert_eq!(plan.segments[0].cache_key, plan.segments[1].cache_key);
         assert_eq!(
@@ -877,10 +1075,11 @@ mod tests {
         // `BASE_TAKE` for every segment today, which is exactly why the plan
         // is edited: a test reading only what the planner writes would pass
         // for a mapping that hard-coded zero.
-        let (lesson, mut plan) = planned_lesson();
+        let (context, mut plan) = planned_lesson();
         plan.segments[1].take = study_tts_core::BASE_TAKE + 7;
 
-        let requests = synthesis_requests(&plan, lesson.language());
+        let requests = synthesis_requests(&plan, &context)
+            .expect("the sample context resolves every planned speaker");
 
         assert_eq!(requests[0].take, plan.segments[0].take);
         assert_eq!(requests[1].take, plan.segments[1].take);

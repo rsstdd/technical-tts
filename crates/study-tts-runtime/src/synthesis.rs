@@ -25,8 +25,10 @@ use thiserror::Error;
 /// `docs/architecture/E1-S1-INTERFACE-CHANGE-001.md`:
 /// [`BackendDescriptor`] replaced one opaque `synthesis_identity` string with
 /// the ADR-0001 §12.5 inputs, which is a required-field change and therefore
-/// breaking under `ContractDescriptor::assess_successor`.
-pub const TTS_EXECUTOR_CONTRACT_VERSION: &str = "e1.tts-executor.1.0";
+/// breaking under `ContractDescriptor::assess_successor`. Raised again by
+/// `docs/architecture/E1-S2-INTERFACE-CHANGE-001.md`, which made
+/// [`SynthesisRequest::voice_conditioning_hash`] required for the same reason.
+pub const TTS_EXECUTOR_CONTRACT_VERSION: &str = "e1.tts-executor.2.0";
 
 /// Stable identity and supported request envelope of one backend.
 ///
@@ -120,8 +122,20 @@ pub struct SynthesisRequest {
     pub segment_id: String,
     /// Exact reviewed text to speak.
     pub spoken_text: String,
-    /// Voice profile selected by the plan.
+    /// Speaker the plan selected, which is also a synthesis-key input.
+    ///
+    /// The speaker's *name*, not the profile identity: two speakers may share
+    /// one voice profile and must not share a cache entry. E1-S3 adds the
+    /// profile identity the worker protocol's `voice` field wants.
     pub voice: String,
+    /// Conditioning artifact the resolved voice profile carries.
+    ///
+    /// Required rather than implied, because it is an ADR-0001 §12.5
+    /// synthesis-key input that the *planner* resolved: an executor that
+    /// reports a different one in [`SynthesisReport::context`] is refused by
+    /// the cache's identity gate, and it can only make that comparison
+    /// meaningful if it was told which artifact the key names.
+    pub voice_conditioning_hash: VoiceConditioningHash,
     /// Delivery style selected by the plan.
     pub style: String,
     /// Language the segment is to be spoken in.

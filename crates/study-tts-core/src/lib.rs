@@ -55,13 +55,15 @@ pub use job::{
 };
 pub use language::{LanguageTag, MAX_LANGUAGE_TAG_BYTES, MalformedLanguageTag};
 pub use lesson::{
-    AuthoredLesson, LESSON_SCHEMA_STEM, LESSON_SCHEMA_VERSION, LessonError, LessonSegment,
-    MAX_LESSON_JSON_BYTES, ReviewStatus, ValidatedLesson, validate_lesson_id, validate_segment_id,
+    AuthoredLesson, DeliveryStyle, LESSON_SCHEMA_STEM, LESSON_SCHEMA_VERSION, LessonDiagnostic,
+    LessonError, LessonSegment, LessonSource, MAX_LESSON_JSON_BYTES, MalformedSourceContentHash,
+    ReviewStatus, SegmentRole, SourceContentHash, SpeakerDeclaration, ValidatedLesson,
+    validate_lesson_id, validate_segment_id,
 };
 pub use plan::{
     BASE_TAKE, CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT,
     CANONICAL_SAMPLE_RATE, CacheKey, MalformedCacheKey, MalformedPlanHash, PLAN_SCHEMA_STEM,
-    PLAN_SCHEMA_VERSION, PlanHash, PlannedSegment, RenderPlan,
+    PLAN_SCHEMA_VERSION, PlanError, PlanHash, PlannedSegment, RenderPlan,
 };
 pub use release::{REQUIRED_PRODUCTION_GATES, ReleaseClaim, ReleaseError, ReleaseStatus};
 pub use rights::{SourceClassification, SourceRightsDeclaration};

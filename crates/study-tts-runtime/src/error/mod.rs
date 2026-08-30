@@ -26,7 +26,7 @@
 
 use std::{io, path::PathBuf};
 
-use study_tts_core::{LessonError, ReleaseError, VoiceError};
+use study_tts_core::{LessonDiagnostic, PlanError, ReleaseError, VoiceError};
 use thiserror::Error;
 
 use crate::BackendError;
@@ -62,9 +62,24 @@ pub enum BuildError {
     /// A path-bound IO, WAV, or JSON operation failed.
     #[error(transparent)]
     Io(#[from] IoError),
-    /// The lesson domain refused an authored lesson or identifier.
+    /// The lesson domain refused an authored lesson or identifier, located in
+    /// the document it came from.
+    ///
+    /// Boxed for the reason [`BuildError::DurableState`] is: locating a
+    /// refusal costs three owned strings, and carrying them inline would grow
+    /// every `BuildError` in the workspace past the baseline
+    /// `t1_e0_build_error_does_not_grow_during_category_refactor` holds. The
+    /// lesson boundary already returns the box, so this is not a second one.
     #[error(transparent)]
-    Lesson(#[from] LessonError),
+    Lesson(#[from] Box<LessonDiagnostic>),
+    /// Render planning refused a lesson whose voices were not resolved.
+    ///
+    /// Named rather than folded into [`BuildError::Lesson`]: the lesson is
+    /// valid, and what failed is the caller's failure to resolve the profiles
+    /// it declares. Sending an author back to their document would be the
+    /// wrong remedy.
+    #[error(transparent)]
+    Plan(#[from] PlanError),
     /// The voice-record domain refused consent, approval, or scope.
     #[error(transparent)]
     Voice(#[from] VoiceError),
@@ -104,7 +119,7 @@ impl BuildError {
     /// Returns governed recovery advice when the routing table establishes it.
     pub fn remedy(&self) -> Option<RemedyAdvice> {
         match self {
-            Self::Io(_) | Self::Lesson(_) | Self::Synthesis(_) => None,
+            Self::Io(_) | Self::Lesson(_) | Self::Plan(_) | Self::Synthesis(_) => None,
             Self::Voice(error) => voice_remedy(error),
             Self::VoiceProfile(error) => error.remedy(),
             Self::Rights(error) => error.remedy(),
@@ -237,7 +252,7 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    use study_tts_core::{LessonError, ReleaseError, ReleaseStatus, VoiceError};
+    use study_tts_core::{LessonDiagnostic, LessonError, ReleaseError, ReleaseStatus, VoiceError};
 
     use crate::worker_bundle::PythonRuntimeIdentity;
 
@@ -281,6 +296,9 @@ mod tests {
         match error {
             VoiceProfileError::MissingVoiceRecord { .. }
             | VoiceProfileError::VoiceRecordNotRegularFile { .. }
+            | VoiceProfileError::MissingVoiceProfileDirectory { .. }
+            | VoiceProfileError::VoiceProfileNotDirectory { .. }
+            | VoiceProfileError::VoiceProfileIdMismatch { .. }
             | VoiceProfileError::VoiceChecksumMismatch { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::ProjectOwner,
                 "supply or correct the voice profile record before use",
@@ -591,8 +609,9 @@ mod tests {
     #[test]
     fn t1_e0_foreign_domain_errors_convert_directly_to_build_error() {
         assert!(matches!(
-            BuildError::from(LessonError::MissingLessonId),
-            BuildError::Lesson(LessonError::MissingLessonId)
+            BuildError::from(lesson_diagnostic(LessonError::MissingLessonId)),
+            BuildError::Lesson(ref diagnostic)
+                if matches!(diagnostic.error(), LessonError::MissingLessonId)
         ));
         assert!(matches!(
             BuildError::from(VoiceError::UnsupportedSchema("future".to_owned())),
@@ -624,14 +643,24 @@ mod tests {
                 .is_some()
         );
 
-        let error = BuildError::from(LessonError::InvalidJson(json_error()));
-        assert!(
-            error
-                .source()
-                .expect("transparent foreign composition must expose the JSON source")
-                .downcast_ref::<serde_json::Error>()
-                .is_some()
-        );
+        // Walked rather than indexed at a fixed depth: a lesson refusal is
+        // located in its document before it is a `BuildError`, so the JSON
+        // source sits one link further down than the filesystem one above.
+        let error = BuildError::from(lesson_diagnostic(LessonError::InvalidJson(json_error())));
+        let mut link: Option<&(dyn Error + 'static)> = error.source();
+        while let Some(current) = link {
+            if current.downcast_ref::<serde_json::Error>().is_some() {
+                return;
+            }
+            link = current.source();
+        }
+        panic!("transparent foreign composition must expose the JSON source");
+    }
+
+    /// A lesson refusal located in a document, which is how one reaches
+    /// [`BuildError`] now that every lesson error carries where it happened.
+    fn lesson_diagnostic(error: LessonError) -> Box<LessonDiagnostic> {
+        LessonDiagnostic::about("lesson.json", error)
     }
 
     #[test]
@@ -644,6 +673,18 @@ mod tests {
             VoiceProfileError::VoiceRecordNotRegularFile {
                 profile_dir: PathBuf::from("voice"),
                 record: "consent.json",
+            },
+            VoiceProfileError::MissingVoiceProfileDirectory {
+                root: PathBuf::from("voices"),
+                profile_id: "absent-voice-v1".to_owned(),
+            },
+            VoiceProfileError::VoiceProfileNotDirectory {
+                root: PathBuf::from("voices"),
+                profile_id: "not-a-directory-v1".to_owned(),
+            },
+            VoiceProfileError::VoiceProfileIdMismatch {
+                declared: "declared-voice-v1".to_owned(),
+                recorded: "recorded-voice-v1".to_owned(),
             },
             VoiceProfileError::VoiceChecksumMismatch {
                 profile_dir: PathBuf::from("voice"),
@@ -1018,7 +1059,7 @@ mod tests {
             BuildError::from(IoError::LessonNotRegularFile {
                 path: PathBuf::from("lesson.json"),
             }),
-            BuildError::from(LessonError::MissingLessonId),
+            BuildError::from(lesson_diagnostic(LessonError::MissingLessonId)),
             BuildError::from(VoiceError::UnsupportedSchema("future".to_owned())),
             BuildError::from(PublicationError::UnsupportedProductionManifest {
                 version: "future".to_owned(),

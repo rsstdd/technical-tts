@@ -1,0 +1,333 @@
+{
+  "$defs": {
+    "DeliveryStyle": {
+      "description": "The delivery one segment asks of its voice.\n\nClosed for the reason [`SegmentRole`] is, plus one this vocabulary carries\nalone: ADR-0001 §13.4 freezes one loudness reference per voice-profile hash\nand style, and forbids a new style entering production until it has been\ncalibrated. An open field would let a lesson name a style with no frozen\nreference behind it, which is a level decision nobody made.\n\nTranscribed from ADR-0001 §8.1's canonical lesson and §5.1's qualification\nfixture, which requires \"calm, emphatic, and deliberately slow delivery\".",
+      "oneOf": [
+        {
+          "const": "calm",
+          "description": "Even, unhurried delivery.",
+          "type": "string"
+        },
+        {
+          "const": "calm_explanatory",
+          "description": "The teaching register of ADR-0001 §8.1's canonical lesson.",
+          "type": "string"
+        },
+        {
+          "const": "emphatic",
+          "description": "Weighted delivery for a point that has to land.",
+          "type": "string"
+        },
+        {
+          "const": "deliberate",
+          "description": "Deliberately slowed delivery.",
+          "type": "string"
+        }
+      ]
+    },
+    "LessonSegment": {
+      "additionalProperties": false,
+      "description": "One continuously spoken passage, the unit that is synthesized, cached, and\nretaken.",
+      "properties": {
+        "display_text": {
+          "description": "Text as a reviewer reads it; display only, and outside the cache key.",
+          "type": "string"
+        },
+        "editorial": {
+          "description": "Whether this segment is the author's own words rather than a claim\ntraced to source material.\n\nAdded by lesson `2.1` as a compatible extension whose declared default\nis `false`, so a `2.0` document stays valid. It spells the second half\nof ADR-0001 §8.2's rule that every segment \"references source material\nor is explicitly marked editorial\": `source_refs` may be empty only\nhere.\n\nDisplay-only. Excluded from every identity, alongside the other review\nmetadata listed on [`crate::SynthesisContext`].",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "Identity of the segment within its lesson, unique and portable as a path\ncomponent.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*$(?![\\s\\S])",
+          "type": "string"
+        },
+        "pause_after_ms": {
+          "description": "Silence written after this segment, in milliseconds.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "review_status": {
+          "$ref": "#/$defs/ReviewStatus",
+          "description": "Whether a human has approved this segment for synthesis."
+        },
+        "role": {
+          "$ref": "#/$defs/SegmentRole",
+          "description": "What this segment is doing in the lesson.\n\nClosed since lesson `3.0`; see [`SegmentRole`] for why the vocabulary\ncannot be authored text. Review context rather than a synthesis input,\nwith one behavioral consequence:\n[`SegmentRole::RecallPrompt`] carries the response-interval invariant\n[`LessonError::RecallPromptWithoutResponseInterval`] enforces."
+        },
+        "source_refs": {
+          "description": "Source material this segment was written from, so a claim can be traced\nback.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "speaker": {
+          "description": "Which voice speaks this segment.",
+          "type": "string"
+        },
+        "spoken_text": {
+          "description": "Text as it is spoken, which is what synthesis and the cache key are\nderived from.",
+          "type": "string"
+        },
+        "style": {
+          "$ref": "#/$defs/DeliveryStyle",
+          "description": "Delivery requested of the voice.\n\nClosed since lesson `3.0`; see [`DeliveryStyle`]. Unlike the role this\nis a synthesis-key input (ADR-0001 §12.5), and\n[`DeliveryStyle::as_str`] is the spelling that reaches the key."
+        }
+      },
+      "required": [
+        "id",
+        "speaker",
+        "role",
+        "source_refs",
+        "display_text",
+        "spoken_text",
+        "style",
+        "pause_after_ms",
+        "review_status"
+      ],
+      "type": "object"
+    },
+    "LessonSource": {
+      "additionalProperties": false,
+      "description": "Provenance of the material one lesson was written from.\n\nA record rather than a bare digest because ADR-0001 §8.1 carries both the\nhash and the references beside it, and a hash alone cannot be traced by a\nreviewer who does not already hold the document it names.",
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/SourceContentHash",
+          "description": "Digest of the reviewed source document this lesson was compiled from.\n\nRequired whenever [`AuthoredLesson::source`] is present: a source\nrecord whose content hash is optional records a claim nothing can be\nchecked against."
+        },
+        "references": {
+          "description": "External references the source material cites.\n\nOptional with an empty default, because source material that cites\nnothing is ordinary rather than an authoring mistake. Unlike\n[`LessonSegment::source_refs`], these name material outside the lesson\nrather than blocks inside its own source document.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "content_hash"
+      ],
+      "type": "object"
+    },
+    "ReviewStatus": {
+      "description": "Whether a segment has cleared human review.\n\nClosed vocabulary rather than a flag: an unrecognized status is a parse\nerror, so a document cannot invent a state that would be treated as approved\nby default.",
+      "oneOf": [
+        {
+          "const": "approved",
+          "description": "A human approved this segment; the only status synthesis accepts.",
+          "type": "string"
+        },
+        {
+          "const": "draft",
+          "description": "Not yet submitted for review.",
+          "type": "string"
+        },
+        {
+          "const": "needs_review",
+          "description": "Submitted and awaiting a decision.",
+          "type": "string"
+        }
+      ]
+    },
+    "SegmentRole": {
+      "description": "What one segment is doing in the lesson.\n\nA closed vocabulary rather than authored text for two reasons. ADR-0001\n§8.2 requires the role to be *declared*, and a free string declares nothing\na build can act on. And §8.2's recall-prompt invariant is not expressible\nat all until a build can tell which segments are recall prompts:\n[`SegmentRole::RecallPrompt`] is what\n[`LessonError::RecallPromptWithoutResponseInterval`] keys on.\n\nThe variants are ADR-0001 §3.2's two speaker repertoires and §3.4's default\nstudy sequence, which name the same vocabulary twice. A lesson need not use\nevery one; §3.2 is explicit that the program \"will not add dialogue merely\nto satisfy a template\".\n\nDisplay-only. Excluded from every identity, alongside the other review\nmetadata listed on [`crate::SynthesisContext`].",
+      "oneOf": [
+        {
+          "const": "problem",
+          "description": "The question or difficulty the lesson opens on.",
+          "type": "string"
+        },
+        {
+          "const": "prerequisite",
+          "description": "Knowledge the listener needs before the explanation can land.",
+          "type": "string"
+        },
+        {
+          "const": "definition",
+          "description": "A term stated precisely.",
+          "type": "string"
+        },
+        {
+          "const": "explanation",
+          "description": "Conceptual explanation of how something works.",
+          "type": "string"
+        },
+        {
+          "const": "why_it_works",
+          "description": "Why the explanation holds rather than merely that it does.",
+          "type": "string"
+        },
+        {
+          "const": "example",
+          "description": "A concrete worked case.",
+          "type": "string"
+        },
+        {
+          "const": "challenge",
+          "description": "An objection or question the learner raises.",
+          "type": "string"
+        },
+        {
+          "const": "plausible_error",
+          "description": "A mistake stated deliberately so it can be corrected.",
+          "type": "string"
+        },
+        {
+          "const": "interruption",
+          "description": "The learner cutting in before an explanation finishes.",
+          "type": "string"
+        },
+        {
+          "const": "clarification",
+          "description": "A narrower restatement the learner asked for.",
+          "type": "string"
+        },
+        {
+          "const": "correction",
+          "description": "The correction of a challenge or a plausible error.",
+          "type": "string"
+        },
+        {
+          "const": "pseudocode",
+          "description": "Algorithm steps spoken rather than read out as code.",
+          "type": "string"
+        },
+        {
+          "const": "synthesis",
+          "description": "The separately explained parts drawn back together.",
+          "type": "string"
+        },
+        {
+          "const": "recap",
+          "description": "A concise recap of what has been covered.",
+          "type": "string"
+        },
+        {
+          "const": "compressed_rule",
+          "description": "The compressed rule worth memorizing.",
+          "type": "string"
+        },
+        {
+          "const": "recall_prompt",
+          "description": "A retrieval-practice question, which must leave a response interval.",
+          "type": "string"
+        },
+        {
+          "const": "answer",
+          "description": "The answer given after a recall prompt's silence.",
+          "type": "string"
+        }
+      ]
+    },
+    "SourceContentHash": {
+      "description": "BLAKE3 over the reviewed source document a lesson was compiled from (ADR-0001 8.1), as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "SpeakerDeclaration": {
+      "additionalProperties": false,
+      "description": "The voice one speaker is rendered with.\n\nA struct rather than a bare profile string so a later story can add a\nspeaker-scoped setting without moving every lesson to a new major.",
+      "properties": {
+        "voice_profile": {
+          "description": "Voice profile this speaker is rendered with.\n\nPortable because `study-tts-runtime` resolves it to a directory under\nthe build's voice-profile root.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*$(?![\\s\\S])",
+          "type": "string"
+        }
+      },
+      "required": [
+        "voice_profile"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://schemas.study-tts.example/lesson-v3.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One authored lesson, as it is written on disk and before validation.",
+  "properties": {
+    "$schema": {
+      "description": "Published schema this document links to, added by lesson schema `1.1`.\n\nOptional, with absent as its declared default, so a `1.0` document\nstays valid. When present it must name the schema for the version the\ndocument declares: a link to some other schema is a document claiming\nto have been checked against something it was not.\n\nSpelled `$schema` because that is the key every JSON Schema tool looks\nfor; `deny_unknown_fields` means the rename is the only way the field\ncan appear at all.",
+      "oneOf": [
+        {
+          "const": "https://schemas.study-tts.example/lesson-v3.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "language": {
+      "description": "Language the lesson is spoken in, as a BCP 47 tag.\n\nUnlike the title this *is* a synthesis-key input (ADR-0001 §12.5), so a\nlesson cannot leave it to a default: the same text in two languages is\ntwo different renders and must not share a cache entry.\n\nAuthored text here and a [`LanguageTag`] on [`ValidatedLesson`], for the\nreason given on `schema_version`.\n\nThe published `pattern` is necessary but not sufficient: `LanguageTag`\nis the authority, and `language_json_schema` spells its grammar loosely\non purpose so an author's editor never rejects a tag this build accepts.\nA tag the schema admits may still be refused by\n[`ValidatedLesson::from_json`].",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$(?![\\s\\S])",
+      "type": "string"
+    },
+    "learning_objectives": {
+      "description": "What a listener should be able to do after the lesson.\n\nAdded by lesson `3.1` as a compatible extension whose declared default\nis empty, so a `3.0` document stays valid. ADR-0001 §8.1 carries it in\nthe canonical format; §8.2 sets no invariant on it beyond the count,\nblank-value, and length bounds validation applies, so it is review\ncontext rather than a gate.\n\nDisplay-only. Excluded from every identity, alongside the other review\nmetadata listed on [`crate::SynthesisContext`].",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "lesson_id": {
+      "description": "Stable identity of the lesson, which also names its output directory.",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*$(?![\\s\\S])",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Schema this document claims; an unrecognized version is refused rather\nthan guessed at.\n\nHeld as authored text rather than a [`SchemaVersion`] so a malformed\nversion is reported by [`LessonError::UnsupportedSchema`] naming what\nwas written, instead of by a serde message about a field type.",
+      "enum": [
+        "3.0",
+        "3.1"
+      ],
+      "type": "string"
+    },
+    "segments": {
+      "description": "The lesson's segments in speaking order.",
+      "items": {
+        "$ref": "#/$defs/LessonSegment"
+      },
+      "type": "array"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LessonSource"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Where the lesson's material came from.\n\nAdded by lesson `3.1` on the same terms as\n[`AuthoredLesson::learning_objectives`]. Absent rather than empty when\na lesson was not compiled from a hashed document: a lesson that names\nno source and one that names a source with nothing in it are different\nclaims, and only the second is a provenance record.\n\nDisplay-only, for the reason `learning_objectives` is."
+    },
+    "speakers": {
+      "additionalProperties": {
+        "$ref": "#/$defs/SpeakerDeclaration"
+      },
+      "description": "Voice binding for every speaker the lesson gives lines to.\n\nRequired since lesson `2.0`. Without it a segment's `speaker` is a\nlabel nothing resolves, and ADR-0001 §8.2 requires a declared voice\nprofile; the resolved conditioning artifact is a synthesis-key input\nunder §12.5, so leaving it undeclared would key audio on a voice the\ndocument never named.\n\nA [`BTreeMap`] rather than a `HashMap` because this document's\nserialized form must not depend on authoring order.",
+      "type": "object"
+    },
+    "title": {
+      "description": "Human-readable title; display only, and deliberately outside every cache\nkey.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "lesson_id",
+    "title",
+    "language",
+    "speakers",
+    "segments"
+  ],
+  "title": "AuthoredLesson",
+  "type": "object"
+}

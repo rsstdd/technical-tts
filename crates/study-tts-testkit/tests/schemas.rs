@@ -169,42 +169,51 @@ fn t3_e1_published_lesson_schema_validates_every_example() {
         // The schema and the parser must agree about the same bytes. A schema
         // that accepted what the parser refuses would send an author away with
         // a green editor and a failing build.
-        ValidatedLesson::from_json(&fs::read(&example).expect("the example is readable"))
-            .unwrap_or_else(|error| {
-                panic!(
-                    "`{}` satisfies the published schema but the parser refuses it: {error}",
-                    example.display()
-                )
-            });
+        ValidatedLesson::from_json(
+            &example.display().to_string(),
+            &fs::read(&example).expect("the example is readable"),
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "`{}` satisfies the published schema but the parser refuses it: {error}",
+                example.display()
+            )
+        });
     }
 }
 
 #[test]
 fn t3_e1_unknown_major_version_is_rejected() {
-    // A real document, not a mutated string: `e1-s1-unknown-major.json` is a
+    // A real document, not a mutated string: `e1-s2-unknown-major.json` is a
     // complete and otherwise valid lesson that declares a major this build does
     // not implement, so nothing but the version can be what refuses it.
-    let example = repository_root().join("fixtures/lessons/e1-s1-unknown-major.json");
+    let example = repository_root().join("fixtures/lessons/e1-s2-unknown-major.json");
+    let document_name = example.display().to_string();
     let bytes = fs::read(&example).expect("the unknown-major example is readable");
 
-    let error = ValidatedLesson::from_json(&bytes)
+    let diagnostic = ValidatedLesson::from_json(&document_name, &bytes)
         .expect_err("a lesson of an unknown major version must be refused");
 
     assert!(
         matches!(
-            error,
+            diagnostic.error(),
             LessonError::UnsupportedSchema(SchemaVersionError::UnsupportedMajor { .. })
         ),
-        "expected a major-version refusal, got {error}"
+        "expected a major-version refusal, got {diagnostic}"
     );
+    // A version refusal is about the field that declared it, and about the
+    // document rather than any one segment.
+    assert_eq!(diagnostic.field_path(), "/schema_version");
+    assert_eq!(diagnostic.segment_id(), None);
+    assert_eq!(diagnostic.document(), document_name);
 
     // The refusal must name what this build publishes, because the author's
     // next action is to migrate the document to that version.
     assert!(
-        error
+        diagnostic
             .to_string()
             .contains(&LESSON_SCHEMA_VERSION.to_string()),
-        "the refusal must name the supported version, got `{error}`"
+        "the refusal must name the supported version, got `{diagnostic}`"
     );
 
     // The same document with only its version corrected is accepted, which is
@@ -212,6 +221,7 @@ fn t3_e1_unknown_major_version_is_rejected() {
     let mut corrected = read_json(&example);
     corrected["schema_version"] = Value::String(LESSON_SCHEMA_VERSION.to_string());
     ValidatedLesson::from_json(
+        &document_name,
         &serde_json::to_vec(&corrected).expect("the corrected example serializes"),
     )
     .expect("only the version may be what refuses the unknown-major example");
@@ -219,32 +229,42 @@ fn t3_e1_unknown_major_version_is_rejected() {
 
 #[test]
 fn t3_e1_compatible_minor_extension_is_accepted() {
-    // `$schema` arrived with lesson `1.1` as a compatible extension under
+    // `learning_objectives` and `source` arrived with lesson `3.1` as a
+    // compatible extension under
     // `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md`, whose declared
-    // default is absent. `e1-s1-prior-minor.json` is a document written before
-    // it, and it must still be readable — otherwise the increment was breaking
-    // and was published under the wrong number.
-    let example = repository_root().join("fixtures/lessons/e1-s1-prior-minor.json");
+    // defaults are empty and absent. `e1-s2-prior-minor.json` is a document
+    // written before them, and it must still be readable — otherwise the
+    // increment was breaking and was published under the wrong number.
+    let example = repository_root().join("fixtures/lessons/e1-s2-prior-minor.json");
+    let document_name = example.display().to_string();
     let document = read_json(&example);
     assert_eq!(
         document.get("schema_version").and_then(Value::as_str),
-        Some("1.0"),
+        Some("3.0"),
         "the compatible-extension example must predate the current minor"
     );
-    assert!(
-        document.get("$schema").is_none(),
-        "the compatible-extension example must omit the field the extension added"
-    );
+    for added in ["learning_objectives", "source"] {
+        assert!(
+            document.get(added).is_none(),
+            "the compatible-extension example must omit `{added}`, which the extension added"
+        );
+    }
 
-    let lesson = ValidatedLesson::from_json(&fs::read(&example).expect("the example is readable"))
-        .expect("an earlier minor version of the same major must be accepted");
+    let lesson = ValidatedLesson::from_json(
+        &document_name,
+        &fs::read(&example).expect("the example is readable"),
+    )
+    .expect("an earlier minor version of the same major must be accepted");
 
     // The document keeps the version it declared. Silently upgrading it would
     // make the next refusal report a version nobody wrote.
     assert_eq!(
         lesson.schema_version(),
-        "1.0".parse().expect("`1.0` parses")
+        "3.0".parse().expect("`3.0` parses")
     );
+    // The extension's declared defaults are what an older document reads as.
+    assert!(lesson.learning_objectives().is_empty());
+    assert!(lesson.source().is_none());
 
     // A newer minor is refused in the other direction: this build does not know
     // the default that extension declared, so reading it would be a guess.
@@ -254,32 +274,34 @@ fn t3_e1_compatible_minor_extension_is_accepted() {
         LESSON_SCHEMA_VERSION.major(),
         LESSON_SCHEMA_VERSION.minor() + 1
     ));
-    let error = ValidatedLesson::from_json(
+    let diagnostic = ValidatedLesson::from_json(
+        &document_name,
         &serde_json::to_vec(&newer).expect("the newer-minor example serializes"),
     )
     .expect_err("a newer minor version must be refused");
     assert!(
         matches!(
-            error,
+            diagnostic.error(),
             LessonError::UnsupportedSchema(SchemaVersionError::UnsupportedMinor { .. })
         ),
-        "expected a minor-version refusal, got {error}"
+        "expected a minor-version refusal, got {diagnostic}"
     );
 
-    // The extension itself is still checked when it is present: an optional
+    // The `1.1` extension is still checked when it is present: an optional
     // field is optional, not unvalidated.
     let mut mislinked =
         read_json(&repository_root().join("fixtures/lessons/e0-s0-two-segment.json"));
     mislinked["$schema"] = Value::String(schema_uri("takes", 1));
-    assert!(
-        matches!(
-            ValidatedLesson::from_json(
-                &serde_json::to_vec(&mislinked).expect("the mislinked example serializes")
-            ),
-            Err(LessonError::UnexpectedSchemaLink { .. })
-        ),
-        "a link naming another schema must be refused"
-    );
+    let diagnostic = ValidatedLesson::from_json(
+        "fixtures/lessons/e0-s0-two-segment.json",
+        &serde_json::to_vec(&mislinked).expect("the mislinked example serializes"),
+    )
+    .expect_err("a link naming another schema must be refused");
+    assert!(matches!(
+        diagnostic.error(),
+        LessonError::UnexpectedSchemaLink { .. }
+    ));
+    assert_eq!(diagnostic.field_path(), "/$schema");
 }
 
 #[test]
@@ -353,13 +375,13 @@ fn t3_e1_invalid_lesson_fixtures_are_refused_by_their_own_invariant() {
         let path = repository_root().join("fixtures/contracts").join(fixture);
         let bytes = fs::read(&path).expect("the invalid fixture is readable");
 
-        let error = ValidatedLesson::from_json(&bytes)
+        let diagnostic = ValidatedLesson::from_json(&path.display().to_string(), &bytes)
             .err()
             .unwrap_or_else(|| panic!("`{fixture}` must be refused"));
 
         assert!(
-            expected(&error),
-            "`{fixture}` was refused by the wrong invariant: {error}"
+            expected(diagnostic.error()),
+            "`{fixture}` was refused by the wrong invariant: {diagnostic}"
         );
     }
 }
@@ -385,7 +407,7 @@ type ValidExample = (&'static str, &'static str, ParserCheck);
 type InvalidExample = (&'static str, &'static str, &'static [&'static str]);
 
 fn accepts_lesson(bytes: &[u8]) -> Result<(), String> {
-    ValidatedLesson::from_json(bytes)
+    ValidatedLesson::from_json("<published-format example>", bytes)
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
@@ -549,7 +571,18 @@ fn planning_context() -> study_tts_core::SynthesisContext {
         determinism_class: study_tts_core::DeterminismClass::Reproducible,
         seed: 0,
         generation_parameters: BTreeMap::new(),
-        voice_conditioning_hashes: BTreeMap::new(),
+        // Both speakers the lesson fixture declares: planning refuses a lesson
+        // whose voices this map does not carry.
+        voice_conditioning_hashes: BTreeMap::from([
+            (
+                "nadia".to_owned(),
+                blake3::hash(b"schema-test nadia conditioning").into(),
+            ),
+            (
+                "tom".to_owned(),
+                blake3::hash(b"schema-test tom conditioning").into(),
+            ),
+        ]),
     }
 }
 
@@ -656,11 +689,13 @@ fn t3_e1_the_published_plan_schema_describes_what_the_planner_writes() {
     // the document is produced by the code under test rather than transcribed
     // beside it.
     let lesson = ValidatedLesson::from_json(
+        "fixtures/lessons/e0-s0-two-segment.json",
         &fs::read(repository_root().join("fixtures/lessons/e0-s0-two-segment.json"))
             .expect("the lesson fixture is readable"),
     )
     .expect("the lesson fixture validates");
-    let plan = study_tts_core::RenderPlan::for_lesson(&lesson, &planning_context());
+    let plan = study_tts_core::RenderPlan::for_lesson(&lesson, &planning_context())
+        .expect("the planning context resolves every speaker the fixture declares");
     let document = serde_json::to_value(&plan).expect("a plan serializes");
 
     assert_eq!(
@@ -794,7 +829,7 @@ fn t3_e1_every_published_schema_claims_the_uri_its_documents_name() {
 /// agree with any schema it was handed, including one that grew a required
 /// field nobody meant to add — which is the change this table exists to make
 /// impossible to land quietly.
-const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 38] = [
+const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 40] = [
     (
         "job 0.1",
         "/",
@@ -806,18 +841,25 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 38] = [
         &["manifest_blake3", "package_id"],
     ),
     (
-        "lesson 1.1",
+        "lesson 3.1",
         "/",
         &[
             "language",
             "lesson_id",
             "schema_version",
             "segments",
+            "speakers",
             "title",
         ],
     ),
     (
-        "lesson 1.1",
+        "lesson 3.1",
+        "/$defs/SpeakerDeclaration",
+        &["voice_profile"],
+    ),
+    ("lesson 3.1", "/$defs/LessonSource", &["content_hash"]),
+    (
+        "lesson 3.1",
         "/$defs/LessonSegment",
         &[
             "display_text",
@@ -873,15 +915,16 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 38] = [
     ),
     ("manifest 0.2", "/$defs/StoredTools", &["ffmpeg", "ffprobe"]),
     (
-        "plan 1.0",
+        "plan 2.0",
         "/",
         &["lesson_id", "plan_hash", "schema_version", "segments"],
     ),
     (
-        "plan 1.0",
+        "plan 2.0",
         "/$defs/PlannedSegment",
         &[
             "cache_key",
+            "display_text",
             "id",
             "pause_after_ms",
             "speaker",

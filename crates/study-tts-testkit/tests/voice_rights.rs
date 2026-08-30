@@ -5,7 +5,7 @@
 //! §E0-S2. The rules they enforce are tabulated in
 //! `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Enforcement.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use study_tts_core::{LessonError, ReleaseStatus, VoiceError};
 use study_tts_runtime::{
@@ -13,8 +13,9 @@ use study_tts_runtime::{
     build_preview, validate_production_manifest,
 };
 use study_tts_testkit::{
-    DeterministicToneWorker, VoiceProfileFixtureSpec, walking_skeleton_fixture,
-    write_voice_profile_fixture,
+    DeterministicToneWorker, FIXTURE_VOICE_PROFILES, VoiceProfileFixtureSpec,
+    cache_identity_fixture, walking_skeleton_fixture, write_voice_profile_fixture,
+    write_voice_profile_root,
 };
 use tempfile::TempDir;
 
@@ -22,26 +23,37 @@ use tempfile::TempDir;
 /// preflight, these tests would report a missing tool instead of the voice
 /// refusal, so asserting the voice error also proves the gate runs before any
 /// tool or synthesis work.
-fn request_without_ffmpeg(workspace: &Path, voice_dir: &Path) -> BuildRequest {
+fn request_without_ffmpeg(workspace: &Path, voice_profile_root: &Path) -> BuildRequest {
     BuildRequest {
         lesson_path: walking_skeleton_fixture(),
         workspace: workspace.to_path_buf(),
         ffmpeg_executable: "study-tts-missing-ffmpeg".into(),
         ffprobe_executable: "study-tts-missing-ffprobe".into(),
-        voice_profile_dir: Some(voice_dir.to_path_buf()),
+        voice_profile_root: voice_profile_root.to_path_buf(),
     }
+}
+
+/// Installs a voice-profile root whose first-resolved profile carries `spec`.
+///
+/// The walking-skeleton lesson's first speaker names
+/// `FIXTURE_VOICE_PROFILES[0]`, so a refusal is attributable to `spec` rather
+/// than to whichever profile the gate happened to reach first; the rest are
+/// written healthy so they refuse nothing. Returns the profile directory under
+/// test, which the record-integrity tests below then damage.
+fn root_with(workspace: &Path, spec: &VoiceProfileFixtureSpec) -> (PathBuf, PathBuf) {
+    let root = workspace.join("voices");
+    let under_test = write_voice_profile_fixture(&root.join(FIXTURE_VOICE_PROFILES[0]), spec);
+    write_voice_profile_root(&root, &FIXTURE_VOICE_PROFILES[1..]);
+    (root, under_test)
 }
 
 fn refused_build(spec: &VoiceProfileFixtureSpec) -> (BuildError, DeterministicToneWorker) {
     let workspace = TempDir::new().expect("create isolated workspace");
-    let voice_dir = write_voice_profile_fixture(&workspace.path().join("voice"), spec);
+    let (root, _under_test) = root_with(workspace.path(), spec);
     let worker = DeterministicToneWorker::default();
 
-    let error = build_preview(
-        request_without_ffmpeg(workspace.path(), &voice_dir),
-        &worker,
-    )
-    .expect_err("a refused voice profile must fail the build");
+    let error = build_preview(request_without_ffmpeg(workspace.path(), &root), &worker)
+        .expect_err("a refused voice profile must fail the build");
     (error, worker)
 }
 
@@ -165,24 +177,129 @@ fn t4_e0_unapproved_voice_profile_cannot_enter_preview_or_production() {
     );
 }
 
+/// The three ways a declared profile fails to resolve, each reported as
+/// itself.
+///
+/// `Path::is_dir` would have collapsed all of these into one `false`, and with
+/// it a permission failure into "the profile is not installed". Each row names
+/// the entry the root holds and the refusal it must produce.
+#[test]
+fn t4_e1_a_declared_profile_that_does_not_resolve_is_refused_as_itself() {
+    let declared = FIXTURE_VOICE_PROFILES[0];
+
+    // Absent: the root holds nothing of that name.
+    let workspace = TempDir::new().expect("create absent-profile workspace");
+    let root = workspace.path().join("voices");
+    write_voice_profile_root(&root, &FIXTURE_VOICE_PROFILES[1..]);
+    let worker = DeterministicToneWorker::default();
+    let error = build_preview(request_without_ffmpeg(workspace.path(), &root), &worker)
+        .expect_err("a profile the root does not hold must be refused");
+    assert!(
+        matches!(
+            error,
+            BuildError::VoiceProfile(VoiceProfileError::MissingVoiceProfileDirectory {
+                ref profile_id,
+                ..
+            }) if profile_id == declared
+        ),
+        "an absent profile produced `{error}`"
+    );
+    assert_eq!(worker.synthesis_count(), 0);
+
+    // Present but not a directory: installing it is not the remedy, so this
+    // must not report the profile as missing.
+    let workspace = TempDir::new().expect("create not-a-directory workspace");
+    let root = workspace.path().join("voices");
+    write_voice_profile_root(&root, &FIXTURE_VOICE_PROFILES[1..]);
+    std::fs::write(root.join(declared), b"not a profile directory")
+        .expect("write a file where a profile directory belongs");
+    let worker = DeterministicToneWorker::default();
+    let error = build_preview(request_without_ffmpeg(workspace.path(), &root), &worker)
+        .expect_err("an entry that is not a directory must be refused");
+    assert!(
+        matches!(
+            error,
+            BuildError::VoiceProfile(VoiceProfileError::VoiceProfileNotDirectory {
+                ref profile_id,
+                ..
+            }) if profile_id == declared
+        ),
+        "a non-directory profile entry produced `{error}`"
+    );
+    assert_eq!(worker.synthesis_count(), 0);
+
+    // Present and complete, but the record inside calls itself something else.
+    // Accepting it would attribute one voice's consent record to another
+    // voice's audio.
+    let workspace = TempDir::new().expect("create mismatched-identity workspace");
+    let root = workspace.path().join("voices");
+    write_voice_profile_root(&root, &FIXTURE_VOICE_PROFILES[1..]);
+    write_voice_profile_fixture(
+        &root.join(declared),
+        &VoiceProfileFixtureSpec {
+            profile_id: "some-other-voice-v1".to_owned(),
+            ..VoiceProfileFixtureSpec::default()
+        },
+    );
+    let worker = DeterministicToneWorker::default();
+    let error = build_preview(request_without_ffmpeg(workspace.path(), &root), &worker)
+        .expect_err("a record naming another identity must be refused");
+    assert!(
+        matches!(
+            error,
+            BuildError::VoiceProfile(VoiceProfileError::VoiceProfileIdMismatch {
+                declared: ref reported,
+                ref recorded,
+            }) if reported == declared && recorded == "some-other-voice-v1"
+        ),
+        "a mismatched profile identity produced `{error}`"
+    );
+    assert_eq!(worker.synthesis_count(), 0);
+}
+
+/// Two speakers may name one voice profile, and the build resolves it.
+///
+/// Names what this can observe from outside the crate. That the profile is
+/// read *once* is structural — `resolve_speakers` keys its work by profile
+/// identity, not by speaker — and no seam here can count reads, so this test
+/// does not claim it. The reason the distinction matters is recorded on that
+/// function: two reads could return two digests if the profile changed between
+/// them, keying two segments of one build on two versions of one voice.
+#[test]
+fn t4_e1_two_speakers_may_share_one_voice_profile() {
+    let workspace = TempDir::new().expect("create shared-profile workspace");
+    let root = workspace.path().join("voices");
+    write_voice_profile_root(&root, &FIXTURE_VOICE_PROFILES);
+
+    // The cache-identity fixture maps both its speakers to one profile, and
+    // its `seg-a`/`seg-f` pair differs only by speaker.
+    let lesson = cache_identity_fixture();
+    let mut request = request_without_ffmpeg(workspace.path(), &root);
+    request.lesson_path = lesson;
+    let worker = DeterministicToneWorker::default();
+
+    let error = build_preview(request, &worker)
+        .expect_err("the absent encoder must be what fails, not the voices");
+
+    assert!(
+        matches!(error, BuildError::Tool(ToolError::MissingTool { .. })),
+        "two speakers sharing one profile must resolve, but produced `{error}`"
+    );
+    assert_eq!(worker.synthesis_count(), 0);
+}
+
 #[test]
 fn t4_e0_voice_checksum_mismatch_blocks_use() {
     for tampered in ["reference.wav", "conditionals.pt"] {
         let workspace = TempDir::new().expect("create isolated workspace");
-        let voice_dir = write_voice_profile_fixture(
-            &workspace.path().join("voice"),
-            &VoiceProfileFixtureSpec::default(),
-        );
+        let (root, voice_dir) = root_with(workspace.path(), &VoiceProfileFixtureSpec::default());
         let tampered_path = voice_dir.join(tampered);
         std::fs::write(&tampered_path, b"tampered-after-consent")
             .expect("overwrite fixture file to break its checksum");
 
         let worker = DeterministicToneWorker::default();
-        let error = build_preview(
-            request_without_ffmpeg(workspace.path(), &voice_dir),
-            &worker,
-        )
-        .expect_err("a checksum mismatch must refuse the profile");
+        let error = build_preview(request_without_ffmpeg(workspace.path(), &root), &worker)
+            .expect_err("a checksum mismatch must refuse the profile");
 
         assert!(
             matches!(
@@ -423,7 +540,11 @@ fn t3_e0_production_manifest_is_a_strict_typed_boundary() {
     for absent in ["", "   "] {
         let error = refuse_lesson_id(absent);
         assert!(
-            matches!(error, BuildError::Lesson(LessonError::MissingLessonId)),
+            matches!(
+                error,
+                BuildError::Lesson(ref diagnostic)
+                    if matches!(diagnostic.error(), LessonError::MissingLessonId)
+            ),
             "blank lesson_id `{absent}` produced `{error}`"
         );
     }
@@ -432,8 +553,11 @@ fn t3_e0_production_manifest_is_a_strict_typed_boundary() {
         assert!(
             matches!(
                 error,
-                BuildError::Lesson(LessonError::InvalidLessonId(ref reported))
-                    if reported == malformed
+                BuildError::Lesson(ref diagnostic)
+                    if matches!(
+                        diagnostic.error(),
+                        LessonError::InvalidLessonId(reported) if reported == malformed
+                    )
             ),
             "lesson_id `{malformed}` produced `{error}`"
         );
@@ -496,18 +620,12 @@ fn t4_e0_every_absent_voice_record_names_its_remedy_owner() {
         "conditionals.pt",
     ] {
         let workspace = TempDir::new().expect("create isolated workspace");
-        let voice_dir = write_voice_profile_fixture(
-            &workspace.path().join("voice"),
-            &VoiceProfileFixtureSpec::default(),
-        );
+        let (root, voice_dir) = root_with(workspace.path(), &VoiceProfileFixtureSpec::default());
         std::fs::remove_file(voice_dir.join(record)).expect("remove a required record");
         let worker = DeterministicToneWorker::default();
 
-        let error = build_preview(
-            request_without_ffmpeg(workspace.path(), &voice_dir),
-            &worker,
-        )
-        .expect_err("an absent record must refuse the profile");
+        let error = build_preview(request_without_ffmpeg(workspace.path(), &root), &worker)
+            .expect_err("an absent record must refuse the profile");
 
         assert!(
             matches!(
@@ -548,10 +666,7 @@ fn t4_e0_voice_records_that_are_not_regular_files_are_refused() {
         "conditionals.pt",
     ] {
         let workspace = TempDir::new().expect("create isolated workspace");
-        let voice_dir = write_voice_profile_fixture(
-            &workspace.path().join("voice"),
-            &VoiceProfileFixtureSpec::default(),
-        );
+        let (root, voice_dir) = root_with(workspace.path(), &VoiceProfileFixtureSpec::default());
         let outside = workspace.path().join("outside");
         std::fs::create_dir(&outside).expect("create the directory the link points into");
         let target = outside.join(record);
@@ -560,11 +675,8 @@ fn t4_e0_voice_records_that_are_not_regular_files_are_refused() {
         symlink(&target, &planted).expect("plant a voice record symlink");
         let worker = DeterministicToneWorker::default();
 
-        let error = build_preview(
-            request_without_ffmpeg(workspace.path(), &voice_dir),
-            &worker,
-        )
-        .expect_err("a planted record must refuse the profile");
+        let error = build_preview(request_without_ffmpeg(workspace.path(), &root), &worker)
+            .expect_err("a planted record must refuse the profile");
 
         assert!(
             matches!(

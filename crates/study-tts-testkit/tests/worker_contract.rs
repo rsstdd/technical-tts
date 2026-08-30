@@ -25,7 +25,10 @@ use study_tts_runtime::{
     parse_worker_request, parse_worker_response,
 };
 use study_tts_testkit::{DETERMINISTIC_TONE_BUNDLE_HASH, DETERMINISTIC_TONE_VOICE_PROFILE_HASH};
-use study_tts_testkit::{FakeTtsExecutor, validate_against_schema, walking_skeleton_fixture};
+use study_tts_testkit::{
+    FIXTURE_VOICE_PROFILES, FakeTtsExecutor, validate_against_schema, walking_skeleton_fixture,
+    write_voice_profile_root,
+};
 use tempfile::TempDir;
 
 const FAKE_SESSION_DEADLINE: Duration = Duration::from_secs(2);
@@ -586,6 +589,7 @@ fn t4_e1_pr_suite_performs_no_model_download() {
 
     let workspace = TempDir::new().expect("create a preview workspace");
     let lesson = ValidatedLesson::from_json(
+        &walking_skeleton_fixture().display().to_string(),
         &fs::read(walking_skeleton_fixture()).expect("the lesson fixture is readable"),
     )
     .expect("the lesson fixture validates");
@@ -596,13 +600,15 @@ fn t4_e1_pr_suite_performs_no_model_download() {
     );
 
     let executor = FakeTtsExecutor::default();
+    let voice_profile_root = workspace.path().join("voices");
+    write_voice_profile_root(&voice_profile_root, &FIXTURE_VOICE_PROFILES);
     build_preview(
         BuildRequest {
             lesson_path: walking_skeleton_fixture(),
             workspace: workspace.path().to_path_buf(),
             ffmpeg_executable: "ffmpeg".into(),
             ffprobe_executable: "ffprobe".into(),
-            voice_profile_dir: None,
+            voice_profile_root,
         },
         &executor,
     )

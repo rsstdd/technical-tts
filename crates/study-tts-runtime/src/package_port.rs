@@ -324,15 +324,29 @@ mod tests {
     use super::*;
 
     fn plan() -> RenderPlan {
-        let lesson = ValidatedLesson::from_json(include_bytes!(
-            "../../../fixtures/lessons/e0-s0-two-segment.json"
-        ))
+        let lesson = ValidatedLesson::from_json(
+            "fixtures/lessons/e0-s0-two-segment.json",
+            include_bytes!("../../../fixtures/lessons/e0-s0-two-segment.json"),
+        )
         .expect("validate package test lesson");
+        // Every speaker the fixture declares, because planning refuses a
+        // lesson whose voices were not resolved.
+        let conditioning = lesson
+            .speakers()
+            .keys()
+            .map(|speaker| {
+                (
+                    speaker.clone(),
+                    blake3::hash(b"package-port-conditioning").into(),
+                )
+            })
+            .collect();
         RenderPlan::for_lesson(
             &lesson,
             &crate::synthesis::sample_descriptor()
-                .synthesis_context(lesson.language().clone(), std::collections::BTreeMap::new()),
+                .synthesis_context(lesson.language().clone(), conditioning),
         )
+        .expect("the package test context resolves every speaker")
     }
 
     fn artifact(

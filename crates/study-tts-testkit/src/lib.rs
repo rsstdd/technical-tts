@@ -215,6 +215,8 @@ impl FakeTtsExecutor {
             })?;
 
         let language = request.language.clone();
+        let voice = request.voice.clone();
+        let conditioning = request.voice_conditioning_hash.clone();
         self.synthesized_texts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -238,14 +240,22 @@ impl FakeTtsExecutor {
             // hash unrelated to its descriptor's — is exactly the drift the
             // cache's identity gate refuses, so a fake that did it could never
             // publish and would stop being a usable double.
-            // No conditioning artifact, because this executor resolves no
-            // voice profile: an empty map serializes as an absent input, which
-            // is the same thing planning supplies until E1-S2 resolves voice
-            // references. A hash invented here would name a cache entry no
-            // voice produced.
+            // The conditioning artifact comes from the request rather than
+            // from anywhere this fake could invent one: a real worker reports
+            // the artifact it loaded, and echoing the requested one is the
+            // closest a fake that loads nothing can honestly get. A hash made
+            // up here would name a cache entry no voice produced, and the
+            // cache's identity gate would refuse it — which is the point.
+            //
+            // The echo is also why that gate proves nothing yet.
+            // `docs/architecture/E1-S2-INTERFACE-CHANGE-001.md` §Limits this
+            // change does not close records it as owed to `DELIVERY-PLAN.md`
+            // E1-S3: the Chatterbox worker must report the artifact it read
+            // from disk, never the value it was handed, or the comparison
+            // stays a tautology that this suite cannot catch.
             context: self
                 .descriptor()
-                .synthesis_context(language, BTreeMap::new()),
+                .synthesis_context(language, BTreeMap::from([(voice, conditioning)])),
             voice_profile_hash: DETERMINISTIC_TONE_VOICE_PROFILE_HASH
                 .parse()
                 .expect("the fake voice profile hash is a well-formed digest"),
@@ -372,6 +382,35 @@ pub fn write_voice_profile_fixture(dir: &Path, spec: &VoiceProfileFixtureSpec) -
 
     dir.to_path_buf()
 }
+
+/// Writes one default synthetic profile per identifier beneath `root`.
+///
+/// A build resolves `speakers[*].voice_profile` to `<root>/<profile_id>/`, so
+/// this is the shape every pipeline test needs: the profile identifiers the
+/// committed lesson fixtures name, installed where the build will look.
+///
+/// # Panics
+///
+/// On the same terms as [`write_voice_profile_fixture`], which it calls.
+pub fn write_voice_profile_root(root: &Path, profile_ids: &[&str]) -> PathBuf {
+    for profile_id in profile_ids {
+        write_voice_profile_fixture(
+            &root.join(profile_id),
+            &VoiceProfileFixtureSpec {
+                profile_id: (*profile_id).to_owned(),
+                ..VoiceProfileFixtureSpec::default()
+            },
+        );
+    }
+    root.to_path_buf()
+}
+
+/// The voice profiles the committed lesson fixtures declare.
+///
+/// Named here rather than repeated per test so a fixture gaining a speaker is
+/// one edit. Mirrors the `speakers` blocks in `fixtures/lessons/`.
+pub const FIXTURE_VOICE_PROFILES: [&str; 2] =
+    ["synthetic-test-voice-v1", "synthetic-test-voice-v2"];
 
 /// Hashes a fixture file so the record written beside it agrees with its
 /// bytes.

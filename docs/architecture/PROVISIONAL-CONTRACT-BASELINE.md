@@ -21,7 +21,7 @@ record or the governing change-control document in return.
 
 | Contract ID / version | Owner and public representation | Consumers | Fake, fixtures, and unchanged shared suite | Identity effect | Stabilization story |
 |---|---|---|---|---|---|
-| `tts_executor` / `e1.tts-executor.1.0` | T-WORKER; `study_tts_runtime::TtsExecutor`, `BackendDescriptor`, `SynthesisRequest`, `SynthesisReport`, `BackendError` | Preview orchestration; E1-S3 worker pool | `study_tts_testkit::FakeTtsExecutor`; `run_tts_executor_contract_scenario`; descriptor fixtures under `fixtures/contracts/` | every `BackendDescriptor` field but `contract_version` and `max_text_bytes` affects every synthesis key; backend and worker identities in a report become artifact provenance | E1-S1/E1-S3; frozen at G1 only after the capacity-one Chatterbox adapter passes the suite |
+| `tts_executor` / `e1.tts-executor.2.0` | T-WORKER; `study_tts_runtime::TtsExecutor`, `BackendDescriptor`, `SynthesisRequest`, `SynthesisReport`, `BackendError` | Preview orchestration; E1-S3 worker pool | `study_tts_testkit::FakeTtsExecutor`; `run_tts_executor_contract_scenario`; descriptor fixtures under `fixtures/contracts/` | every `BackendDescriptor` field but `contract_version` and `max_text_bytes` affects every synthesis key, as does `SynthesisRequest::voice_conditioning_hash`; backend and worker identities in a report become artifact provenance | E1-S1/E1-S3; frozen at G1 only after the capacity-one Chatterbox adapter passes the suite |
 | `worker_frames` / baseline `e1.worker.1.0`; declared optional extension `e1.worker.1.1` | T-WORKER; strict `WorkerRequestFrame` and `WorkerResponseFrame` in `study-tts-runtime/src/worker_protocol.rs` | Future Rust worker client and executable worker | `fake-ndjson-worker`; valid, malformed, incompatible-version, and compatible-extension NDJSON fixtures; `fixtures/contracts/e1-s1-worker-protocol-cases.ndjson`, the committed decisions both the Rust and the Python end must make alike; `t3_e0_contract_change_requires_version_or_explicit_compatible_extension`, `t3_e1_both_protocol_ends_decide_the_committed_cases_alike`, and frame-boundary tests | Executable protocol interpretation is a worker-bundle input and therefore synthesis-affecting | E1-S1/E1-S3; security and real-worker protocol suites must pass before G1 |
 | `cache_publication` / `e0.cache-publication.1.0` | T-AUDIO; `CachePublisher`, `CacheResolveRequest`, `StagedAudioProducer`, and opaque `ValidatedCachedArtifact` with read-only accessors | Preview orchestration, PCM assembly, manifest writer | `FakeCachePublisher`; `run_cache_contract_scenario`; deterministic worker WAV | Cache-layout or acceptance changes affect reusable artifacts; speech-affecting acceptance changes require synthesis-identity review | E1-S3, E2-S1, E2-S2, and E4 cache/recovery/prune work; frozen after fake and filesystem adapters pass at G1 |
 | `package_writer` / `e0.package-writer.1.0` | T-AUDIO; `PackageWriter::preflight`, `PackagePreflightRequest`, `PreparedPackageWriter`, prepare/write requests, and `PackagePublication` | Preview orchestration and provisional job state | `FakePackageWriter`; `run_package_writer_contract_scenario` without external tools; real FFmpeg walking-skeleton fixture | Package tool/profile or assembly changes affect package identity; they do not silently reuse a package selected under different tool identities | E1-S4 and E2-S3; real master-first package path must pass the shared suite before G1 |
@@ -57,6 +57,28 @@ synthesis-key input set, then gained a declared language set, and
 used. That record also names the two §12.5 inputs — the voice-conditioning
 artifact hash and the backend generation parameters — that are present in the
 identity but not resolved to real values until E1-S2 and E1-S3 respectively.
+
+[`E1-S2-INTERFACE-CHANGE-001.md`](E1-S2-INTERFACE-CHANGE-001.md) records the
+first of those landing, and why it moved the executor contract again to
+`e1.tts-executor.2.0`. Resolving voice references makes the conditioning hash a
+real value in every cache key, and the cache's own identity gate compares the
+key it derived against the one an executor reports; an executor can only make
+that comparison meaningful if the request tells it which artifact the key names.
+The same record covers the lesson document's move to `2.1` and the
+`SYNTHESIS_IDENTITY_VERSION` move to `e1-s2-v1`.
+
+[`E1-S2-INTERFACE-CHANGE-002.md`](E1-S2-INTERFACE-CHANGE-002.md) completes the same
+story against `DELIVERY-PLAN.md` E1-S2's tasks: the lesson document moves to
+`3.1` with ADR-0001 §8.1's `learning_objectives` and `source`, closed `role` and
+`style` vocabularies, and §8.2's recall-prompt response interval, and
+`PlannedSegment` carries the display text a package writer needs. No synthesis
+identity moves with it — the style spellings that reach a key are unchanged, so
+every published cache entry stays reachable. The plan document moves to `2.0`:
+`display_text` becomes required and `style` narrows to the closed vocabulary,
+which §Change classes calls a **Breaking contract**, and `ADR-0001-D005` does
+not reach it because `plan 1.0` was E1-S1's version rather than this story's.
+That no `plan.json` has been written makes the migration empty, not the major
+optional.
 
 The report's context is not advisory. `crates/study-tts-runtime/src/cache.rs`
 recomputes the synthesis key from it and refuses publication when that key is

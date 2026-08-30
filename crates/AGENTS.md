@@ -30,7 +30,8 @@ The root `AGENTS.md` governs the whole repository; this file adds the rules and 
 | Decision, work, failure, and artifact routing | `docs/governance/ROUTING-TABLES.md` |
 | Evidence filing rules | `evidence/README.md` |
 | Document version rule (major refused, older minor accepted) | `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` ↔ `study-tts-core/src/schema.rs` (must agree) |
-| Lesson schema and validation | `study-tts-core/src/lesson.rs` |
+| Lesson schema, validation, and located diagnostics | `study-tts-core/src/lesson.rs` |
+| Declared voice resolution into the synthesis key | `study-tts-runtime/src/voice_gate.rs` |
 | BCP 47 language tag, checked and case-normalized | `study-tts-core/src/language.rs` |
 | Explicit take selection document | `study-tts-core/src/takes.rs` |
 | Render planning and cache identity | `study-tts-core/src/plan.rs` |

@@ -48,8 +48,9 @@ fn segment() -> PlannedSegment {
     let mut planned = PlannedSegment {
         id: "seg-0001".to_owned(),
         speaker: "synthetic-test-voice-v1".to_owned(),
+        display_text: "A cache stores reusable work.".to_owned(),
         spoken_text: "A cache stores reusable work.".to_owned(),
-        style: "calm_explanatory".to_owned(),
+        style: study_tts_core::DeliveryStyle::CalmExplanatory,
         pause_after_ms: 0,
         take: study_tts_core::BASE_TAKE,
         // Replaced below; a hand-written key would be refused by the identity
