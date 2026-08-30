@@ -259,12 +259,14 @@ fn t4_e1_a_declared_profile_that_does_not_resolve_is_refused_as_itself() {
 
 /// Two speakers may name one voice profile, and the build resolves it.
 ///
-/// Names what this can observe from outside the crate. That the profile is
-/// read *once* is structural — `resolve_speakers` keys its work by profile
-/// identity, not by speaker — and no seam here can count reads, so this test
-/// does not claim it. The reason the distinction matters is recorded on that
-/// function: two reads could return two digests if the profile changed between
-/// them, keying two segments of one build on two versions of one voice.
+/// Names what this can observe from outside the crate: a shared profile
+/// resolves through a real build. That the profile is read *once* is counted
+/// by `voice_gate`'s
+/// `t1_e1_one_voice_profile_is_loaded_once_however_many_speakers_name_it`,
+/// which drives the loader directly because no seam here can count reads. The
+/// reason the distinction matters is recorded on `resolve_speakers`: two reads
+/// could return two digests if the profile changed between them, keying two
+/// segments of one build on two versions of one voice.
 #[test]
 fn t4_e1_two_speakers_may_share_one_voice_profile() {
     let workspace = TempDir::new().expect("create shared-profile workspace");
