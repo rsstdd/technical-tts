@@ -271,12 +271,12 @@ showing `(1499, 4000)` against `(1500, 4000)`. After restoring it, changing only
 only the new ceiling pin, whose assertion named `learning objectives per lesson`. Both constants
 were restored before verification.
 
-The role/style half of issue #58 remains open. `SegmentRole` and `DeliveryStyle` still form a
-two-sided mirror between `crates/study-tts-core/src/lesson.rs` and ADR-0001 §3.2, §5.1, and §8.1,
-but no independent expected array is added: those sections describe the vocabularies in prose and
-do not supply an exact normative list that a test can transcribe without inventing a second
-interpretation. Revisit that decision when ADR-0001 gains an exact list or real vocabulary drift
-occurs.
+The role/style limitation remains intentionally non-mechanized. `SegmentRole` and `DeliveryStyle`
+still form a two-sided mirror between `crates/study-tts-core/src/lesson.rs` and ADR-0001 §3.2,
+§5.1, and §8.1, but no independent expected array is added: those sections describe the
+vocabularies in prose and do not supply an exact normative list that a test can transcribe without
+inventing a second interpretation. Issue #58 closes with that limitation recorded; revisit the
+decision when ADR-0001 gains an exact list or real vocabulary drift occurs.
 
 ## Defect found and fixed during review
 
@@ -332,7 +332,7 @@ Run from the repository root on Ubuntu 24.04 under WSL2, with `ffmpeg` and `ffpr
 | `cargo deny check` | Pass, including the added `serde_path_to_error` |
 | `taplo fmt --check` | Pass |
 | `cargo run --offline --locked --package study-tts-runtime --example generate-schemas` then `git diff --exit-code -- schemas/` | Pass, no drift |
-| `python3 scripts/check-evidence-provenance.py` | Pass, 0 unaccounted mismatches. It has been red twice since first run, both times on pins belonging to E1-S1 baseline records rather than to any accounting E1-S2 owes: three v13 pins the twenty-second E1-S1 audit moved, cleared when `e1-s1-provisional-contract-baseline-v14` was accepted and superseded v13; then three of v14's own pins — `docs/INDEX.md`, `crates/study-tts-core/src/lesson.rs`, and `docs/governance/TRACEABILITY-MATRIX.md` — moved by the provenance correction and the two E1-S2 audit fixes, cleared when `e1-s1-provisional-contract-baseline-v15` was accepted on 2026-08-30 and superseded v14. The eleven pins E1-S2 moved were accounted for by the accepted `e1-s2-evidence-provenance-reconciliation-v3` and are retired with v13. The issue #58 follow-up correctly reports exactly two v15 mismatches while `e1-s2-policy-pin-provenance-reconciliation-v1` is `Proposed`; zero remains required after its approval |
+| `python3 scripts/check-evidence-provenance.py` | Pass, 0 unaccounted mismatches. It has been red twice since first run, both times on pins belonging to E1-S1 baseline records rather than to any accounting E1-S2 owes: three v13 pins the twenty-second E1-S1 audit moved, cleared when `e1-s1-provisional-contract-baseline-v14` was accepted and superseded v13; then three of v14's own pins — `docs/INDEX.md`, `crates/study-tts-core/src/lesson.rs`, and `docs/governance/TRACEABILITY-MATRIX.md` — moved by the provenance correction and the two E1-S2 audit fixes, cleared when `e1-s1-provisional-contract-baseline-v15` was accepted on 2026-08-30 and superseded v14. The eleven pins E1-S2 moved were accounted for by the accepted `e1-s2-evidence-provenance-reconciliation-v3` and are retired with v13. The accepted `e1-s2-policy-pin-provenance-reconciliation-v1` now accounts for the two v15 pins moved by the issue #58 follow-up |
 | `cargo test --offline --locked -p study-tts-core recall` with `MIN_RECALL_RESPONSE_MS` changed from `1_500` to `1_499`, then restored | Expected red: the existing recall-boundary test passed and only `t3_e1_recall_response_interval_matches_adr` failed |
 | `cargo test --offline --locked -p study-tts-core --lib` with `MAX_LEARNING_OBJECTIVES` changed from `64` to `65`, then restored | Expected red: 97 passed and only `t3_e1_provisional_lesson_resource_ceilings_match_walking_skeleton_document` failed, naming `learning objectives per lesson` |
 
