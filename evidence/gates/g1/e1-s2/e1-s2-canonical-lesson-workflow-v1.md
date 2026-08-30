@@ -250,6 +250,34 @@ None of the four documentation defects weakened a validation, containment, right
 consent, offline, or recovery control. The one control defect is a refusal that did not exist and
 now does.
 
+## Issue #58 policy-pin follow-up
+
+Two independent T3 controls now pin the numeric lesson policy that issue #58 found was only a
+two-sided prose mirror:
+
+- `t3_e1_recall_response_interval_matches_adr` compares
+  `(MIN_RECALL_RESPONSE_MS, MAX_RECALL_RESPONSE_MS)` directly with ADR-0001 §13.2's exact
+  `(1_500, 4_000)` endpoints.
+- `t3_e1_provisional_lesson_resource_ceilings_match_walking_skeleton_document` uses a named
+  ten-case table to compare every lesson resource constant with
+  `docs/architecture/WALKING-SKELETON.md` §Provisional resource ceilings. The display and spoken
+  limits are one case because production deliberately uses one shared constant for both fields.
+
+Both controls were proved independently by mutation before the final green run. Changing only
+`MIN_RECALL_RESPONSE_MS` from `1_500` to `1_499` left
+`t1_e1_a_recall_prompt_must_leave_a_response_interval` green and failed only the new ADR pin,
+showing `(1499, 4000)` against `(1500, 4000)`. After restoring it, changing only
+`MAX_LEARNING_OBJECTIVES` from `64` to `65` left the other 97 core library tests green and failed
+only the new ceiling pin, whose assertion named `learning objectives per lesson`. Both constants
+were restored before verification.
+
+The role/style half of issue #58 remains open. `SegmentRole` and `DeliveryStyle` still form a
+two-sided mirror between `crates/study-tts-core/src/lesson.rs` and ADR-0001 §3.2, §5.1, and §8.1,
+but no independent expected array is added: those sections describe the vocabularies in prose and
+do not supply an exact normative list that a test can transcribe without inventing a second
+interpretation. Revisit that decision when ADR-0001 gains an exact list or real vocabulary drift
+occurs.
+
 ## Defect found and fixed during review
 
 `docs/testing/TEST-STRATEGY.md` §Failure policy calls a flaky test a defect, so this is recorded
@@ -297,14 +325,16 @@ Run from the repository root on Ubuntu 24.04 under WSL2, with `ffmpeg` and `ffpr
 | `cargo fmt --all -- --check` | Pass |
 | `python3 scripts/check-rust-conventions.py` | Pass, 0 violations in 67 files |
 | `cargo clippy --workspace --all-targets --all-features --offline --locked -- -D warnings` | Pass |
-| `cargo test --workspace --offline --locked --all-targets` | Pass, 306 tests; 10 consecutive runs clean. Re-run at the sixth review: 308, the two added since belonging to the twenty-second E1-S1 audit. Re-run for the issue #57 follow-up on 2026-08-30: 309, the one added being `t1_e1_one_voice_profile_is_loaded_once_however_many_speakers_name_it` |
+| `cargo test --workspace --offline --locked --all-targets` | Pass, 306 tests; 10 consecutive runs clean. Re-run at the sixth review: 308, the two added since belonging to the twenty-second E1-S1 audit. Re-run for the issue #57 follow-up on 2026-08-30: 309, the one added being `t1_e1_one_voice_profile_is_loaded_once_however_many_speakers_name_it`. Re-run for the issue #58 follow-up on 2026-08-30: 311, the two added being the policy pins named above |
 | `cargo test --workspace --offline --locked --doc` | Pass, 7 doctests |
 | `cargo test --offline -p study-tts-testkit --test walking_skeleton --locked` | Pass, 35 tests, real FFmpeg and ffprobe; 20 consecutive runs clean. Re-run for the issue #57 follow-up: 35 |
 | `python3 -m unittest discover --start-directory worker/tests` | Pass, 44 tests |
 | `cargo deny check` | Pass, including the added `serde_path_to_error` |
 | `taplo fmt --check` | Pass |
 | `cargo run --offline --locked --package study-tts-runtime --example generate-schemas` then `git diff --exit-code -- schemas/` | Pass, no drift |
-| `python3 scripts/check-evidence-provenance.py` | Pass, 0 unaccounted mismatches. It has been red twice since first run, both times on pins belonging to E1-S1 baseline records rather than to any accounting E1-S2 owes: three v13 pins the twenty-second E1-S1 audit moved, cleared when `e1-s1-provisional-contract-baseline-v14` was accepted and superseded v13; then three of v14's own pins — `docs/INDEX.md`, `crates/study-tts-core/src/lesson.rs`, and `docs/governance/TRACEABILITY-MATRIX.md` — moved by the provenance correction and the two E1-S2 audit fixes, cleared when `e1-s1-provisional-contract-baseline-v15` was accepted on 2026-08-30 and superseded v14. The eleven pins E1-S2 moved were accounted for by the accepted `e1-s2-evidence-provenance-reconciliation-v3` and are retired with v13 |
+| `python3 scripts/check-evidence-provenance.py` | Pass, 0 unaccounted mismatches. It has been red twice since first run, both times on pins belonging to E1-S1 baseline records rather than to any accounting E1-S2 owes: three v13 pins the twenty-second E1-S1 audit moved, cleared when `e1-s1-provisional-contract-baseline-v14` was accepted and superseded v13; then three of v14's own pins — `docs/INDEX.md`, `crates/study-tts-core/src/lesson.rs`, and `docs/governance/TRACEABILITY-MATRIX.md` — moved by the provenance correction and the two E1-S2 audit fixes, cleared when `e1-s1-provisional-contract-baseline-v15` was accepted on 2026-08-30 and superseded v14. The eleven pins E1-S2 moved were accounted for by the accepted `e1-s2-evidence-provenance-reconciliation-v3` and are retired with v13. The issue #58 follow-up correctly reports exactly two v15 mismatches while `e1-s2-policy-pin-provenance-reconciliation-v1` is `Proposed`; zero remains required after its approval |
+| `cargo test --offline --locked -p study-tts-core recall` with `MIN_RECALL_RESPONSE_MS` changed from `1_500` to `1_499`, then restored | Expected red: the existing recall-boundary test passed and only `t3_e1_recall_response_interval_matches_adr` failed |
+| `cargo test --offline --locked -p study-tts-core --lib` with `MAX_LEARNING_OBJECTIVES` changed from `64` to `65`, then restored | Expected red: 97 passed and only `t3_e1_provisional_lesson_resource_ceilings_match_walking_skeleton_document` failed, naming `learning objectives per lesson` |
 
 ## Review
 
