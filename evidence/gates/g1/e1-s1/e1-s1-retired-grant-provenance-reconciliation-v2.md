@@ -4,7 +4,7 @@
 - Candidate revision: branch `fix/issue-59-retired-grant`, after pull-request review
 - Accountable owner: Engineering owner
 - Approvers: Engineering owner and project owner
-- Status: Proposed
+- Status: Accepted
 - Supersedes: `e1-s1-retired-grant-provenance-reconciliation-v1`
 
 ## Scope and decision
@@ -47,14 +47,15 @@ stale `legacy-v1` citation. With `declared_superseded_ids` filtered through
 |---|---|
 | `python3 -m unittest scripts.tests.test_check_evidence_provenance.EvidenceProvenanceTests.test_a_superseded_record_cannot_declare_a_prose_supersession` | Pass, 1 test; failed before the fix with 0 violations instead of 1 |
 | `python3 -m unittest discover -s scripts/tests -p 'test_check_evidence_provenance.py'` | Pass, 21 tests |
-| `python3 scripts/check-evidence-provenance.py` | Pending final acceptance |
-| `git diff --check` | Pending final diff |
+| `python3 scripts/check-evidence-provenance.py` | Pass, zero unaccounted mismatches after acceptance |
+| `git diff --check` | Pass |
 
 ## Decision
 
-Ross Todd holds both roles below. The rows remain unsigned while this record is Proposed.
+Ross Todd holds both roles below. On 2026-08-30 the repository codeowner explicitly approved both
+decisions after reviewing this Proposed successor; each row records the separate role judgment.
 
 | Role | Name | Decision | Date |
 |---|---|---|---|
-| Engineering owner | Ross Todd | Pending | |
-| Project owner | Ross Todd | Pending | |
+| Engineering owner | Ross Todd | Approve — accept the corrected red/green statement and that it changes no implementation behavior | 2026-08-30 |
+| Project owner | Ross Todd | Approve — accept v2 superseding immutable v1 and carrying its three accounting rows unchanged | 2026-08-30 |
