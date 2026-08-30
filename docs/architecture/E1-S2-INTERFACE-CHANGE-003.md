@@ -118,12 +118,14 @@ Ross Todd holds every role below. `docs/governance/PROJECT-EXECUTION-CHARTER.md`
 a personal project and requires each approval to name its role and accepted risk separately, which
 is why the rows stay separate for one signatory. Two rows rather than
 `E1-S2-INTERFACE-CHANGE-002`'s ten, because no contract, version, refusal, or test is under
-decision here.
+decision here. **Both rows are signed on 2026-08-30**, so this record is in force and the
+statement it corrects in `E1-S2-INTERFACE-CHANGE-002` §Delivery and recovery is amended from
+outside, as that record's own §Approval requires.
 
 | Role | Decision sought | Status |
 |---|---|---|
 | Project owner | Accept that an accepted and signed architecture record is corrected from outside, in a successor, as its own §Approval requires, with no predecessor edited; and accept that the same class of defect stays answered by the standing obligation in `e1-s2-evidence-provenance-reconciliation-v3` §Open findings rather than by a mechanism proposed here | Accepted — Ross Todd, 2026-08-30 |
-| Contract owner (T-CORE) | Accept that no contract, version, identity, published schema, or durable byte moves, and that every technical conclusion `E1-S2-INTERFACE-CHANGE-002` records is untouched by this correction | Pending |
+| Contract owner (T-CORE) | Accept that no contract, version, identity, published schema, or durable byte moves, and that every technical conclusion `E1-S2-INTERFACE-CHANGE-002` records is untouched by this correction | Accepted — Ross Todd, 2026-08-30 |
 
 - Effective version and date: no version moves. `lesson 3.1`, `plan 2.0`, `e1-s2-v1`, and
   `e1.tts-executor.2.0` are unchanged by this record
