@@ -131,7 +131,7 @@ def superseded_ids(records: list[pathlib.Path]) -> set[str]:
 
 
 def declared_superseded_ids(records: list[pathlib.Path]) -> set[str]:
-    """Returns ids an accepted reconciliation record declares superseded.
+    """Returns ids an active accepted reconciliation declares superseded.
 
     `- Supersedes:` metadata is what a new record must carry, and
     `test_supersession_requires_explicit_metadata` keeps prose from counting.
@@ -141,9 +141,7 @@ def declared_superseded_ids(records: list[pathlib.Path]) -> set[str]:
     wrong entry is visible, which editing each record in place would not.
     """
     declared = set()
-    for record in records:
-        if not is_accepted(record):
-            continue
+    for record in active_accepted_records(records):
         for line in section(record.read_text(encoding="utf-8"), SUPERSESSION_HEADING):
             match = SUPERSESSION_ROW.match(line)
             if match:

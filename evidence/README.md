@@ -68,7 +68,8 @@ supersession is for. Supersession is read from a `- Supersedes:` metadata line, 
 record must carry one; prose alone does not remove a record from checking. Records accepted
 before that rule are listed under `## Superseded without supersession metadata` in an accepted
 reconciliation record, because adding the line to them would be the in-place amendment forbidden
-above.
+above. That declaration grants only while the reconciliation remains active under explicit
+supersession metadata. An accepted successor must repeat every declaration that is still needed.
 
 Acceptance decides who may *grant* — supersede a record, or account for a mismatch — not who is
 *checked*. A record that declares no status is checked rather than skipped, because the reverse

@@ -205,6 +205,34 @@ class EvidenceProvenanceTests(unittest.TestCase):
 
         self.assertEqual(found, [])
 
+    def test_a_superseded_record_cannot_declare_a_prose_supersession(self):
+        self.write("docs/control.md", "current")
+        pinned = hashlib.sha256(b"previous").hexdigest()
+        self.write(
+            "evidence/legacy-v1.md",
+            f"# Legacy\n\n| Record | SHA-256 |\n|---|---|\n"
+            f"| `docs/control.md` | `{pinned}` |\n",
+        )
+        self.write(
+            "evidence/reconciliation-v1.md",
+            "# Reconciliation\n\n- Status: Accepted\n\n"
+            "## Superseded without supersession metadata\n\n"
+            "| Superseded record | Superseded by |\n"
+            "|---|---|\n"
+            "| `legacy-v1` | `something-v2` |\n",
+        )
+        self.write(
+            "evidence/reconciliation-v2.md",
+            "# Reconciliation\n\n- Status: Accepted\n"
+            "- Supersedes: `reconciliation-v1`\n",
+        )
+
+        found = PROVENANCE.check(self.root, self.evidence)
+
+        self.assertEqual(len(found), 1)
+        self.assertIn("legacy-v1", found[0])
+        self.assertIn("docs/control.md", found[0])
+
     def test_a_proposed_record_cannot_declare_a_prose_supersession(self):
         self.write("docs/control.md", "current")
         pinned = hashlib.sha256(b"previous").hexdigest()
