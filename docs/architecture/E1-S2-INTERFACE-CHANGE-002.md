@@ -3,8 +3,8 @@
 ## Identification
 
 - Record ID: `E1-S2-INTERFACE-CHANGE-002`
-- Status: **Proposed — unsigned.** §Approval lists the decisions this change asks for; none
-  has been made.
+- Status: **Accepted, 2026-08-30.** §Approval records the decision each role made and the date
+  it was signed.
 - Contract owner: T-CORE (lesson document, render plan)
 - Engineering owner: Engineering owner
 - Affected-track reviewers: T-CORE, T-RUNTIME, T-CLI, T-AUDIO
@@ -14,7 +14,7 @@
   readable transcript), §13.2 (the recall-question pause range), and §13.4 (one frozen loudness
   reference per voice-profile hash and style) as written. No authority boundary moves.
 
-This record closes twelve gaps, in five rounds. The first four a review of
+This record closes fourteen gaps, in six rounds. The first four a review of
 [`E1-S2-INTERFACE-CHANGE-001.md`](E1-S2-INTERFACE-CHANGE-001.md)'s implementation found against
 `DELIVERY-PLAN.md` E1-S2:
 
@@ -31,7 +31,8 @@ This record closes twelve gaps, in five rounds. The first four a review of
    refusals that E1-S2 added, one plan refusal, and one audio refusal.
 
 A second review of *this* record's own implementation found two more, closed in the same change
-and recorded here rather than in a successor, because this record has not been accepted:
+and recorded here rather than in a successor, because this record had not been accepted when
+they were found:
 
 5. **The render plan changed incompatibly under a held version.** Task 4's fix added a required
    field and narrowed another while `PLAN_SCHEMA_VERSION` stood at `1.0`, on an argument belonging
@@ -63,8 +64,9 @@ A fourth review found three more, closed on the same terms:
    dated, and `AGENTS.md` §State and `docs/INDEX.md` repeated the claim, while no role had decided
    anything and item 5 above already said this record "has not been accepted". A record cannot
    sign itself, and a reader trusting three documents at once would have read an implemented change
-   as an accepted one. §Approval now states each decision as sought and pending, and both documents
-   describe this record as `Proposed` and unsigned.
+   as an accepted one. §Approval stated each decision as sought and pending from that review
+   until this record was signed, and both documents described it as `Proposed` and unsigned for
+   the same period.
 10. **This record contradicted itself, and cited a superseded record.** §Version and compatibility
     said the recall ceiling was "deliberately not enforced" and §Limits repeated it, while
     §Recall response interval and the build both enforce it; the migration procedure asked for a
@@ -93,6 +95,25 @@ A fifth review found one more, closed on the same terms:
     reconciliation with ten accounted pins where it accounts for eleven, and a
     `docs/architecture/WALKING-SKELETON.md` paragraph still naming the deleted
     `schemas/lesson-v2.schema.json` as the published lesson schema.
+
+A sixth review found two more, closed on the same terms:
+
+13. **A malformed source digest had no refusal of its own.** `LessonSource::content_hash` parses
+    through `SourceContentHash`, which refuses a value that is not a BLAKE3 digest — and `serde`
+    delivered that typed refusal as prose inside `LessonError::InvalidJson`, located at
+    `/source/content_hash`. A recorded hash that is not a digest and a `content_hash` that is not a
+    string therefore arrived as one located refusal, so `MalformedSourceContentHash` — a public
+    error type carrying its own remedy, *recompile from the source document* — named an invariant
+    no caller could match on and no test asserted. It is correction 6's gap in the one field
+    correction 6 did not reach: `t1_e1_each_lesson_invariant_has_a_distinct_error` had no case at
+    `/source/content_hash` at all. §Source content hash below records the correction.
+14. **The T1 ordering test proved its claim by construction only.**
+    `t1_e1_unreviewed_lesson_fails_before_worker_start` calls `plan_requests`, a pure helper, and
+    never observes an executor; `build_preview` receives one already constructed. Every assertion
+    it makes would still pass against a backend that had started. The end-to-end half,
+    `t4_e0_unapproved_content_fails_before_tools_and_synthesis`, asserted `synthesis_count() == 0`
+    — which a build that had already asked the backend for its descriptor also satisfies.
+    §Worker-start ordering below records what is now observed and what remains argued.
 
 ## Version and compatibility
 
@@ -199,7 +220,9 @@ evidence for this paragraph rather than an argument for it. No published cache e
   constructing one; `crates/study-tts-runtime/src/cache.rs` and the testkit fixtures were moved
   with it. `SynthesisRequest::style` stays a `String` on purpose: the worker protocol is a
   separately versioned wire contract, and narrowing it is E1-S3's move, not this one.
-- `LessonError` loses two variants and gains fourteen, moving 29 -> 41. `MissingRole` and
+- `LessonError` loses two variants and gains fourteen in the rounds below, moving 29 -> 41, and
+  then one variant per round for the last two: `DuplicateSpeaker` (§Repeated speaker bindings) and
+  `MalformedSourceContentHash` (§Source content hash), ending at 43. `MissingRole` and
   `MissingStyle` are removed as spellings; their invariants return as `MissingSegmentRole` and
   `MissingDeliveryStyle`. The fourteen are `RecallPromptWithoutResponseInterval`,
   `RecallPromptResponseIntervalTooLong`, `TooManyLearningObjectives`, `EmptyLearningObjective`,
@@ -289,13 +312,66 @@ only place the gap could be.
 - **Why `3.0` rather than a fourth major.** RFC 8259 leaves a repeated object name undefined, so no
   document with a defined meaning under `1.x`, `2.x`, or `3.x` is refused by this. It is recorded
   inside `3.0` on the same terms as the recall-range narrowing in §Identification item 7: this
-  record is `Proposed` and unsigned, so `3.0` is not yet a version anyone has been told to rely on.
+  record was `Proposed` and unsigned when the decision was taken, so `3.0` was not yet a version
+  anyone had been told to rely on. Acceptance ratifies that reading rather than reopening it.
 - **The test.** `t1_e1_a_speaker_declared_twice_is_refused` (T1) builds the document as text,
   because `serde_json::Value` holds a map and cannot carry a repeated key at all — which is the
   same reason the check reads bytes. It asserts the variant, the name it carries, and the pointer,
   over both the differing-profile and identical-profile cases.
   `t1_e1_each_lesson_invariant_has_a_distinct_error` gains the case as its one entry that cannot be
   written by mutating the fixture, and its variant count moves from 41 to 42.
+
+### Source content hash — a digest that is not one
+
+`SourceContentHash` already refused a value that is not a BLAKE3 digest; what was missing is a
+refusal a caller can tell apart from any other thing that can be wrong at that field. `serde`
+converts a `try_from` failure into its own error, so the typed refusal survived only as prose, and
+`MalformedSourceContentHash` — a public type whose message routes the remedy to recompiling the
+lesson from its source document — named an invariant nothing could match on.
+
+- **The refusal.** `LessonError::MalformedSourceContentHash(MalformedSourceContentHash)`, carrying
+  the typed error and located at `/source/content_hash`. Its own variant for the reason the three
+  vocabularies have theirs: the remedy is specific and different. A hash that is not a digest is
+  recompiled; a `content_hash` that is not a string is a document that does not have the declared
+  shape.
+- **The mechanism.** `source_hash_refusal` reads the authored value back at the pointer the
+  deserializer supplied and reparses it, exactly as `vocabulary_refusal` does and for the same
+  reason — the classification reads the *document*, never `serde`'s message. A value that parses
+  leaves the refusal alone, because it was then about something else.
+- **What stays `InvalidJson`.** A wrong type, on the same terms as at the three vocabularies. So
+  does an absent `content_hash`: that is `serde`'s missing field like every other required one, and
+  `omitted_field` has already pointed it at the key the author must add. No document's acceptance
+  changes — every document refused before this correction is refused after it, by a refusal that
+  now names which invariant it broke.
+- **The test.** `t1_e1_each_lesson_invariant_has_a_distinct_error` gains both forms as separate
+  cases — a malformed string and a wrong type at one pointer — which is what makes the classifier
+  provable rather than merely present: with the variant added and the classifier removed, the
+  malformed-string case is refused as `InvalidJson` and the table's distinctness assertion fails.
+  Its variant count moves from 42 to 43.
+
+### Worker-start ordering — observed, not only argued
+
+`t1_e1_unreviewed_lesson_fails_before_worker_start` is a `DELIVERY-PLAN.md` E1-S2 test name and
+stays as written: `docs/testing/TEST-STRATEGY.md` makes a `t1_` a pure deterministic function, so
+it can only prove the ordering by construction — a draft lesson yields no `ValidatedLesson`,
+`plan_requests` accepts nothing else, and no `SynthesisRequest` exists to send. What it cannot do
+is observe an executor, and `build_preview` receives one already constructed.
+
+- **What is now observed.** `FakeTtsExecutor` counts every `TtsExecutor` call it receives, not only
+  synthesis, and `t4_e0_unapproved_content_fails_before_tools_and_synthesis` asserts that count is
+  zero. The build's first touch of the backend is `descriptor()`, and it sits after the lesson gate
+  and the voice gate — so a worker that starts on first use has not started. Moving that
+  `descriptor()` call above the lesson gate fails that test and no other, which is what makes the
+  ordering provable rather than merely present.
+- **What remains argued, and whose it is.** An executor that started a process in its own
+  *constructor* would satisfy both tests, because construction happens before `build_preview` is
+  called and `TtsExecutor` has no lifecycle method to observe. No such executor exists: the trait
+  is `descriptor`, `capacity`, `validate`, and `synthesize`, and the product worker refuses
+  `initialize` until E1-S3. The claim becomes testable when E1-S3 lands a process-spawning pool,
+  and belongs to that story's tests rather than to a seam invented here for a worker that does not
+  yet start. This record does not add a factory or lazy-start seam: ADR-0001 §12 already ratifies
+  an `#[async_trait] TtsExecutor` pool for E1-S3, and an abstraction added now would be one
+  implementation ahead of its purpose.
 
 ### New provisional resource ceilings
 
@@ -361,7 +437,15 @@ stop counting into it, because a closed vocabulary has a fixed spelling and cann
   `t3_e1_generated_schemas_match_checked_in_files`, and
   `t1_e1_the_canonical_adr_lesson_document_is_accepted`, which parses ADR-0001 §8.1's own document
   at the version this build publishes.
-- Mapped tests and qualification rerun: the whole workspace suite, 306 tests, plus 7 doctests. New
+- Mapped tests and qualification rerun: the whole workspace suite, 308 tests at the sixth review —
+  306 at the fifth, the two added since belonging to the twenty-second audit in
+  [`E1-S1-INTERFACE-CHANGE-001.md`](E1-S1-INTERFACE-CHANGE-001.md) — plus 7 doctests. The sixth
+  review adds no test name either: item 13 adds two cases to
+  `t1_e1_each_lesson_invariant_has_a_distinct_error`, one per form the field can fail in, and item
+  14 adds one assertion to `t4_e0_unapproved_content_fails_before_tools_and_synthesis` and a
+  `touch_count` to `FakeTtsExecutor` for it to read. Both guards were confirmed live: removing
+  `source_hash_refusal` fails the first, and moving `descriptor()` above the lesson gate fails the
+  second and nothing else. New
   in this change: `t1_e1_the_canonical_adr_lesson_document_is_accepted`,
   `t1_e1_delivery_style_spelling_matches_its_serde_form`,
   `t1_e1_a_role_or_style_outside_its_vocabulary_is_refused`,
@@ -387,8 +471,8 @@ stop counting into it, because a closed vocabulary has a fixed spelling and cann
   `RecallPromptResponseIntervalTooLong` plus the eight the parser raises ahead of `validate` —
   until that function's section accounted for each.
 - Walking skeleton result: green, 35 tests against real FFmpeg and ffprobe.
-- Evidence provenance: `python3 scripts/check-evidence-provenance.py` exits zero. Every file this
-  change touches that `e1-s1-provisional-contract-baseline-v13` pins is accounted by
+- Evidence provenance: every file this change touches that
+  `e1-s1-provisional-contract-baseline-v13` pins is accounted by
   `evidence/gates/g1/e1-s2/e1-s2-evidence-provenance-reconciliation-v3.md`, which is `Accepted` and
   supersedes v2, which superseded v1. A successor each time rather than an edit because an accepted
   record may not be amended in place under `evidence/README.md` §Provenance, and because each
@@ -397,6 +481,13 @@ stop counting into it, because a closed vocabulary has a fixed spelling and cann
   reviews landed after it was accepted. A reconciliation that reads fewer changes than the bytes
   carry grants more than it examined. v3 restates the same eleven pairs against the bytes those
   files hold now and extends the reading to every round of this record.
+  `python3 scripts/check-evidence-provenance.py` exits zero for this change. The twenty-second
+  E1-S1 audit moved three further v13 pins —
+  `crates/study-tts-runtime/src/worker_protocol.rs`, `crates/study-tts-runtime/src/lib.rs`, and
+  `docs/architecture/E1-S1-INTERFACE-CHANGE-001.md` — which
+  `evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v14.md` records and clears by
+  superseding v13. That record was accepted on 2026-08-30, so v13 is no longer checked and those
+  three no longer stand.
 
 ## Limits this change does not close
 
@@ -421,33 +512,32 @@ stop counting into it, because a closed vocabulary has a fixed spelling and cann
 
 ## Approval
 
-**No row below is signed.** Each records a decision this change asks a role for and has not yet
-received. That is also why §Identification items 5 through 12 record four rounds of correction in
-this record rather than in a successor: nothing here has been accepted, so there is nothing to
-amend from outside.
+**Every row below is signed, on 2026-08-30.** Each records a decision a role was asked for and has
+now made. §Identification items 5 through 14 record six rounds of correction in this record rather
+than in a successor because nothing here was accepted while they were made; a further correction
+amends this record from outside, in a successor, now that it is in force.
 
 Ross Todd holds every role listed. `docs/governance/PROJECT-EXECUTION-CHARTER.md` permits that for
 a personal project and requires each approval to name its role and accepted risk separately, which
 is why the rows stay separate for one signatory. A row is signed by recording the deciding role's
-name and the date beside it; until then the change is implemented and unaccepted, and no document
-may describe it otherwise.
+name and the date beside it, which every row now carries.
 
-Acceptance, when each row is signed, would cover this record as corrected through §Identification
-item 12. It would **not** accept `evidence/gates/g1/e1-s2/e1-s2-canonical-lesson-workflow-v1.md`,
-which stays `Proposed` until G1 for the reason that record's own §Open findings gives.
+This acceptance covers this record as corrected through §Identification item 14. It does **not**
+accept `evidence/gates/g1/e1-s2/e1-s2-canonical-lesson-workflow-v1.md`, which stays `Proposed`
+until G1 for the reason that record's own §Open findings gives.
 
 | Role | Decision sought | Status |
 |---|---|---|
-| Contract owner (T-CORE) | Accept the lesson document moving `2.1` → `3.0` → `3.1`, that every `2.x` lesson naming a role or style outside the two vocabularies is now refused with no automated migration, and that `3.1` was landed in the same change so an older minor of the current major exists | Pending |
-| Contract owner (T-CORE) | Accept `SegmentRole` and `DeliveryStyle` as the closed vocabularies transcribed from ADR-0001 §3.2, §3.4, §5.1, and §8.1, and both `MIN_RECALL_RESPONSE_MS` and `MAX_RECALL_RESPONSE_MS` as the two ends of §13.2's recall range, enforced because the format declares no override annotation for §8.2 to admit | Pending |
-| Contract owner (T-CORE) | Accept `PlannedSegment` carrying `display_text` inside the plan hash and outside every cache key, and the render plan moving `1.0` → `2.0` with `schemas/plan-v1.schema.json` deleted, on the reading that `ADR-0001-D005` condition 2 fails because `plan 1.0` came from E1-S1 rather than this story | Pending |
-| Contract owner (T-CORE) | Accept six new variants giving each closed vocabulary its own absent and unrecognized refusal, `vocabulary_refusal` classifying them by reading the document rather than `serde`'s message, a wrong JSON type remaining `InvalidJson` as one shape invariant located by its pointer, and `t1_e1_each_lesson_invariant_has_a_distinct_error` exercising all three fields in all three forms | Pending |
-| Contract owner (T-CORE) | Accept `LessonError::MissingRole` and `MissingStyle` being removed as spellings while their invariants return as `MissingSegmentRole` and `MissingDeliveryStyle`, and accept that `LessonError` growing to 42 variants is breaking for an exhaustive match no consumer outside this workspace has | Pending |
-| Contract owner (T-CORE) | Accept `LessonError::DuplicateSpeaker` refusing a `speakers` object that binds one name twice, whatever the two bindings say, and accept that this is recorded inside `3.0` rather than as a fourth major because RFC 8259 leaves a repeated object name undefined and no document with a defined meaning is refused by it | Pending |
-| Engineering owner | Accept the change on the 306-test workspace suite, the 35-test walking skeleton against real FFmpeg and ffprobe, 7 doctests, clean fmt, conventions, evidence provenance, Clippy `-D warnings`, rustdoc `-D warnings`, and no schema drift; and accept that the plan hash pinned in `t1_e0_plan_is_stable_for_identical_inputs` was recomputed rather than relaxed while both cache keys stood | Pending |
-| Affected-track reviewer (T-RUNTIME) | Accept `t3_e1_every_documented_error_variant_is_named_by_its_errors_section` as a source-reading test, and that `build_preview`'s and `AuthoredLesson::validate`'s `# Errors` sections are now held to their error enums in both directions | Pending |
-| Affected-track reviewer (T-CLI) | Accept that an author now meets two closed vocabularies, so E1-S5's scaffold must offer them rather than a free-text field | Pending |
-| Affected-track reviewer (T-AUDIO) | Accept that no audio bytes changed and no cache key moved, so no listening evidence is required by this change | Pending |
+| Contract owner (T-CORE) | Accept the lesson document moving `2.1` → `3.0` → `3.1`, that every `2.x` lesson naming a role or style outside the two vocabularies is now refused with no automated migration, and that `3.1` was landed in the same change so an older minor of the current major exists | Accepted — Ross Todd, 2026-08-30 |
+| Contract owner (T-CORE) | Accept `SegmentRole` and `DeliveryStyle` as the closed vocabularies transcribed from ADR-0001 §3.2, §3.4, §5.1, and §8.1, and both `MIN_RECALL_RESPONSE_MS` and `MAX_RECALL_RESPONSE_MS` as the two ends of §13.2's recall range, enforced because the format declares no override annotation for §8.2 to admit | Accepted — Ross Todd, 2026-08-30 |
+| Contract owner (T-CORE) | Accept `PlannedSegment` carrying `display_text` inside the plan hash and outside every cache key, and the render plan moving `1.0` → `2.0` with `schemas/plan-v1.schema.json` deleted, on the reading that `ADR-0001-D005` condition 2 fails because `plan 1.0` came from E1-S1 rather than this story | Accepted — Ross Todd, 2026-08-30 |
+| Contract owner (T-CORE) | Accept six new variants giving each closed vocabulary its own absent and unrecognized refusal, `vocabulary_refusal` classifying them by reading the document rather than `serde`'s message, a wrong JSON type remaining `InvalidJson` as one shape invariant located by its pointer, and `t1_e1_each_lesson_invariant_has_a_distinct_error` exercising all three fields in all three forms | Accepted — Ross Todd, 2026-08-30 |
+| Contract owner (T-CORE) | Accept `LessonError::MissingRole` and `MissingStyle` being removed as spellings while their invariants return as `MissingSegmentRole` and `MissingDeliveryStyle`, and accept that `LessonError` growing to 43 variants is breaking for an exhaustive match no consumer outside this workspace has | Accepted — Ross Todd, 2026-08-30 |
+| Contract owner (T-CORE) | Accept `LessonError::DuplicateSpeaker` refusing a `speakers` object that binds one name twice, whatever the two bindings say, and accept that this is recorded inside `3.0` rather than as a fourth major because RFC 8259 leaves a repeated object name undefined and no document with a defined meaning is refused by it | Accepted — Ross Todd, 2026-08-30 |
+| Engineering owner | Accept the change on the 308-test workspace suite, the 35-test walking skeleton against real FFmpeg and ffprobe, 7 doctests, clean fmt, conventions, evidence provenance, Clippy `-D warnings`, rustdoc `-D warnings`, and no schema drift; and accept that the plan hash pinned in `t1_e0_plan_is_stable_for_identical_inputs` was recomputed rather than relaxed while both cache keys stood | Accepted — Ross Todd, 2026-08-30 |
+| Affected-track reviewer (T-RUNTIME) | Accept `t3_e1_every_documented_error_variant_is_named_by_its_errors_section` as a source-reading test, and that `build_preview`'s and `AuthoredLesson::validate`'s `# Errors` sections are now held to their error enums in both directions | Accepted — Ross Todd, 2026-08-30 |
+| Affected-track reviewer (T-CLI) | Accept that an author now meets two closed vocabularies, so E1-S5's scaffold must offer them rather than a free-text field | Accepted — Ross Todd, 2026-08-30 |
+| Affected-track reviewer (T-AUDIO) | Accept that no audio bytes changed and no cache key moved, so no listening evidence is required by this change | Accepted — Ross Todd, 2026-08-30 |
 
-- Effective version and date: **none; this record is not in force.** On acceptance: provisional
-  `lesson 3.1`, `plan 2.0`, `e1-s2-v1` unchanged, `e1.tts-executor.2.0` unchanged
+- Effective version and date: **2026-08-30.** Provisional `lesson 3.1`, `plan 2.0`, `e1-s2-v1`
+  unchanged, `e1.tts-executor.2.0` unchanged

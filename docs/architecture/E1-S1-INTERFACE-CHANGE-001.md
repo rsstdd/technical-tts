@@ -42,6 +42,7 @@ from each section's own §What this moves rather than inferred.
 | 19 | Audits 15–16 approved, the authoritative 60-second T4 deadline restored, and the fake-worker contract harness bounded with timeout cleanup | no move |
 | 20 | The environment probe bootstrapped under `-S`, installed `RECORD`s authenticated against manifest layout `1.2`, and the interpreter attach step made to refuse a real directory | moves, manifest layout `1.1`→`1.2` |
 | 21 | An unhashable frame method refused instead of crashing the parser, provenance accounting restricted to reconciliation records, and two false statements in accepted evidence corrected by supersession | moves, `protocol.py` is a declared bundle input |
+| 22 | A repeated name accepted silently in the two map-valued fields this build parses: a worker response's voice profiles, and a published cache entry's generation parameters | no move |
 
 Audits 1 through 13 name `schemas/worker-protocol-v0.schema.json`, which is
 correct for the time each was written. The eleventh audit's breaking change
@@ -1388,3 +1389,143 @@ separate decision and accepted risk.
 | Worker owner | Ross Todd for T-WORKER | Accept the worker-bundle identity moving to `75d56310…9d2bab3`, reproduced five times on the reference machine, with hosted-CI and protected qualification reproduction still owed before G1 | 2026-08-29 |
 | Affected-track reviewer | Ross Todd for T-RUNTIME | Accept that old plan and cache entries remain valid only under their producing identities and are not reused, deleted, or re-keyed by this change | 2026-08-29 |
 | Affected-track reviewer | Ross Todd for T-AUDIO | Accept that no audio behavior or bytes changed, so no listening evidence is required | 2026-08-29 |
+
+## What the twenty-second audit closed
+
+This remediation answers two findings, both found by asking whether the
+silent-overwrite class `E1-S2-INTERFACE-CHANGE-002` §Identification item 12
+closed for lesson speakers reached anywhere else. It reached both map-valued
+fields this build parses; §The sweep records what else was read and why it needs
+nothing.
+
+| Finding | Closed by |
+|---|---|
+| `parse_worker_response` accepted an `initialized` frame naming one voice profile twice, keeping whichever digest the worker wrote last. `WorkerInitializationIdentities::voice_profile_hashes` deserialized through a derived `BTreeMap`, which keeps the last value for a repeated key, while `worker/study_tts_worker/protocol.py`'s `_distinct_keys` refuses a repeated name in every object it reads — and `worker_protocol.rs`'s own module documentation lists "the duplicate-name refusal" among the rules it says both ends apply. It is the one map-valued field in either direction of the protocol; every other object is a struct, where `serde` already refuses a repeated field. ADR-0001 §12.5 makes the resolved voice-profile identity a synthesis-key input, so the sender, not the review, chose which digest this build would record for a name it declared twice | The shared deserializer §One deserializer, two fields describes, beside the empty-set refusal the field already carried. `t1_e1_a_response_naming_one_voice_profile_twice_is_refused` drives an `initialized` response binding one profile to two digests and asserts the refusal names the fault rather than only its variant; restoring the derived `BTreeMap` parses that frame and fails the test |
+| `load_validated` accepted a published cache entry whose provenance named one generation parameter twice, **and reused the audio under it**. `ArtifactProvenance::generation_parameters` deserialized through a derived `BTreeMap`, so the earlier binding was gone before path 5 recomputed the key — and the key recomputes from what the map kept, which is the published one. An entry edited to carry a second spelling of a parameter it already records therefore derived its own key, passed every check, and was handed back as a hit, while the record beside the audio no longer said one thing about what produced it. ADR-0001 §12.5 makes those parameters a synthesis-key input, and `rust-production`'s durability rule is that a corrupt published entry is a refusal, never a silent repair | The same deserializer on that field. `t1_e1_a_cache_record_naming_one_generation_parameter_twice_is_not_reused` publishes an honest entry carrying one parameter, edits the record textually — `serde_json::Value` cannot hold a name twice — so that the last binding is still the published one, and asserts the entry is refused as an unparseable artifact rather than reused. Against the derived `BTreeMap` the same test receives a `ValidatedCachedArtifact` |
+
+### One deserializer, two fields
+
+Both fields read through `crate::distinct_map::deserialize`, which is the whole
+of the new code: a `MapAccess` visitor that refuses a name already bound. Two
+copies of that visitor in two modules would be two chances for one of them to
+drift, and neither field needs anything the other does not.
+
+`study-tts-core`'s `repeated_speaker` deliberately stays as it is. It answers a
+different question — *which* speaker was bound twice, for a `LessonDiagnostic`
+that must name it and its JSON Pointer for an author — and pays a second parse
+of the document to answer it.
+
+### The sweep
+
+Every other map-valued field in a type this build deserializes was read against
+the same question. None needs the deserializer:
+
+- `SynthesisContext::generation_parameters`,
+  `SynthesisContext::voice_conditioning_hashes`, and
+  `VerificationContext::decoder_parameters` derive `Deserialize` and are
+  published in `schemas/`, but nothing parses either type from bytes today.
+  They are built in-process and serialized — into a key, a plan, or a cache
+  record. `ArtifactProvenance` is what a reader gets back, and it is the field
+  above. When a reader for a verification record lands, it inherits this
+  question with the rest of the boundary.
+- `StoredManifestVersion::_remaining` and `BundleManifestVersion::_remaining`
+  are `BTreeMap<String, IgnoredAny>` catch-alls that exist to see which *names*
+  a document carries. A repeated name changes nothing they read.
+- `AuthoredLesson::speakers` was closed by `E1-S2-INTERFACE-CHANGE-002`
+  §Identification item 12 and is not reopened here.
+
+### Why no new `WorkerFrameError` variant
+
+The refusal is `WorkerFrameError::Malformed`, which is where every other
+duplicate-name refusal on this boundary already lands: `serde` raises one for a
+repeated struct field, and both parse functions report it that way. A distinct
+variant would give one invariant two names, depending on which object in the
+frame violated it. The cache side answers the same way for the same reason:
+`CacheEntryFault::UnparseableArtifact` is path 1, the fault every record that
+does not parse is already reported as, and it names the entry and its remedy
+owner like the rest of them.
+
+Reaching one would also cost a second parse of the frame bytes. That is what
+`study-tts-core`'s `repeated_speaker` does for a lesson, and it is worth it
+there: a lesson refusal is a `LessonDiagnostic` that must name the offending
+speaker and its JSON Pointer for an author. A worker frame is answered to a
+supervisor, and `rust-review`'s rule that a test assert the exact failure is met
+here by the message the test asserts alongside the variant.
+
+### Why the shared decision fixture carries no case for this
+
+`fixtures/contracts/e1-s1-worker-protocol-cases.ndjson` records frames both ends
+must decide alike, and both of its readers —
+`t3_e1_both_protocol_ends_decide_the_committed_cases_alike` here and
+`SharedContractCaseTests` in `worker/tests/test_protocol.py` — drive their
+**request** parser. The request direction has no map-valued field, and the
+Python end never parses a response at all: it writes one from a `dict`, where a
+repeated name cannot exist. A case in that file would therefore be a case only
+one end can decide, which is the opposite of what the file is for. The refusal
+is pinned by the T1 test beside the code instead, and the deserializer's own
+documentation says why the case is not in the fixture, so the next reader finds
+that answer where they will look for the missing row.
+
+### Compatibility and identity impact
+
+Neither version moves: the worker protocol stays at `e1.worker.1.0` and the
+cache artifact at `CACHE_SCHEMA_VERSION`. Both narrowings are **Breaking
+contract** changes under
+`docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` §Change classes — each
+refuses a document this build previously accepted — taken under
+`ADR-0001-D005`, whose five conditions hold for both:
+
+1. Both seams are provisional and unfrozen; G1 has not run. §Provisional
+   baseline lists worker frames and synthesis-cache publication among them.
+2. Each version was introduced by an unreleased breaking move in this story,
+   and nothing has consumed the shape being corrected: no worker has ever sent
+   a repeated voice-profile name, and no cache entry has ever recorded a
+   repeated parameter name.
+3. No durable artifact and no evidence record outside `Proposed` was written
+   under either shape. Nothing in the build reads `voice_profile_hashes` yet —
+   E1-S3 owns the comparison — and the only process that emits an `initialized`
+   frame is `fake-ndjson-worker`, which builds the map from a Rust `BTreeMap`;
+   the product worker still refuses `initialize`. Every published cache entry
+   was written by serializing a `BTreeMap`, which cannot emit a name twice, so
+   **no existing entry is invalidated, re-keyed, or deleted** — what now fails
+   is a record edited or corrupted after publication, which is the refusal
+   rather than a cost of it.
+4. Everything that must move, moves in the same commit. The fake, the product
+   worker, the shared fixture, and the published schemas do not have to: the
+   two workers build that map from a `BTreeMap` and a `dict`, neither of which
+   can repeat a name; the fixture's readers parse requests; and JSON Schema has
+   no vocabulary for a repeated object name, so
+   `schemas/worker-protocol-v1.schema.json` regenerates byte-identical and the
+   cache record's shape is unchanged.
+5. This section is written before the change lands.
+
+No public Rust API signature, wire field, published schema, protocol version,
+dependency, or audio byte changes. `WorkerInitializationIdentities` and
+`ArtifactProvenance` keep their types and their published shapes; only the set of
+documents that reach them narrows. The runtime crate gains one private module,
+`distinct_map`, and no public item. The refusal surface widens by one message,
+`a JSON object names one field twice`, reported as a malformed frame at one
+boundary and as an unparseable artifact at the other. The workspace suite moves
+from 306 to 308 tests.
+
+**The worker-bundle identity does not move.** No file
+`worker/bundle-manifest.json` declares is touched, and
+`cargo run -p study-tts-runtime --example worker-bundle-hash` returns
+`75d563103eccc76616ce97b66e2d4648b2a258cda1118e6ffc9ccc20b9d2bab3`, unchanged
+from the twenty-first audit. Existing plan and cache entries are neither
+re-keyed nor invalidated.
+
+### Approval
+
+**Sought, not given.** No role has decided anything about this audit; the rows
+below state the decision each one is asked for. `E1-S2-INTERFACE-CHANGE-002`
+§Identification item 9 records what it cost the last time a record in this tree
+carried rows a reader could mistake for signatures.
+
+| Role | Name | Decision sought | Date |
+|---|---|---|---|
+| Contract owner | Ross Todd for T-CORE | Accept two semantic narrowings — `e1.worker.1.0` and the cache artifact at `CACHE_SCHEMA_VERSION` — under `ADR-0001-D005` rather than major increments, on the five conditions recorded above | pending |
+| Engineering owner | Ross Todd | Accept one shared deserializer for both fields and the two T1 tests, each reproduced red, and accept that the refusals stay `WorkerFrameError::Malformed` and `CacheEntryFault::UnparseableArtifact` rather than gaining variants | pending |
+| Worker owner | Ross Todd for T-WORKER | Accept that no worker-bundle input moved and that the Python end needs no change, because it refuses a repeated name in every object it parses and cannot emit one | pending |
+| Affected-track reviewer | Ross Todd for T-RUNTIME | Accept that no published cache entry is invalidated — none can carry a repeated name — and that an entry edited after publication is now refused rather than reused, with nothing reading `voice_profile_hashes` before E1-S3 | pending |
+| Affected-track reviewer | Ross Todd for T-AUDIO | Accept that no audio behavior or bytes changed, so no listening evidence is required | pending |
