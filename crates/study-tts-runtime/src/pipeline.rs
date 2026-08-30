@@ -127,8 +127,12 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// provenance return [`study_tts_core::LessonError::MissingLessonId`],
 /// [`study_tts_core::LessonError::InvalidLessonId`],
 /// [`study_tts_core::LessonError::MalformedLanguage`],
-/// [`study_tts_core::LessonError::EmptyLearningObjective`], or
-/// [`study_tts_core::LessonError::EmptyLessonReference`]. Speaker declarations
+/// [`study_tts_core::LessonError::EmptyLearningObjective`],
+/// [`study_tts_core::LessonError::EmptyLessonReference`], or
+/// [`study_tts_core::LessonError::MalformedSourceContentHash`] for a recorded
+/// source digest that is not one, which is its own refusal rather than a shape
+/// error because it is recompiled from the source document rather than edited.
+/// Speaker declarations
 /// return [`study_tts_core::LessonError::MissingVoiceProfile`],
 /// [`study_tts_core::LessonError::InvalidVoiceProfile`], or
 /// [`study_tts_core::LessonError::DuplicateSpeaker`] when the document binds
@@ -1006,6 +1010,14 @@ mod tests {
         // validation is what did not return. Correcting the one field the
         // document is wrong about is what proves it — a lesson refused for
         // some unrelated reason would still be refused here.
+        //
+        // By construction, which is all a T1 can give: this test observes no
+        // executor, and `build_preview` receives one already constructed, so
+        // an executor that started a worker in its own constructor would
+        // satisfy every assertion here. The observed half is
+        // `t4_e0_unapproved_content_fails_before_tools_and_synthesis`, which
+        // drives the real orchestration and asserts the backend is never
+        // reached — `touch_count() == 0`, not merely unsynthesized.
         let reviewed = lesson_document(|document| {
             document["segments"][1]["review_status"] = serde_json::json!(ReviewStatus::Approved);
         });

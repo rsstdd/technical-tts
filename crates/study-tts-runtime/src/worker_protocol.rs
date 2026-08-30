@@ -274,18 +274,30 @@ pub struct WorkerInitializationIdentities {
     /// Identity of the executable worker bundle.
     pub worker_bundle_hash: WorkerBundleHash,
     /// Loaded voice profiles keyed by their stable profile identifiers.
-    #[serde(deserialize_with = "deserialize_nonempty_voice_profile_hashes")]
+    #[serde(deserialize_with = "deserialize_voice_profile_hashes")]
     #[schemars(schema_with = "nonempty_voice_profile_hashes_json_schema")]
     pub voice_profile_hashes: BTreeMap<String, VoiceProfileHash>,
 }
 
-fn deserialize_nonempty_voice_profile_hashes<'de, D>(
+/// Reads the loaded voice profiles, refusing an empty set or a repeated name.
+///
+/// Through [`crate::distinct_map`] rather than a derived [`BTreeMap`], which
+/// keeps the last binding silently. The digest it would keep is an ADR-0001
+/// §12.5 conditioning identity, so a worker naming one profile under two
+/// digests would choose which digest this build records for that name.
+/// `worker/study_tts_worker/protocol.py`'s `_distinct_keys` is the same rule at
+/// the other end, applied to every object it reads.
+///
+/// Not in `fixtures/contracts/e1-s1-worker-protocol-cases.ndjson` with the
+/// other duplicate-name cases: both ends read that file through their request
+/// parser, and only this end parses a response at all.
+fn deserialize_voice_profile_hashes<'de, D>(
     deserializer: D,
 ) -> Result<BTreeMap<String, VoiceProfileHash>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let hashes = BTreeMap::deserialize(deserializer)?;
+    let hashes = crate::distinct_map::deserialize(deserializer)?;
     if hashes.is_empty() {
         return Err(D::Error::custom(
             "a successful initialization must report at least one voice-profile identity",
@@ -834,6 +846,43 @@ mod tests {
         )
         .expect_err("an empty voice-profile identity set must be refused");
         assert!(matches!(empty_error, WorkerFrameError::Malformed(_)));
+    }
+
+    /// A repeated voice-profile name is refused rather than resolved.
+    ///
+    /// The mutation check for [`crate::distinct_map`] on this field: with a
+    /// derived `BTreeMap` back in its place the frame below parses, keeping
+    /// whichever digest the sender wrote last. That digest is the ADR-0001
+    /// §12.5 conditioning identity recorded for the name, so a worker naming
+    /// one profile twice would otherwise choose it. Every other object in a
+    /// frame is a struct, where `serde` already refuses a repeated field.
+    ///
+    /// The message is asserted, not just the variant, for the reason
+    /// `t1_e1_a_frame_naming_an_identity_that_is_not_a_digest_is_refused`
+    /// gives: `Malformed` is also what a typo in this literal would produce.
+    #[test]
+    fn t1_e1_a_response_naming_one_voice_profile_twice_is_refused() {
+        let frame = format!(
+            concat!(
+                r#"{{"event":"initialized","protocol_version":"e1.worker.1.0","#,
+                r#""request_id":"request-1","identities":{{"#,
+                r#""model_revision":"model-v1","tokenizer_revision":"tokenizer-v1","#,
+                r#""worker_bundle_hash":"{bundle}","voice_profile_hashes":{{"#,
+                r#""synthetic-test-voice-v1":"{first}","#,
+                r#""synthetic-test-voice-v1":"{second}"}}}}}}"#,
+            ),
+            bundle = "1".repeat(64),
+            first = "2".repeat(64),
+            second = "3".repeat(64),
+        );
+
+        let error = parse_worker_response(frame.as_bytes())
+            .expect_err("a response naming one voice profile twice must be refused");
+
+        assert!(
+            matches!(&error, WorkerFrameError::Malformed(_)) && error.to_string().contains("twice"),
+            "the refusal must name the repeated binding, not some other frame fault: {error}"
+        );
     }
 
     #[test]

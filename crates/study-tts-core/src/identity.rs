@@ -732,12 +732,9 @@ mod tests {
 
     #[test]
     fn t1_e1_two_speakers_reading_one_line_do_not_share_a_key() {
-        // The `speaker` case in the property above is confounded:
-        // `sample_context` resolves a conditioning hash for `nadia` and none
-        // for `tom`, so it passes on that difference alone and would still
-        // pass with `speaker` dropped from the key. Unresolved is today's
-        // production shape — no speaker has a conditioning hash until E1-S2 —
-        // and there `speaker` is the only term keeping two voices apart.
+        // Clearing both resolved hashes isolates the speaker term. Otherwise,
+        // distinct conditioning artifacts would keep the keys apart even if
+        // `speaker` were removed from the identity.
         let mut context = sample_context();
         context.voice_conditioning_hashes.clear();
         let mut other_speaker = sample_segment();

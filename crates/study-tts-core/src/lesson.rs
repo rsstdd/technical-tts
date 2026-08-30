@@ -509,6 +509,17 @@ pub enum LessonError {
     /// defaulted or passed through unchecked.
     #[error("lesson language is unusable: {0}")]
     MalformedLanguage(#[from] MalformedLanguageTag),
+    /// The recorded source digest is not a BLAKE3 digest.
+    ///
+    /// Its own invariant rather than a shape refusal, for the reason the three
+    /// closed vocabularies have theirs: `SourceContentHash` refuses the value
+    /// at parse time and `serde` would deliver that refusal as opaque prose,
+    /// leaving a hash that is not a digest indistinguishable from a
+    /// `content_hash` that is not a string at all. The remedy differs — the
+    /// first is recompiled from the source document, the second is a document
+    /// that does not have the declared shape.
+    #[error("lesson source hash is unusable: {0}")]
+    MalformedSourceContentHash(#[from] MalformedSourceContentHash),
     /// An identity was supplied but could not safely name a directory.
     #[error(
         "lesson_id `{0}` must be 1-{max} ASCII letters, digits, hyphen, underscore, or dot, and \
@@ -937,8 +948,8 @@ impl LessonDiagnostic {
 }
 
 // Written out rather than derived through `thiserror` because the rendering is
-// conditional: a whole-document refusal has no pointer to name, and `at ``` is
-// worse than saying nothing.
+// conditional: a whole-document refusal has no pointer to name, and displaying
+// an empty location is worse than saying nothing.
 impl fmt::Display for LessonDiagnostic {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.field_path.as_str() {
@@ -978,6 +989,7 @@ fn field_of(error: &LessonError) -> Option<String> {
         LessonError::UnexpectedSchemaLink { .. } => "$schema".to_owned(),
         LessonError::MissingLessonId | LessonError::InvalidLessonId(_) => "lesson_id".to_owned(),
         LessonError::MalformedLanguage(_) => "language".to_owned(),
+        LessonError::MalformedSourceContentHash(_) => "source/content_hash".to_owned(),
         LessonError::TooManyLearningObjectives { .. }
         | LessonError::EmptyLearningObjective
         | LessonError::LearningObjectiveTooLong { .. } => "learning_objectives".to_owned(),
@@ -1082,6 +1094,7 @@ fn locate_shape_refusal(
             .map(str::to_owned)
     });
     let refusal = vocabulary_refusal(&field_path, authored.as_ref())
+        .or_else(|| source_hash_refusal(&field_path, authored.as_ref()))
         .unwrap_or_else(|| LessonError::InvalidJson(error.into_inner()));
     LessonDiagnostic::at(document, segment_id, field_path, refusal)
 }
@@ -1161,6 +1174,40 @@ fn vocabulary_refusal(
         ("review_status", None, false) => Some(LessonError::MissingReviewStatus),
         _ => None,
     }
+}
+
+/// The source-digest invariant a located `serde` refusal is really about.
+///
+/// [`SourceContentHash`] refuses a value that is not a digest during parsing,
+/// and `serde` delivers that typed refusal as prose inside
+/// [`LessonError::InvalidJson`] — so without this, a recorded hash that is not
+/// a digest and a `content_hash` that is not a string arrive as one
+/// `(InvalidJson, /source/content_hash)` pair, and the invariant
+/// [`MalformedSourceContentHash`] exists to name has no variant a caller or a
+/// test can match on. The remedies differ: one is recompiled from the source
+/// document, the other is a document that does not have the declared shape.
+///
+/// The value is reparsed from the document rather than read out of `serde`'s
+/// message, for the reason [`vocabulary_refusal`] gives, and a value that
+/// parses leaves the refusal alone: it was about something else.
+///
+/// A wrong type stays [`LessonError::InvalidJson`], as it does at the three
+/// vocabularies. So does an absent `content_hash`, which is `serde`'s missing
+/// field like every other required one — [`omitted_field`] has already pointed
+/// it at the key the author must add.
+fn source_hash_refusal(
+    field_path: &str,
+    authored: Option<&serde_json::Value>,
+) -> Option<LessonError> {
+    if field_path != "/source/content_hash" {
+        return None;
+    }
+    authored?
+        .pointer(field_path)?
+        .as_str()?
+        .parse::<SourceContentHash>()
+        .err()
+        .map(LessonError::MalformedSourceContentHash)
 }
 
 /// The segment a pointer is inside, if it is inside one.
@@ -1323,14 +1370,17 @@ impl AuthoredLesson {
     /// checks preserve their relative order; resource checks occur beside the
     /// count or field they bound.
     ///
-    /// Nine [`LessonError`] variants cannot be returned here, because
+    /// Ten [`LessonError`] variants cannot be returned here, because
     /// [`ValidatedLesson::from_json`] raises them before this function is
     /// reached and a caller holding an [`AuthoredLesson`] has already parsed:
     /// [`LessonError::LessonJsonTooLarge`] and [`LessonError::InvalidJson`]
     /// for bytes that are not one document of this shape,
     /// [`LessonError::DuplicateSpeaker`] for a speaker the document binds
     /// twice, which a [`BTreeMap`] field cannot represent and so cannot be
-    /// reached from an [`AuthoredLesson`] at all, and
+    /// reached from an [`AuthoredLesson`] at all,
+    /// [`LessonError::MalformedSourceContentHash`], which
+    /// [`SourceContentHash`] refuses during deserialization so an
+    /// [`AuthoredLesson`] can only hold a digest, and
     /// [`LessonError::UnknownSegmentRole`],
     /// [`LessonError::UnknownDeliveryStyle`],
     /// [`LessonError::UnknownReviewStatus`],
@@ -2486,7 +2536,7 @@ mod tests {
         // until they add its case here, and the distinctness assertion is what
         // fails if the case they add is answered by a refusal another invariant
         // already produces.
-        let cases: [Invariant; 32] = [
+        let cases: [Invariant; 34] = [
             (
                 "unknown major",
                 |lesson| {
@@ -2802,6 +2852,32 @@ mod tests {
                 },
                 "/source/references",
             ),
+            // The two forms `/source/content_hash` can fail in, together
+            // because they are what tell the classifier from the shape
+            // refusal: a string the digest rule refuses earns its own
+            // invariant, while a value of the wrong type is the document not
+            // having the declared shape, which stays `InvalidJson` for the
+            // reason `vocabulary_refusals` gives.
+            (
+                "a source hash that is not a digest",
+                |lesson| {
+                    lesson["source"]["content_hash"] = Value::String("not-a-digest".to_owned());
+                },
+                LessonError::MalformedSourceContentHash(
+                    "not-a-digest"
+                        .parse::<SourceContentHash>()
+                        .expect_err("`not-a-digest` is not a BLAKE3 digest"),
+                ),
+                "/source/content_hash",
+            ),
+            (
+                "a source hash that is not a string",
+                |lesson| {
+                    lesson["source"]["content_hash"] = Value::Number(7.into());
+                },
+                LessonError::InvalidJson(shape_error()),
+                "/source/content_hash",
+            ),
         ];
 
         let mut seen = Vec::with_capacity(cases.len());
@@ -2919,9 +2995,41 @@ mod tests {
         }
         assert_eq!(
             variants.len(),
-            42,
+            declared_lesson_error_variants(),
             "every `LessonError` variant needs a case"
         );
+    }
+
+    /// How many variants [`LessonError`] declares, read from this module.
+    ///
+    /// Derived rather than written down: a number kept by hand agrees with any
+    /// enum, so a variant added together with its `field_of` arm would leave
+    /// the count assertion above passing while no case exercised the refusal.
+    /// Parser drift cannot weaken that assertion — it can only report a count
+    /// the case table does not match, which fails.
+    ///
+    /// A variant is a four-space-indented capitalized name; every other line at
+    /// that indentation is a doc comment, an attribute, a field, or a closing
+    /// brace. `crates/study-tts-testkit/tests/error_documentation.rs` reads an
+    /// enum out of its module the same way, and the reading is repeated rather
+    /// than shared because this crate cannot depend on the testkit that depends
+    /// on it.
+    fn declared_lesson_error_variants() -> usize {
+        let (_, body) = include_str!("lesson.rs")
+            .split_once("pub enum LessonError {")
+            .expect("this module declares `LessonError`");
+        let (body, _) = body
+            .split_once("\n}\n")
+            .expect("`LessonError` has a closing brace");
+        body.lines()
+            .filter_map(|line| {
+                let rest = line.strip_prefix("    ")?;
+                let name = rest[..rest.find(['(', '{', ','])?].trim_end();
+                let is_variant =
+                    name.starts_with(char::is_uppercase) && name.chars().all(char::is_alphanumeric);
+                is_variant.then_some(())
+            })
+            .count()
     }
 
     /// The refusal a caller actually receives: which invariant, and where.

@@ -73,6 +73,7 @@ const TONE_FRAMES: u32 = CANONICAL_SAMPLE_RATE / 10;
 /// failures let contract tests observe refusal ordering and error propagation.
 #[derive(Debug, Default)]
 pub struct FakeTtsExecutor {
+    touch_count: AtomicUsize,
     synthesis_count: AtomicUsize,
     synthesized_texts: Mutex<Vec<String>>,
     requests: Mutex<Vec<SynthesisRequest>>,
@@ -80,6 +81,22 @@ pub struct FakeTtsExecutor {
 }
 
 impl FakeTtsExecutor {
+    /// Returns every [`TtsExecutor`] call this executor has received.
+    ///
+    /// What `synthesis_count` cannot say: a gate that runs before *synthesis*
+    /// still runs after the build has asked the backend for its descriptor,
+    /// and a real worker that starts its process on first use would have
+    /// started by then. Zero here is the observable form of "the backend was
+    /// never reached", which is as close to "no worker started" as a seam that
+    /// receives an already-constructed executor can get — construction itself
+    /// belongs to the caller.
+    ///
+    /// Counts self-calls too: `validate` consults `descriptor`. Tests assert
+    /// zero, where that cannot matter.
+    pub fn touch_count(&self) -> usize {
+        self.touch_count.load(Ordering::SeqCst)
+    }
+
     /// Returns completed synthesis calls so tests can prove a gate ran first.
     pub fn synthesis_count(&self) -> usize {
         self.synthesis_count.load(Ordering::SeqCst)
@@ -116,6 +133,7 @@ impl FakeTtsExecutor {
 
 impl TtsExecutor for FakeTtsExecutor {
     fn descriptor(&self) -> BackendDescriptor {
+        self.touch_count.fetch_add(1, Ordering::SeqCst);
         BackendDescriptor {
             contract_version: TTS_EXECUTOR_CONTRACT_VERSION.to_owned(),
             // Fixed, well-formed stand-ins for the real bundle and model
@@ -137,10 +155,12 @@ impl TtsExecutor for FakeTtsExecutor {
     }
 
     fn capacity(&self) -> usize {
+        self.touch_count.fetch_add(1, Ordering::SeqCst);
         1
     }
 
     fn validate(&self, request: &SynthesisRequest) -> Result<(), BackendError> {
+        self.touch_count.fetch_add(1, Ordering::SeqCst);
         validate_executor_request(&self.descriptor(), self.capacity(), request).map_err(|source| {
             BackendError::InvalidRequest {
                 request_id: request.request_id.clone(),
@@ -154,6 +174,7 @@ impl TtsExecutor for FakeTtsExecutor {
         request: SynthesisRequest,
         destination: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<SynthesisReport, BackendError>> + Send + 'a>> {
+        self.touch_count.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move { self.synthesize_tone(request, destination) })
     }
 }

@@ -8,6 +8,7 @@
 mod assembly;
 mod cache;
 mod cache_port;
+mod distinct_map;
 mod durable;
 mod error;
 mod export;

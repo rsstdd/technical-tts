@@ -1148,6 +1148,17 @@ fn t4_e0_unapproved_content_fails_before_tools_and_synthesis() {
             if matches!(diagnostic.error(), LessonError::UnapprovedSegment(_))
     ));
     assert_eq!(worker.synthesis_count(), 0);
+    // The observed half of `t1_e1_unreviewed_lesson_fails_before_worker_start`,
+    // which proves the same ordering by construction. The backend is never
+    // reached at all — not even for its descriptor, which is the build's first
+    // touch of the executor — so a worker that starts on first use has not
+    // started. Moving that descriptor call above the lesson gate in
+    // `build_preview_with_services` fails here and nowhere else.
+    assert_eq!(
+        worker.touch_count(),
+        0,
+        "an unapproved lesson must be refused before the backend is reached"
+    );
 }
 
 #[test]

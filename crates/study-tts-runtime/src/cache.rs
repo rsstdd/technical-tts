@@ -177,6 +177,13 @@ struct ArtifactProvenance {
     language: LanguageTag,
     determinism_class: DeterminismClass,
     seed: u64,
+    /// Backend generation parameters, by name.
+    ///
+    /// Through [`crate::distinct_map`] because a repeated name here is not a
+    /// duplicate of anything: the map keeps the last binding, the key
+    /// recomputes from what it kept, and the entry is reused under a record
+    /// that no longer says one thing about what produced its audio.
+    #[serde(deserialize_with = "crate::distinct_map::deserialize")]
     generation_parameters: BTreeMap<String, String>,
     /// Voice-conditioning artifact for this segment's speaker, absent until
     /// E1-S2 resolves voice references.
@@ -964,6 +971,21 @@ mod tests {
     /// key beside it — a hand-written key would be refused by the check this
     /// helper exists to exercise the other paths of.
     fn published_entry(root: &Path, label: &str) -> (PathBuf, PathBuf, PathBuf) {
+        published_entry_for(root, label, &producer_context(), &synthesized_segment())
+    }
+
+    /// Publishes an entry whose recorded provenance reports `context`.
+    ///
+    /// [`published_entry`] is this with the module's own producer context. A
+    /// test needing a different recorded input — one generation parameter,
+    /// say — derives `segment`'s key from the same `context`, because an
+    /// honest entry is one whose provenance recomputes the key beside it.
+    fn published_entry_for(
+        root: &Path,
+        label: &str,
+        context: &SynthesisContext,
+        segment: &PlannedSegment,
+    ) -> (PathBuf, PathBuf, PathBuf) {
         // Any unique directory will do: `load_validated` is handed its paths,
         // so nothing here depends on where the real layout puts an entry.
         let dir = root.join(label);
@@ -973,21 +995,21 @@ mod tests {
         write_tone(&audio, 2_400, CANONICAL_SAMPLE_RATE);
         let record = CacheArtifact {
             schema_version: CACHE_SCHEMA_VERSION.to_owned(),
-            cache_key: synthesized_segment().cache_key,
+            cache_key: segment.cache_key.clone(),
             audio_blake3: hash_file(&audio).expect("hash test audio"),
             sample_rate: CANONICAL_SAMPLE_RATE,
             channels: CANONICAL_CHANNELS,
             sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
             frames: 2_400,
             provenance: ArtifactProvenance {
-                worker_bundle_hash: producer_context().worker_bundle_hash,
-                model_repository: producer_context().model_repository,
-                model_revision: producer_context().model_revision,
-                tokenizer_revision: producer_context().tokenizer_revision,
-                language: producer_context().language,
-                determinism_class: producer_context().determinism_class,
-                seed: producer_context().seed,
-                generation_parameters: producer_context().generation_parameters,
+                worker_bundle_hash: context.worker_bundle_hash.clone(),
+                model_repository: context.model_repository.clone(),
+                model_revision: context.model_revision.clone(),
+                tokenizer_revision: context.tokenizer_revision.clone(),
+                language: context.language.clone(),
+                determinism_class: context.determinism_class,
+                seed: context.seed,
+                generation_parameters: context.generation_parameters.clone(),
                 voice_conditioning_hash: None,
                 voice_profile_hash: blake3::hash(b"voice").into(),
                 backend_revision: "test-backend-v1".to_owned(),
@@ -1635,6 +1657,54 @@ mod tests {
     /// The audio is left intact in every case here, so a rejection that speaks
     /// of a mismatch would be accusing the wrong file. Uppercase is the trap
     /// worth naming: it is a digest of the right audio, in the wrong spelling.
+    /// A record naming one generation parameter twice is refused, not reused.
+    ///
+    /// The map keeps the last binding, and the key recomputes from what it
+    /// kept, so the earlier spelling is dropped before any check can see it:
+    /// the entry still derives its own key and is handed back as a hit, while
+    /// the record on disk no longer says one thing about what produced the
+    /// audio. Path 1 is the only place that is visible, which is why the
+    /// refusal is the parse and not a later comparison.
+    ///
+    /// The edit is textual because `serde_json::Value` cannot hold a name
+    /// twice — the shape under test is one it has no way to represent. The
+    /// second spelling is the published one, so a reader that keeps the last
+    /// binding reproduces this entry exactly: with the derived `BTreeMap` back
+    /// on the field, `load_validated` returns the entry and this test fails.
+    #[test]
+    fn t1_e1_a_cache_record_naming_one_generation_parameter_twice_is_not_reused() {
+        let root = TempDir::new().expect("create a cache root");
+        let mut context = producer_context();
+        context.generation_parameters =
+            BTreeMap::from([("temperature".to_owned(), "0.7".to_owned())]);
+        let mut segment = planned("abcdef");
+        segment.cache_key = context.key_for(&segment);
+        let (dir, audio, artifact) =
+            published_entry_for(root.path(), "repeated-parameter", &context, &segment);
+        let published = fs::read_to_string(&artifact).expect("read the published artifact");
+        let edited = published.replace(
+            r#""temperature": "0.7""#,
+            r#""temperature": "0.1",
+        "temperature": "0.7""#,
+        );
+        assert_ne!(
+            edited, published,
+            "the edit must reach the recorded parameter"
+        );
+        fs::write(&artifact, &edited).expect("write the edited artifact");
+
+        let error = load_validated(&segment, &dir, &audio, &artifact)
+            .expect_err("an entry recording one parameter twice must not be reused");
+
+        let BuildError::Cache(CacheError::UnusableCacheEntry { fault, .. }) = &error else {
+            panic!("a repeated parameter name produced the wrong variant: {error}");
+        };
+        assert!(
+            matches!(**fault, CacheEntryFault::UnparseableArtifact { .. }),
+            "the refusal must be the parse, not a later comparison: {error}"
+        );
+    }
+
     #[test]
     fn t1_e0_malformed_recorded_digest_is_reported_as_malformed() {
         let workspace = TempDir::new().expect("create cache workspace");
