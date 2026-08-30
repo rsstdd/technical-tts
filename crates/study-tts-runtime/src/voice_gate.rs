@@ -33,7 +33,9 @@ use crate::{BuildError, IoError, VoiceProfileError, cache};
 /// hash the same artifacts twice — and could return two different digests if
 /// the profile changed between the reads, silently keying two segments of one
 /// build on two versions of one voice. They still receive different cache
-/// keys, because `speaker` is a key input of its own.
+/// keys, because `speaker` is a key input of its own. The single load is
+/// observed by
+/// `t1_e1_one_voice_profile_is_loaded_once_however_many_speakers_name_it`.
 ///
 /// The returned map is what fills
 /// [`study_tts_core::SynthesisContext::voice_conditioning_hashes`], so this
@@ -54,6 +56,25 @@ pub(crate) fn resolve_speakers(
     lesson: &ValidatedLesson,
     requested: VoiceUse,
 ) -> Result<BTreeMap<String, VoiceConditioningHash>, BuildError> {
+    resolve_by_profile(lesson, |profile_id| {
+        load_conditioning(root, profile_id, requested)
+    })
+}
+
+/// Maps every speaker a segment names to the conditioning identity of the
+/// profile it declares, loading each profile once.
+///
+/// The loader is a parameter because it is the only seam from which loading
+/// once is observable. The returned map says which hash each speaker received
+/// and nothing about how many times a profile was read, so the rewrite
+/// [`resolve_speakers`] warns about — resolving per speaker — would return
+/// exactly this map and refuse exactly the same documents.
+/// `t1_e1_one_voice_profile_is_loaded_once_however_many_speakers_name_it`
+/// counts the calls instead.
+fn resolve_by_profile(
+    lesson: &ValidatedLesson,
+    mut load: impl FnMut(&str) -> Result<VoiceConditioningHash, BuildError>,
+) -> Result<BTreeMap<String, VoiceConditioningHash>, BuildError> {
     // Keyed by profile rather than by speaker, so one profile is loaded once
     // however many speakers name it.
     let mut by_profile: BTreeMap<&str, VoiceConditioningHash> = BTreeMap::new();
@@ -65,7 +86,7 @@ pub(crate) fn resolve_speakers(
         let conditioning = match by_profile.get(profile_id) {
             Some(conditioning) => conditioning.clone(),
             None => {
-                let conditioning = load_conditioning(root, profile_id, requested)?;
+                let conditioning = load(profile_id)?;
                 by_profile.insert(profile_id, conditioning.clone());
                 conditioning
             }
@@ -257,4 +278,48 @@ fn verify_checksum(dir: &Path, record: &'static str, recorded: &str) -> Result<(
         .into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use study_tts_core::ValidatedLesson;
+
+    use super::resolve_by_profile;
+
+    /// Two speakers naming one profile load that profile once.
+    ///
+    /// T1 because nothing here reaches the filesystem: the lesson is compiled
+    /// in and the loader is a closure, which is what makes the load count
+    /// observable at all. The half that runs the real build is
+    /// `t4_e1_two_speakers_may_share_one_voice_profile` in `study-tts-testkit`,
+    /// which proves a shared profile resolves through the pipeline but cannot
+    /// count reads.
+    #[test]
+    fn t1_e1_one_voice_profile_is_loaded_once_however_many_speakers_name_it() {
+        // `nadia` and `tom` both name `synthetic-test-voice-v1` over six
+        // segments, so resolving per speaker loads twice and resolving per
+        // segment loads six times — the two shapes this asserts against.
+        let lesson = ValidatedLesson::from_json(
+            "e0-s0-cache-identity.json",
+            include_bytes!("../../../fixtures/lessons/e0-s0-cache-identity.json"),
+        )
+        .expect("the cache-identity fixture is a valid lesson");
+        let mut loaded: Vec<String> = Vec::new();
+
+        let resolved = resolve_by_profile(&lesson, |profile_id| {
+            loaded.push(profile_id.to_owned());
+            Ok(blake3::hash(profile_id.as_bytes()).into())
+        })
+        .expect("the counting loader resolves every speaker");
+
+        assert_eq!(
+            loaded,
+            ["synthetic-test-voice-v1"],
+            "profiles loaded, in order"
+        );
+        assert_eq!(
+            resolved["nadia"], resolved["tom"],
+            "two speakers naming one profile must receive one conditioning identity"
+        );
+    }
 }
