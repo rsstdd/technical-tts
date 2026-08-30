@@ -3077,8 +3077,8 @@ mod tests {
             authored["segments"][0]["display_text"] = Value::String(format!("display: {text}"));
             let bytes = serde_json::to_vec(&authored).expect("the lesson serializes");
 
-            let lesson =
-                ValidatedLesson::from_json(DOCUMENT, &bytes).expect("`{case}` must be valid");
+            let lesson = ValidatedLesson::from_json(DOCUMENT, &bytes)
+                .unwrap_or_else(|error| panic!("`{case}` must be valid: {error}"));
 
             // Bytes in, bytes out: a normalizer between the two would change
             // what a reviewer approved.
