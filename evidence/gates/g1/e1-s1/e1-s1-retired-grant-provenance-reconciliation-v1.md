@@ -4,7 +4,7 @@
 - Candidate revision: branch `fix/issue-59-retired-grant`
 - Accountable owner: Engineering owner
 - Approvers: Engineering owner and project owner
-- Status: Proposed
+- Status: Accepted
 - Supersedes: nothing
 
 ## Scope and decision
@@ -66,7 +66,7 @@ passes and reports the violation when the filter is removed.
 |---|---|
 | `python3 -m unittest scripts.tests.test_check_evidence_provenance.EvidenceProvenanceTests.test_a_superseded_record_cannot_declare_a_prose_supersession` | Pass, 1 test; failed before the fix with 0 violations instead of 1 |
 | `python3 -m unittest discover -s scripts/tests -p 'test_check_evidence_provenance.py'` | Pass, 21 tests |
-| `python3 scripts/check-evidence-provenance.py` | Expected refusal while Proposed: exactly the three v15 pins accounted above |
+| `python3 scripts/check-evidence-provenance.py` | Pass, zero unaccounted mismatches after acceptance; while Proposed it refused exactly the three v15 pins accounted above |
 | `git diff --check` | Pass |
 
 No Rust, schema, dependency, worker, model, audio, or product behavior changes. Cargo checks,
@@ -75,9 +75,10 @@ this reconciliation.
 
 ## Decision
 
-Ross Todd holds both roles below. The rows remain unsigned while this record is Proposed.
+Ross Todd holds both roles below. On 2026-08-30 the repository user explicitly approved both
+decisions after reviewing the Proposed record; each row names the role's separate judgment.
 
 | Role | Name | Decision | Date |
 |---|---|---|---|
-| Engineering owner | Ross Todd | Pending | |
-| Project owner | Ross Todd | Pending | |
+| Engineering owner | Ross Todd | Approve — accept filtering legacy declarations to active accepted records, with the regression proof and unchanged active/proposed behavior recorded above | 2026-08-30 |
+| Project owner | Ross Todd | Approve — accept the three exact v15 accounting rows and leave E1-S2 v3's adjacent non-expiring mismatch-pair behavior under its standing reviewer obligation | 2026-08-30 |
