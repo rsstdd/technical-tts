@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::process::{ProcessOwnership, configure_process_group, terminate};
+use crate::process::{ProcessOwnership, configure_process_group, contain_descendants, terminate};
 use crate::worker_protocol::{
     MAX_WORKER_FRAME_BYTES, MAX_WORKER_REQUEST_ID_BYTES, WORKER_PROTOCOL_VERSION,
     WorkerRequestFrame, WorkerResponseFrame, parse_worker_response,
@@ -53,6 +53,15 @@ enum ProtocolEvent {
     Frame(Vec<u8>),
     /// A line exceeding [`MAX_WORKER_FRAME_BYTES`], refused before it was kept.
     Oversized,
+    /// Bytes left on the stream at end of input with no newline to close them.
+    ///
+    /// Reported rather than dropped: a partial line is either a worker killed
+    /// mid-frame or output that was never a frame at all, and discarding it
+    /// silently is what let contamination past the last frame go unseen.
+    /// Carries the length, not the bytes — ADR-0001 §16 keeps source text and
+    /// voice paths out of a diagnostic, and this build cannot know which of
+    /// those a partial line holds.
+    Unterminated(usize),
     /// The stream could not be read.
     Unreadable(String),
 }
@@ -275,6 +284,16 @@ impl WorkerClient {
                         "the worker sent a frame larger than the protocol ceiling",
                     ));
                 }
+                Ok(ProtocolEvent::Unterminated(bytes)) => {
+                    // A worker that died mid-frame, which is not the same
+                    // refusal as one that exited between frames: the caller is
+                    // told the stream stopped inside a message rather than that
+                    // nothing answered.
+                    return Err(protocol_failure(
+                        request_id,
+                        &format!("the worker's standard output ended inside a {bytes}-byte frame"),
+                    ));
+                }
                 Ok(ProtocolEvent::Unreadable(message)) => {
                     return Err(protocol_failure(request_id, &message));
                 }
@@ -404,6 +423,12 @@ impl WorkerClient {
         // at an unknown position in the stream cannot be asked anything, and
         // none of those is a reason to skip the containment below — which is
         // why this returns nothing and the kill still runs.
+        // Enumerated before the worker is even asked to leave, which is the
+        // only moment its children are certainly still nameable:
+        // `/proc/<pid>/task/*/children` disappears with the process, so a
+        // descendant not recorded by then is one nothing can find afterwards.
+        // A failure to look is not a reason to skip the containment below.
+        let inspection = self.ownership.refresh().err();
         self.ask_to_leave();
         // Dropped after the frame: a worker blocked reading its next frame sees
         // end of input and leaves on its own, so the kill below is a backstop
@@ -412,25 +437,113 @@ impl WorkerClient {
         let Some(mut child) = self.child.take() else {
             return Ok(());
         };
-        // A worker that took the invitation is already gone, so there is
-        // nothing to signal and its exit status is already collected.
-        if wait_for_voluntary_exit(&mut child) {
-            self.ownership = ProcessOwnership::default();
-            for reader in self.readers.drain(..) {
-                let _ = reader.join();
-            }
-            return Ok(());
+        // A worker that took the invitation is gone and already reaped, so the
+        // group cannot be signalled by number — that PID is free, and the next
+        // process to get it would be a stranger. Its *descendants* are another
+        // matter: a backend helper does not leave because its parent did, and
+        // ADR-0001 §10.3 makes this build responsible for the whole tree.
+        let result = if wait_for_voluntary_exit(&mut child) {
+            let ownership = std::mem::take(&mut self.ownership);
+            contain_descendants(&self.invocation, &ownership)
+        } else {
+            let ownership = std::mem::take(&mut self.ownership);
+            terminate(child, &self.invocation, ownership).map(|_| ())
         }
-        let ownership = std::mem::take(&mut self.ownership);
-        let result = terminate(child, &self.invocation, ownership)
-            .map(|_| ())
-            .map_err(|source| protocol_failure("shutdown", &source.to_string()));
+        .map_err(|source| protocol_failure("shutdown", &source.to_string()));
+        // Drained *before* the readers are joined, never after. The response
+        // channel holds one frame, because ADR-0001 §10.3 is one response per
+        // request — so a worker that wrote anything past its last frame leaves
+        // the protocol reader blocked on a full channel, and joining it first
+        // is a deadlock rather than a wait.
+        let epilogue = self.epilogue_was_only_the_shutdown_response();
         // Joined after the pipes are closed by the child's exit, so neither
         // reader outlives the client and leaks a thread per worker.
         for reader in self.readers.drain(..) {
             let _ = reader.join();
         }
-        result
+        // Containment first: a worker that left a process behind is the worse
+        // failure of the two, and the epilogue is only about bytes.
+        result?;
+        if let Some(source) = inspection {
+            return Err(protocol_failure("shutdown", &source.to_string()));
+        }
+        epilogue
+    }
+
+    /// Refuses anything the worker left on standard output past its last frame.
+    ///
+    /// Exactly one event is expected: the response to the `shutdown` frame
+    /// [`ask_to_leave`](Self::ask_to_leave) sent and deliberately did not wait
+    /// for. Anything else is contamination — a second frame, an unterminated
+    /// tail, or a line past the ceiling — and ADR-0001 §17.7 requires standard
+    /// output to carry protocol messages and nothing else. Nothing reads this
+    /// channel after the last request, so unless it is drained here the last
+    /// bytes on the stream are the ones no check ever sees.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::Protocol`] naming what was left, for the tool owner per
+    /// `docs/governance/ROUTING-TABLES.md`.
+    fn epilogue_was_only_the_shutdown_response(&self) -> Result<(), BackendError> {
+        let mut answered = false;
+        loop {
+            let event = match self.responses.recv_timeout(WORKER_SHUTDOWN_GRACE) {
+                Ok(event) => event,
+                // The reader owns the only sender, so a disconnect is it having
+                // seen end of input: the stream is complete and this is the
+                // whole of what the worker wrote.
+                Err(RecvTimeoutError::Disconnected) => return Ok(()),
+                // The worker is gone by the time this runs, so its standard
+                // output is still open only because something it started
+                // inherited the pipe and outlived the containment above.
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(protocol_failure(
+                        "shutdown",
+                        "the worker's standard output stayed open after the worker was gone",
+                    ));
+                }
+            };
+            match event {
+                ProtocolEvent::Frame(bytes) if !answered => {
+                    let frame = parse_worker_response(&bytes)
+                        .map_err(|source| protocol_failure("shutdown", &source.to_string()))?;
+                    let WorkerResponseFrame::Shutdown { .. } = frame else {
+                        return Err(protocol_failure(
+                            "shutdown",
+                            &format!(
+                                "the worker answered the shutdown request with `{}`",
+                                frame.event_name()
+                            ),
+                        ));
+                    };
+                    answered = true;
+                }
+                ProtocolEvent::Frame(_) => {
+                    return Err(protocol_failure(
+                        "shutdown",
+                        "the worker wrote a further frame after answering the shutdown request",
+                    ));
+                }
+                ProtocolEvent::Oversized => {
+                    return Err(protocol_failure(
+                        "shutdown",
+                        "the worker wrote a line past the protocol ceiling after its last frame",
+                    ));
+                }
+                ProtocolEvent::Unterminated(bytes) => {
+                    return Err(protocol_failure(
+                        "shutdown",
+                        &format!(
+                            "the worker left {bytes} bytes of unterminated output on standard \
+                             output after its last frame"
+                        ),
+                    ));
+                }
+                ProtocolEvent::Unreadable(message) => {
+                    return Err(protocol_failure("shutdown", &message));
+                }
+            }
+        }
     }
 }
 
@@ -492,7 +605,12 @@ fn spawn_protocol_reader(stdout: ChildStdout, sender: SyncSender<ProtocolEvent>)
         let mut byte = [0_u8; 1];
         loop {
             match reader.read(&mut byte) {
-                Ok(0) => return,
+                Ok(0) => {
+                    if !frame.is_empty() {
+                        let _ = sender.send(ProtocolEvent::Unterminated(frame.len()));
+                    }
+                    return;
+                }
                 Ok(_) if byte[0] == b'\n' => {
                     if sender
                         .send(ProtocolEvent::Frame(std::mem::take(&mut frame)))

@@ -23,9 +23,10 @@ use std::time::Duration;
 
 use study_tts_core::{
     CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, DeterminismClass,
-    LanguageTag, WorkerBundleHash,
+    LanguageTag, Revision, WorkerBundleHash,
 };
 
+use crate::model_gate::verify_model_artifacts;
 use crate::synthesis::{
     BackendDescriptor, BackendError, BackendValidationError, DriftedIdentity, SynthesisReport,
     SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, validate_executor_request,
@@ -96,6 +97,15 @@ pub struct WorkerConfiguration {
     worker_bundle_hash: WorkerBundleHash,
     /// Model repository the backend loads from.
     model_repository: String,
+    /// The model revision whose bytes were proven before this worker starts.
+    ///
+    /// Carried rather than taken from the worker's answer, because the answer
+    /// is what it decides which weights to load *from*: the worker computes
+    /// `model-{revision}` from the governed acquisition record and loads that
+    /// directory, so a worker reporting another revision has loaded bytes
+    /// [`crate::verify_model_artifacts`] never hashed.
+    /// [`WorkerTtsExecutor::start`] compares the two.
+    model_revision: Revision,
     /// Seed the backend samples with.
     seed: u64,
     /// Backend generation parameters, by name, in their configured spelling.
@@ -172,6 +182,13 @@ impl WorkerConfiguration {
         // Identity before anything else, so a bundle that cannot be identified
         // never reaches the point of having a launchable configuration at all.
         let worker_bundle_hash = WorkerBundle::load(bundle_root)?.verified_hash()?;
+        // And the model's bytes before that identity can launch anything. The
+        // worker reads its revision out of the governed acquisition record and
+        // loads whatever that names; until this ran, nothing had hashed the
+        // weights, so ADR-0001 §12.5's key described a claim rather than the
+        // bytes that produced the audio. Issue #66, and the model half of the
+        // 2026-08-31 audit's sixth finding.
+        let model_revision = verify_model_artifacts(model_root)?;
         let launcher = WorkerLauncher::read(bundle_root)?;
         // Absolute from here on — the bundle root and both governed roots. The
         // child is given a working directory of its own, so every path handed
@@ -204,6 +221,7 @@ impl WorkerConfiguration {
             threads: launcher.threads,
             worker_bundle_hash,
             model_repository: launcher.model_repository.clone(),
+            model_revision,
             seed: launcher.seed,
             generation_parameters: launcher.generation_parameters.clone(),
             initialize_deadline: WORKER_INITIALIZE_DEADLINE,
@@ -248,6 +266,12 @@ impl WorkerConfiguration {
                 .parse()
                 .expect("the protocol fake's identity is a well-formed digest"),
             model_repository: "study-tts/deterministic-tone".to_owned(),
+            // The fake loads no weights, so there is nothing to prove and this
+            // is simply what it reports. It still travels through the same
+            // comparison in `start`, which is what keeps that check honest.
+            model_revision: "v1"
+                .parse()
+                .expect("the protocol fake's revision is well formed"),
             seed: 0,
             generation_parameters: BTreeMap::new(),
             initialize_deadline: deadline,
@@ -369,6 +393,46 @@ impl WorkerTtsExecutor {
             WorkerResponseFrame::Initialized { identities, .. } => identities,
             frame => return Err(unexpected_frame("initialize", &frame).into()),
         };
+
+        // `initialize` *sends* the bundle identity this build derived and
+        // verified, so the worker's is an echo and nothing else — and it is the
+        // echo, not the verified value, that reaches [`BackendDescriptor`] and
+        // therefore every cache key ADR-0001 §12.5 builds. Compared before
+        // `capabilities`, so a worker this build cannot name never opens a
+        // session at all.
+        //
+        // TODO(rsstdd): the model half of this rule is issue #66. Model and
+        // tokenizer revisions are still strings the worker read out of the
+        // governed root's acquisition record, never digests of the bytes it
+        // loaded, so changed weights keep an unchanged synthesis identity.
+        if identities.worker_bundle_hash != configuration.worker_bundle_hash {
+            return Err(BackendError::InvalidRequest {
+                request_id: "initialize".to_owned(),
+                source: BackendValidationError::BundleIdentityNotEchoed {
+                    sent: configuration.worker_bundle_hash.as_str().to_owned(),
+                    answered: identities.worker_bundle_hash.as_str().to_owned(),
+                },
+            }
+            .into());
+        }
+
+        // The same rule for the model, and the half that makes
+        // [`crate::verify_model_artifacts`] mean anything. That gate hashed
+        // `model-{configuration.model_revision}`; the worker decides which
+        // directory to load by the revision it reads from the governed
+        // acquisition record and reports here. If the two disagree it has
+        // loaded weights nothing proved, under a revision ADR-0001 §12.5 would
+        // key the audio on.
+        if identities.model_revision != configuration.model_revision {
+            return Err(BackendError::InvalidRequest {
+                request_id: "initialize".to_owned(),
+                source: BackendValidationError::ModelRevisionNotEchoed {
+                    verified: configuration.model_revision.as_str().to_owned(),
+                    answered: identities.model_revision.as_str().to_owned(),
+                },
+            }
+            .into());
+        }
 
         let capabilities = match client.request(
             "capabilities",

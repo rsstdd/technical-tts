@@ -57,7 +57,7 @@ pub(crate) fn resolve_speakers(
     requested: VoiceUse,
 ) -> Result<BTreeMap<String, VoiceConditioningHash>, BuildError> {
     resolve_by_profile(lesson, |profile_id| {
-        load_conditioning(root, profile_id, requested)
+        resolve_voice_conditioning(root, profile_id, requested)
     })
 }
 
@@ -98,7 +98,27 @@ fn resolve_by_profile(
 
 /// Loads one profile from the root and returns the conditioning identity that
 /// reaches the cache key.
-fn load_conditioning(
+///
+/// Public because the committed instruments under
+/// `crates/study-tts-testkit/examples/` render against a governed voice root
+/// without a lesson to resolve speakers from, and the alternative is what they
+/// did before: read `profile.json` by hand and skip consent, the rights
+/// decision, the permitted-use scope, and both checksums. An instrument whose
+/// output a gate record cites must pass the same gate a build does.
+/// [`resolve_speakers`] stays crate-private, because it takes a
+/// [`ValidatedLesson`] and neither instrument has one.
+///
+/// # Errors
+///
+/// [`VoiceProfileError::MissingVoiceProfileDirectory`] when `root` holds no
+/// entry for `profile_id`, [`VoiceProfileError::VoiceProfileNotDirectory`] when
+/// the entry is not a directory, [`VoiceProfileError::VoiceProfileIdMismatch`]
+/// when the record calls itself something else,
+/// [`VoiceProfileError::VoiceChecksumMismatch`] when an artifact does not hash
+/// to the digest its record states, [`BuildError::Voice`] for a withdrawn
+/// consent, an unapproved rights decision, or a use outside the recorded
+/// scope, and [`IoError::ReadFile`] when a record cannot be read at all.
+pub fn resolve_voice_conditioning(
     root: &Path,
     profile_id: &str,
     requested: VoiceUse,

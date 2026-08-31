@@ -13,6 +13,12 @@ workspace = true
 # licensed, and carried in Cargo.lock.
 [dependencies]
 blake3 = "1.8.6"
+# The governed model acquisition record states SHA-256, so the gate that
+# proves the weights verifies what that record actually says rather than
+# re-hashing a ratified artifact into this crate's preferred algorithm.
+# Already in the workspace beneath `study-tts-testkit`, so no new crate
+# enters `Cargo.lock`.
+sha2 = "0.10.9"
 hound = "3.5.1"
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }

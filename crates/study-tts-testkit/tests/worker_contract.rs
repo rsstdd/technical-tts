@@ -1965,3 +1965,158 @@ fn t4_e1_a_worker_survives_being_shut_down_and_started_again() {
         );
     }
 }
+
+// `/proc` is where both this test and `ProcessOwnership` prove ancestry, and
+// descendant tracking is `#[cfg(target_os = "linux")]` on the production side
+// too: elsewhere the process group is the whole containment story.
+#[cfg(target_os = "linux")]
+#[test]
+fn t4_e1_a_gracefully_shut_down_worker_leaves_no_descendant_behind() {
+    // `WorkerClient::shutdown` promises in its own words to prove the process
+    // tree is gone, and the graceful path did not: a worker that took the
+    // invitation had its recorded ownership discarded and its children never
+    // enumerated, signalled, or observed. ADR-0001 §10.3 makes the parent
+    // responsible for the whole tree, and a backend helper that outlives the
+    // build holds the staging directory open and a model resident.
+    //
+    // The kill path already proves this for a worker that will not leave, in
+    // `t4_e1_a_hung_worker_is_refused_at_its_deadline_and_its_tree_is_reaped`.
+    // The graceful path is where a supervisor is most tempted to believe the
+    // tree left with the child it was watching.
+    let configuration = fake_worker_configuration_tagged("spawn-descendant", "descendant");
+    let executor = WorkerTtsExecutor::start(&configuration).expect("the protocol fake initializes");
+
+    executor.shutdown().expect("the worker shuts down cleanly");
+
+    // Read after `shutdown`, which joins the reader threads: the fake writes
+    // this line at startup, but only a joined reader has certainly drained it.
+    let descendant = descendant_pid(&executor.diagnostics());
+    assert!(
+        !parked_descendant_is_live(descendant),
+        "shutdown must contain the worker's descendants, but {descendant} survived it"
+    );
+}
+
+#[test]
+fn t4_e1_trailing_bytes_past_the_last_frame_are_refused() {
+    // The protocol reader forwarded completed lines and dropped whatever was
+    // left unterminated at end of stream, and nothing read the channel after
+    // the last request — so a worker could write anything it liked past its
+    // final frame and the session still looked clean. ADR-0001 §17.7 requires
+    // standard output to carry protocol messages and nothing else, and a check
+    // that cannot see the last bytes on the stream is not that requirement.
+    let configuration = fake_worker_configuration_tagged("trailing-bytes", "trailing");
+    let executor = WorkerTtsExecutor::start(&configuration).expect("the protocol fake initializes");
+
+    let error = executor
+        .shutdown()
+        .expect_err("bytes past the last frame must be refused, not discarded");
+
+    let BackendError::Protocol {
+        request_id,
+        message,
+    } = &error
+    else {
+        panic!("the wrong error was produced: {error:?}");
+    };
+    assert_eq!(request_id, "shutdown", "the refusal names the exchange");
+    assert!(
+        message.contains("34 byte"),
+        "the refusal must name what was left on the stream: {message}"
+    );
+}
+
+#[test]
+fn t4_e1_a_worker_echoing_another_bundle_identity_is_refused_at_start() {
+    // The supervisor sends the bundle identity it verified for itself and the
+    // worker answers with one of its own, which reaches `BackendDescriptor` and
+    // therefore every cache key ADR-0001 §12.5 builds. The two were never
+    // compared, so a worker could file audio under an identity the supervisor
+    // had not proven — the whole point of verifying the bundle first.
+    //
+    // Refused at `start`, so no executor exists and nothing downstream of it
+    // can have run.
+    let configuration =
+        fake_worker_configuration_tagged("drift-bundle-at-initialize", "echo-drift");
+
+    let error = WorkerTtsExecutor::start(&configuration)
+        .expect_err("a worker answering under another bundle identity must not open a session");
+
+    let BuildError::Synthesis(source) = &error else {
+        panic!("the wrong error was produced: {error:?}");
+    };
+    let BackendError::InvalidRequest { source, .. } = source.as_ref() else {
+        panic!("the wrong error was produced: {error:?}");
+    };
+    assert!(
+        matches!(
+            source,
+            BackendValidationError::BundleIdentityNotEchoed { .. }
+        ),
+        "the refusal must name the identity the worker answered with: {source:?}"
+    );
+}
+
+/// The PID the `spawn-descendant` fake announced for the child it started.
+#[cfg(target_os = "linux")]
+fn descendant_pid(diagnostics: &str) -> u32 {
+    const PREFIX: &str = "fake worker descendant pid: ";
+
+    diagnostics
+        .lines()
+        .find_map(|line| line.strip_prefix(PREFIX))
+        .unwrap_or_else(|| panic!("the fake must announce its descendant, got {diagnostics:?}"))
+        .trim()
+        .parse()
+        .expect("the announced descendant PID is a number")
+}
+
+/// Whether `pid` is still the parked descendant, rather than gone or recycled.
+///
+/// The command line is read rather than only the directory, so a PID reused
+/// between `shutdown` returning and this question cannot be counted as a
+/// descendant that survived. A reaped process has no `/proc` entry and a zombie
+/// has an empty command line; neither holds a file or a model, which is what
+/// containment is about.
+#[cfg(target_os = "linux")]
+fn parked_descendant_is_live(pid: u32) -> bool {
+    fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| {
+        cmdline
+            .split(|byte| *byte == 0)
+            .any(|argument| argument == b"descendant-park")
+    })
+}
+
+#[test]
+fn t4_e1_a_worker_reporting_another_model_revision_is_refused_at_start() {
+    // `verify_model_artifacts` hashes the declared artifacts of one revision
+    // before a worker is started, and the worker decides which weights to load
+    // from the revision it reads out of the governed acquisition record. A
+    // worker answering with another has loaded bytes this build never hashed,
+    // under the revision ADR-0001 §12.5 keys the audio on — which is what made
+    // the verification worth doing rather than a check that guards a directory
+    // nobody promised to read.
+    //
+    // The companion to the bundle-identity echo case above, and the second
+    // half of the 2026-08-31 audit's sixth finding.
+    let configuration =
+        fake_worker_configuration_tagged("drift-model-at-initialize", "model-echo-drift");
+
+    let error = WorkerTtsExecutor::start(&configuration).expect_err(
+        "a worker answering under an unverified model revision must not open a session",
+    );
+
+    let BuildError::Synthesis(source) = &error else {
+        panic!("the wrong error was produced: {error:?}");
+    };
+    let BackendError::InvalidRequest { source, .. } = source.as_ref() else {
+        panic!("the wrong error was produced: {error:?}");
+    };
+    assert!(
+        matches!(
+            source,
+            BackendValidationError::ModelRevisionNotEchoed { .. }
+        ),
+        "the refusal must name the revision the worker answered with: {source:?}"
+    );
+}

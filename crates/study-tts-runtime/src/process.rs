@@ -1219,6 +1219,64 @@ fn wait_for_containment(
     Ok(())
 }
 
+/// Kills and proves gone the descendants of a child that has already exited.
+///
+/// [`terminate`] is the wrong tool once the direct child has been reaped: it
+/// signals the *group* by number, and a reaped child's PID is free for the
+/// kernel to hand to something else. Every descendant [`ProcessOwnership`]
+/// recorded carries a pidfd instead, which stays bound to that exact process
+/// across reparenting and PID reuse — so this signals only what was owned.
+///
+/// The ownership must have been refreshed while the child was alive.
+/// `/proc/<pid>/task/*/children` is gone once it exits, so a descendant not
+/// enumerated by then is one nothing can name afterwards.
+///
+/// # Errors
+///
+/// [`ToolError::ToolContainmentSignalFailed`] when a recorded descendant cannot
+/// be signalled, [`ToolError::ToolContainmentInspectionFailed`] when its state
+/// cannot be read, and [`ToolError::ToolTerminationTimedOut`] when one is still
+/// live after [`TERMINATION_OBSERVATION_GRACE`]. Every one routes to the tool
+/// owner per `docs/governance/ROUTING-TABLES.md`.
+#[cfg(target_os = "linux")]
+pub(crate) fn contain_descendants(
+    invocation: &ToolInvocation,
+    ownership: &ProcessOwnership,
+) -> Result<(), ToolError> {
+    ownership.signal_descendants(invocation)?;
+    let deadline = Instant::now() + TERMINATION_OBSERVATION_GRACE;
+    loop {
+        let live = ownership.has_live_descendants().map_err(|source| {
+            ToolError::ToolContainmentInspectionFailed {
+                invocation: invocation.clone(),
+                source,
+            }
+        })?;
+        if !live {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(ToolError::ToolTerminationTimedOut {
+                invocation: invocation.clone(),
+                timeout_ms: duration_ms(TERMINATION_OBSERVATION_GRACE),
+            });
+        }
+        thread::sleep(PROCESS_POLL_INTERVAL);
+    }
+}
+
+/// Nothing to contain where descendants cannot be owned in the first place.
+///
+/// [`ProcessOwnership`] records descendants only on Linux, where `/proc` proves
+/// ancestry; elsewhere the process group remains the whole containment story.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn contain_descendants(
+    _invocation: &ToolInvocation,
+    _ownership: &ProcessOwnership,
+) -> Result<(), ToolError> {
+    Ok(())
+}
+
 // These process-executing T4 tests remain colocated as a proportionate
 // exception to `docs/testing/TEST-STRATEGY.md`: injected deadlines and capture
 // startup failures use private policy seams that must not become production API

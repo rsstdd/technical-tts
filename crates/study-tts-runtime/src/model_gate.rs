@@ -1,0 +1,328 @@
+//! The governed model root's bytes, proven before a worker is started.
+//!
+//! ADR-0001 §12.5 keys every cache entry on the model revision, and until this
+//! existed that revision was a *string* — one the worker read out of
+//! `bundle-manifest.json` in the governed root and reported back. Nothing
+//! hashed the weights it actually loaded, so replacing them under an unchanged
+//! record left every cache key where it was: stale audio would be reused, and
+//! new audio published under a key describing bytes that did not produce it. A
+//! content-addressed cache must never do that. Raised as issue #66 and as the
+//! model half of the 2026-08-31 audit's sixth finding.
+//!
+//! # Why the digests live here and not beside the weights
+//!
+//! `bundle-manifest.json` in the governed model root already declares each
+//! artifact's SHA-256, and checking against it alone would be trust on first
+//! use: whoever can replace the weights can replace the record describing
+//! them. The authoritative list therefore has to be in Git, and once it is,
+//! parsing the governed record adds nothing a reader could rely on — it only
+//! adds a second parser of a format `worker/study_tts_worker/worker.py`
+//! already reads, which is a drift surface rather than a control.
+//!
+//! Pinning these digests in Git leaks nothing.
+//! `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` keeps governed *locations*
+//! and *bytes* out of the repository, not the checksums of public third-party
+//! weights. **It does not extend to voice digests**, which sit beside personal
+//! data and stay in the governed voice root where `voice_gate` reads them.
+//!
+//! # What this does not do
+//!
+//! It does not add a term to the synthesis key. Verification and keying are
+//! separable, and refusing unproven bytes is the stronger of the two: a
+//! legitimate weights change moves [`PINNED_MODEL_REVISION`] and therefore the
+//! key already, while an illegitimate one is refused here rather than filed
+//! under a key that describes it. Issue #66 proposes a `model_artifacts_hash`
+//! key term as well; the project owner directed on 2026-08-31 that it be
+//! deferred, and that adding a `SynthesisContext` input would need an ADR-0001
+//! §12.5 amendment rather than an interface-change record alone.
+//!
+//! It also cannot close the window between hashing a file and the worker
+//! opening it. The model root is governed and read-only in practice, and an
+//! attacker who can rewrite it during a build can rewrite it before one.
+
+use std::fs;
+use std::path::Path;
+
+use sha2::{Digest, Sha256};
+use study_tts_core::Revision;
+
+use crate::error::{BuildError, ModelArtifactError};
+
+/// The acquisition this build runs against, transcribed from the governed
+/// `bundle-manifest.json` `model.revision`.
+///
+/// Two-sided with `docs/operations/REVIEW-AND-ACCEPT-CYCLE.md` §The model root
+/// is pinned in Git, and that is deliberate, which names this constant in
+/// return. ADR-0002 owns the qualified revision: changing this is a
+/// governed-backend change and re-qualification, never an edit made to get a
+/// failing gate to pass.
+pub const PINNED_MODEL_REVISION: &str = "1b475dffa71fb191cb6d5901215eb6f55635a9b6";
+
+/// One inference-affecting file the model root must hold, and its bytes.
+///
+/// Size as well as digest, so a truncated or padded file is refused by the
+/// cheap check before 3 GB are read — and so a mismatch can say which of the
+/// two failed rather than only that something did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeclaredArtifact {
+    /// File name beneath the revision directory.
+    pub name: &'static str,
+    /// Exact size in bytes.
+    pub bytes: u64,
+    /// Lowercase hexadecimal SHA-256 of the file's bytes.
+    ///
+    /// SHA-256 rather than the BLAKE3 `voice_gate` uses, because these are
+    /// transcribed from a governed acquisition record that recorded SHA-256.
+    /// Re-hashing a ratified record in another algorithm to suit this crate's
+    /// dependency list would be the wrong way round.
+    pub sha256: &'static str,
+}
+
+/// Every artifact `ChatterboxTTS.from_local` reads, for
+/// [`PINNED_MODEL_REVISION`].
+///
+/// Transcribed from `model.artifacts` in the governed model root's
+/// `bundle-manifest.json`, which `scripts/qualification/chatterbox_spike.py`
+/// wrote at acquisition. Undeclared extra files in the root are ignored rather
+/// than refused: the layout belongs to ResembleAI, not to this project, and a
+/// file the loader never reads cannot change what it renders.
+pub const DECLARED_MODEL_ARTIFACTS: [DeclaredArtifact; 4] = [
+    DeclaredArtifact {
+        name: "s3gen.safetensors",
+        bytes: 1_056_484_620,
+        sha256: "2b78103c654207393955e4900aac14a12de8ef25f4b09424f1ef91941f161d4e",
+    },
+    DeclaredArtifact {
+        name: "t3_cfg.safetensors",
+        bytes: 2_129_653_744,
+        sha256: "914cb1696f47527fe8852ca8f1fe1fa63cb34f76f9c715e84e067b744dd0da81",
+    },
+    DeclaredArtifact {
+        name: "tokenizer.json",
+        bytes: 25_470,
+        sha256: "d71e3a44eabb1784df9a68e9f95b251ecbf1a7af6a9f50835856b2ca9d8c14a5",
+    },
+    DeclaredArtifact {
+        name: "ve.safetensors",
+        bytes: 5_695_784,
+        sha256: "f0921cab452fa278bc25cd23ffd59d36f816d7dc5181dd1bef9751a7fb61f63c",
+    },
+];
+
+/// Proves the governed model root holds the bytes this build is pinned to.
+///
+/// Called before a worker is started, never after: a worker that has loaded
+/// unproven weights has already produced audio under an identity nothing
+/// checked, and refusing then would only decide what to do with it.
+///
+/// **The ordering is the type system's, not a test's.** Every launch field of
+/// [`crate::WorkerConfiguration`] is private and
+/// [`crate::WorkerConfiguration::for_bundle`] is the only way to obtain one for
+/// a bundle, so a configuration that could start a real worker cannot exist
+/// unless this returned `Ok`. `rust-testing` puts an invariant the compiler can
+/// make unrepresentable ahead of one a test asserts, and this is one — which is
+/// also why no test calls `for_bundle`: doing so would need the restored
+/// interpreter and the governed model root, neither of which CI has.
+///
+/// Returns the revision it verified, so a caller carries the value it proved
+/// rather than one it read somewhere else. [`crate::WorkerTtsExecutor::start`]
+/// compares it against what the worker answers with, which is what stops the
+/// worker loading a different revision than the one hashed here.
+///
+/// # Errors
+///
+/// [`ModelArtifactError::MissingModelArtifact`] when a declared file is absent,
+/// [`ModelArtifactError::ModelArtifactNotRegularFile`] when its name holds
+/// something else, [`ModelArtifactError::ModelArtifactSizeMismatch`] and
+/// [`ModelArtifactError::ModelArtifactChecksumMismatch`] when the bytes are not
+/// the pinned ones. Each routes to the engineering and project owners, who
+/// decide a model revision per `docs/governance/ROUTING-TABLES.md` §Decision
+/// routing.
+pub fn verify_model_artifacts(model_root: &Path) -> Result<Revision, BuildError> {
+    let revision_root = model_root.join(format!("model-{PINNED_MODEL_REVISION}"));
+    for artifact in &DECLARED_MODEL_ARTIFACTS {
+        verify_artifact(&revision_root, artifact)?;
+    }
+    Ok(PINNED_MODEL_REVISION
+        .parse()
+        .expect("the pinned model revision is a well-formed revision"))
+}
+
+/// Proves one declared artifact, cheapest check first.
+fn verify_artifact(revision_root: &Path, artifact: &DeclaredArtifact) -> Result<(), BuildError> {
+    let path = revision_root.join(artifact.name);
+    let metadata =
+        fs::symlink_metadata(&path).map_err(|_| ModelArtifactError::MissingModelArtifact {
+            root: revision_root.to_path_buf(),
+            artifact: artifact.name,
+        })?;
+    // A link would supply both sides of the comparison from one file outside
+    // the root, exactly as `voice_gate::read_record` refuses it to: the gate
+    // would then agree with itself about bytes the acquisition never approved.
+    if !metadata.is_file() {
+        return Err(ModelArtifactError::ModelArtifactNotRegularFile {
+            root: revision_root.to_path_buf(),
+            artifact: artifact.name,
+        }
+        .into());
+    }
+    if metadata.len() != artifact.bytes {
+        return Err(ModelArtifactError::ModelArtifactSizeMismatch {
+            path,
+            declared: artifact.bytes,
+            found: metadata.len(),
+        }
+        .into());
+    }
+
+    let digest = sha256_of(&path)?;
+    if digest != artifact.sha256 {
+        return Err(ModelArtifactError::ModelArtifactChecksumMismatch { path }.into());
+    }
+    Ok(())
+}
+
+/// Streams a file into SHA-256, in lowercase hexadecimal.
+///
+/// Streamed rather than read whole: the largest declared artifact is 2 GB, and
+/// reading it into memory to hash it would be a resource ceiling this build has
+/// no reason to spend.
+fn sha256_of(path: &Path) -> Result<String, BuildError> {
+    let file = fs::File::open(path).map_err(|source| crate::io_error(path, source))?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut digest = Sha256::new();
+    std::io::copy(&mut reader, &mut digest).map_err(|source| crate::io_error(path, source))?;
+    Ok(digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::io::Write;
+
+    use tempfile::TempDir;
+
+    /// A synthetic model root holding `contents` for every declared artifact.
+    ///
+    /// Synthetic and tiny: these cases are about the gate's decisions, and
+    /// `docs/testing/TEST-STRATEGY.md` keeps real weights out of the suite
+    /// entirely. The sizes therefore never match, which is why every case here
+    /// asserts a refusal — the accepting case is `t5_` on the reference
+    /// machine, where the real bytes are.
+    fn model_root(contents: &[u8]) -> TempDir {
+        let root = TempDir::new().expect("create a model root");
+        let revision = root.path().join(format!("model-{PINNED_MODEL_REVISION}"));
+        fs::create_dir_all(&revision).expect("create the revision directory");
+        for artifact in &DECLARED_MODEL_ARTIFACTS {
+            let mut file =
+                fs::File::create(revision.join(artifact.name)).expect("create an artifact");
+            file.write_all(contents).expect("write an artifact");
+        }
+        root
+    }
+
+    /// The revision directory beneath a synthetic model root.
+    fn revision_root(root: &TempDir) -> std::path::PathBuf {
+        root.path().join(format!("model-{PINNED_MODEL_REVISION}"))
+    }
+
+    #[test]
+    fn t1_e1_an_artifact_of_the_wrong_size_is_refused_before_it_is_hashed() {
+        let root = model_root(b"not the governed weights");
+
+        let error = verify_model_artifacts(root.path())
+            .expect_err("bytes that are not the pinned ones must be refused");
+
+        assert!(
+            matches!(
+                error,
+                BuildError::ModelArtifacts(ModelArtifactError::ModelArtifactSizeMismatch { .. })
+            ),
+            "the refusal must name the size: {error:?}"
+        );
+    }
+
+    #[test]
+    fn t1_e1_an_absent_artifact_is_refused() {
+        let root = model_root(b"");
+        let missing = DECLARED_MODEL_ARTIFACTS[0].name;
+        fs::remove_file(revision_root(&root).join(missing)).expect("remove an artifact");
+
+        let error = verify_model_artifacts(root.path())
+            .expect_err("a declared artifact that is absent must be refused");
+
+        assert!(
+            matches!(
+                &error,
+                BuildError::ModelArtifacts(ModelArtifactError::MissingModelArtifact {
+                    artifact,
+                    ..
+                }) if *artifact == missing
+            ),
+            "the refusal must name the missing artifact: {error:?}"
+        );
+    }
+
+    #[test]
+    fn t1_e1_an_artifact_that_is_a_symlink_is_refused_rather_than_followed() {
+        // The link would supply both sides of the comparison from one file
+        // outside the root, and the gate would agree with itself about bytes
+        // the acquisition never approved. `voice_gate::read_record` refuses a
+        // link for the same reason.
+        let root = model_root(b"");
+        let linked = DECLARED_MODEL_ARTIFACTS[0].name;
+        let elsewhere = root.path().join("elsewhere.safetensors");
+        fs::write(&elsewhere, b"whatever this build would have hashed")
+            .expect("write the link target");
+        let planted = revision_root(&root).join(linked);
+        fs::remove_file(&planted).expect("remove an artifact");
+        std::os::unix::fs::symlink(&elsewhere, &planted).expect("plant the link");
+
+        let error = verify_model_artifacts(root.path())
+            .expect_err("a declared artifact that is a link must be refused");
+
+        assert!(
+            matches!(
+                &error,
+                BuildError::ModelArtifacts(ModelArtifactError::ModelArtifactNotRegularFile {
+                    artifact,
+                    ..
+                }) if *artifact == linked
+            ),
+            "the refusal must name the artifact that is not a regular file: {error:?}"
+        );
+    }
+
+    #[test]
+    fn t1_e1_the_declared_artifacts_match_the_governed_acquisition_record() {
+        // A transcription check, not a behavior one: these four entries are
+        // copied from `model.artifacts` in the governed root's
+        // `bundle-manifest.json`, and a typo in one would refuse every real
+        // build with a message pointing at the weights rather than at this
+        // table. The record itself is not in Git, so this pins the shape and
+        // the count; the values are proven against the bytes by `t5_`.
+        assert_eq!(DECLARED_MODEL_ARTIFACTS.len(), 4);
+        for artifact in &DECLARED_MODEL_ARTIFACTS {
+            assert_eq!(
+                artifact.sha256.len(),
+                64,
+                "{} carries a SHA-256 digest",
+                artifact.name
+            );
+            assert!(
+                artifact
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+                "{} is spelled in lowercase hexadecimal",
+                artifact.name
+            );
+            assert!(artifact.bytes > 0, "{} declares a size", artifact.name);
+        }
+    }
+}

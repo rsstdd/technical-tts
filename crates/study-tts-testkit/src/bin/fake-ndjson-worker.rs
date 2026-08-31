@@ -9,6 +9,7 @@ use std::{
     error::Error,
     io::{BufRead, Write},
     path::Path,
+    process::{Command, Stdio},
     time::Duration,
 };
 
@@ -46,6 +47,24 @@ enum Behavior {
     TruncatedAudio,
     Stderr,
     Exit,
+    /// Starts a child of its own, then answers every frame honestly.
+    ///
+    /// The worker that leaves a descendant behind is what `shutdown`'s
+    /// containment exists for: killing or waiting out the direct child leaves
+    /// its children holding the staging directory and a resident model. This
+    /// one leaves *gracefully*, which is the path where a supervisor is most
+    /// tempted to believe the tree left with it.
+    ///
+    /// The descendant's PID goes to standard error so a test can ask the kernel
+    /// whether it survived rather than infer it from a timeout.
+    SpawnDescendant,
+    /// Sleeps out [`DESCENDANT_LIFETIME`], reading and writing nothing.
+    ///
+    /// What [`Behavior::SpawnDescendant`] starts. Bounded rather than endless
+    /// so a failing test leaks a process for seconds instead of for the
+    /// session, and silent on both streams so it cannot be mistaken for the
+    /// worker on either.
+    DescendantPark,
     EscapeStaging,
     /// Writes the assigned take, and a second file beside it.
     ///
@@ -65,7 +84,27 @@ enum Behavior {
     /// refused takes, so it is refused when it opens rather than per segment.
     NonCanonicalFormat,
     OversizedFrame,
+    /// Answers the `shutdown` frame, then writes bytes with no newline.
+    ///
+    /// The tail a line-oriented reader drops: it never completes a frame, so a
+    /// reader that only forwards finished lines discards it at end of stream
+    /// and the session looks clean. ADR-0001 §17.7 requires standard output to
+    /// carry protocol messages and nothing else, and this is the shape that
+    /// breaks the rule where nobody is still reading.
+    TrailingBytes,
     ForeignRequestId,
+    /// Answers `initialize` with an identity the supervisor did not verify.
+    ///
+    /// Distinct from [`Behavior::Drift`], which spoils a *synthesis* frame:
+    /// this one is honest about every take and wrong about what produced it.
+    /// `initialize` is the moment a supervisor can compare what it proved
+    /// against what the worker claims — the bundle identity it sent, and the
+    /// model revision whose artifacts it hashed before starting anything.
+    ///
+    /// Carries [`DriftedIdentity`] for the reason [`Behavior::Drift`] does, so
+    /// the two moments share one vocabulary rather than growing a variant per
+    /// field per moment.
+    DriftAtInitialize(DriftedIdentity),
     /// Reports one identity a success frame restates as something else.
     ///
     /// Carries [`DriftedIdentity`] rather than a behavior per field so the fake
@@ -78,6 +117,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     let behavior = parse_behavior(std::env::args().nth(1).as_deref())?;
     if behavior == Behavior::Exit {
         std::process::exit(17);
+    }
+    // Before the protocol streams are touched, because this process is not a
+    // worker at all: it stands in for whatever a worker starts and forgets.
+    if behavior == Behavior::DescendantPark {
+        std::thread::sleep(DESCENDANT_LIFETIME);
+        return Ok(());
+    }
+    if behavior == Behavior::SpawnDescendant {
+        // Inherits the process group deliberately: a real backend's helper is
+        // in the group its parent was spawned into, which is what makes the
+        // group kill the backstop it is. Every stream is null so the descendant
+        // can never be mistaken for the worker on stdout or stderr.
+        let descendant = Command::new(std::env::current_exe()?)
+            .arg("descendant-park")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        // The other end of this line is
+        // `t4_e1_a_gracefully_shut_down_worker_leaves_no_descendant_behind` in
+        // `crates/study-tts-testkit/tests/worker_contract.rs`, which asks the
+        // kernel about this PID rather than inferring containment.
+        eprintln!("fake worker descendant pid: {}", descendant.id());
     }
     if behavior == Behavior::Stderr {
         eprintln!("fake worker diagnostic on stderr");
@@ -157,13 +219,27 @@ fn main() -> Result<(), Box<dyn Error>> {
             continue;
         }
 
+        let leaving = matches!(frame, WorkerRequestFrame::Shutdown { .. });
         let response = respond(frame, behavior)?;
         serde_json::to_writer(&mut stdout, &response)?;
         stdout.write_all(b"\n")?;
         stdout.flush()?;
+        // After the last frame a supervisor expects, and with no newline, so
+        // this is the contamination nobody is left reading for.
+        if leaving && behavior == Behavior::TrailingBytes {
+            stdout.write_all(b"trailing bytes past the last frame")?;
+            stdout.flush()?;
+            return Ok(());
+        }
     }
     Ok(())
 }
+
+/// How long [`Behavior::DescendantPark`] outlives the worker that started it.
+///
+/// Long enough that containment is what ends it rather than the clock, short
+/// enough that a failing test leaks a process for seconds.
+const DESCENDANT_LIFETIME: Duration = Duration::from_secs(60);
 
 /// `honest`, unless this run is the one drifting `identity`.
 ///
@@ -192,13 +268,20 @@ fn parse_behavior(value: Option<&str>) -> Result<Behavior, Box<dyn Error>> {
         "litter-staging-directory" => Ok(Behavior::LitterStagingDirectory),
         "non-canonical-format" => Ok(Behavior::NonCanonicalFormat),
         "oversized-frame" => Ok(Behavior::OversizedFrame),
+        "trailing-bytes" => Ok(Behavior::TrailingBytes),
         "foreign-request-id" => Ok(Behavior::ForeignRequestId),
+        "drift-bundle-at-initialize" => {
+            Ok(Behavior::DriftAtInitialize(DriftedIdentity::WorkerBundle))
+        }
+        "drift-model-at-initialize" => Ok(Behavior::DriftAtInitialize(DriftedIdentity::Model)),
         "drift-bundle" => Ok(Behavior::Drift(DriftedIdentity::WorkerBundle)),
         "drift-model" => Ok(Behavior::Drift(DriftedIdentity::Model)),
         "drift-codec" => Ok(Behavior::Drift(DriftedIdentity::Codec)),
         "drift-voice" => Ok(Behavior::Drift(DriftedIdentity::VoiceProfile)),
         "stderr" => Ok(Behavior::Stderr),
         "exit" => Ok(Behavior::Exit),
+        "spawn-descendant" => Ok(Behavior::SpawnDescendant),
+        "descendant-park" => Ok(Behavior::DescendantPark),
         unknown => Err(format!("unknown fake-worker behavior `{unknown}`").into()),
     }
 }
@@ -227,13 +310,25 @@ fn respond(
                     recoverable: false,
                 });
             }
+            // The honest frame first, then exactly one field spoiled, for the
+            // reason the synthesis arm builds its drift the same way round.
+            let drift = match behavior {
+                Behavior::DriftAtInitialize(identity) => Some(identity),
+                _ => None,
+            };
             Ok(WorkerResponseFrame::Initialized {
                 protocol_version,
                 request_id,
                 identities: WorkerInitializationIdentities {
-                    model_revision: "v1".parse()?,
+                    model_revision: drifted_or("v1", drift, DriftedIdentity::Model).parse()?,
                     tokenizer_revision: "none".parse()?,
-                    worker_bundle_hash,
+                    // A well-formed digest that is not this fake's, so the
+                    // refusal is the comparison rather than the parse.
+                    worker_bundle_hash: if drift == Some(DriftedIdentity::WorkerBundle) {
+                        "0".repeat(DETERMINISTIC_TONE_BUNDLE_HASH.len()).parse()?
+                    } else {
+                        worker_bundle_hash
+                    },
                     // Read out of the synthetic voice root this fake stands
                     // in for, not handed to it: `initialize` names no voice, so
                     // this is what the worker went and looked at.

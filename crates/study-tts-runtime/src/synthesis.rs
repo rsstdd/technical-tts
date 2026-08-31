@@ -347,6 +347,42 @@ pub enum BackendValidationError {
         /// Requested sample format.
         sample_format: String,
     },
+    /// The worker answered `initialize` under a bundle identity of its own.
+    ///
+    /// The supervisor derives and verifies the bundle identity itself and sends
+    /// it, so the worker's answer is an echo and nothing else. Believing a
+    /// different one would file audio under an identity this build never
+    /// proved, and ADR-0001 §12.5 keys every cache entry on it.
+    #[error(
+        "the worker answered `initialize` under bundle identity `{answered}` but was started \
+         under `{sent}`; the worker owner must reinstall the bundle from \
+         `worker/requirements.lock` so the running worker is the one this build verified"
+    )]
+    BundleIdentityNotEchoed {
+        /// Identity the supervisor verified and sent.
+        sent: String,
+        /// Identity the worker answered with.
+        answered: String,
+    },
+    /// The worker answered `initialize` under a model revision nothing proved.
+    ///
+    /// The supervisor hashes the declared artifacts of one revision before the
+    /// worker starts, and the worker decides which weights to load from the
+    /// revision it reads out of the governed acquisition record. A worker
+    /// answering with another has loaded bytes this build never verified,
+    /// under the revision ADR-0001 §12.5 keys the audio on.
+    #[error(
+        "the worker answered `initialize` under model revision `{answered}` but this build \
+         verified the artifacts of `{verified}`; the engineering and project owners must \
+         reconcile the governed model root with the pinned acquisition, because weights \
+         nothing proved must not render audio a cache key names"
+    )]
+    ModelRevisionNotEchoed {
+        /// Revision whose artifacts the supervisor hashed.
+        verified: String,
+        /// Revision the worker answered with.
+        answered: String,
+    },
 }
 
 /// Why an executor could not produce one staged audio artifact.

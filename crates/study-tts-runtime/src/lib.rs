@@ -17,6 +17,7 @@ mod job_repository;
 mod locking;
 mod managed;
 mod manifest;
+mod model_gate;
 mod package_port;
 mod pipeline;
 mod preview;
@@ -44,13 +45,17 @@ pub use cache_port::{
 };
 pub use error::{
     AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, ConditioningContradiction,
-    DurableStateError, EnvironmentMismatch, IoError, ManagedPathError, PackageArtifactMismatch,
-    PublicationError, RemedyAdvice, RemedyOwner, RightsError, RuntimeIdentityMismatch, ToolError,
-    ToolInvocation, ToolOperation, ToolOutputStream, VoiceProfileError, WorkerBundleError,
-    WorkerLockfileErrorReason, WorkerLockfileLocus, WorkerRequirementFault,
+    DurableStateError, EnvironmentMismatch, IoError, ManagedPathError, ModelArtifactError,
+    PackageArtifactMismatch, PublicationError, RemedyAdvice, RemedyOwner, RightsError,
+    RuntimeIdentityMismatch, ToolError, ToolInvocation, ToolOperation, ToolOutputStream,
+    VoiceProfileError, WorkerBundleError, WorkerLockfileErrorReason, WorkerLockfileLocus,
+    WorkerRequirementFault,
 };
 pub use job_repository::{
     FileSystemJobRepository, JOB_STATE_CONTRACT_VERSION, JobOwnership, JobRepository,
+};
+pub use model_gate::{
+    DECLARED_MODEL_ARTIFACTS, DeclaredArtifact, PINNED_MODEL_REVISION, verify_model_artifacts,
 };
 pub use package_port::{
     FileSystemPackageWriter, PACKAGE_WRITER_CONTRACT_VERSION, PackagePreflightRequest,
@@ -69,6 +74,7 @@ pub use synthesis::{
     BackendDescriptor, BackendError, BackendValidationError, DriftedIdentity, SynthesisReport,
     SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, validate_executor_request,
 };
+pub use voice_gate::resolve_voice_conditioning;
 pub use worker_bundle::{
     BUNDLE_MANIFEST_PATH, BUNDLE_MANIFEST_SCHEMA_VERSION, BundleManifest, DeclaredStartupModule,
     MAX_BUNDLE_INPUT_BYTES, PythonRuntimeIdentity, REQUIRED_BUNDLE_INPUTS, REQUIRED_IMPORT_ROOT,
