@@ -245,12 +245,17 @@ impl Configuration {
         if output_root.exists() {
             return Err("--output-root must not exist; a retake takes a new root".into());
         }
+        // Absolute from here on. Every path below is handed to the worker,
+        // whose working directory is the bundle's import root rather than this
+        // process's: a relative `--output-root` becomes a directory the worker
+        // cannot find, and it refuses the render rather than writing somewhere
+        // nobody meant.
         let configuration = Self {
-            bundle_root: bundle_root.ok_or("--bundle-root is required")?,
-            model_root: model_root.ok_or("--model-root is required")?,
-            voice_root: voice_root.ok_or("--voice-root is required")?,
-            staging_root: output_root.join("takes"),
-            listening_root: output_root.join("listening"),
+            bundle_root: std::path::absolute(bundle_root.ok_or("--bundle-root is required")?)?,
+            model_root: std::path::absolute(model_root.ok_or("--model-root is required")?)?,
+            voice_root: std::path::absolute(voice_root.ok_or("--voice-root is required")?)?,
+            staging_root: std::path::absolute(output_root.join("takes"))?,
+            listening_root: std::path::absolute(output_root.join("listening"))?,
         };
         fs::create_dir_all(&configuration.staging_root)?;
         fs::create_dir_all(&configuration.listening_root)?;

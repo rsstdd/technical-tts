@@ -372,9 +372,19 @@ Added as the work landed, per §Scope and decision. The story half is accepted w
 
 1. Every one of the eight defects raised against the in-progress work is closed by a check that
    fails against the defect before it passes against the fix.
-2. No published contract version moves: not the worker protocol, the plan schema, the
-   `TtsExecutor` contract, or the launcher record.
-3. The worker bundle identity moves at most once, and nothing is stranded by the move.
+2. No published contract version moves *without an accepted interface-change record*: the
+   worker protocol, the plan schema, the `TtsExecutor` contract, and the launcher record each
+   move only under one. **Restated 2026-08-31.** As first written this said no version moves at
+   all, which was true of the governance preflight it was written for and false of the story:
+   `E1-S3-INTERFACE-CHANGE-001` moved three of the four deliberately. The criterion now says what
+   it was protecting — that no version moves unrecorded — rather than a stronger thing the story
+   never intended.
+3. The worker bundle identity moves only for a change to a declared bundle input, and nothing is
+   stranded by any move. **Restated 2026-08-31.** As first written this said *at most once*. The
+   audit remediation changed `worker/study_tts_worker/`, a declared input, so a second move was
+   not optional — a criterion that forbade it would have been asking the identity to lie. What
+   the criterion was protecting is that the identity never moves for anything else, and that is
+   what it now says.
 4. The four `t5_e1_` criteria are discharged on the reference machine by an instrument whose
    output is hashed and cited here.
 5. `cargo fmt --check`, Clippy with `-D warnings`, the workspace suite, doctests, the Rust
@@ -386,9 +396,9 @@ Added as the work landed, per §Scope and decision. The story half is accepted w
 | Criterion | Result |
 |---|---|
 | 1 — eight defects closed red-before-green | Met. §Story findings |
-| 2 — no published contract version moves | **Not met, and superseded by a decision.** The criterion was written for the governance preflight, before `E1-S3-INTERFACE-CHANGE-001` was accepted. The story then moved the worker protocol to `e1.worker.2.0`, the plan schema to v3, and the `TtsExecutor` contract to 3.0, all under that record; the audit remediation folded `staging_root` into the same unreleased 2.0 under `ADR-0001-D005`. The schema-drift test passes against the moved shapes. The project owner should restate this criterion to say what it now means |
-| 3 — one identity move | **Not met as written.** The identity has moved twice: `84baafe98bf861cb…` → `839baa220e90ab89…` during the story, then → `7b065eeb5319c6bc0d7b69f15f085fbe23e7ac70576dcf3ece570fe2a54884e3` under the audit remediation, which changed `worker/study_tts_worker/` and so had to. Nothing is stranded by either move — the cache root holds no entries and the shipped worker refused `synthesize` until this work — but the criterion says *at most once*, and whether to restate it or accept the second move is the project owner's |
-| 4 — four T5 criteria | **Not met yet.** Two of the four are marked Owed pending a rerun on the reference machine, and no hashed instrument output is cited. §T5 qualification result |
+| 2 — no unrecorded contract version move | Met under the restated criterion. The worker protocol moved to `e1.worker.2.0`, the plan schema to v3, and the `TtsExecutor` contract to 3.0, all under `E1-S3-INTERFACE-CHANGE-001`; the audit remediation folded `staging_root` into the same unreleased 2.0 under `ADR-0001-D005`. The launcher record is unchanged. The schema-drift test passes against the moved shapes |
+| 3 — identity moves only for a declared input | Met under the restated criterion. `84baafe98bf861cb…` → `839baa220e90ab89…` during the story, then → `7b065eeb5319c6bc0d7b69f15f085fbe23e7ac70576dcf3ece570fe2a54884e3` under the audit remediation. Both moves follow a change to `worker/study_tts_worker/`, a declared bundle input. Nothing is stranded by either: the cache root holds no entries, and the shipped worker refused `synthesize` until this work |
+| 4 — four T5 criteria | Met. All five pass on the reference machine against real weights, and the instrument's output is hashed and cited as `e1-s3-qualification-result-v1.json`. §T5 qualification result |
 | 5 — checks | Met for everything run |
 | 6 — what was not run | Met. §Verification run, and §Limits below |
 
@@ -434,25 +444,30 @@ Discharged by `cargo run --package study-tts-testkit --example worker-qualificat
 is why: every `t5_` name in this project is an acceptance criterion answered by an operator-run
 instrument and a record, the shape E0-S3 used.
 
-The runs below were taken on 2026-08-30, before the audit remediation recorded in §Audit
-remediation. Two rows are marked **Owed**: the remediation changed what those criteria test, so
-their recorded results no longer describe the instrument that would run today. The other three are
-unaffected — none of them touches the staging root or the worker's lifetime — but the *bundle
-identity* moved with the remediation, so the digest in the first row is superseded and the
-instrument must be rerun before this record is accepted at G1.
+Rerun on the reference machine on 2026-08-31, after the audit remediation, against the real
+model and the governed voice root. The pre-remediation run of 2026-08-30 is superseded entirely:
+the bundle identity moved, two criteria changed what they test, and a fifth was added.
 
-**No hashed instrument output is cited yet, and that is a finding against this record rather than
-an omission.** The instrument previously printed its result and wrote nothing, so there were no
-bytes to hash. It now writes `qualification-result.json` under the output root and reports that
-file's SHA-256; the rerun owed above is what produces the file this table will cite.
+**The instrument's output is hashed and cited, which it was not before.** It previously printed a
+result and wrote nothing, so there were no bytes to hash — the tenth audit finding. The raw result
+is filed beside this record:
+
+| Artifact | Value |
+|---|---|
+| `evidence/gates/g1/e1-s3/e1-s3-qualification-result-v1.json` | SHA-256 `9f6fe197b75afd76234b5ba6515a7aea65c0accfc334f3e3e0c074fa090542a0` |
+| Worker bundle identity | `7b065eeb5319c6bc0d7b69f15f085fbe23e7ac70576dcf3ece570fe2a54884e3` |
+| Criteria | 5 of 5 pass |
+
+It carries no path and no governed location, which is why it can be committed: every `observed`
+string names counts, criteria, and digests only.
 
 | Criterion | Result | Observed |
 |---|---|---|
 | `t5_e1_worker_bundle_hash_matches_when_all_declared_bundle_inputs_match` | Pass, re-derived | Two derivations on the qualified interpreter agreed at `7b065eeb5319c6bc0d7b69f15f085fbe23e7ac70576dcf3ece570fe2a54884e3` after the audit remediation, superseding the pre-remediation `839baa220e90ab89…`. Derived with `cargo run --package study-tts-runtime --example worker-bundle-hash`, which needs the bundle root and the qualified interpreter but no governed root. Sensitivity to a moved input is pinned at T1 by `t1_e1_worker_bundle_hash_changes_on_owned_runtime_input` |
-| `t5_e1_model_load_occurs_once_per_worker_lifetime` | Pass | Three takes through one worker reported one model load |
-| `t5_e1_worker_protocol_stdout_remains_clean` | Pass | Every frame of a completed session parsed off standard output, while 12,272 bytes of backend diagnostics went to standard error |
-| `t5_e1_worker_output_cannot_escape_staging_root` | **Owed** | The result above was taken before `initialize` carried `staging_root`. The criterion now also drives an absolute path outside the root and a path whose parent is a symlink out of it, neither of which the recorded run exercised, so it must be retaken |
-| `t5_e1_worker_survives_restart_and_starts_offline` | **Owed** | Added after the recorded run. Two worker lifetimes through one configuration, asserting identical synthesis identities and that each lifetime applied its offline settings |
+| `t5_e1_model_load_occurs_once_per_worker_lifetime` | Pass | 3 takes through one worker reported 1 model load |
+| `t5_e1_worker_protocol_stdout_remains_clean` | Pass | Every frame of a completed session parsed off standard output, while 8,034 bytes of backend diagnostics went to standard error |
+| `t5_e1_worker_output_cannot_escape_staging_root` | Pass | A contained take wrote only its assigned path; **five** shapes refused — a symlink planted at the assigned path, a path that walks upward, a path that already exists, **an absolute path outside the staging root**, and **a path whose parent is a symlink out of the root**; zero files outside the staging root. The last two are the shapes the pre-remediation worker could not refuse, because it was told a path and no root |
+| `t5_e1_worker_survives_restart_and_starts_offline` | Pass | Two worker lifetimes through one configuration reported identical synthesis identities, and both applied their offline settings. Not a `DELIVERY-PLAN.md` name: a helper criterion covering ADR-0001 §17.7's restart and offline requirements, driven by the same `run_worker_restart_contract_scenario` the T4 suite drives the protocol fake through |
 
 ## Audit remediation
 
@@ -556,40 +571,64 @@ governed root, but the other four criteria do — and the listening review retak
 
 ## Listening material
 
-Rendered 2026-08-31 through one worker session, for the listening review this record does not
-claim. Governed output, so the location is named by root rather than reproduced here, per
+Re-rendered 2026-08-31 after the audit remediation, by
+`cargo run --package study-tts-testkit --example listening-render`. The 2026-08-30 set it replaces
+was produced by piping a hand-built NDJSON session into the worker and could not be re-rendered.
+Governed output, so the location is named by root rather than reproduced here, per
 `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`.
 
 | Item | Value |
 |---|---|
-| Location | `listening-2026-08-31/` beneath the governed qualification output root |
-| Takes | 6, `take-00.wav` through `take-05.wav` |
-| Total duration | 36.8 s |
-| Format | 24 000 Hz, one channel, IEEE float, uniform across all six |
+| Location | `listening-2026-08-31/listening/` beneath the governed qualification output root |
+| Samples | 6, `sample-01.wav` through `sample-06.wav`, blinded |
+| Script | `fixtures/listening/e1-s3-listening-script.json`, committed and registered |
+| Total duration | 30.8 s |
+| Format | 24 000 Hz, one channel, IEEE float |
 | Voice profile | `owner-fallback-v1` |
 | Style | `calm_explanatory` |
 | Seed | 42, from `worker/launcher.json` |
-| Model loads | 1, across all six takes |
-| Worker bundle identity | `839baa220e90ab894f3f5e8b3bee1f7ef76d178a2359fe862e9bd932ebea8d95` |
+| Worker bundle identity | `7b065eeb5319c6bc0d7b69f15f085fbe23e7ac70576dcf3ece570fe2a54884e3` |
+| Pending review sheet | SHA-256 `d0f8c7863c805fea352895783863b5a80479c18e66be39b9d8d28587c18e1b52` |
+
+Each sample's digest, which every judgment is recorded against:
+
+| Sample | SHA-256 |
+|---|---|
+| `sample-01.wav` | `174dc45c5ce4f9281977e2634e7ec7cbadd9751779284520bdbaae58881055fe` |
+| `sample-02.wav` | `82363a64ae49ec22912cf43afc6586d44168cfee985582f73fdfbf9d76c61af0` |
+| `sample-03.wav` | `deec7fe0610f02cc72e5b66e2d1d21fe9e19642fe1b3bcb3bee103209d47fca1` |
+| `sample-04.wav` | `ed55003e07e97123aaec2dfaebc1470b7bf8e1daea2faeaa8a7d6b22ef0e1d7b` |
+| `sample-05.wav` | `16a98ed4ca6471cf2d03f73122b9d89e9e9929f9bd09505bfff74f0e08bca92b` |
+| `sample-06.wav` | `0a9e393c0b547cd4300815c3c23e088a8a361ace5fa92b83f03aeef441a3b81a` |
+
+The order is randomized and the mapping withheld in `randomization-key.json`;
+`scripts/qualification/check_listening_review.py` reveals it only once the sheet is complete and
+still matches these bytes.
 
 ### Review result
 
-Completed 2026-08-31 by Ross Todd, on laptop built-in speakers. Recorded in `review-sheet.json`
-beside the takes, SHA-256 `08fbf7fcb1e98f0fe3252b74cccac490bf253bcce46a98543eb8e826fd4888ea`, which names every take's own digest so the
-judgment is bound to the bytes it was taken against rather than to a filename.
+**Owed. The sheet for the 2026-08-31 re-render is pending human review**, which is the one thing in
+this record no instrument may supply. `docs/operations/REVIEW-AND-ACCEPT-CYCLE.md` carries the
+procedure.
 
-| Criterion | Result across all six takes |
+| Criterion | Result across all six samples |
 |---|---|
-| Omissions or additions against the written text | None |
-| Pronunciation | None |
-| Voice consistency | None |
-| Pacing | None |
-| Noise or artifacts | None |
+| `omissions_or_additions` | Pending |
+| `pronunciation` | Pending |
+| `voice_consistency` | Pending |
+| `pacing` | Pending |
+| `noise_or_artifacts` | Pending |
 
-**Overall finding: accepted**, 6 of 6, no findings on any criterion.
+**Overall finding: pending.**
 
 The five criteria are E0-S3's. Its sixth, `audible_difference_from_other_runs`, is not applicable:
 it compared ten runs of one line for determinism, while these are six different lines.
+
+The superseded review of the 2026-08-30 set — completed by Ross Todd on laptop built-in speakers,
+sheet SHA-256 `08fbf7fcb1e98f0fe3252b74cccac490bf253bcce46a98543eb8e826fd4888ea` — accepted 6 of 6
+with no findings on any criterion. It is recorded here as history, not as a result: it was taken
+against audio this build no longer produces, because `ADR-0001-D007`'s edge conditioning pads and
+ramps every segment.
 
 ### What this review does not cover
 

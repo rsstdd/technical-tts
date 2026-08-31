@@ -137,6 +137,19 @@ impl Configuration {
                 .ok_or("--output-root is required")?
                 .join("staging"),
         };
+        // Absolute from here on. Every path below is handed to the worker,
+        // whose working directory is the bundle's import root rather than this
+        // process's: a relative `--output-root` becomes a directory the worker
+        // cannot find, and it refuses the render rather than writing somewhere
+        // nobody meant. `WorkerConfiguration::for_bundle` resolves the roots it
+        // is given for the same reason.
+        let configuration = Self {
+            bundle_root: std::path::absolute(&configuration.bundle_root)?,
+            model_root: std::path::absolute(&configuration.model_root)?,
+            voice_root: std::path::absolute(&configuration.voice_root)?,
+            output_root: std::path::absolute(&configuration.output_root)?,
+            staging_root: std::path::absolute(&configuration.staging_root)?,
+        };
         if configuration.output_root.exists() {
             return Err("--output-root must not exist; a rerun takes a new root".into());
         }
