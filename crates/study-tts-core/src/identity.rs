@@ -49,7 +49,7 @@ pub const SYNTHESIS_IDENTITY_VERSION: &str = "e1-s2-v1";
 /// than in the cache because `study-tts-runtime` reads it as an identity input
 /// and a second copy could drift; `crates/study-tts-runtime/src/cache.rs`
 /// imports this constant and names this module in return.
-pub const CACHE_SCHEMA_VERSION: &str = "1.0";
+pub const CACHE_SCHEMA_VERSION: &str = "2.0";
 
 /// Whether a backend reproduces bytes for a fixed seed.
 ///

@@ -27,6 +27,8 @@
 
 use std::f32::consts::PI;
 
+use serde::{Deserialize, Serialize};
+
 /// Width of one edge-analysis frame, in milliseconds.
 ///
 /// ADR-0001 §13.4: edges are analyzed in 5 ms RMS frames. Fixed by ADR-0001
@@ -67,12 +69,35 @@ pub const MAX_SEGMENT_AUDIO_MS: u32 = 10 * 60 * 1_000;
 /// The distinction exists because this build applies a threshold ADR-0003 has
 /// not frozen. A number with no provenance attached is one that gets copied
 /// into a production path by the next person who needs a threshold.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+///
+/// Serialized because a cache entry records the calibration its conditioning
+/// was produced under: without it, an entry conditioned against the provisional
+/// threshold is indistinguishable from one conditioned against the frozen value
+/// ADR-0003 will publish. No `#[serde(other)]`: a calibration this build does
+/// not know is a parse error, never a silent default.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub enum CalibrationSource {
     /// Chosen for preview use while ADR-0003 is Proposed and its value Pending.
     Provisional,
     /// Frozen by an accepted ADR-0003 calibration table.
     Frozen,
+}
+
+impl CalibrationSource {
+    /// This calibration's name, in the spelling a cache entry records.
+    ///
+    /// Pinned to the serde representation by
+    /// `t1_e1_calibration_source_spelling_matches_its_serde_form`, so a
+    /// refusal quotes what a reader will find in the file rather than a
+    /// second spelling that drifted from it.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Provisional => "provisional",
+            Self::Frozen => "frozen",
+        }
+    }
 }
 
 /// The RMS level at or below which an edge frame counts as silence.
@@ -164,7 +189,13 @@ pub struct EdgeConditioning {
 /// Saturating rather than wrapping, and computed in `u64` so the multiplication
 /// cannot overflow before the narrowing: a rate and a duration that are both in
 /// range can still multiply past `u32`.
-fn samples_for(milliseconds: u32, sample_rate: u32) -> usize {
+///
+/// Public because cache acceptance converts the same ratified durations —
+/// [`REQUIRED_EDGE_SILENCE_MS`], [`MAX_TRANSITION_RAMP_MS`] — into the sample
+/// counts it checks a published entry against. A second conversion is how the
+/// publisher and the acceptor stop agreeing on what the ADR asked for.
+#[must_use]
+pub fn samples_for(milliseconds: u32, sample_rate: u32) -> usize {
     let samples = u64::from(milliseconds) * u64::from(sample_rate) / 1_000;
     usize::try_from(samples).unwrap_or(usize::MAX)
 }
@@ -229,6 +260,34 @@ fn trailing_silent_samples(samples: &[f32], sample_rate: u32, threshold: f32) ->
         silent = samples.len();
     }
     silent
+}
+
+/// Silence at each exposed edge, in samples, leading first.
+///
+/// The measurement [`condition_edges`] pads from, exposed so cache acceptance
+/// can re-derive it. ADR-0001 §12.6 makes the silence check a condition of
+/// *using* an entry as well as of writing one, and a second implementation of
+/// the same measurement is how the two ends stop agreeing: an entry would then
+/// be publishable under one reading and unusable under the other.
+///
+/// Returns `(leading, trailing)`. Audio that is silent throughout reports its
+/// whole length as both, which is what [`condition_edges`] does with it.
+#[must_use]
+pub fn measure_edge_silence(
+    samples: &[f32],
+    sample_rate: u32,
+    threshold: SilenceThreshold,
+) -> (usize, usize) {
+    let level = threshold.rms();
+    let leading = leading_silent_samples(samples, sample_rate, level);
+    // A wholly silent segment reports its whole length as leading silence, and
+    // measuring the trailing edge again would count the same samples twice.
+    let trailing = if leading == samples.len() {
+        leading
+    } else {
+        trailing_silent_samples(samples, sample_rate, level)
+    };
+    (leading, trailing)
 }
 
 /// Raised-cosine gain at `offset` of a ramp `length` samples long.
@@ -296,17 +355,9 @@ pub fn condition_edges(
 ) -> EdgeConditioning {
     let required = samples_for(REQUIRED_EDGE_SILENCE_MS, sample_rate);
     let max_ramp = samples_for(MAX_TRANSITION_RAMP_MS, sample_rate);
-    let level = threshold.rms();
 
-    let leading_silence = leading_silent_samples(samples, sample_rate, level);
-    // A wholly silent segment reports its whole length as leading silence, and
-    // measuring the trailing edge again would count the same samples twice.
+    let (leading_silence, trailing_silence) = measure_edge_silence(samples, sample_rate, threshold);
     let wholly_silent = leading_silence == samples.len();
-    let trailing_silence = if wholly_silent {
-        leading_silence
-    } else {
-        trailing_silent_samples(samples, sample_rate, level)
-    };
 
     let leading_padding = required.saturating_sub(leading_silence);
     let trailing_padding = required.saturating_sub(trailing_silence);
@@ -506,5 +557,18 @@ mod tests {
         assert_eq!(MAX_TRANSITION_RAMP_MS, 5);
         assert_eq!(samples_for(REQUIRED_EDGE_SILENCE_MS, RATE), REQUIRED);
         assert_eq!(samples_for(MAX_TRANSITION_RAMP_MS, RATE), RAMP);
+    }
+
+    #[test]
+    fn t1_e1_calibration_source_spelling_matches_its_serde_form() {
+        // A cache entry records the serde form; a refusal quotes `name`. An
+        // exhaustive list makes a new calibration a compile error here rather
+        // than a spelling nobody checked.
+        for source in [CalibrationSource::Provisional, CalibrationSource::Frozen] {
+            let serialized =
+                serde_json::to_string(&source).expect("a calibration source serializes");
+
+            assert_eq!(serialized, format!("\"{}\"", source.name()));
+        }
     }
 }

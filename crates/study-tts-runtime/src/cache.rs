@@ -28,13 +28,14 @@ use study_tts_core::{
 use tempfile::Builder;
 
 use crate::{
-    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, ConditioningContradiction,
-    EdgeConditioning, MAX_SEGMENT_AUDIO_MS, SilenceThreshold, StagedAudioProducer, condition_edges,
+    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, CalibrationSource,
+    ConditioningContradiction, EdgeConditioning, MAX_SEGMENT_AUDIO_MS, MAX_TRANSITION_RAMP_MS,
+    REQUIRED_EDGE_SILENCE_MS, SilenceThreshold, StagedAudioProducer, condition_edges,
     durable::{
         DurableFileSystem, RenameOutcome, publish_directory_noreplace, sync_directory_transaction,
         write_json_atomically,
     },
-    io_error, locking, managed,
+    io_error, locking, managed, measure_edge_silence, samples_for,
 };
 
 // Layout version this module accepts for a cache artifact, imported rather
@@ -164,7 +165,43 @@ struct CacheArtifact {
     channels: u16,
     sample_format: String,
     frames: u32,
+    edge_conditioning: RecordedConditioning,
     provenance: ArtifactProvenance,
+}
+
+/// What conditioning did to this entry's audio, and under which calibration.
+///
+/// ADR-0001 §11.1 and §13.4 both require the padding and ramp sample counts to
+/// be recorded rather than merely applied, so a reviewer can tell audio that
+/// needed no work from audio that was rebuilt at both ends.
+///
+/// Separate from [`EdgeConditioning`], which is what the conditioner returns:
+/// this is the durable shape, and it carries the calibration the counts were
+/// produced under. `EdgeConditioning` is measured in samples and knows nothing
+/// about provenance; flattening it in here is not open either, because
+/// `serde(flatten)` and `deny_unknown_fields` cannot both apply, and
+/// `deny_unknown_fields` is the rule this record is built on.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+struct RecordedConditioning {
+    leading_padding: u32,
+    trailing_padding: u32,
+    leading_ramp: u32,
+    trailing_ramp: u32,
+    calibration_source: CalibrationSource,
+}
+
+impl RecordedConditioning {
+    /// Records what the conditioner reported, under the threshold it applied.
+    fn new(conditioning: EdgeConditioning, threshold: SilenceThreshold) -> Self {
+        Self {
+            leading_padding: conditioning.leading_padding,
+            trailing_padding: conditioning.trailing_padding,
+            leading_ramp: conditioning.leading_ramp,
+            trailing_ramp: conditioning.trailing_ramp,
+            calibration_source: threshold.source(),
+        }
+    }
 }
 
 /// The identities the worker reported for the audio beside this record.
@@ -526,8 +563,8 @@ fn synthesize_transaction(
     // which must cover the bytes that are actually published. `frames` is
     // replaced because conditioning adds zero padding, so the count recorded in
     // the artifact is the conditioned one.
-    let frames = match condition_staged_audio(&audio_path) {
-        Ok(frames) => frames,
+    let staged = match condition_staged_audio(&audio_path) {
+        Ok(staged) => staged,
         Err(fault) => {
             let error = AudioError::UnusableAudio {
                 path: audio_path.clone(),
@@ -552,7 +589,15 @@ fn synthesize_transaction(
         sample_rate: CANONICAL_SAMPLE_RATE,
         channels: CANONICAL_CHANNELS,
         sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
-        frames,
+        frames: staged.frames,
+        // ADR-0001 §11.1 and §13.4: the counts are recorded, not merely
+        // applied. Taken from the conditioner's own report rather than
+        // re-derived, so the record cannot describe conditioning other than the
+        // conditioning that produced these bytes.
+        edge_conditioning: RecordedConditioning::new(
+            staged.conditioning,
+            SilenceThreshold::provisional(),
+        ),
         provenance: ArtifactProvenance {
             worker_bundle_hash: report.context.worker_bundle_hash.clone(),
             model_repository: report.context.model_repository.clone(),
@@ -848,19 +893,31 @@ fn load_validated(
         ));
     }
 
-    // Path 6: the audio itself is unreadable, non-canonical, or does not match
+    // Path 6: the record declares conditioning ADR-0001 §13.4 does not permit.
+    //
+    // Record-only, and before the audio is read, for the reason path 5 gives: a
+    // dishonest record is refused without reading a megabyte of WAV. It is also
+    // the *only* place the ramp can be checked. A raised-cosine gain multiplied
+    // into speech cannot be separated from it again, so the recorded ramp is
+    // attested rather than verified, and what remains checkable is that it lies
+    // inside the geometry ADR-0001 fixes.
+    check_declared_conditioning(&artifact.edge_conditioning)
+        .map_err(|fault| rejected(entry_dir, &segment.id, fault))?;
+
+    // Path 7: the audio itself is unreadable, non-canonical, or does not match
     // the artifact.
     let frames =
         validate_wav(audio_path).map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?;
-    // ADR-0001 §12.6 lists the edge check among the conditions for *using* an
-    // entry, not only for writing one: an entry published by a build that
-    // conditioned differently is refused rather than concatenated into a master
-    // with a step at its join.
-    check_exposed_endpoints(
-        &read_canonical_samples(audio_path)
-            .map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?,
-    )
-    .map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?;
+    // ADR-0001 §12.6 lists the silence and edge checks among the conditions for
+    // *using* an entry, not only for writing one: an entry published by a build
+    // that conditioned differently is refused rather than concatenated into a
+    // master with a step at its join. Read once and checked twice, because the
+    // endpoints and the edge silence are two readings of the same samples.
+    let samples = read_canonical_samples(audio_path)
+        .map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?;
+    check_exposed_endpoints(&samples)
+        .map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?;
+    check_edge_silence(&samples).map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?;
     let checksum = hash_file(audio_path)?;
     if frames != artifact.frames {
         return Err(rejected(
@@ -987,6 +1044,106 @@ fn check_exposed_endpoints(samples: &[f32]) -> Result<(), AudioFault> {
     Ok(())
 }
 
+/// Refuses audio whose exposed edges carry less silence than ADR-0001 requires.
+///
+/// ADR-0001 §13.4 requires at least 10 ms at each exposed edge and §12.6 makes
+/// the check a condition of using an entry. Measured through
+/// [`measure_edge_silence`] — the same measurement the conditioner pads from —
+/// rather than by testing the padding for exact zero: conditioning pads only
+/// until an edge *has* its silence, so audio that already began
+/// quiet-but-nonzero is lawfully unpadded and an exact-zero test would refuse
+/// it.
+///
+/// # Errors
+///
+/// [`AudioFault::InsufficientEdgeSilence`] naming the shorter edge.
+fn check_edge_silence(samples: &[f32]) -> Result<(), AudioFault> {
+    let required = samples_for(REQUIRED_EDGE_SILENCE_MS, CANONICAL_SAMPLE_RATE);
+    let (leading, trailing) = measure_edge_silence(
+        samples,
+        CANONICAL_SAMPLE_RATE,
+        SilenceThreshold::provisional(),
+    );
+
+    for (edge, measured) in [("first", leading), ("last", trailing)] {
+        if measured < required {
+            return Err(AudioFault::InsufficientEdgeSilence {
+                edge,
+                silence_frames: u32::try_from(measured).unwrap_or(u32::MAX),
+                required_frames: u32::try_from(required).unwrap_or(u32::MAX),
+                required_milliseconds: REQUIRED_EDGE_SILENCE_MS,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a record declaring conditioning ADR-0001 §13.4 does not permit.
+///
+/// # Errors
+///
+/// [`CacheEntryFault::ConditioningOutsideRatifiedGeometry`] naming the first
+/// count out of range, and
+/// [`CacheEntryFault::ConditionedUnderAnotherCalibration`] when the entry was
+/// conditioned against a threshold this build no longer applies.
+fn check_declared_conditioning(recorded: &RecordedConditioning) -> Result<(), CacheEntryFault> {
+    let ramp = ratified_samples(MAX_TRANSITION_RAMP_MS);
+    let padding = ratified_samples(REQUIRED_EDGE_SILENCE_MS);
+
+    // Padding is bounded by the silence it completes: `condition_edges`
+    // computes it as the shortfall against that requirement, so a record
+    // declaring more describes conditioning this project does not perform.
+    for (field, declared, permitted, milliseconds) in [
+        (
+            "leading_ramp",
+            recorded.leading_ramp,
+            ramp,
+            MAX_TRANSITION_RAMP_MS,
+        ),
+        (
+            "trailing_ramp",
+            recorded.trailing_ramp,
+            ramp,
+            MAX_TRANSITION_RAMP_MS,
+        ),
+        (
+            "leading_padding",
+            recorded.leading_padding,
+            padding,
+            REQUIRED_EDGE_SILENCE_MS,
+        ),
+        (
+            "trailing_padding",
+            recorded.trailing_padding,
+            padding,
+            REQUIRED_EDGE_SILENCE_MS,
+        ),
+    ] {
+        if declared > permitted {
+            return Err(CacheEntryFault::ConditioningOutsideRatifiedGeometry {
+                field,
+                declared,
+                permitted,
+                permitted_milliseconds: milliseconds,
+            });
+        }
+    }
+
+    let applied = SilenceThreshold::provisional().source();
+    if recorded.calibration_source != applied {
+        return Err(CacheEntryFault::ConditionedUnderAnotherCalibration {
+            recorded: recorded.calibration_source.name(),
+            required: applied.name(),
+        });
+    }
+    Ok(())
+}
+
+/// One ratified edge duration as a canonical-rate frame count.
+fn ratified_samples(milliseconds: u32) -> u32 {
+    u32::try_from(samples_for(milliseconds, CANONICAL_SAMPLE_RATE)).unwrap_or(u32::MAX)
+}
+
 /// Conditions one staged segment's edges in place and reports the new frames.
 ///
 /// ADR-0001 §12.6 lists duration, silence, and edge checks among the conditions
@@ -1014,7 +1171,7 @@ fn check_exposed_endpoints(samples: &[f32]) -> Result<(), AudioFault> {
 /// The silence threshold is provisional while ADR-0003 is Proposed; see
 /// [`crate::SilenceThreshold`] and
 /// `docs/adr/deviations/ADR-0001-D007-provisional-edge-conditioning.md`.
-fn condition_staged_audio(path: &Path) -> Result<u32, AudioFault> {
+fn condition_staged_audio(path: &Path) -> Result<ConditionedStage, AudioFault> {
     let mut samples = read_canonical_samples(path)?;
     let frames = u32::try_from(samples.len()).map_err(|_| AudioFault::FrameCountOverflow)?;
     let conditioning = condition_edges(
@@ -1029,7 +1186,25 @@ fn condition_staged_audio(path: &Path) -> Result<u32, AudioFault> {
         write_canonical_samples(path, &samples)?;
     }
     check_exposed_endpoints(&samples)?;
-    Ok(conditioned)
+    // The same check reuse applies. Conditioning satisfies it by construction,
+    // and asserting that here is what stops a later change to the conditioner
+    // publishing entries this build would afterwards refuse to read.
+    check_edge_silence(&samples)?;
+    Ok(ConditionedStage {
+        frames: conditioned,
+        conditioning,
+    })
+}
+
+/// What conditioning left behind, for the record published beside the audio.
+///
+/// Both halves, because ADR-0001 §13.4 requires the counts to be recorded and
+/// the artifact needs the frame count: returning only the length is what let
+/// the counts be measured and then discarded.
+#[derive(Debug)]
+struct ConditionedStage {
+    frames: u32,
+    conditioning: EdgeConditioning,
 }
 
 /// Refuses conditioned audio the ceiling will not let this build publish.
@@ -1295,7 +1470,7 @@ mod tests {
         // conditioned audio by definition, so a fixture that skipped this would
         // be a file the cache could never have written — and the edge check on
         // reuse would refuse it.
-        let frames = condition_staged_audio(&audio).expect("condition the fixture's edges");
+        let staged = condition_staged_audio(&audio).expect("condition the fixture's edges");
         let record = CacheArtifact {
             schema_version: CACHE_SCHEMA_VERSION.to_owned(),
             cache_key: segment.cache_key.clone(),
@@ -1303,7 +1478,14 @@ mod tests {
             sample_rate: CANONICAL_SAMPLE_RATE,
             channels: CANONICAL_CHANNELS,
             sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
-            frames,
+            frames: staged.frames,
+            // What the conditioner reported for this fixture's audio, under
+            // the threshold it applied. A hand-written value here would be a
+            // record the cache could never have published.
+            edge_conditioning: RecordedConditioning::new(
+                staged.conditioning,
+                SilenceThreshold::provisional(),
+            ),
             provenance: ArtifactProvenance {
                 worker_bundle_hash: context.worker_bundle_hash.clone(),
                 model_repository: context.model_repository.clone(),
@@ -1332,6 +1514,36 @@ mod tests {
         let mut record = read_artifact(artifact);
         record[field] = value;
         write_artifact(artifact, &record);
+    }
+
+    /// Rewrites one recorded conditioning count or its calibration.
+    ///
+    /// The tampering nothing else can detect: the ramp is not recoverable from
+    /// the audio, so a record claiming conditioning ADR-0001 never permits is
+    /// caught by the declared value or not at all.
+    fn overwrite_conditioning(artifact: &Path, field: &str, value: serde_json::Value) {
+        let mut record = read_artifact(artifact);
+        record["edge_conditioning"][field] = value;
+        write_artifact(artifact, &record);
+    }
+
+    /// Republishes `audio` as `samples`, re-pinning the record to match.
+    ///
+    /// Everything a self-consistent entry needs stays true: the frame count and
+    /// the digest are recomputed, so every check that exists today still passes
+    /// and only the property under test differs.
+    fn republish_audio(artifact: &Path, audio: &Path, samples: &[f32]) {
+        write_canonical_samples(audio, samples).expect("write replacement audio");
+        overwrite_field(
+            artifact,
+            "frames",
+            json!(u32::try_from(samples.len()).expect("a test fixture fits a u32")),
+        );
+        overwrite_field(
+            artifact,
+            "audio_blake3",
+            json!(hash_file(audio).expect("hash replacement audio")),
+        );
     }
 
     /// Rewrites one recorded provenance input, leaving the key beside it and
@@ -1914,9 +2126,37 @@ mod tests {
         let unreadable = load_validated(&synthesized_segment(), &dir5, &audio5, &artifact5)
             .expect_err("unreadable audio must be rejected");
 
+        // Path 6: audio carrying no edge silence, from an older or defective
+        // producer. Endpoints are exactly zero, so the check that existed
+        // before this one accepted it; ADR-0001 §12.6 makes the *silence* check
+        // a condition of using an entry, and nothing performed it.
+        let (dir7, audio7, artifact7) = published_entry(workspace.path(), "aa7777");
+        let mut unsilenced = vec![0.25_f32; 2_880];
+        unsilenced[0] = 0.0;
+        let last = unsilenced.len() - 1;
+        unsilenced[last] = 0.0;
+        republish_audio(&artifact7, &audio7, &unsilenced);
+        let no_silence = load_validated(&synthesized_segment(), &dir7, &audio7, &artifact7)
+            .expect_err("audio without edge silence must be rejected");
+
+        // Path 7: a record declaring a ramp longer than ADR-0001 §13.4 permits.
+        // One sample past 5 ms at the canonical rate.
+        let (dir8, audio8, artifact8) = published_entry(workspace.path(), "aa8888");
+        overwrite_conditioning(&artifact8, "leading_ramp", json!(121));
+        let wide_ramp = load_validated(&synthesized_segment(), &dir8, &audio8, &artifact8)
+            .expect_err("a ramp beyond the ratified bound must be rejected");
+
+        // Path 8: conditioning calibrated against a threshold this build does
+        // not apply. What makes `ADR-0001-D007` expire cleanly once ADR-0003
+        // freezes a value.
+        let (dir9, audio9, artifact9) = published_entry(workspace.path(), "aa9999");
+        overwrite_conditioning(&artifact9, "calibration_source", json!("frozen"));
+        let other_calibration = load_validated(&synthesized_segment(), &dir9, &audio9, &artifact9)
+            .expect_err("another calibration must be rejected");
+
         // Each path carries the fault it is supposed to report, so a rejection
         // that reaches the right variant for the wrong reason still fails here.
-        let paths: [RejectionPath; 6] = [
+        let paths: [RejectionPath; 9] = [
             ("unparseable artifact", unparseable, dir, |fault| {
                 matches!(fault, CacheEntryFault::UnparseableArtifact { .. })
             }),
@@ -1937,6 +2177,24 @@ mod tests {
             }),
             ("unreadable audio", unreadable, dir5, |fault| {
                 matches!(fault, CacheEntryFault::Audio(AudioFault::Unreadable(_)))
+            }),
+            ("audio without edge silence", no_silence, dir7, |fault| {
+                matches!(
+                    fault,
+                    CacheEntryFault::Audio(AudioFault::InsufficientEdgeSilence { .. })
+                )
+            }),
+            ("a ramp beyond the bound", wide_ramp, dir8, |fault| {
+                matches!(
+                    fault,
+                    CacheEntryFault::ConditioningOutsideRatifiedGeometry { .. }
+                )
+            }),
+            ("another calibration", other_calibration, dir9, |fault| {
+                matches!(
+                    fault,
+                    CacheEntryFault::ConditionedUnderAnotherCalibration { .. }
+                )
             }),
         ];
 
@@ -2170,6 +2428,59 @@ mod tests {
             error.to_string().contains(&staged.display().to_string()),
             "error did not name the staged file: `{error}`"
         );
+    }
+
+    /// A published entry records what conditioning did, not merely that it ran.
+    ///
+    /// ADR-0001 §11.1 and §13.4 both require the padding and ramp sample counts
+    /// to be recorded. The expectation is read from the conditioner rather than
+    /// written out, because the counts depend on the fixture's audio; what this
+    /// pins is that the *recorded* value is the one conditioning reported,
+    /// which a stub or a default would not be.
+    #[test]
+    fn t1_e1_a_published_entry_records_what_conditioning_did() {
+        let workspace = TempDir::new().expect("create cache workspace");
+        let (cache_root, quarantine_root) = crash_test_roots(workspace.path());
+        let segment = synthesized_segment();
+        let mut producer = CountingProducer::default();
+
+        // Through `resolve`, not through the test fixture: what is under test
+        // is the record *publication* writes, and a fixture that assembled the
+        // record itself would agree with itself whatever publication did.
+        let published = resolve(
+            &OsDurableFileSystem,
+            &cache_root,
+            &quarantine_root,
+            "job",
+            &segment,
+            &mut producer,
+        )
+        .expect("publish one entry");
+
+        let recorded: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(published.entry_dir().join(ARTIFACT_RECORD))
+                .expect("read the published artifact"),
+        )
+        .expect("the published artifact parses");
+        let conditioning = &recorded["edge_conditioning"];
+
+        // What the conditioner reports for this fixture's audio: a constant
+        // 0.25 tone, so neither edge is silent and both take the full padding.
+        let mut samples = vec![0.25_f32; 2_400];
+        let expected = condition_edges(
+            &mut samples,
+            CANONICAL_SAMPLE_RATE,
+            SilenceThreshold::provisional(),
+        );
+
+        assert_eq!(conditioning["leading_padding"], expected.leading_padding);
+        assert_eq!(conditioning["trailing_padding"], expected.trailing_padding);
+        assert_eq!(conditioning["leading_ramp"], expected.leading_ramp);
+        assert_eq!(conditioning["trailing_ramp"], expected.trailing_ramp);
+        // The calibration the counts were produced under. Without it an entry
+        // conditioned against the provisional threshold cannot be told from one
+        // conditioned against the value ADR-0003 will freeze.
+        assert_eq!(conditioning["calibration_source"], "provisional");
     }
 
     /// The ceiling refuses what conditioning pushed past it, with both counts.

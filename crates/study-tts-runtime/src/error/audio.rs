@@ -292,6 +292,29 @@ pub enum AudioFault {
         value: f32,
     },
 
+    /// An exposed edge carries less than the required silence.
+    ///
+    /// ADR-0001 §13.4 requires at least 10 ms of silence at each exposed edge,
+    /// and §12.6 makes the silence check a condition of *using* an entry rather
+    /// than only of writing one. Measured against the audio-profile threshold
+    /// rather than against exact zero: conditioning pads only until the edge
+    /// *has* its silence, so an edge that already began quiet-but-nonzero is
+    /// lawfully unpadded and would fail an exact-zero test.
+    #[error(
+        "its {edge} edge carries {silence_frames} silent frames, short of the \
+         {required_frames} ({required_milliseconds} ms) each exposed edge requires"
+    )]
+    InsufficientEdgeSilence {
+        /// Which end of the stream, for a reader repairing it.
+        edge: &'static str,
+        /// Silent frames measured at that edge.
+        silence_frames: u32,
+        /// Silent frames required there.
+        required_frames: u32,
+        /// The same requirement as the duration ADR-0001 §13.4 states.
+        required_milliseconds: u32,
+    },
+
     /// A sample is non-finite or beyond full scale.
     #[error("sample {index} is `{value}`, outside the finite range -1.0 to 1.0")]
     OutOfRangeSample {

@@ -606,17 +606,28 @@ mod tests {
         // below again did not, and that is the same separation: §12.5 keys on
         // the conditioning artifact's hash, so renaming a profile directory
         // re-plans without re-rendering a single segment.
+        //
+        // All three moved together, still within E1-S3, when `artifact.json`
+        // gained the required `edge_conditioning` record and
+        // `CACHE_SCHEMA_VERSION` — itself a §12.5 key input — moved to `2.0`.
+        // Unlike the two moves above this one *is* a cache-wide invalidation,
+        // which is what the constant being a key input is for: an entry written
+        // without the conditioning ADR-0001 §13.4 requires recorded cannot be
+        // reused by a build that requires it.
+        // `E1-S3-INTERFACE-CHANGE-002` records the move, and supersedes the
+        // `abd889db…` plan hash `E1-S3-INTERFACE-CHANGE-001` §Plan document
+        // cites.
         assert_eq!(
             first.plan_hash.as_str(),
-            "abd889db17077103d0857a97098d50bd8c0b6786622e3c4c4ceca0d1b3dbdc0f"
+            "46bf2c57d31eb5cf337973c32ca0cd6ae1ee40bf5e51cfbe5fbd8fc18fff793e"
         );
         assert_eq!(
             first.segments[0].cache_key.as_str(),
-            "1354a4708035551584c1f2d425605f8d804056156200aa800250c10b6d24fe55"
+            "01ffb5593c2e0daac0a1ce08a1e4ea375cc56276e72446e684fffca9b0ae5a6c"
         );
         assert_eq!(
             first.segments[1].cache_key.as_str(),
-            "d10e6f7fd16d38f7dda782256c619be2f5c05c8d08acdad80f4b5b75e69aa6c1"
+            "d4248913a9a39a2ec7efe89fb8b7f5573d47f54ad9a4b8340742d1af7f8c19ee"
         );
 
         assert_eq!(first.plan_hash, second.plan_hash);

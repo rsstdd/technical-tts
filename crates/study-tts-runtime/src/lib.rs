@@ -33,8 +33,9 @@ mod worker_launcher;
 mod worker_protocol;
 
 pub use audio_edges::{
-    CalibrationSource, EdgeConditioning, MAX_SEGMENT_AUDIO_MS, ProvisionalCalibration,
-    SilenceThreshold, condition_edges,
+    CalibrationSource, EdgeConditioning, MAX_SEGMENT_AUDIO_MS, MAX_TRANSITION_RAMP_MS,
+    ProvisionalCalibration, REQUIRED_EDGE_SILENCE_MS, SilenceThreshold, condition_edges,
+    measure_edge_silence, samples_for,
 };
 pub use cache::ValidatedCachedArtifact;
 pub use cache_port::{

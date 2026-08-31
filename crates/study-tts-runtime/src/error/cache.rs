@@ -227,6 +227,46 @@ pub enum CacheEntryFault {
         declared: String,
     },
 
+    /// The artifact declares conditioning ADR-0001 does not permit.
+    ///
+    /// The ramp cannot be re-derived from the audio — a raised-cosine gain
+    /// multiplied into speech cannot be separated from it again — so the
+    /// recorded count is attested rather than verified. What *can* be checked
+    /// is that it lies inside the geometry ADR-0001 §13.4 fixes, which is what
+    /// refuses a record claiming conditioning this project never performs.
+    #[error(
+        "the artifact declares {field} of {declared} samples, beyond the {permitted} \
+         ({permitted_milliseconds} ms) ADR-0001 §13.4 permits"
+    )]
+    ConditioningOutsideRatifiedGeometry {
+        /// Which recorded count is out of range.
+        field: &'static str,
+        /// The value the artifact declares.
+        declared: u32,
+        /// The most ADR-0001 §13.4 permits there.
+        permitted: u32,
+        /// The same limit as the duration ADR-0001 §13.4 states.
+        permitted_milliseconds: u32,
+    },
+
+    /// The entry was conditioned under a calibration this build does not apply.
+    ///
+    /// The recorded counts describe a silence threshold, and a threshold that
+    /// has moved describes different audio. Refusing here is what makes
+    /// `ADR-0001-D007` expire cleanly: every entry conditioned against the
+    /// provisional value is refused once an accepted ADR-0003 gives this build
+    /// a frozen one, rather than being reused under a reading nobody checked.
+    #[error(
+        "the artifact records conditioning calibrated as {recorded}, but this build conditions \
+         against a {required} threshold"
+    )]
+    ConditionedUnderAnotherCalibration {
+        /// The calibration the entry records.
+        recorded: &'static str,
+        /// The calibration this build applies.
+        required: &'static str,
+    },
+
     /// The entry's audio failed canonical-audio validation.
     #[error("{0}")]
     Audio(#[from] AudioFault),
