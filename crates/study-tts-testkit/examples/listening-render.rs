@@ -22,6 +22,15 @@
 //! A Python harness would re-implement the protocol client and then review the
 //! re-implementation's output.
 //!
+//! The same argument reaches past the executor, and an earlier version of this
+//! stopped short of it. Every take is **published through the cache** before it
+//! is blinded, because edge conditioning under `ADR-0001-D007` runs inside
+//! publication: an instrument that wrote the worker's WAV straight to a file
+//! would hand the reviewer audio the conditioner had never seen, which is the
+//! audio this review exists to judge. And the voice is resolved through
+//! [`resolve_voice_conditioning`], the gate a build passes, so the material is
+//! not reviewed under a consent the record does not give.
+//!
 //! # Blinding
 //!
 //! Copies are shuffled into `sample-NN.wav` and the mapping is written to a
@@ -44,14 +53,21 @@
 //!     --output-root <fresh directory>
 //! ```
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
-use study_tts_core::{CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE};
-use study_tts_runtime::{SynthesisRequest, TtsExecutor, WorkerConfiguration, WorkerTtsExecutor};
+use study_tts_core::{
+    CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, DeliveryStyle,
+    PlannedSegment, VoiceConditioningHash, VoiceUse,
+};
+use study_tts_runtime::{
+    CachePublisher, CacheResolveRequest, FileSystemCachePublisher, SynthesisRequest, TtsExecutor,
+    WorkerConfiguration, WorkerTtsExecutor, resolve_voice_conditioning,
+};
 use study_tts_testkit::run_tts_executor_contract_scenario;
 
 /// The committed text this review is taken against.
@@ -64,6 +80,12 @@ const REVIEW_SHEET_SCHEMA: &str = "1.0-e1-s3-listening-review";
 
 /// Layout version of the mapping the sheet is blind to.
 const RANDOMIZATION_KEY_SCHEMA: &str = "1.0-e1-s3-randomization-key";
+
+/// The language the committed script is written in.
+const LISTENING_LANGUAGE: &str = "en";
+
+/// The job this instrument's cache entries and quarantine are filed under.
+const LISTENING_JOB_ID: &str = "e1-s3-listening";
 
 /// The criteria a reviewer answers for every sample.
 ///
@@ -86,28 +108,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         &configuration.bundle_root,
         &configuration.model_root,
         &configuration.voice_root,
-        &configuration.staging_root,
+        &configuration.workspace,
     )?;
     let executor = WorkerTtsExecutor::start(&launch)?;
     let bundle = executor.descriptor().worker_bundle_hash.as_str().to_owned();
     let voice = governed_voice(&configuration.voice_root)?;
 
-    let mut takes = Vec::with_capacity(script.lines.len());
-    for (index, line) in script.lines.iter().enumerate() {
-        let destination = configuration
-            .staging_root
-            .join(format!("take-{index:02}.wav"));
-        run_tts_executor_contract_scenario(
-            &executor,
-            request(&voice, index, &line.text, &script.style)?,
-            &destination,
-        )?;
-        takes.push(Take {
-            line_id: line.id.clone(),
-            digest: digest_of(&destination)?,
-            path: destination,
-        });
-    }
+    let takes = render_takes(
+        &executor,
+        &FileSystemCachePublisher,
+        &configuration.workspace,
+        &script,
+        &voice,
+    )?;
     // Read before the shutdown joins the reader threads, then shut down through
     // the protocol rather than by dropping the executor.
     let diagnostics = executor.diagnostics().len();
@@ -116,11 +129,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let blinded = blind(&configuration.listening_root, &takes)?;
     let sheet = configuration.listening_root.join("review-sheet.json");
     let key = configuration.listening_root.join("randomization-key.json");
-    fs::write(&sheet, render_review_sheet(&bundle, &voice.0, &blinded))?;
+    fs::write(
+        &sheet,
+        render_review_sheet(&bundle, &voice.profile_id, &blinded),
+    )?;
     fs::write(&key, render_randomization_key(&blinded))?;
 
     println!("worker bundle identity: {bundle}");
-    println!("voice profile: {}", voice.0);
+    println!("voice profile: {}", voice.profile_id);
     println!(
         "takes: {} ({} bytes of diagnostics)",
         takes.len(),
@@ -141,7 +157,106 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Renders every script line and returns the takes, newest first line first.
+///
+/// Separate from `main` so the composition can be driven offline by a fake
+/// executor: this is the part that decides *what audio a reviewer hears*, and
+/// an instrument whose output a gate record cites should not have that part
+/// reachable only through a governed root and a real model.
+fn render_takes(
+    executor: &dyn TtsExecutor,
+    cache: &dyn CachePublisher,
+    workspace: &Path,
+    script: &Script,
+    voice: &GovernedVoice,
+) -> Result<Vec<Take>, Box<dyn Error>> {
+    fs::create_dir_all(workspace)?;
+    let workspace = fs::canonicalize(workspace)?;
+
+    // The composition `pipeline.rs` uses for a real build: the backend
+    // contributes its own identity, the lesson its language, and the voice gate
+    // the conditioning hash. Assembling it here rather than taking the worker's
+    // word is what keeps the cache's identity gate a real comparison — the
+    // planned key is derived from a record read off disk, the reported one from
+    // what the worker says it loaded.
+    let context = executor.descriptor().synthesis_context(
+        LISTENING_LANGUAGE.parse()?,
+        BTreeMap::from([(voice.profile_id.clone(), voice.conditioning.clone())]),
+    );
+
+    let mut takes = Vec::with_capacity(script.lines.len());
+    for (index, line) in script.lines.iter().enumerate() {
+        let mut segment = planned_segment(index, line, &script.style, voice)?;
+        segment.cache_key = context.key_for(&segment);
+        let synthesis = request(voice, index, &line.text, &script.style, &segment)?;
+
+        // Through the cache, not around it. Edge conditioning under
+        // `ADR-0001-D007` runs inside publication, so an instrument that
+        // rendered straight to a file would hand the reviewer audio the
+        // conditioner had never seen — which is precisely what the D007 retake
+        // exists to listen to.
+        let mut producer = |destination: &Path| {
+            run_tts_executor_contract_scenario(executor, synthesis.clone(), destination)
+        };
+        let published = cache.resolve(
+            &CacheResolveRequest {
+                workspace: workspace.clone(),
+                job_id: LISTENING_JOB_ID.to_owned(),
+                segment: segment.clone(),
+            },
+            &mut producer,
+        )?;
+
+        takes.push(Take {
+            line_id: line.id.clone(),
+            digest: digest_of(published.audio_path())?,
+            path: published.audio_path().to_path_buf(),
+        });
+    }
+    Ok(takes)
+}
+
+/// One planned segment for one script line.
+///
+/// A real [`PlannedSegment`], because that is what the cache resolves against:
+/// its `cache_key` is filled in by the caller from the synthesis context, so
+/// the entry is filed under the identity a build would file it under.
+fn planned_segment(
+    index: usize,
+    line: &ScriptLine,
+    style: &str,
+    voice: &GovernedVoice,
+) -> Result<PlannedSegment, Box<dyn Error>> {
+    Ok(PlannedSegment {
+        id: format!("listening-{index}"),
+        speaker: voice.profile_id.clone(),
+        voice_profile: voice.profile_id.clone(),
+        display_text: line.text.clone(),
+        spoken_text: line.text.clone(),
+        // Through the closed vocabulary rather than as a string, so a script
+        // naming a fifth style is refused here rather than rendered.
+        style: serde_json::from_value::<DeliveryStyle>(serde_json::Value::String(
+            style.to_owned(),
+        ))?,
+        pause_after_ms: 0,
+        // Every line is its own segment, so nothing here is a retake.
+        take: 0,
+        // Replaced by the caller. `CacheKey` has no empty value, and a
+        // placeholder that reached the cache would be refused by the identity
+        // gate rather than published.
+        cache_key: "0".repeat(64).parse()?,
+    })
+}
+
+/// The voice this run renders with, resolved through the rights gate.
+#[derive(Debug)]
+struct GovernedVoice {
+    profile_id: String,
+    conditioning: VoiceConditioningHash,
+}
+
 /// One rendered take, before it is blinded.
+#[derive(Debug)]
 struct Take {
     line_id: String,
     digest: String,
@@ -208,8 +323,11 @@ struct Configuration {
     bundle_root: PathBuf,
     model_root: PathBuf,
     voice_root: PathBuf,
-    /// The one directory the worker is told it may write inside.
-    staging_root: PathBuf,
+    /// The one directory the worker is told it may write inside, and the
+    /// managed root the cache publishes beneath. One directory, because the
+    /// cache assigns its own staging destination inside it and the worker
+    /// refuses to write outside the root it was declared at `initialize`.
+    workspace: PathBuf,
     /// Where the blinded copies and both records go.
     listening_root: PathBuf,
 }
@@ -254,10 +372,10 @@ impl Configuration {
             bundle_root: std::path::absolute(bundle_root.ok_or("--bundle-root is required")?)?,
             model_root: std::path::absolute(model_root.ok_or("--model-root is required")?)?,
             voice_root: std::path::absolute(voice_root.ok_or("--voice-root is required")?)?,
-            staging_root: std::path::absolute(output_root.join("takes"))?,
+            workspace: std::path::absolute(output_root.join("workspace"))?,
             listening_root: std::path::absolute(output_root.join("listening"))?,
         };
-        fs::create_dir_all(&configuration.staging_root)?;
+        fs::create_dir_all(&configuration.workspace)?;
         fs::create_dir_all(&configuration.listening_root)?;
         Ok(configuration)
     }
@@ -381,61 +499,80 @@ fn digest_of(path: &Path) -> Result<String, Box<dyn Error>> {
 
 /// One synthesis request for one line of the script.
 fn request(
-    voice: &(String, String),
-    take: usize,
+    voice: &GovernedVoice,
+    index: usize,
     text: &str,
     style: &str,
+    segment: &PlannedSegment,
 ) -> Result<SynthesisRequest, Box<dyn Error>> {
-    let (voice_profile, conditioning) = voice;
-    let take = u32::try_from(take)?;
     Ok(SynthesisRequest {
-        request_id: format!("e1-s3-listening-{take}"),
-        segment_id: format!("listening-{take}"),
+        request_id: format!("e1-s3-listening-{index}"),
+        segment_id: segment.id.clone(),
         spoken_text: text.to_owned(),
-        voice: voice_profile.to_owned(),
-        voice_profile: voice_profile.to_owned(),
-        voice_conditioning_hash: conditioning.parse()?,
+        voice: voice.profile_id.clone(),
+        voice_profile: voice.profile_id.clone(),
+        voice_conditioning_hash: voice.conditioning.clone(),
         style: style.to_owned(),
-        language: "en".parse()?,
-        take,
-        cache_key: "0".repeat(64).parse()?,
+        language: LISTENING_LANGUAGE.parse()?,
+        take: segment.take,
+        // The key the cache filed this segment under, so what the worker is
+        // asked for and what the entry is named by cannot come apart.
+        cache_key: segment.cache_key.clone(),
         sample_rate: CANONICAL_SAMPLE_RATE,
         channels: CANONICAL_CHANNELS,
         sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
     })
 }
 
-/// The voice profile this run renders with, and the digest its record states.
+/// The voice this run renders with, resolved through the rights gate.
 ///
-/// Read from the governed voice root, the same record
-/// `voice_gate::load_profile` verifies `conditionals.pt` against before any
-/// synthesis runs.
-fn governed_voice(voice_root: &Path) -> Result<(String, String), Box<dyn Error>> {
+/// Discovery is by directory name; the *load* goes through
+/// [`resolve_voice_conditioning`], which is the gate a build passes before any
+/// synthesis: consent status, rights decision, permitted-use scope, and the
+/// bytes of both `reference.wav` and `conditionals.pt` against the digests the
+/// record states. An earlier version of this read `profile.json` by hand and
+/// took `conditionals_blake3` on trust, so the review could be taken against a
+/// voice whose consent had been withdrawn and whose artifact had been swapped.
+///
+/// [`VoiceUse::VoiceQualification`] rather than
+/// [`VoiceUse::PrivateSynthesis`]: this renders a committed script to discharge
+/// ADR-0001 §17.5's gate condition, and never reaches a lesson, which is what
+/// that variant is for.
+///
+/// Read from disk rather than asked of the worker, deliberately. The cache's
+/// identity gate compares the conditioning artifact the worker reports against
+/// the one the planned key was derived from, and a key derived from the
+/// worker's own answer would make that comparison pass by construction.
+fn governed_voice(voice_root: &Path) -> Result<GovernedVoice, Box<dyn Error>> {
     let mut profiles: Vec<PathBuf> = fs::read_dir(voice_root)?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.join("profile.json").is_file())
         .collect();
     profiles.sort();
-    let profile = profiles
+    let profile_id = profiles
         .first()
-        .ok_or("the governed voice root holds no profile record")?;
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .ok_or("the governed voice root holds no profile record")?
+        .to_owned();
 
-    let record: serde_json::Value =
-        serde_json::from_slice(&fs::read(profile.join("profile.json"))?)?;
-    let field = |name: &str| -> Result<String, Box<dyn Error>> {
-        Ok(record
-            .get(name)
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| format!("the voice profile record states no `{name}`"))?
-            .to_owned())
-    };
-    Ok((field("profile_id")?, field("conditionals_blake3")?))
+    let conditioning =
+        resolve_voice_conditioning(voice_root, &profile_id, VoiceUse::VoiceQualification)?;
+    Ok(GovernedVoice {
+        profile_id,
+        conditioning,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use study_tts_testkit::{
+        FakeTtsExecutor, VoiceProfileFixtureSpec, write_voice_profile_fixture,
+    };
+    use tempfile::TempDir;
 
     fn blinded() -> Vec<Blinded> {
         vec![
@@ -525,6 +662,107 @@ mod tests {
             assert!(!line.id.is_empty(), "every line carries an id");
             assert!(!line.text.trim().is_empty(), "every line carries text");
         }
+    }
+
+    /// A fake executor, a real publisher, and a synthetic governed voice root.
+    ///
+    /// Returns the workspace guard alongside, because dropping it removes the
+    /// published entry the caller is about to read.
+    /// The scope this instrument's material is rendered under.
+    ///
+    /// `voice_qualification`, because the listening set never reaches a lesson.
+    /// A governed root whose `consent.json` omits it refuses the render, which
+    /// is the check working rather than a fixture detail.
+    fn qualification_spec(consent_status: &str) -> VoiceProfileFixtureSpec {
+        VoiceProfileFixtureSpec {
+            consent_status: consent_status.to_owned(),
+            permitted_use: vec!["voice_qualification".to_owned()],
+            ..VoiceProfileFixtureSpec::default()
+        }
+    }
+
+    fn rendered_offline(
+        spec: &VoiceProfileFixtureSpec,
+    ) -> (TempDir, FakeTtsExecutor, Result<Vec<Take>, Box<dyn Error>>) {
+        let workspace = TempDir::new().expect("create a listening workspace");
+        let voice_root = workspace.path().join("voices");
+        write_voice_profile_fixture(&voice_root.join(&spec.profile_id), spec);
+
+        let executor = FakeTtsExecutor::default();
+        let script = Script {
+            style: "calm_explanatory".to_owned(),
+            lines: vec![ScriptLine {
+                id: "line-01".to_owned(),
+                text: "A checksum proves that bytes did not change.".to_owned(),
+            }],
+        };
+        let takes = governed_voice(&voice_root).and_then(|voice| {
+            render_takes(
+                &executor,
+                &FileSystemCachePublisher,
+                &workspace.path().join("run"),
+                &script,
+                &voice,
+            )
+        });
+        (workspace, executor, takes)
+    }
+
+    /// Samples at the start and end of a WAV that are exactly zero.
+    fn zero_edges(path: &Path) -> (usize, usize) {
+        let mut reader = hound::WavReader::open(path).expect("the take is readable as WAV");
+        let samples: Vec<f32> = reader
+            .samples::<f32>()
+            .collect::<Result<_, _>>()
+            .expect("the take holds float samples");
+        let leading = samples.iter().take_while(|sample| **sample == 0.0).count();
+        let trailing = samples.iter().rev().take_while(|s| **s == 0.0).count();
+        (leading, trailing)
+    }
+
+    #[test]
+    fn t1_e1_the_reviewed_audio_is_the_conditioned_audio_the_cache_publishes() {
+        // The defect this exists for: the instrument rendered through the
+        // executor and blinded the worker's raw WAV, so the D007 retake — whose
+        // whole purpose is to review conditioned audio — reviewed audio the
+        // conditioner had never seen.
+        //
+        // ADR-0001 §13.4 requires at least 10 ms of silence at each exposed
+        // edge, which is 240 samples at the canonical rate. The fake's tone
+        // carries one leading zero, because `sin(0)` is zero, and no trailing
+        // zeros at all.
+        let (_workspace, _executor, takes) = rendered_offline(&qualification_spec("granted"));
+        let takes = takes.expect("a rights-clean voice renders");
+
+        let (leading, trailing) = zero_edges(&takes[0].path);
+
+        assert!(
+            leading >= 240 && trailing >= 240,
+            "the reviewed audio carries {leading} leading and {trailing} trailing zero samples, \
+             so it is not what the cache publishes"
+        );
+    }
+
+    #[test]
+    fn t1_e1_a_revoked_consent_refuses_the_render_before_any_synthesis() {
+        // The other half: the instrument read `profile.json` by hand and took
+        // its digest on trust, so a voice whose consent had been revoked
+        // could be rendered and reviewed. The count is what makes this an
+        // *ordering* rather than a refusal that happened to arrive eventually.
+        let (_workspace, executor, takes) = rendered_offline(&qualification_spec("revoked"));
+
+        let refusal = takes
+            .expect_err("revoked consent must refuse the render")
+            .to_string();
+        assert!(
+            refusal.contains("consent"),
+            "the refusal does not name consent: {refusal}"
+        );
+        assert_eq!(
+            executor.synthesis_count(),
+            0,
+            "the gate ran after synthesis rather than before it"
+        );
     }
 
     #[test]

@@ -25,6 +25,7 @@ cargo clippy --offline --workspace --all-targets --all-features --locked -- -D w
 cargo test --offline --workspace --all-targets --locked
 cargo test --offline --workspace --doc --locked
 python3 -m unittest discover --start-directory worker/tests
+worker/.venv/bin/python -m unittest discover --start-directory worker/tests
 (cd scripts/qualification && python3 -m unittest discover --start-directory tests)
 python3 -m unittest discover -s scripts/tests -p 'test_check_evidence_provenance.py'
 python3 scripts/check-evidence-provenance.py
@@ -33,6 +34,15 @@ git diff --check
 
 Doctests are a separate command because `--all-targets` excludes them. A check that did not run is
 reported as not run, never as passed.
+
+The worker suite runs **twice, under two interpreters, and both are required**. It is standard
+library only, which is what lets `.github/workflows/ci.yml` run it with the system interpreter and
+no installation step. But the worker's render path imports `numpy`, `soundfile`, and `torch`
+unconditionally, so on that interpreter every test covering it is skipped — and a defect once
+shipped through exactly that gap, with all sixty-one tests passing while the real worker died on
+its first synthesis. `RenderPlumbingTests` drives the render with a stub model and the real
+libraries; the second command is the only place it runs. `python3 -m unittest` reporting
+`OK (skipped=2)` is the signal that it did not.
 
 ---
 
@@ -44,12 +54,21 @@ nothing on purpose: every one is an acceptance criterion discharged by an operat
 plus a record citing its hashed output.
 
 ```bash
-cargo run --package study-tts-testkit --example worker-qualification -- \
+cargo build --package study-tts-testkit --example worker-qualification
+
+unshare --user --map-root-user --net \
+  ./target/debug/examples/worker-qualification \
     --bundle-root . \
     --model-root <governed model root> \
     --voice-root <governed voice root> \
     --output-root <fresh directory>
 ```
+
+The namespace is required: the instrument refuses to start unless `/proc/net/dev`
+holds only `lo` and `/proc/net/route` is empty, so a filed result is always one
+whose egress was denied rather than one whose worker said it had set some
+variables. Built outside the namespace and run inside it, because a build may
+legitimately reach a network and a qualification run may not.
 
 Writes `qualification-result.json` under the output root and prints its SHA-256. Copy it beside the
 story record and cite that digest.
@@ -63,6 +82,29 @@ The worker bundle identity alone needs no governed root:
 ```bash
 cargo run --package study-tts-runtime --example worker-bundle-hash
 ```
+
+### The model root is pinned in Git, and that is deliberate
+
+`PINNED_MODEL_REVISION` and `DECLARED_MODEL_ARTIFACTS` in
+`crates/study-tts-runtime/src/model_gate.rs` hold the qualified revision and the SHA-256 and byte
+count of every artifact the backend loads. `WorkerConfiguration::for_bundle` hashes them before it
+can return a launchable configuration, so a worker cannot start against weights this build has not
+proven — and `WorkerTtsExecutor::start` refuses a worker that then reports a *different* revision,
+which is what stops it loading a directory the gate never read. Hashing all four costs about two
+seconds on the reference machine.
+
+They live in Git rather than being read from the governed root's `bundle-manifest.json`, which
+declares the same values. A digest list beside the weights is trust on first use: whoever can
+replace the weights can replace the list. `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` keeps
+governed *locations* and *bytes* out of the repository, not the checksums of public third-party
+weights — and this does not extend to voice digests, which stay in the governed voice root.
+
+**Changing them is a governed-backend change.** A new revision is ADR-0002's decision, taken by the
+engineering and project owners per `docs/governance/ROUTING-TABLES.md` §Decision routing, and the
+constants are updated from the new acquisition's `bundle-manifest.json` as part of it — never
+edited to make a failing gate pass. `ADR-0001-D005` and issue #66 record why the derived digest is
+not also a synthesis-key input: verification refuses unproven bytes outright, and adding a
+`SynthesisContext` term would move every cache key and needs an ADR-0001 §12.5 amendment.
 
 ---
 
@@ -84,6 +126,14 @@ cargo run --package study-tts-testkit --example listening-render -- \
 - The words come from `fixtures/listening/e1-s3-listening-script.json`, committed and registered in
   `docs/testing/TEST-DATA-MANIFEST.md`, so a retake reviews the same text and only the audio
   differs.
+- **Every take is published through the cache before it is blinded**, so what a reviewer hears is
+  the conditioned audio a build would assemble — padded, ramped, and validated — rather than the
+  worker's raw output. An instrument that rendered straight to a file would hand the reviewer audio
+  the conditioner had never seen, which is what this review exists to judge.
+- The voice is resolved through the same rights gate a build passes, at
+  `VoiceUse::VoiceQualification`: this material never reaches a lesson. **A governed `consent.json`
+  whose `permitted_use` omits `voice_qualification` refuses the render**, and the consent record is
+  what must change, not the request.
 - Takes are shuffled into `sample-NN.wav`. The mapping goes to `randomization-key.json`.
 - `review-sheet.json` is written **pending**: five criteria and a disposition per sample, all
   `null`.

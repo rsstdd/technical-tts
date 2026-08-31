@@ -76,13 +76,32 @@ four criteria are about the *executor* driving a real worker. A Python harness
 would re-implement the protocol client and then qualify the re-implementation
 instead of the shipped path.
 
+Build it first, then run the binary through the required namespace. `cargo run`
+inside `unshare` would resolve and compile under it, and a build is the one part
+of this that legitimately reaches a network:
+
 ```text
-cargo run --package study-tts-testkit --example worker-qualification -- \
+cargo build --package study-tts-testkit --example worker-qualification
+
+unshare --user --map-root-user --net \
+  ./target/debug/examples/worker-qualification \
     --bundle-root . \
     --model-root <governed model root> \
     --voice-root <governed voice root> \
     --output-root <fresh directory>
 ```
+
+**The namespace is required, not advised.** The instrument reads `/proc/net/dev`
+and `/proc/net/route` before it creates the output root and refuses unless the
+only interface is `lo` and no IP route exists, which is the same check
+`validate_network_isolation` makes for the E0-S3 harness above. ADR-0001 §17.7
+asks the worker to operate without network access, and until this existed the
+criterion read that off the worker's own diagnostics: `_apply_offline_environment`
+prints the variables it applied, which proves the worker configured
+`huggingface_hub` and `transformers` and proves nothing about the backend, a
+transitive dependency, or a socket. Flags are a request; a namespace with no
+route is a denial. The interfaces and the namespace inode are recorded in the
+result, so a record can read the isolation off the artifact.
 
 Every root is a required argument with no default. The governed two are named
 here only as placeholders: `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`

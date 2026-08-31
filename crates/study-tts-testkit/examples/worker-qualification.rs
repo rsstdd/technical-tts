@@ -1,13 +1,20 @@
 //! T5 qualification instrument for `DELIVERY-PLAN.md` E1-S3.
 //!
 //! ```text
-//! cargo run --package study-tts-testkit --example worker-qualification -- \
+//! cargo build --package study-tts-testkit --example worker-qualification
+//!
+//! unshare --user --map-root-user --net \
+//!   ./target/debug/examples/worker-qualification \
 //!     --bundle-root <repo> --model-root <governed> --voice-root <governed> \
 //!     --output-root <fresh directory>
 //! ```
 //!
+//! **The namespace is required**, and [`NetworkIsolation::require`] refuses the
+//! run without it. Built outside it and run inside it, because a build may
+//! legitimately reach a network and a qualification run may not.
+//!
 //! **Run by an operator on the reference machine, never by a workflow.** The
-//! four criteria below need real weights, a lawful voice profile, and the
+//! criteria below need real weights, a lawful voice profile, and the
 //! qualified interpreter, none of which a hosted runner has;
 //! `.github/workflows/qualification.yml` says in its own words why the
 //! real-model steps are not invoked from it, and
@@ -33,12 +40,17 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
-use study_tts_core::{CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE};
+use study_tts_core::{
+    CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, VoiceConditioningHash,
+    VoiceUse,
+};
 use study_tts_runtime::{
     SynthesisRequest, TtsExecutor, WorkerBundle, WorkerConfiguration, WorkerTtsExecutor,
+    resolve_voice_conditioning,
 };
 use study_tts_testkit::{run_tts_executor_contract_scenario, run_worker_restart_contract_scenario};
 
@@ -159,6 +171,10 @@ impl Configuration {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // Before the output root is even created: a `qualification-result.json`
+    // that exists at all should be one from a run whose egress was denied, the
+    // same principle as the output root that must not already exist.
+    let isolation = NetworkIsolation::require()?;
     let configuration = Configuration::from_arguments()?;
     let mut outcomes = Vec::new();
 
@@ -175,11 +191,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let voice = governed_voice(&configuration.voice_root)?;
 
     outcomes.push(model_loads_once(&configuration, &executor, &voice)?);
-    outcomes.push(protocol_stdout_stayed_clean(&executor));
     outcomes.push(worker_restarts_and_stays_offline(
         &configuration,
         &launch,
         &voice,
+        &isolation,
     )?);
     outcomes.push(output_stayed_in_the_staging_root(
         &configuration,
@@ -187,10 +203,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         &voice,
     )?);
 
-    executor.shutdown()?;
+    // Shut down before the stdout criterion is recorded, because shutdown is
+    // where the *end* of the stream is read: what a worker writes past its
+    // last frame is exactly what no check sees while the session is still
+    // open. A refusal here is the criterion's answer, not the instrument's
+    // failure, so it becomes an outcome rather than ending the run.
+    let refusal = executor.shutdown().err().map(|error| error.to_string());
+    outcomes.push(protocol_stdout_stayed_clean(&executor, refusal.as_deref()));
 
     let passed = outcomes.iter().all(|outcome| outcome.passed);
-    let result = render_result(descriptor.worker_bundle_hash.as_str(), &outcomes);
+    let result = render_result(
+        descriptor.worker_bundle_hash.as_str(),
+        &isolation,
+        &outcomes,
+    );
     println!("{result}");
 
     // Written and hashed, not only printed. The E1-S3 story record requires the
@@ -255,7 +281,7 @@ fn bundle_identity_is_stable(configuration: &Configuration) -> Result<Outcome, B
 fn model_loads_once(
     configuration: &Configuration,
     executor: &WorkerTtsExecutor,
-    voice: &(String, String),
+    voice: &GovernedVoice,
 ) -> Result<Outcome, Box<dyn Error>> {
     const CRITERION: &str = "t5_e1_model_load_occurs_once_per_worker_lifetime";
 
@@ -291,23 +317,40 @@ fn model_loads_once(
 
 /// `t5_e1_worker_protocol_stdout_remains_clean`.
 ///
-/// Every take above already proves it: the executor parses each frame off
-/// standard output and refuses anything it cannot read, so a session that
-/// completed is a session whose stdout carried nothing but frames. What this
-/// adds is that the proof is not vacuous — the backend really does write
+/// Every take above proves the middle of the session: the executor parses each
+/// frame off standard output and refuses anything it cannot read, so a session
+/// that completed is a session whose stdout carried nothing but frames. Two
+/// things that proof does not cover are added here.
+///
+/// The *end* of the stream, which `refusal` carries. Nothing reads the response
+/// channel after the last request, so until `shutdown` drained it a worker
+/// could write anything it liked past its final frame — an unterminated tail
+/// most of all, which a line-oriented reader discards at end of input — and the
+/// session still looked clean. This criterion passed for such a worker, which
+/// is the tenth-audit shape of a check named more strongly than its predicate.
+///
+/// And that the proof is not vacuous: the backend really does write
 /// diagnostics, and they really did land on the other channel.
-fn protocol_stdout_stayed_clean(executor: &WorkerTtsExecutor) -> Outcome {
+fn protocol_stdout_stayed_clean(executor: &WorkerTtsExecutor, refusal: Option<&str>) -> Outcome {
     const CRITERION: &str = "t5_e1_worker_protocol_stdout_remains_clean";
 
     let diagnostics = executor.diagnostics();
+    let Some(refusal) = refusal else {
+        return Outcome::new(
+            CRITERION,
+            !diagnostics.trim().is_empty(),
+            format!(
+                "every frame of a completed session parsed off standard output and nothing \
+                 followed the last one, while {} bytes of backend diagnostics went to standard \
+                 error",
+                diagnostics.len()
+            ),
+        );
+    };
     Outcome::new(
         CRITERION,
-        !diagnostics.trim().is_empty(),
-        format!(
-            "every frame of a completed session parsed off standard output, while {} bytes of \
-             backend diagnostics went to standard error",
-            diagnostics.len()
-        ),
+        false,
+        format!("the session's standard output was refused at shutdown: {refusal}"),
     )
 }
 
@@ -320,15 +363,27 @@ fn protocol_stdout_stayed_clean(executor: &WorkerTtsExecutor) -> Outcome {
 /// once and dropped it — which cannot tell a restartable worker from one that
 /// only ever ran once.
 ///
-/// Offline is read out of the worker's own diagnostics rather than assumed:
-/// `_apply_offline_environment` prints the variables it *applied* in that
-/// process, so a launcher that merely names them does not satisfy this. Since
-/// `WorkerClient::spawn` now clears the environment, the second lifetime also
-/// proves the declared set is enough to start a worker from nothing.
+/// Offline has two independent halves, and this criterion needs both.
+///
+/// **Egress was denied**, which [`NetworkIsolation`] established before the run
+/// began: a loopback-only namespace with no IP route. That is the half the
+/// worker cannot attest to, and until it existed this criterion asserted
+/// "operates without network access" while measuring nothing of the kind.
+///
+/// **The worker configured itself**, read out of its own diagnostics rather
+/// than assumed: `_apply_offline_environment` prints the variables it *applied*
+/// in that process, so a launcher that merely names them does not satisfy this.
+/// Since `WorkerClient::spawn` now clears the environment, the second lifetime
+/// also proves the declared set is enough to start a worker from nothing.
+///
+/// Neither half implies the other. Flags steer `huggingface_hub` and
+/// `transformers` and bind no socket; a namespace says nothing about what the
+/// worker would have tried to fetch had it been able to.
 fn worker_restarts_and_stays_offline(
     configuration: &Configuration,
     launch: &WorkerConfiguration,
-    voice: &(String, String),
+    voice: &GovernedVoice,
+    isolation: &NetworkIsolation,
 ) -> Result<Outcome, Box<dyn Error>> {
     const CRITERION: &str = "t5_e1_worker_survives_restart_and_starts_offline";
 
@@ -361,9 +416,10 @@ fn worker_restarts_and_stays_offline(
         CRITERION,
         offline.iter().all(|applied| *applied),
         format!(
-            "two lifetimes reported identical synthesis identities; offline settings applied \
-             in {} of 2 lifetimes",
-            offline.iter().filter(|applied| **applied).count()
+            "two lifetimes reported identical synthesis identities; offline settings applied in \
+             {} of 2 lifetimes, inside a network namespace holding {:?} with no IP route",
+            offline.iter().filter(|applied| **applied).count(),
+            isolation.interfaces
         ),
     ))
 }
@@ -380,7 +436,7 @@ fn worker_restarts_and_stays_offline(
 fn output_stayed_in_the_staging_root(
     configuration: &Configuration,
     executor: &WorkerTtsExecutor,
-    voice: &(String, String),
+    voice: &GovernedVoice,
 ) -> Result<Outcome, Box<dyn Error>> {
     const CRITERION: &str = "t5_e1_worker_output_cannot_escape_staging_root";
 
@@ -495,19 +551,18 @@ fn inventory(root: &Path) -> Result<BTreeSet<PathBuf>, Box<dyn Error>> {
 /// has no reason to carry. What the key is *made of* is E1-S3's cache tests;
 /// what this instrument measures is the worker session.
 fn request(
-    voice: &(String, String),
+    voice: &GovernedVoice,
     take: usize,
     text: &str,
 ) -> Result<SynthesisRequest, Box<dyn Error>> {
-    let (voice_profile, conditioning) = voice;
     let take = u32::try_from(take)?;
     Ok(SynthesisRequest {
         request_id: format!("e1-s3-qualification-{take}"),
         segment_id: format!("qualification-{take}"),
         spoken_text: text.to_owned(),
-        voice: voice_profile.to_owned(),
-        voice_profile: voice_profile.to_owned(),
-        voice_conditioning_hash: conditioning.parse()?,
+        voice: voice.profile_id.clone(),
+        voice_profile: voice.profile_id.clone(),
+        voice_conditioning_hash: voice.conditioning.clone(),
         style: "calm_explanatory".to_owned(),
         language: "en".parse()?,
         take,
@@ -518,49 +573,141 @@ fn request(
     })
 }
 
-/// The voice profile this run renders with, and the digest its record states.
+/// The voice this run renders with, resolved through the rights gate.
+#[derive(Debug)]
+struct GovernedVoice {
+    profile_id: String,
+    conditioning: VoiceConditioningHash,
+}
+
+/// The voice profile this run renders with, resolved through the rights gate.
 ///
-/// Read from the governed voice root, which is the same record
-/// `voice_gate::load_profile` verifies `conditionals.pt` against before any
-/// synthesis runs. Reading it here rather than asking the worker is what makes
-/// the request an independent claim: the executor compares the profile the
-/// worker reports back against the one the request named, so a request built
-/// from the worker's own answer would make that comparison pass by
-/// construction.
-fn governed_voice(voice_root: &Path) -> Result<(String, String), Box<dyn Error>> {
+/// Discovery is by directory name; the *load* goes through
+/// [`resolve_voice_conditioning`], which is the gate a build passes before any
+/// synthesis: consent status, rights decision, permitted-use scope, and the
+/// bytes of both `reference.wav` and `conditionals.pt` against the digests the
+/// record states. An earlier version of this read `profile.json` by hand and
+/// took `conditionals_blake3` on trust, so this instrument could qualify a
+/// worker against a voice whose consent had been revoked and whose artifact had
+/// been swapped — while its own comment claimed the gate had verified it.
+///
+/// [`VoiceUse::VoiceQualification`] is the scope: this is a qualification run
+/// that never reaches a lesson, which is the use that variant names. A governed
+/// `consent.json` that does not permit it refuses the run, and that refusal is
+/// the check working.
+///
+/// Reading from disk rather than asking the worker is still what makes the
+/// request an independent claim: the executor compares the profile the worker
+/// reports back against the one the request named, so a request built from the
+/// worker's own answer would make that comparison pass by construction.
+fn governed_voice(voice_root: &Path) -> Result<GovernedVoice, Box<dyn Error>> {
     let mut profiles: Vec<PathBuf> = fs::read_dir(voice_root)?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.join("profile.json").is_file())
         .collect();
     profiles.sort();
-    let profile = profiles
+    let profile_id = profiles
         .first()
-        .ok_or("the governed voice root holds no profile record")?;
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .ok_or("the governed voice root holds no profile record")?
+        .to_owned();
 
-    let record = fs::read_to_string(profile.join("profile.json"))?;
-    let identity = json_string(&record, "profile_id")?;
-    let digest = json_string(&record, "conditionals_blake3")?;
-    Ok((identity, digest))
+    let conditioning =
+        resolve_voice_conditioning(voice_root, &profile_id, VoiceUse::VoiceQualification)?;
+    Ok(GovernedVoice {
+        profile_id,
+        conditioning,
+    })
 }
 
-/// One string field out of a governed record.
+/// The loopback-only network namespace this instrument refuses to run outside.
 ///
-/// Read by hand rather than with a deserializer: this crate has `serde_json`,
-/// but a struct for two fields of a record this instrument does not own would
-/// have to be kept in step with a schema E0-S2 governs, and getting that wrong
-/// silently is worse than a missing field failing loudly here.
-fn json_string(record: &str, field: &str) -> Result<String, Box<dyn Error>> {
-    let value: serde_json::Value = serde_json::from_str(record)?;
-    Ok(value
-        .get(field)
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| format!("the voice profile record states no `{field}`"))?
-        .to_owned())
+/// The two-sided other end is `validate_network_isolation` in
+/// `scripts/qualification/chatterbox_spike.py`, which asks the same two
+/// questions of the same two files for the E0-S3 harness; the operator
+/// procedure is `scripts/qualification/README.md` §E1-S3. Kept as its own
+/// type so the answers reach [`render_result`]: an evidence record should be
+/// able to read the isolation off the artifact rather than take the run's word
+/// for it.
+struct NetworkIsolation {
+    /// Interface names the namespace holds: `lo`, and nothing else.
+    interfaces: Vec<String>,
+    /// IP routes the namespace carries, which is none.
+    ///
+    /// Counted and carried rather than written into the result as a literal:
+    /// a constant printed where a reader expects a measurement is the shape
+    /// this whole finding was about.
+    routes: usize,
+    /// The namespace itself, so two runs can be told apart or matched up.
+    namespace_inode: u64,
+}
+
+impl NetworkIsolation {
+    /// Refuses unless this process is in a loopback-only network namespace.
+    ///
+    /// ADR-0001 §17.7 asks the worker to operate without network access, and
+    /// the criterion below used to read that off the worker's own diagnostics:
+    /// `_apply_offline_environment` prints the variables it applied, which
+    /// proves the worker configured `huggingface_hub` and `transformers` and
+    /// proves nothing about the backend, a transitive dependency, or a socket.
+    /// Environment flags are a request; a namespace with no route is a denial.
+    ///
+    /// Refused rather than reported, so the run has to be wrapped:
+    ///
+    /// ```text
+    /// unshare --user --map-root-user --net <this instrument> ...
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// When `/proc/net/dev` or `/proc/net/route` cannot be read, when any
+    /// interface besides `lo` exists, or when the namespace carries an IP
+    /// route. Every one names the wrapper as the remedy, and the operator is
+    /// the remedy owner per `docs/governance/ROUTING-TABLES.md`.
+    fn require() -> Result<Self, Box<dyn Error>> {
+        // Both files carry header lines the kernel writes for `ip` and
+        // `netstat` to skip: two in `/proc/net/dev`, one in `/proc/net/route`.
+        let interfaces: Vec<String> = fs::read_to_string("/proc/net/dev")?
+            .lines()
+            .skip(2)
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, _)| name.trim().to_owned())
+            .collect();
+        if interfaces != ["lo"] {
+            return Err(format!(
+                "this instrument must run in a loopback-only network namespace, and this one \
+                 holds {interfaces:?}; wrap the command in `unshare --user --map-root-user --net`"
+            )
+            .into());
+        }
+        let routes = fs::read_to_string("/proc/net/route")?
+            .lines()
+            .skip(1)
+            .filter(|line| !line.trim().is_empty())
+            .count();
+        if routes > 0 {
+            return Err(format!(
+                "this instrument's network namespace carries {routes} IP route(s), so egress is \
+                 reachable; wrap the command in `unshare --user --map-root-user --net`"
+            )
+            .into());
+        }
+        Ok(Self {
+            interfaces,
+            routes,
+            namespace_inode: fs::metadata("/proc/self/ns/net")?.ino(),
+        })
+    }
 }
 
 /// The result object an evidence record cites, hashed as it stands.
-fn render_result(worker_bundle_hash: &str, outcomes: &[Outcome]) -> String {
+fn render_result(
+    worker_bundle_hash: &str,
+    isolation: &NetworkIsolation,
+    outcomes: &[Outcome],
+) -> String {
     let criteria: Vec<String> = outcomes
         .iter()
         .map(|outcome| {
@@ -573,7 +720,81 @@ fn render_result(worker_bundle_hash: &str, outcomes: &[Outcome]) -> String {
         })
         .collect();
     format!(
-        "{{\n  \"worker_bundle_hash\": \"{worker_bundle_hash}\",\n  \"criteria\": [\n{}\n  ]\n}}",
+        "{{\n  \"worker_bundle_hash\": \"{worker_bundle_hash}\",\n  \"network_isolation\": \
+         {{\"interfaces\": [{}], \"routes\": {}, \"namespace_inode\": {}}},\n  \"criteria\": \
+         [\n{}\n  ]\n}}",
+        isolation
+            .interfaces
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(", "),
+        isolation.routes,
+        isolation.namespace_inode,
         criteria.join(",\n")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use study_tts_testkit::{VoiceProfileFixtureSpec, write_voice_profile_fixture};
+    use tempfile::TempDir;
+
+    /// A synthetic governed root whose consent carries `status`.
+    ///
+    /// `voice_qualification` scope, because that is what this instrument
+    /// requests: a run that qualifies a worker and never reaches a lesson.
+    fn voice_root(status: &str) -> TempDir {
+        let workspace = TempDir::new().expect("create a qualification workspace");
+        let spec = VoiceProfileFixtureSpec {
+            consent_status: status.to_owned(),
+            permitted_use: vec!["voice_qualification".to_owned()],
+            ..VoiceProfileFixtureSpec::default()
+        };
+        write_voice_profile_fixture(&workspace.path().join(&spec.profile_id), &spec);
+        workspace
+    }
+
+    #[test]
+    fn t1_e1_a_revoked_consent_refuses_the_governed_voice() {
+        // This instrument read `profile.json` by hand and took its digest on
+        // trust, so it could qualify a worker against a voice whose consent had
+        // been revoked — while its own comment claimed the gate had verified
+        // the artifact. No worker is started here: the refusal is what the
+        // instrument's first governed read must produce.
+        let granted = voice_root("granted");
+        governed_voice(granted.path()).expect("a rights-clean voice resolves");
+
+        let revoked = voice_root("revoked");
+        let refusal = governed_voice(revoked.path())
+            .expect_err("revoked consent must refuse the run")
+            .to_string();
+
+        assert!(
+            refusal.contains("consent"),
+            "the refusal does not name consent: {refusal}"
+        );
+    }
+
+    #[test]
+    fn t1_e1_a_voice_outside_the_qualification_scope_is_refused() {
+        // The scope this instrument renders under is not the one a build uses.
+        // A profile consented only to `private_synthesis` is not consented to
+        // being qualified, and the governed record is what must change rather
+        // than the request.
+        let workspace = TempDir::new().expect("create a qualification workspace");
+        let spec = VoiceProfileFixtureSpec::default();
+        write_voice_profile_fixture(&workspace.path().join(&spec.profile_id), &spec);
+
+        let refusal = governed_voice(workspace.path())
+            .expect_err("a voice outside the qualification scope must be refused")
+            .to_string();
+
+        assert!(
+            refusal.contains("voice_qualification"),
+            "the refusal does not name the requested use: {refusal}"
+        );
+    }
 }

@@ -334,6 +334,15 @@ pub struct VoiceProfileFixtureSpec {
     pub consent_status: String,
     /// Value of `approval` in `profile.json`.
     pub approval: String,
+    /// Values of `permitted_use` in `consent.json`.
+    ///
+    /// A field rather than a fixed list because the scope is what decides
+    /// which [`study_tts_core::VoiceUse`] a fixture admits, and the two uses
+    /// belong to different callers: a build renders a lesson under
+    /// `private_synthesis`, while the committed instruments under `examples/`
+    /// render qualification material that never reaches one. A fixture that
+    /// permitted both by default would make the scope check unobservable.
+    pub permitted_use: Vec<String>,
     /// Whether `consent.json` is written at all.
     pub write_consent: bool,
 }
@@ -344,6 +353,7 @@ impl Default for VoiceProfileFixtureSpec {
             profile_id: "synthetic-test-voice-v1".to_owned(),
             consent_status: "granted".to_owned(),
             approval: "approved".to_owned(),
+            permitted_use: vec!["private_synthesis".to_owned()],
             write_consent: true,
         }
     }
@@ -408,7 +418,7 @@ pub fn write_voice_profile_fixture(dir: &Path, spec: &VoiceProfileFixtureSpec) -
         let consent = serde_json::json!({
             "schema_version": "0.1-voice",
             "declaration": "Synthetic test fixture; generated tone, no human voice.",
-            "permitted_use": ["private_synthesis"],
+            "permitted_use": spec.permitted_use,
             "reference_wav_blake3": reference_hash,
             "created": "2026-08-23",
             "consent_status": spec.consent_status,
