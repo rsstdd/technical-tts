@@ -116,8 +116,14 @@ def check_sheet_is_complete(sheet: dict[str, Any]) -> None:
     if not isinstance(samples, list) or not samples:
         raise ReviewError("the review sheet names no samples")
 
+    blind_ids: set[str] = set()
     for sample in samples:
-        blind_id = sample.get("blind_id", "an unnamed sample")
+        blind_id = sample.get("blind_id")
+        if not isinstance(blind_id, str) or not blind_id:
+            raise ReviewError("the review sheet contains an empty blind ID")
+        if blind_id in blind_ids:
+            raise ReviewError(f"the review sheet repeats blind ID {blind_id}")
+        blind_ids.add(blind_id)
         findings = sample.get("findings")
         if not isinstance(findings, dict):
             raise ReviewError(f"{blind_id} records no findings")
@@ -144,13 +150,19 @@ def check_sheet_matches_audio(listening_root: Path, sheet: dict[str, Any]) -> No
     Raises:
         ReviewError: naming the first sample that has moved or gone.
     """
+    listening_root = listening_root.resolve()
     for sample in sheet["samples"]:
         blind_id = sample.get("blind_id", "an unnamed sample")
         name = sample.get("wav")
         recorded = sample.get("sha256")
         if not isinstance(name, str) or not isinstance(recorded, str):
             raise ReviewError(f"{blind_id} names no audio file and digest")
-        audio = listening_root / name
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ReviewError(f"{blind_id} names audio outside the listening root")
+        audio = (listening_root / relative).resolve()
+        if not audio.is_relative_to(listening_root):
+            raise ReviewError(f"{blind_id} names audio outside the listening root")
         if not audio.is_file():
             raise ReviewError(f"{blind_id} names {name}, which is not beside the sheet")
         actual = sha256_file(audio)
@@ -178,7 +190,30 @@ def check_key_covers_sheet(sheet: dict[str, Any], key: dict[str, Any]) -> dict[s
     if not isinstance(mapping, list):
         raise ReviewError("the randomization key records no mapping")
 
-    by_blind_id = {entry.get("blind_id"): entry for entry in mapping}
+    mapping_ids: set[str] = set()
+    for entry in mapping:
+        blind_id = entry.get("blind_id")
+        if not isinstance(blind_id, str) or not blind_id:
+            raise ReviewError("the randomization key contains an empty blind ID")
+        if blind_id in mapping_ids:
+            raise ReviewError(f"the randomization key repeats blind ID {blind_id}")
+        mapping_ids.add(blind_id)
+
+    sheet_ids = {sample["blind_id"] for sample in sheet["samples"]}
+    if len(mapping) != len(sheet["samples"]) or mapping_ids != sheet_ids:
+        missing = sorted(sheet_ids - mapping_ids)
+        surplus = sorted(mapping_ids - sheet_ids)
+        details = []
+        if missing:
+            details.append(f"missing {', '.join(missing)}")
+        if surplus:
+            details.append(f"surplus {', '.join(surplus)}")
+        raise ReviewError(
+            "the randomization key does not cover exactly the reviewed samples"
+            + (f": {'; '.join(details)}" if details else "")
+        )
+
+    by_blind_id = {entry["blind_id"]: entry for entry in mapping}
     revealed = {}
     for sample in sheet["samples"]:
         blind_id = sample["blind_id"]
@@ -190,11 +225,6 @@ def check_key_covers_sheet(sheet: dict[str, Any], key: dict[str, Any]) -> dict[s
                 f"the randomization key and the review sheet disagree about {blind_id}'s bytes"
             )
         revealed[blind_id] = entry.get("line_id", "an unnamed line")
-    surplus = sorted(set(by_blind_id) - {sample["blind_id"] for sample in sheet["samples"]})
-    if surplus:
-        raise ReviewError(
-            f"the randomization key names samples the sheet does not review: {', '.join(surplus)}"
-        )
     return revealed
 
 
@@ -205,6 +235,7 @@ def verify(listening_root: Path) -> dict[str, str]:
     finished is told that rather than being handed a checksum complaint about a
     sheet they were still filling in.
     """
+    listening_root = listening_root.resolve()
     sheet = read_json(listening_root / "review-sheet.json", "review sheet")
     check_sheet_is_complete(sheet)
     check_sheet_matches_audio(listening_root, sheet)

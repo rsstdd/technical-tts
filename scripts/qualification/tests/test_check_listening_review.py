@@ -148,6 +148,47 @@ class ListeningReviewTests(unittest.TestCase):
 
         self.assertIn("sample-02", str(refused.exception))
 
+    def test_audio_paths_must_stay_beneath_the_listening_root(self) -> None:
+        outside_workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(outside_workspace.cleanup)
+        outside = Path(outside_workspace.name) / "outside.wav"
+        outside.write_bytes(b"outside audio")
+        (self.root / "linked.wav").symlink_to(outside)
+
+        for name in (str(outside), "../outside.wav", "linked.wav"):
+            with self.subTest(name=name):
+                sheet = self.sheet()
+                sheet["samples"][0]["wav"] = name
+
+                with self.assertRaises(checker.ReviewError) as refused:
+                    checker.verify(self.write(sheet))
+
+                self.assertIn("listening root", str(refused.exception))
+
+    def test_reviewed_sample_ids_must_be_nonempty_and_unique(self) -> None:
+        for blind_ids in (("", "sample-02"), ("sample-01", "sample-01")):
+            with self.subTest(blind_ids=blind_ids):
+                sheet = self.sheet()
+                for sample, blind_id in zip(sheet["samples"], blind_ids, strict=True):
+                    sample["blind_id"] = blind_id
+
+                with self.assertRaises(checker.ReviewError) as refused:
+                    checker.verify(self.write(sheet))
+
+                self.assertIn("blind ID", str(refused.exception))
+
+    def test_mapping_ids_must_be_nonempty_and_unique(self) -> None:
+        for blind_ids in (("", "sample-02"), ("sample-01", "sample-01")):
+            with self.subTest(blind_ids=blind_ids):
+                key = self.key()
+                for entry, blind_id in zip(key["mapping"], blind_ids, strict=True):
+                    entry["blind_id"] = blind_id
+
+                with self.assertRaises(checker.ReviewError) as refused:
+                    checker.verify(self.write(key=key))
+
+                self.assertIn("blind ID", str(refused.exception))
+
     def test_a_key_that_does_not_cover_the_sheet_is_refused(self) -> None:
         short = self.key()
         short["mapping"] = short["mapping"][:1]
