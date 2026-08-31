@@ -32,6 +32,25 @@ WORKER_ROOT = Path(__file__).resolve().parent.parent
 
 sys.path.insert(0, str(WORKER_ROOT))
 
+try:  # noqa: SIM105 - the failure is the signal, not an error to suppress
+    import soundfile
+    import torch
+
+    RESTORED_ENVIRONMENT = True
+except ImportError:
+    RESTORED_ENVIRONMENT = False
+"""Whether this interpreter is the restored worker environment.
+
+The suite is otherwise standard-library only, which `.github/workflows/ci.yml`
+relies on to run it with the system interpreter and no installation step. One
+class below needs the real numerical libraries and skips without them, so that
+property is unchanged: nothing here ever *fails* for a missing import.
+
+Run it where it can run, per `docs/operations/REVIEW-AND-ACCEPT-CYCLE.md` §1:
+
+    worker/.venv/bin/python -m unittest discover --start-directory worker/tests
+"""
+
 from study_tts_worker import WORKER_PROTOCOL_VERSION  # noqa: E402
 from study_tts_worker import worker as worker_module  # noqa: E402
 from study_tts_worker.protocol import (  # noqa: E402
@@ -580,25 +599,74 @@ class AssignedOutputContainmentTests(unittest.TestCase):
         self.root.mkdir()
         self.outside = Path(self._workspace.name, "outside").resolve()
         self.outside.mkdir()
+        self.staging = worker_module._staging_root(str(self.root))
+        self.addCleanup(os.close, self.staging.descriptor)
+
+    def contained(self, assigned: Path) -> tuple[int, str]:
+        """The containment decision, with the descriptor closed for the test."""
+        directory, name = worker_module._contained_output(self.staging, str(assigned))
+        self.addCleanup(os.close, directory)
+        return directory, name
+
+    def test_a_symlinked_parent_inside_the_root_is_refused(self) -> None:
+        # Containment used to resolve the parent and then ask where it had
+        # landed, so a symlink was admitted as long as it pointed somewhere
+        # lawful -- which made the answer depend on what the pathname resolved
+        # to at that instant. The walk now starts at the staging root's own
+        # descriptor and opens each component with `O_NOFOLLOW`, so a symlink
+        # is refused for being one rather than for where it points, and there
+        # is no longer a moment at which the answer could change.
+        shard = self.root / "shard"
+        shard.mkdir()
+        bridge = self.root / "bridge"
+        bridge.symlink_to(shard, target_is_directory=True)
+
+        with self.assertRaises(worker_module.BackendUnavailable):
+            worker_module._contained_output(self.staging, str(bridge / "take.wav"))
 
     def test_a_path_inside_the_root_is_accepted(self) -> None:
         shard = self.root / "shard"
         shard.mkdir()
 
-        assigned = worker_module._contained_output(self.root, str(shard / "take.wav"))
+        directory, name = self.contained(shard / "take.wav")
 
-        self.assertEqual(assigned, str(shard / "take.wav"))
+        self.assertEqual(name, "take.wav")
+        self.assertEqual(Path(os.readlink(f"/proc/self/fd/{directory}")), shard)
+
+    def test_an_ancestor_swapped_after_the_check_cannot_redirect_the_write(self) -> None:
+        # `O_NOFOLLOW` covers the final component only. While containment
+        # returned a pathname for the caller to open later, replacing a
+        # directory *above* it with a symlink between the two sent the write
+        # wherever the symlink pointed -- with every refusal above having
+        # passed on the way through. The check and the write now name one
+        # directory descriptor, so there is no pathname left to swap.
+        shard = self.root / "shard"
+        shard.mkdir()
+        directory, name = self.contained(shard / "take.wav")
+
+        shard.rename(self.root / "moved")
+        shard.symlink_to(self.outside, target_is_directory=True)
+        os.close(worker_module._create_contained_file(directory, name))
+
+        self.assertFalse(
+            (self.outside / "take.wav").exists(),
+            "the write must not follow a directory swapped in after the check",
+        )
+        self.assertTrue(
+            (self.root / "moved" / "take.wav").is_file(),
+            "the write must land in the directory containment was decided about",
+        )
 
     def test_an_absolute_path_outside_the_root_is_refused(self) -> None:
         with self.assertRaises(worker_module.BackendUnavailable) as refused:
-            worker_module._contained_output(self.root, str(self.outside / "take.wav"))
+            worker_module._contained_output(self.staging, str(self.outside / "take.wav"))
 
         self.assertIn("staging root", str(refused.exception))
 
     def test_a_path_that_climbs_out_of_the_root_is_refused(self) -> None:
         with self.assertRaises(worker_module.BackendUnavailable):
             worker_module._contained_output(
-                self.root, str(self.root / os.pardir / "outside" / "take.wav")
+                self.staging, str(self.root / os.pardir / "outside" / "take.wav")
             )
 
     def test_a_symlinked_parent_leaving_the_root_is_refused(self) -> None:
@@ -608,18 +676,18 @@ class AssignedOutputContainmentTests(unittest.TestCase):
         bridge.symlink_to(self.outside, target_is_directory=True)
 
         with self.assertRaises(worker_module.BackendUnavailable):
-            worker_module._contained_output(self.root, str(bridge / "take.wav"))
+            worker_module._contained_output(self.staging, str(bridge / "take.wav"))
 
     def test_a_parent_that_does_not_exist_is_refused(self) -> None:
         # The worker creates exactly the file it was assigned and never a
         # directory, so an absent parent is the parent's mistake, not a path to
         # be built.
         with self.assertRaises(worker_module.BackendUnavailable):
-            worker_module._contained_output(self.root, str(self.root / "absent" / "take.wav"))
+            worker_module._contained_output(self.staging, str(self.root / "absent" / "take.wav"))
 
     def test_the_root_itself_is_not_an_assignable_output(self) -> None:
         with self.assertRaises(worker_module.BackendUnavailable):
-            worker_module._contained_output(self.root, str(self.root / os.curdir))
+            worker_module._contained_output(self.staging, str(self.root / os.curdir))
 
 
 class VoiceProfileResolutionTests(unittest.TestCase):
@@ -711,8 +779,108 @@ class RefusalRedactionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as workspace:
             root = Path(workspace, "staging")
             root.mkdir()
+            staging = worker_module._staging_root(str(root))
+            self.addCleanup(os.close, staging.descriptor)
 
             with self.assertRaises(worker_module.BackendUnavailable) as refused:
-                worker_module._contained_output(root, str(root / "absent" / "take.wav"))
+                worker_module._contained_output(staging, str(root / "absent" / "take.wav"))
 
             self.assertNotIn(str(root), str(refused.exception))
+
+
+@unittest.skipUnless(
+    RESTORED_ENVIRONMENT, "needs the restored worker environment's numerical libraries"
+)
+class RenderPlumbingTests(unittest.TestCase):
+    """`_render` is driven end to end, with a stub model and no weights.
+
+    Every other test here reaches the worker's *refusals*, which the standard
+    library can express. This one reaches the path that actually renders, and
+    nothing did: it imports `numpy`, `soundfile`, and `torch` unconditionally,
+    so no test running on the system interpreter could enter it, and the whole
+    of it was covered only by `t5_` on the reference machine.
+
+    That gap shipped a defect. Splitting a helper out of `_render` left `voice`
+    behind in the caller, and all sixty-one tests here passed because none of
+    them could execute the line that used it; the real worker died on the first
+    synthesis. A stub model costs nothing and closes the class.
+
+    Stub *model*, real libraries. Faking `numpy` and `torch` well enough to
+    satisfy this function would mean writing a second copy of what it does, and
+    a test that re-derives its subject agrees with any implementation including
+    a wrong one. The model is the only expensive part, and it is the only part
+    replaced.
+    """
+
+    class _StubModel:
+        """Answers `generate` with silence, and records what it was conditioned on."""
+
+        def __init__(self, frames: int) -> None:
+            self.frames = frames
+            self.conds: object | None = None
+            self.calls: list[str] = []
+
+        def generate(self, text: str, **parameters: float) -> object:
+            self.calls.append(text)
+            return torch.zeros(1, self.frames)
+
+    def setUp(self) -> None:
+        self._workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(self._workspace.cleanup)
+        self.root = Path(self._workspace.name, "staging").resolve()
+        self.root.mkdir()
+        self.staging = worker_module._staging_root(str(self.root))
+        self.addCleanup(os.close, self.staging.descriptor)
+
+        self.launcher = worker_module._load_launcher()
+        self.model = self._StubModel(frames=1_000)
+        self.backend = worker_module._Backend(
+            model=self.model,
+            model_revision="v1",
+            codec_revision="none",
+            conditioning={"owner-fallback-v1": "a" * 64},
+            conditionals={"owner-fallback-v1": object()},
+            sample_rate=worker_module.CANONICAL_SAMPLE_RATE_HZ,
+        )
+
+    def parameters(self, output: Path) -> dict[str, object]:
+        return {
+            "text": "One. Two. Three.",
+            "voice": "owner-fallback-v1",
+            "style": worker_module.CALM_EXPLANATORY_STYLE,
+            "seed": 42,
+            "take": 0,
+            "output": str(output),
+        }
+
+    def test_a_render_writes_the_assigned_file_inside_the_staging_root(self) -> None:
+        shard = self.root / "shard"
+        shard.mkdir()
+        assigned = shard / "take.wav"
+
+        frames = worker_module._render(
+            self.backend, self.launcher, self.parameters(assigned), self.staging
+        )
+
+        self.assertEqual(frames, 1_000)
+        self.assertTrue(assigned.is_file(), "the take must land at its assigned path")
+        self.assertEqual(self.model.calls, ["One. Two. Three."])
+        # Set per request rather than once at load, so a take is never rendered
+        # under the voice the previous request happened to leave behind.
+        self.assertIs(self.model.conds, self.backend.conditionals["owner-fallback-v1"])
+
+    def test_a_render_refused_for_containment_leaves_no_file_and_no_descriptor(self) -> None:
+        # The gate runs before generation, so a refused path costs no render --
+        # and the descriptor the walk opened is closed on the way out, which a
+        # long-running worker depends on for not exhausting its own limit.
+        outside = Path(self._workspace.name, "outside")
+        outside.mkdir()
+        before = len(os.listdir("/proc/self/fd"))
+
+        with self.assertRaises(worker_module.BackendUnavailable):
+            worker_module._render(
+                self.backend, self.launcher, self.parameters(outside / "take.wav"), self.staging
+            )
+
+        self.assertEqual(self.model.calls, [], "no audio may be generated for a refused path")
+        self.assertEqual(len(os.listdir("/proc/self/fd")), before, "no descriptor may leak")

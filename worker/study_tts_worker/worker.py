@@ -34,7 +34,7 @@ import os
 import random
 import sys
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 
 from . import WORKER_PROTOCOL_VERSION
 from .protocol import (
@@ -307,10 +307,11 @@ class _Session:
         # success frame so the parent can see the worker did not change bundles
         # mid-session.
         self.worker_bundle_hash = ""
-        # The one directory this worker may write inside, resolved once at
-        # `initialize` so every later containment decision is made against a
-        # real path rather than a spelling the supervisor sent.
-        self.staging_root: Path | None = None
+        # The one directory this worker may write inside, opened once at
+        # `initialize` and held: every later containment decision is a walk
+        # from this descriptor rather than a check on a name the supervisor
+        # sent. See `_staging_root`.
+        self.staging: _StagingRoot | None = None
 
 
 class _Backend:
@@ -548,71 +549,159 @@ def _redacted_detail(error: BaseException) -> str:
     return type(error).__name__
 
 
-def _staging_root(assigned: str) -> Path:
-    """Resolves the one directory this worker may write inside.
+class _StagingRoot(NamedTuple):
+    """The one directory this worker may write inside, held open.
 
-    Resolved once, at `initialize`, so a symlink swapped in later cannot move
-    the boundary every later request is checked against.
+    The two travel together because neither is usable alone: the descriptor is
+    the boundary, and the path is only how an assigned output is spelled
+    relative to it.
+    """
+
+    path: Path
+    descriptor: int
+
+
+def _staging_root(assigned: str) -> _StagingRoot:
+    """Opens the one directory this worker may write inside, and keeps it open.
+
+    Opened once, at `initialize`, and held for the session. A descriptor rather
+    than a resolved path, because containment then stops being a check made on
+    a name and becomes a property of how the file is reached: every later
+    request walks from *this* descriptor, opening each component with
+    `O_NOFOLLOW`, so there is no pathname to re-walk and nothing a symlink
+    swapped in later can redirect. ADR-0001 §10.3 confines worker writes to the
+    assigned staging root.
+
+    The path is kept beside it only for :func:`_contained_output` to spell an
+    assigned output relative to the root. It is the supervisor's own spelling
+    and deliberately not resolved: the supervisor builds both the root and
+    every output path from one absolute base, so the two agree textually, and
+    resolving here would only invite them to disagree.
 
     Raises:
-        BackendUnavailable: if the assigned root is not an existing directory.
+        BackendUnavailable: if the assigned root is not an existing directory
+            this worker can open.
     """
+    root = Path(assigned)
+    if not root.is_absolute():
+        raise BackendUnavailable("the assigned staging root is not an absolute path")
     try:
-        root = Path(assigned).resolve(strict=True)
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
     except OSError as error:
         raise BackendUnavailable(
-            f"the assigned staging root cannot be resolved: {_redacted_detail(error)}"
+            f"the assigned staging root cannot be opened: {_redacted_detail(error)}"
         ) from error
-    if not root.is_dir():
-        raise BackendUnavailable("the assigned staging root does not name a directory")
-    return root
+    return _StagingRoot(root, descriptor)
 
 
-def _contained_output(staging_root: Path, assigned: str) -> str:
-    """Returns the assigned output path proven to lie inside the staging root.
+def _contained_output(staging: _StagingRoot, assigned: str) -> tuple[int, str]:
+    """Walks from the staging root to the directory the assigned file goes in.
 
-    Containment is decided against the *resolved parent*, never the spelling.
-    A lexical check accepts a path whose every component is inside the root by
-    name and whose parent is a symlink pointing out of it, which is the shape
-    ADR-0001 10.3 confines worker writes against. Resolving the parent and
-    rebuilding the path from it leaves the final component unresolved, which is
-    what `O_NOFOLLOW` at the open is then for: together they cover a symlink at
-    any level.
+    Returns that directory as an open descriptor, with the file name to create
+    inside it. **Containment is the walk, not a check performed after one.**
+    Every component is opened relative to the descriptor before it, with
+    `O_NOFOLLOW`, so nothing this returns can be outside the root: there is no
+    pathname resolved and re-walked, and therefore no window in which a symlink
+    planted at any level could redirect the write. A lexical check alone
+    accepts a path whose every component is inside the root by name and whose
+    parent is a symlink pointing out of it, which is the shape ADR-0001 10.3
+    confines worker writes against.
+
+    A symlinked component is refused for *being* a symlink rather than for
+    where it points, so a link to a lawful directory inside the root is refused
+    too. That is stricter than resolving and then asking where the answer
+    landed, and deliberately: the supervisor composes every staging path itself
+    and plants no links, so nothing lawful is turned away, while the decision
+    no longer depends on what a name resolved to at one instant.
 
     The parent must already exist. The worker creates exactly the one file it
     was assigned and never a directory, so an absent parent is the supervisor's
     mistake rather than a path to be built.
 
+    The caller closes the returned descriptor. It is always its own, never the
+    session's, so closing it cannot shut the boundary for the next request.
+
+    Residual limit, which no descriptor can close: a directory proven inside
+    the root and then *moved* out of it carries this descriptor with it,
+    because a descriptor follows the inode rather than the name. Closing that
+    needs a filesystem sandbox rather than more care here, and whoever can move
+    a directory out of the staging root can already write inside it.
+
     Raises:
-        BackendUnavailable: if the assigned path does not resolve to a file
-            directly inside the staging root this worker was initialized with.
+        BackendUnavailable: if the assigned path does not name a file reachable
+            from the staging root this worker was initialized with.
     """
-    candidate = Path(assigned)
-    name = candidate.name
-    if not name or name in (os.curdir, os.pardir):
+    try:
+        relative = Path(assigned).relative_to(staging.path)
+    except ValueError:
+        raise BackendUnavailable(
+            "the assigned output path is not inside the staging root this worker was "
+            "given, and this worker writes only inside it"
+        ) from None
+    parts = relative.parts
+    if not parts:
         raise BackendUnavailable(
             "the assigned output path does not name a file this worker could create"
         )
+    # `relative_to` is purely textual, so a path spelled through the root and
+    # back out again keeps its `..` rather than being rejected as outside.
+    if os.pardir in parts:
+        raise BackendUnavailable(
+            "the assigned output path climbs out of the staging root this worker was given"
+        )
+
+    # Duplicated so the caller owns exactly what it is handed, including when
+    # the file goes directly in the root and no component is walked at all.
+    directory = os.dup(staging.descriptor)
     try:
-        parent = candidate.parent.resolve(strict=True)
+        for part in parts[:-1]:
+            nested = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory
+            )
+            os.close(directory)
+            directory = nested
     except OSError as error:
+        os.close(directory)
         raise BackendUnavailable(
             f"the assigned output path has no directory this worker can write into: "
             f"{_redacted_detail(error)}"
         ) from error
-    if parent != staging_root and staging_root not in parent.parents:
-        raise BackendUnavailable(
-            "the assigned output path resolves outside the staging root this worker was "
-            "given, and this worker writes only inside it"
+    return directory, parts[-1]
+
+
+def _create_contained_file(directory: int, name: str) -> int:
+    """Creates `name` inside the directory `directory` holds, exactly once.
+
+    `O_EXCL` and `O_NOFOLLOW`, and no `mkdir`: the worker writes exactly the
+    one file it was assigned, never through a symlink planted at that path and
+    never over something already there. Opened relative to the descriptor
+    :func:`_contained_output` returned, so no part of the path is walked a
+    second time and the containment decision still holds when the file appears.
+
+    Durability is the parent's: it syncs and renames the staging transaction
+    into place.
+
+    Raises:
+        BackendUnavailable: if the assigned file cannot be created exactly once.
+    """
+    try:
+        return os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory,
         )
-    return str(parent / name)
+    except OSError as error:
+        raise BackendUnavailable(
+            f"the assigned output path could not be created exactly once: {_redacted_detail(error)}"
+        ) from error
 
 
 def _render(
     backend: _Backend,
     launcher: dict[str, Any],
     parameters: dict[str, Any],
-    staging_root: Path,
+    staging: _StagingRoot,
 ) -> int:
     """Renders one request to the assigned path and returns the frames written.
 
@@ -633,65 +722,58 @@ def _render(
     # Proven before anything is generated, not after. A path this worker may
     # not write is a refusal the supervisor should get without paying for a
     # render first, and a gate that runs after the work it guards cannot be
-    # told from one that never ran.
-    output = _contained_output(staging_root, parameters["output"])
-
-    import numpy
-    import soundfile
-    import torch
-
-    # Reset before every take, not once at load: generation advances the global
-    # random state, so a second take under one seed would otherwise sample from
-    # wherever the first one left off and the seed would describe only the first.
-    random.seed(parameters["seed"])
-    numpy.random.seed(parameters["seed"] % (2**32))
-    torch.manual_seed(parameters["seed"])
-
-    # Set per request, not once at load: each request names its own voice, and a
-    # model left conditioned on the previous one would render a voice the plan
-    # did not ask for -- under a key naming the voice it did.
-    backend.model.conds = backend.conditionals[voice]
-
+    # told from one that never ran. The directory is *held* across the
+    # generation rather than re-derived after it, which is what keeps the
+    # decision and the write about the same directory.
+    directory, name = _contained_output(staging, parameters["output"])
     try:
-        generated = backend.model.generate(
-            parameters["text"], **_generation_parameters(launcher)
-        )
-    except Exception as error:  # noqa: BLE001 - any backend fault is one refusal
-        raise BackendUnavailable(f"synthesis failed: {_redacted_detail(error)}") from error
+        import numpy
+        import soundfile
+        import torch
 
-    samples = generated.squeeze().detach().cpu().numpy().astype(numpy.float32, copy=False)
-    if samples.ndim != 1:
-        raise BackendUnavailable("the backend returned audio that is not one channel")
+        # Reset before every take, not once at load: generation advances the global
+        # random state, so a second take under one seed would otherwise sample from
+        # wherever the first one left off and the seed would describe only the first.
+        random.seed(parameters["seed"])
+        numpy.random.seed(parameters["seed"] % (2**32))
+        torch.manual_seed(parameters["seed"])
 
-    # `O_EXCL` and `O_NOFOLLOW`, and no `mkdir`: the worker writes exactly the
-    # one file it was assigned, never through a symlink planted at that path and
-    # never over something already there. ADR-0001 §10.3 confines worker writes
-    # to the assigned staging root, and this is the half the worker itself can
-    # enforce. Durability is the parent's: it syncs and renames the staging
-    # transaction into place.
-    try:
-        descriptor = os.open(
-            output,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o600,
-        )
-    except OSError as error:
-        raise BackendUnavailable(
-            f"the assigned output path could not be created exactly once: {_redacted_detail(error)}"
-        ) from error
-    try:
-        with os.fdopen(descriptor, "wb") as artifact:
-            soundfile.write(
-                artifact,
-                samples,
-                backend.sample_rate,
-                format="WAV",
-                subtype="FLOAT",
+        # Set per request, not once at load: each request names its own voice, and a
+        # model left conditioned on the previous one would render a voice the plan
+        # did not ask for -- under a key naming the voice it did.
+        backend.model.conds = backend.conditionals[voice]
+
+        try:
+            generated = backend.model.generate(
+                parameters["text"], **_generation_parameters(launcher)
             )
-    except Exception as error:  # noqa: BLE001 - any write fault is one refusal
-        raise BackendUnavailable(f"the assigned output could not be written: {_redacted_detail(error)}") from error
+        except Exception as error:  # noqa: BLE001 - any backend fault is one refusal
+            raise BackendUnavailable(f"synthesis failed: {_redacted_detail(error)}") from error
 
-    return int(samples.shape[0])
+        samples = generated.squeeze().detach().cpu().numpy().astype(numpy.float32, copy=False)
+        if samples.ndim != 1:
+            raise BackendUnavailable("the backend returned audio that is not one channel")
+
+        # ADR-0001 §10.3 confines worker writes to the assigned staging root, and
+        # this is the half the worker itself can enforce.
+        descriptor = _create_contained_file(directory, name)
+        try:
+            with os.fdopen(descriptor, "wb") as artifact:
+                soundfile.write(
+                    artifact,
+                    samples,
+                    backend.sample_rate,
+                    format="WAV",
+                    subtype="FLOAT",
+                )
+        except Exception as error:  # noqa: BLE001 - any write fault is one refusal
+            raise BackendUnavailable(
+                f"the assigned output could not be written: {_redacted_detail(error)}"
+            ) from error
+
+        return int(samples.shape[0])
+    finally:
+        os.close(directory)
 
 
 def _generation_parameters(launcher: dict[str, Any]) -> dict[str, float]:
@@ -769,12 +851,12 @@ def _respond(
                 recoverable=False,
             )
         try:
-            staging_root = _staging_root(frame["parameters"]["staging_root"])
+            staging = _staging_root(frame["parameters"]["staging_root"])
             session.backend = _load_backend(launcher, frame["parameters"]["threads"])
         except BackendUnavailable as error:
             return failure(request_id, "initialization_failed", str(error), recoverable=False)
         session.worker_bundle_hash = frame["parameters"]["worker_bundle_hash"]
-        session.staging_root = staging_root
+        session.staging = staging
         return {
             "event": "initialized",
             "protocol_version": WORKER_PROTOCOL_VERSION,
@@ -808,7 +890,7 @@ def _respond(
     if method == "synthesize":
         # Both, though `initialize` sets them together: the pair is what a
         # render needs, and a checker cannot see that one implies the other.
-        if session.backend is None or session.staging_root is None:
+        if session.backend is None or session.staging is None:
             return failure(
                 request_id,
                 "initialization_failed",
@@ -818,9 +900,7 @@ def _respond(
             )
         parameters = frame["parameters"]
         try:
-            frames = _render(
-                session.backend, launcher, parameters, session.staging_root
-            )
+            frames = _render(session.backend, launcher, parameters, session.staging)
         except BackendUnavailable as error:
             return failure(request_id, "synthesis_failed", str(error), recoverable=True)
         return {
