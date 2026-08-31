@@ -40,8 +40,9 @@ pub const REQUIRED_EDGE_SILENCE_MS: u32 = 10;
 
 /// Longest raised-cosine transition ramp, in milliseconds.
 ///
-/// ADR-0001 §13.4: no longer than 5 ms. Fixed by ADR-0001. The ramp is placed
-/// entirely inside the silence it rises out of, so it can never enter speech.
+/// ADR-0001 §13.4: no longer than 5 ms. Fixed by ADR-0001. The ramp covers the
+/// first samples of signal, which is the only side of the transition with
+/// anything to attenuate — the silence side is exactly zero once padded.
 pub const MAX_TRANSITION_RAMP_MS: u32 = 5;
 
 /// Longest segment audio this build will condition or publish.
@@ -200,7 +201,7 @@ fn leading_silent_samples(samples: &[f32], sample_rate: u32, threshold: f32) -> 
     // than left unmeasured. Without this a segment shorter than 5 ms measures
     // as having no silence at all even when every sample in it is zero, and the
     // conditioner then treats silence as an edge to ramp out of.
-    if silent < samples.len() && frame_rms(&samples[silent..]) <= threshold {
+    if samples.len() - silent < frame && frame_rms(&samples[silent..]) <= threshold {
         silent = samples.len();
     }
     silent
@@ -217,50 +218,45 @@ fn trailing_silent_samples(samples: &[f32], sample_rate: u32, threshold: f32) ->
         }
         silent += frame;
     }
-    if silent < samples.len() && frame_rms(&samples[..samples.len() - silent]) <= threshold {
+    if samples.len() - silent < frame && frame_rms(&samples[..samples.len() - silent]) <= threshold
+    {
         silent = samples.len();
     }
     silent
 }
 
-/// Applies a raised-cosine ramp rising to unity at `boundary`.
+/// Raised-cosine gain at `offset` of a ramp `length` samples long.
 ///
-/// The ramp occupies the `length` samples *before* `boundary` and no others, so
-/// it lies entirely within the silence it rises out of — ADR-0001 §13.4's ramp
-/// "without entering speech". Its first sample is scaled by exactly zero, which
-/// is what makes an exposed endpoint exactly zero after conditioning.
-fn apply_leading_ramp(samples: &mut [f32], boundary: usize, length: usize) {
-    if length == 0 {
-        return;
-    }
-    let start = boundary - length;
+/// Exactly zero at offset 0 and rising toward unity, with zero slope at both
+/// ends — which is what makes a transition smooth rather than merely gradual.
+fn raised_cosine_gain(offset: usize, length: usize) -> f32 {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a ramp is at most 5 ms of samples, far inside f32's exact integer range"
+    )]
+    let position = offset as f32 / length as f32;
+    0.5 * (1.0 - (PI * position).cos())
+}
+
+/// Fades the signal in across the `length` samples starting at `onset`.
+///
+/// The ramp covers *signal*, not the silence before it. ADR-0001 §13.4 requires
+/// each silence-to-signal transition to be smoothed, and after padding the
+/// silence side is exactly zero: scaling zero by any gain leaves zero, so a
+/// ramp confined to the silence leaves the very step it exists to remove. The
+/// sample at `onset` is scaled by exactly zero, so the transition out of the
+/// padding is continuous and the exposed endpoint stays exactly zero.
+fn apply_leading_ramp(samples: &mut [f32], onset: usize, length: usize) {
     for offset in 0..length {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "a ramp is at most 5 ms of samples, far inside f32's exact integer range"
-        )]
-        let position = offset as f32 / length as f32;
-        // Raised cosine: 0 at the far end, 1 at the boundary, with zero slope
-        // at both, which is what makes the transition smooth rather than merely
-        // gradual.
-        let gain = 0.5 * (1.0 - (PI * position).cos());
-        samples[start + offset] *= gain;
+        samples[onset + offset] *= raised_cosine_gain(offset, length);
     }
 }
 
-/// The mirror of [`apply_leading_ramp`] at the other end.
-fn apply_trailing_ramp(samples: &mut [f32], boundary: usize, length: usize) {
-    if length == 0 {
-        return;
-    }
+/// The mirror at the other end, fading out across the `length` samples ending
+/// at `end`, which is one past the last signal sample.
+fn apply_trailing_ramp(samples: &mut [f32], end: usize, length: usize) {
     for offset in 0..length {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "a ramp is at most 5 ms of samples, far inside f32's exact integer range"
-        )]
-        let position = offset as f32 / length as f32;
-        let gain = 0.5 * (1.0 - (PI * position).cos());
-        samples[boundary + length - 1 - offset] *= gain;
+        samples[end - 1 - offset] *= raised_cosine_gain(offset, length);
     }
 }
 
@@ -269,9 +265,19 @@ fn apply_trailing_ramp(samples: &mut [f32], boundary: usize, length: usize) {
 /// ADR-0001 §13.4, in the order that document states: analyze each edge in 5 ms
 /// RMS frames, add zero samples until each edge has at least 10 ms of silence,
 /// then smooth each silence-to-signal transition with a raised-cosine ramp no
-/// longer than 5 ms. Ramp length is additionally capped at the silence actually
-/// present, so the ramp cannot reach into speech on a segment that arrived with
-/// less than a full ramp's worth of quiet.
+/// longer than 5 ms.
+///
+/// **Smoothing attenuates the first and last 5 ms of signal**, because that is
+/// the only side of the transition with anything to attenuate: the silence side
+/// is exactly zero once padded. `DELIVERY-PLAN.md` E1-S3 task 3 previously
+/// required the ramp to apply "without entering speech", which cannot smooth
+/// anything at all; the project owner resolved the conflict in ADR-0001's
+/// favour under the conflict order in `CLAUDE.md`, and the plan now carries
+/// ADR-0001's wording and names
+/// `t1_e2_ramp_smooths_the_silence_to_signal_transition` in return.
+///
+/// Ramp length is capped at half the signal, so on a segment shorter than two
+/// full ramps the two abut rather than overlapping into a hole in its middle.
 ///
 /// Audio that is silent throughout is padded and left unramped: there is no
 /// silence-to-signal transition to smooth, and inventing one would fabricate a
@@ -312,16 +318,18 @@ pub fn condition_edges(
         return conditioning;
     }
 
+    // The signal is what lies between the two silences, and it is what the
+    // ramps cover. Half of it apiece, so two ramps on a segment shorter than
+    // 10 ms of signal abut instead of overlapping and multiplying.
     let leading_boundary = leading_silence + leading_padding;
-    let leading_ramp = max_ramp.min(leading_boundary);
-    apply_leading_ramp(samples, leading_boundary, leading_ramp);
-
     let trailing_boundary = samples.len() - (trailing_silence + trailing_padding);
-    let trailing_ramp = max_ramp.min(samples.len() - trailing_boundary);
-    apply_trailing_ramp(samples, trailing_boundary, trailing_ramp);
+    let ramp = max_ramp.min((trailing_boundary - leading_boundary) / 2);
+    apply_leading_ramp(samples, leading_boundary, ramp);
+    apply_trailing_ramp(samples, trailing_boundary, ramp);
 
-    conditioning.leading_ramp = u32::try_from(leading_ramp).unwrap_or(u32::MAX);
-    conditioning.trailing_ramp = u32::try_from(trailing_ramp).unwrap_or(u32::MAX);
+    let recorded = u32::try_from(ramp).unwrap_or(u32::MAX);
+    conditioning.leading_ramp = recorded;
+    conditioning.trailing_ramp = recorded;
     conditioning
 }
 
@@ -371,44 +379,73 @@ mod tests {
     }
 
     #[test]
-    fn t1_e2_ramp_never_extends_into_speech() {
-        // The ramp is placed inside the silence and stops at the boundary, so
-        // no sample the worker wrote as speech may be scaled. A ramp that
-        // reached one sample further would attenuate the first phoneme.
-        let leading = REQUIRED * 2;
-        let mut samples = vec![0.0; leading];
-        samples.extend(speech(2_400));
-        samples.extend(std::iter::repeat_n(0.0, leading));
+    fn t1_e2_ramp_smooths_the_silence_to_signal_transition() {
+        // ADR-0001 §13.4's actual requirement, and the one a ramp confined to
+        // the padding cannot meet: scaling inserted zeros is arithmetically
+        // inert, so the 0.0 -> 0.5 step at the onset survived untouched. The
+        // ramp therefore covers signal, and this pins both halves of the rule —
+        // that the transition is smooth, and that the smoothing is bounded.
+        let mut samples = speech(2_400);
 
         let conditioning = condition_edges(&mut samples, RATE, SilenceThreshold::provisional());
 
+        assert_eq!(conditioning.leading_padding, REQUIRED as u32);
         assert_eq!(conditioning.leading_ramp, RAMP as u32);
-        for (index, sample) in samples.iter().enumerate().skip(leading).take(2_400) {
+        assert_eq!(
+            samples[REQUIRED], 0.0,
+            "the transition must start from exactly zero"
+        );
+        for index in REQUIRED..REQUIRED + RAMP - 1 {
+            assert!(
+                samples[index] < samples[index + 1],
+                "the ramp must rise at {index}: {} then {}",
+                samples[index],
+                samples[index + 1]
+            );
+        }
+        for (index, sample) in samples
+            .iter()
+            .enumerate()
+            .skip(REQUIRED + RAMP)
+            .take(2_400 - 2 * RAMP)
+        {
             assert!(
                 (*sample - 0.5).abs() < f32::EPSILON,
-                "speech at {index} was attenuated to {sample}"
+                "signal beyond the ramp was attenuated at {index} to {sample}"
             );
         }
     }
 
     #[test]
-    fn t1_e2_ramp_is_capped_by_the_silence_it_rises_out_of() {
-        // A segment arriving with less quiet than a full ramp gets a shorter
-        // ramp rather than one that starts inside speech. The cap is what makes
-        // "no longer than 5 ms" and "never into speech" hold together.
-        let mut samples = vec![0.0; 40];
-        samples.extend(speech(2_400));
-        samples.extend(std::iter::repeat_n(0.0, 40));
+    fn t1_e2_ramp_is_capped_by_the_signal_it_rises_into() {
+        // A segment holding less signal than two full ramps gets shorter ramps
+        // rather than two that overlap and multiply into a hole in its middle.
+        let mut samples = speech(100);
 
         let conditioning = condition_edges(&mut samples, RATE, SilenceThreshold::provisional());
 
-        // The 40 zeros are shorter than one 5 ms analysis frame, so the frame
-        // covering them also covers speech and the measured silence is zero;
-        // the padding then supplies the whole requirement.
+        assert_eq!(conditioning.leading_ramp, 50);
+        assert_eq!(conditioning.trailing_ramp, 50);
+    }
+
+    #[test]
+    fn t1_e2_a_loud_burst_before_long_silence_is_not_measured_as_wholly_silent() {
+        // The partial-frame branch measures a remainder *shorter than one
+        // frame*. Unbounded, it instead measured the whole remainder: a quiet
+        // burst followed by a second of silence averages below the threshold,
+        // the segment is called wholly silent, and conditioning returns before
+        // ramping any of the real signal. The burst is above the threshold in
+        // its own 5 ms frame and below it once diluted across the remainder,
+        // which is exactly the shape that distinguishes the two readings.
+        let mut samples = vec![0.01; 120];
+        samples.extend(std::iter::repeat_n(0.0, 24_000));
+
+        let conditioning = condition_edges(&mut samples, RATE, SilenceThreshold::provisional());
+
         assert_eq!(conditioning.leading_padding, REQUIRED as u32);
-        assert!(
-            conditioning.leading_ramp <= RAMP as u32,
-            "a ramp may never exceed {MAX_TRANSITION_RAMP_MS} ms"
+        assert_eq!(
+            conditioning.leading_ramp, 60,
+            "the burst is signal, so its onset must be smoothed"
         );
     }
 

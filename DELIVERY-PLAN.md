@@ -547,7 +547,7 @@ The E0-S0 skeleton already supplies the shared durable-filesystem primitives, pr
 
 1. Analyze leading and trailing audio in 5 ms RMS frames.
 2. Add zero padding until each exposed edge has at least 10 ms silence.
-3. Apply a raised-cosine transition ramp no longer than 5 ms without entering speech.
+3. Apply a raised-cosine transition ramp no longer than 5 ms that smooths the silence-to-signal transition.
 4. Validate exact zero endpoints, join discontinuity, finite samples, and `max(abs(sample)) <= 1.0`.
 5. Apply two-pass final-package loudness normalization.
 6. Record provisional voice/style measurements without treating them as production references.
@@ -557,7 +557,7 @@ The E0-S0 skeleton already supplies the shared durable-filesystem primitives, pr
 
 - `t1_e2_short_edge_is_padded_to_ten_milliseconds`
 - `t1_e2_sufficient_edge_receives_no_extra_padding`
-- `t1_e2_ramp_never_extends_into_speech`
+- `t1_e2_ramp_smooths_the_silence_to_signal_transition`
 - `t1_e2_exposed_endpoints_are_exactly_zero`
 - `t1_e2_discontinuity_threshold_is_enforced`
 - `t4_e2_loudnorm_requires_linear_result`

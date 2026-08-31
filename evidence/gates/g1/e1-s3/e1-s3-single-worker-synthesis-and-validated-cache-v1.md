@@ -484,11 +484,51 @@ carries **Owed** rows.
 | 4 | Worker launches inherited the ambient environment; `env_clear` was never called | Called before anything is declared. The test written first observed **over 100** inherited variables, including `PYENV_ROOT`, `LD_LIBRARY_PATH` and `SSL_CERT_FILE`. The child now holds exactly the declared set, which meant declaring the offline variables from Rust too — over the same allowlist the Python end uses, never over `worker/launcher.json`, because iterating that file would make a declared bundle input a place to set `PYTHONPATH` |
 | 5 | The staging-containment criterion admitted it could not prove its own name | `initialize` carries `staging_root`; containment is decided against the resolved parent. See §Limits |
 | 6 | The shared suite ran neither graceful shutdown nor restart, and shutdown went straight to `SIGKILL` without sending the protocol frame that already existed | The `shutdown` frame is sent and a grace period observed before the group kill, which remains the backstop. `run_worker_restart_contract_scenario` drives two lifetimes and is used by both the T4 fake suite and the T5 instrument. **Mid-generation cancellation is not implemented**: Python synthesis is synchronous, so a cancel frame cannot be processed while generation runs, and making the worker interruptible is an architecture change |
-| 7 | Task 4 was checked while duration, silence, and edge conditioning were absent | Implemented — under `ADR-0001-D007`, which records that this required a **provisional** silence threshold because ADR-0003 is Proposed and records the value as pending, and that the project owner directed it be done now rather than deferred. Join discontinuity and loudness normalization remain E2-S3's; both need the second pending ADR-0003 value or FFmpeg |
+| 7 | Task 4 was checked while duration, silence, and edge conditioning were absent | Implemented — under `ADR-0001-D007`, which records that this required a **provisional** silence threshold because ADR-0003 is Proposed and records the value as pending, and that the project owner directed it be done now rather than deferred. Join discontinuity and loudness normalization remain E2-S3's; both need the second pending ADR-0003 value or FFmpeg. **A later audit found the ramp half of this inert** — see §The ramp correction |
 | 8 | Raw backend exception strings reached failure frames, carrying governed paths and possibly source text | Redacted at all nine sites: the fault's own message is dropped and the type name reported, with `OSError` keeping `strerror` — the kernel's words for *why*, with no path in them |
 | 9 | The requirement parser scanned only double-quoted strings and skipped entries whose suffix did not match its operator set | Single-quoted literals and unterminated extras brackets are refused as `Unreadable` rather than skipped, and PEP 508 extras are stepped over so the requirement is still reconciled. Whole-line comments are excluded first, so prose cannot trip the guard |
 | 10 | This record required the instrument's output to be "hashed and cited" and cited only observations | The instrument writes `qualification-result.json` and reports its SHA-256. The citation is owed with the rerun the T5 table above records |
 | 11 | Contract documentation still named removed versions and a deleted schema file | `worker_client.rs` and `docs/architecture/PROVISIONAL-CONTRACT-BASELINE.md` corrected to executor 3.0 and worker 2.0/2.1 |
+
+### The ramp correction
+
+A later audit found that the edge conditioning row 7 reports as implemented had never smoothed
+anything. `condition_edges` inserted the zero padding and then applied the raised-cosine gain to
+samples *inside that padding*. Scaling zeros is arithmetically inert, so a segment whose signal
+began at `0.5` still stepped `0.0` to `0.5` at its onset — the discontinuity the ramp exists to
+remove survived every build that reported the ramp applied.
+
+Its test agreed with it. `t1_e2_ramp_never_extends_into_speech` asserted that every speech sample
+came through unchanged, which held precisely *because* nothing had been smoothed. The test
+confirmed the defect instead of detecting it, and the module's doc comment attributed the rule it
+was enforcing — "without entering speech" — to ADR-0001 §13.4, which does not contain that phrase
+and requires the opposite.
+
+**The two governing sentences were in genuine conflict**, and it was resolved in the wrong
+direction without being flagged:
+
+| Document | Rule |
+|---|---|
+| ADR-0001 §13.4 | "smooth each silence-to-signal transition with a raised-cosine ramp no longer than 5 ms" |
+| `DELIVERY-PLAN.md` E1-S3 task 3, as written | "without entering speech" |
+
+Both cannot hold: after padding, the silence side is exactly zero, so smoothing requires
+attenuating signal. Under `CLAUDE.md` §Conflict order ADR-0001 prevails, and the project owner so
+directed. The ramp now covers the first and last 5 ms of *signal*, capped at half the signal so two
+ramps on a short segment abut rather than overlap.
+`t1_e2_ramp_smooths_the_silence_to_signal_transition` replaces the test that confirmed the bug and
+was checked to fail against the old placement before being accepted as passing.
+`DELIVERY-PLAN.md` carries ADR-0001's wording, and
+`e1-s3-delivery-plan-ramp-correction-reconciliation-v1` accounts for the digest that moved.
+
+One further defect was corrected on the same path: the partial-frame branch of
+`leading_silent_samples` had no length bound, though its own comment described it as measuring "a
+remainder shorter than one frame". Unbounded, a quiet burst followed by a second of silence
+averaged below the threshold, the segment was classified wholly silent, and conditioning returned
+before ramping any real signal.
+
+`ADR-0001-D007` is not edited. Its condition 2 states the ramp geometry "is implemented as
+ratified"; that claim was false when signed and is true now.
 
 ### What the remediation costs this record
 
@@ -532,7 +572,8 @@ governed root, but the other four criteria do — and the listening review retak
   `is_file` would have walked past. With the T5 refusals, containment is covered at every point
   either end can observe.
 - **The listening review was complete and accepted, and is now superseded.** `ADR-0001-D007`'s edge
-  conditioning pads and ramps every segment, so the published samples differ from the ones reviewed
+  conditioning pads every segment, and since the ramp correction below it ramps them too, so the
+  published samples differ from the ones reviewed
   and the review must be retaken before G1. What follows describes the review as taken on
   2026-08-31 and is retained because its method and limitations still apply to the retake.
 
@@ -628,7 +669,7 @@ The superseded review of the 2026-08-30 set — completed by Ross Todd on laptop
 sheet SHA-256 `08fbf7fcb1e98f0fe3252b74cccac490bf253bcce46a98543eb8e826fd4888ea` — accepted 6 of 6
 with no findings on any criterion. It is recorded here as history, not as a result: it was taken
 against audio this build no longer produces, because `ADR-0001-D007`'s edge conditioning pads and
-ramps every segment.
+ramps every segment. The 2026-08-31 re-render is superseded in turn by the ramp correction.
 
 ### What this review does not cover
 
