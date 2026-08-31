@@ -530,6 +530,57 @@ before ramping any real signal.
 `ADR-0001-D007` is not edited. Its condition 2 states the ramp geometry "is implemented as
 ratified"; that claim was false when signed and is true now.
 
+### The publication ceiling correction
+
+A further audit found the ten-minute segment ceiling applied to the wrong bytes. `validate_wav`
+holds the worker's WAV to `MAX_SEGMENT_AUDIO_MS`; `condition_staged_audio` then adds up to 10 ms
+of zero padding at each exposed edge and converted the new length with `u32::try_from` alone.
+Nothing re-applied the ceiling, so audio arriving at exactly the limit was published up to 20 ms
+over it.
+
+**The published entry was stranded, not merely wrong.** Every quarantine path in
+`synthesize_transaction` sits above the rename, so once `publish_directory_noreplace` had moved the
+stage into place there was nothing left to collect it. `load_entry` on the next line re-validated
+the entry this build had just written and refused it `AudioFault::TooLong`; `resolve` would find
+the same entry first on every later run and refuse it again, and this module's own doctrine is that
+"a corrupt published entry is refused rather than repaired, because repair would hide tampering".
+That cache key was unbuildable until a person deleted the directory by hand.
+
+Reserving headroom in `validate_wav` was rejected: that function is shared with the reuse path, so
+an entry legitimately holding up to the full ceiling would have started being refused, and every
+segment's ceiling would have narrowed including those whose edges are already silent. The ceiling
+means what `audio_edges.rs` says — the longest audio this build will condition **or publish** — so
+audio that cannot be conditioned within it is refused before publication, where quarantine still
+reaches it.
+
+| Decision | What was chosen, and why |
+|---|---|
+| Which fault | A distinct `AudioFault::ConditionedTooLong` carrying **both** counts. Reusing `TooLong` would have reported 14,400,480 against a file carrying 14,400,000 and read as "the worker wrote too much", sending the operator to the wrong component |
+| When it runs | Before the conditioned samples are written back, so the quarantined stage holds exactly what the worker produced and the count in the message is one the operator can measure |
+| How it is proven | Both a T1 table over `check_segment_ceiling` and a T4 test at the real ceiling. Only the T4 test proves the wiring, which is the half this defect got through |
+
+The ceiling arithmetic `validate_wav` computed inline is now `max_segment_frames`, shared by both
+places the ceiling applies so one rule cannot drift into two.
+
+Both tests were checked red before the fix, against the reverted check alone:
+`t1_e1_conditioning_may_not_carry_a_segment_past_the_audio_ceiling` failed "one frame past it:
+published a count past the ceiling", and
+`t4_e1_at_limit_audio_is_refused_rather_than_conditioned_over_the_ceiling` failed "conditioning
+past the ceiling must be refused: 14400480" — the defect itself, reproduced. The T4 test writes a
+57.6 MB WAV, which is what the ceiling is; **measured at 2.5-3.5 s** against `TEST-STRATEGY.md`'s
+five-minute T4 budget.
+
+`docs/architecture/WALKING-SKELETON.md` §Provisional resource ceilings said the constant bounds
+"what one segment may hand the edge conditioner". That was the narrower reading the code had been
+enforcing. Both halves of the mirror now state that it bounds conditioning's output as well, and
+the document names `cache.rs` beside `audio_edges.rs` as the enforcing path.
+
+No published byte moves: this refuses a case that was previously published, so nothing already in a
+cache or a listening set changes. No provenance moves either — `cache.rs` and
+`WALKING-SKELETON.md` are both already accounted by the accepted
+`e1-s3-worker-backend-provenance-reconciliation-v1`, whose suppression is by citing-record and path
+rather than by digest, and `crates/study-tts-runtime/src/error/audio.rs` is pinned by no record.
+
 ### What the remediation costs this record
 
 The worker bundle identity moves again, because `worker/study_tts_worker/` is a declared bundle

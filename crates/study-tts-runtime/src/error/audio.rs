@@ -255,6 +255,29 @@ pub enum AudioFault {
         max_milliseconds: u32,
     },
 
+    /// Conditioning would carry the stream past the segment ceiling.
+    ///
+    /// Distinct from [`AudioFault::TooLong`] because the count the operator can
+    /// verify in their own file is *within* the ceiling: what exceeds it is the
+    /// edge silence ADR-0001 §13.4 requires this build to add, up to 10 ms at
+    /// each exposed edge. Refused rather than published, because `cache.rs`
+    /// re-validates every entry it reads and would refuse this one for ever.
+    #[error(
+        "conditioning its edges would carry it from {frames} to \
+         {conditioned_frames} frames, beyond the provisional {max_frames}-frame \
+         ({max_milliseconds} ms) ceiling for one segment"
+    )]
+    ConditionedTooLong {
+        /// Frames the stream carries as the worker wrote it.
+        frames: u32,
+        /// Frames conditioning would leave behind.
+        conditioned_frames: u32,
+        /// The most this build conditions or publishes.
+        max_frames: u32,
+        /// The same ceiling as the duration the document records.
+        max_milliseconds: u32,
+    },
+
     /// An exposed edge does not begin or end at exactly zero.
     ///
     /// ADR-0001 §13.4 requires exposed endpoints to be exactly zero so assembly

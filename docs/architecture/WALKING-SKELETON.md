@@ -77,7 +77,12 @@ The three worker rows are E1-S3's, and `crates/study-tts-runtime/src/worker_exec
 `crates/study-tts-runtime/src/worker_client.rs` (`MAX_WORKER_STDERR_BYTES`) name this
 section in return. The segment-audio row is E1-S3's too:
 `crates/study-tts-runtime/src/audio_edges.rs` (`MAX_SEGMENT_AUDIO_MS`) names this section, and
-it bounds what one segment may hand the edge conditioner, whose samples are held in memory. The two deadlines differ because a model load and one segment of
+it bounds both what one segment may hand the edge conditioner, whose samples are held in
+memory, and what conditioning may leave behind: conditioning adds up to 10 ms of zero padding
+at each exposed edge, so `crates/study-tts-runtime/src/cache.rs` (`max_segment_frames`,
+`check_segment_ceiling`) applies the ceiling to its own output as well as to the worker's,
+refusing rather than publishing an entry it would afterwards refuse to read. The two deadlines
+differ because a model load and one segment of
 speech are different waits: ADR-0001 §10.3 requires both to be bounded, not to be
 bounded alike.
 

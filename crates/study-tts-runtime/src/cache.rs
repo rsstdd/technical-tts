@@ -1000,21 +1000,66 @@ fn check_exposed_endpoints(samples: &[f32]) -> Result<(), AudioFault> {
 /// this build's own edit — and before the audio is hashed, so the digest and
 /// the recorded frame count describe the bytes that are published.
 ///
+/// Because it adds frames it re-applies the segment ceiling to its own result:
+/// see [`check_segment_ceiling`], which runs before the conditioned samples are
+/// written back.
+///
+/// # Errors
+///
+/// [`AudioFault::ConditionedTooLong`] when the padding would carry the segment
+/// past `crate::MAX_SEGMENT_AUDIO_MS`, [`AudioFault::ExposedEndpointNotZero`]
+/// when conditioning left an endpoint off zero, and whichever [`AudioFault`]
+/// the read or the write-back reports.
+///
 /// The silence threshold is provisional while ADR-0003 is Proposed; see
 /// [`crate::SilenceThreshold`] and
 /// `docs/adr/deviations/ADR-0001-D007-provisional-edge-conditioning.md`.
 fn condition_staged_audio(path: &Path) -> Result<u32, AudioFault> {
     let mut samples = read_canonical_samples(path)?;
+    let frames = u32::try_from(samples.len()).map_err(|_| AudioFault::FrameCountOverflow)?;
     let conditioning = condition_edges(
         &mut samples,
         CANONICAL_SAMPLE_RATE,
         SilenceThreshold::provisional(),
     );
+    // Before the write-back, so a refusal leaves the worker's own bytes in the
+    // stage: that is what quarantine retains, and what a person measures.
+    let conditioned = check_segment_ceiling(frames, samples.len())?;
     if conditioning != EdgeConditioning::default() {
         write_canonical_samples(path, &samples)?;
     }
     check_exposed_endpoints(&samples)?;
-    u32::try_from(samples.len()).map_err(|_| AudioFault::FrameCountOverflow)
+    Ok(conditioned)
+}
+
+/// Refuses conditioned audio the ceiling will not let this build publish.
+///
+/// The ceiling is applied twice because conditioning moves the count:
+/// [`validate_wav`] holds the worker to it, and this holds this build's own
+/// edit to it. Without the second application, audio arriving at exactly the
+/// ceiling is published up to 20 ms over it — and the reload that immediately
+/// follows publication refuses the entry this build has just written, for ever,
+/// because no quarantine path reaches an entry already renamed into place.
+///
+/// # Errors
+///
+/// [`AudioFault::ConditionedTooLong`] naming both counts, so the operator can
+/// see that the file they can measure is within the ceiling and the padding is
+/// what crossed it, and [`AudioFault::FrameCountOverflow`] when the conditioned
+/// length exceeds what the artifact record's `u32` can carry.
+fn check_segment_ceiling(frames: u32, conditioned: usize) -> Result<u32, AudioFault> {
+    let conditioned_frames =
+        u32::try_from(conditioned).map_err(|_| AudioFault::FrameCountOverflow)?;
+    let max_frames = max_segment_frames();
+    if conditioned_frames > max_frames {
+        return Err(AudioFault::ConditionedTooLong {
+            frames,
+            conditioned_frames,
+            max_frames,
+            max_milliseconds: MAX_SEGMENT_AUDIO_MS,
+        });
+    }
+    Ok(conditioned_frames)
 }
 
 /// Validates one WAV, reporting *which* property failed and leaving the path
@@ -1064,9 +1109,7 @@ fn validate_wav(path: &Path) -> Result<u32, AudioFault> {
     if frames == 0 {
         return Err(AudioFault::Empty);
     }
-    let max_frames =
-        u32::try_from(u64::from(MAX_SEGMENT_AUDIO_MS) * u64::from(CANONICAL_SAMPLE_RATE) / 1_000)
-            .unwrap_or(u32::MAX);
+    let max_frames = max_segment_frames();
     if frames > max_frames {
         return Err(AudioFault::TooLong {
             frames,
@@ -1075,6 +1118,17 @@ fn validate_wav(path: &Path) -> Result<u32, AudioFault> {
         });
     }
     Ok(frames)
+}
+
+/// The most frames one segment's canonical audio may carry.
+///
+/// `MAX_SEGMENT_AUDIO_MS` at the canonical rate, multiplied at `u64` width so
+/// the product cannot wrap before it is narrowed. Shared by the two places the
+/// ceiling applies — what the worker wrote, and what conditioning left behind —
+/// so one rule cannot drift into two.
+fn max_segment_frames() -> u32 {
+    u32::try_from(u64::from(MAX_SEGMENT_AUDIO_MS) * u64::from(CANONICAL_SAMPLE_RATE) / 1_000)
+        .unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]
@@ -2115,6 +2169,102 @@ mod tests {
         assert!(
             error.to_string().contains(&staged.display().to_string()),
             "error did not name the staged file: `{error}`"
+        );
+    }
+
+    /// The ceiling refuses what conditioning pushed past it, with both counts.
+    ///
+    /// `docs/architecture/WALKING-SKELETON.md` §Provisional resource ceilings
+    /// gives one segment's audio ten minutes, which is 14,400,000 frames at the
+    /// canonical 24 kHz. Written out rather than recomputed from the constants
+    /// `max_segment_frames` multiplies, so this reads against the document
+    /// rather than agreeing with the arithmetic it is checking.
+    #[test]
+    fn t1_e1_conditioning_may_not_carry_a_segment_past_the_audio_ceiling() {
+        assert_eq!(max_segment_frames(), 14_400_000);
+
+        // Label, what the worker wrote, what conditioning left, and whether it
+        // must be refused. The last case is the defect this exists for: an
+        // input at the ceiling, padded 240 frames at each exposed edge.
+        const CASES: [(&str, u32, u32, bool); 4] = [
+            ("well inside", 1_000, 1_480, false),
+            ("padded onto the ceiling", 14_399_760, 14_400_000, false),
+            ("one frame past it", 14_400_000, 14_400_001, true),
+            ("padded past it", 14_400_000, 14_400_480, true),
+        ];
+
+        for (label, frames, conditioned, refused) in CASES {
+            let outcome = check_segment_ceiling(
+                frames,
+                usize::try_from(conditioned).expect("a frame count fits a usize"),
+            );
+
+            match outcome {
+                Ok(count) => {
+                    assert!(!refused, "{label}: published a count past the ceiling");
+                    assert_eq!(count, conditioned, "{label}");
+                }
+                Err(AudioFault::ConditionedTooLong {
+                    frames: reported,
+                    conditioned_frames,
+                    max_frames,
+                    max_milliseconds,
+                }) => {
+                    assert!(refused, "{label}: refused a count within the ceiling");
+                    // The refusal names the file the operator can measure, not
+                    // only the length this build would have written.
+                    assert_eq!(reported, frames, "{label}");
+                    assert_eq!(conditioned_frames, conditioned, "{label}");
+                    assert_eq!(max_frames, 14_400_000, "{label}");
+                    assert_eq!(max_milliseconds, MAX_SEGMENT_AUDIO_MS, "{label}");
+                }
+                Err(other) => panic!("{label}: fault was `{other}`"),
+            }
+        }
+    }
+
+    /// The ceiling bounds what this build publishes, not only what it reads.
+    ///
+    /// Conditioning adds edge silence, so audio the worker wrote at exactly
+    /// the ceiling crosses it. Published, that entry is refused by the reload
+    /// on the next line of `synthesize_transaction` and by every run after it,
+    /// because no quarantine path reaches an entry already renamed into place.
+    ///
+    /// T4 rather than T1: proving the wiring needs a file at the real ceiling,
+    /// and the real ceiling is 57.6 MB.
+    #[test]
+    fn t4_e1_at_limit_audio_is_refused_rather_than_conditioned_over_the_ceiling() {
+        let workspace = TempDir::new().expect("create cache workspace");
+        let staged = workspace.path().join("at-limit.wav");
+        // Ten minutes at 24 kHz: the ceiling §Provisional resource ceilings of
+        // `docs/architecture/WALKING-SKELETON.md` records. `write_tone` writes
+        // a constant 0.25, so neither edge is silent and both take the full
+        // 10 ms of padding, 240 frames apiece.
+        write_tone(&staged, 14_400_000, CANONICAL_SAMPLE_RATE);
+
+        let fault = condition_staged_audio(&staged)
+            .expect_err("conditioning past the ceiling must be refused");
+
+        assert!(
+            matches!(
+                fault,
+                AudioFault::ConditionedTooLong {
+                    frames: 14_400_000,
+                    conditioned_frames: 14_400_480,
+                    max_frames: 14_400_000,
+                    max_milliseconds: MAX_SEGMENT_AUDIO_MS,
+                }
+            ),
+            "fault was `{fault}`"
+        );
+        // The refusal precedes the write-back, so the stage still holds exactly
+        // what the worker produced. That is what quarantine retains, what a
+        // person measures, and why the fault does not blame the worker for a
+        // count only this build would have written.
+        assert_eq!(
+            validate_wav(&staged).expect("the worker's own file is within the ceiling"),
+            14_400_000,
+            "conditioning rewrote a file it had already refused"
         );
     }
 }

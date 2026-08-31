@@ -52,6 +52,12 @@ pub const MAX_TRANSITION_RAMP_MS: u32 = 5;
 /// worker that returned an unbounded file would otherwise be handed the
 /// process. Ten minutes of canonical float mono is about 57 MB.
 ///
+/// It bounds conditioning's output as well as its input, because
+/// [`condition_edges`] adds up to 10 ms of padding at each exposed edge:
+/// `crates/study-tts-runtime/src/cache.rs` applies it on both sides, so an
+/// entry is never published that the same build would afterwards refuse to
+/// read.
+///
 /// `docs/architecture/WALKING-SKELETON.md` §Provisional resource ceilings
 /// records it and names this constant in return.
 pub const MAX_SEGMENT_AUDIO_MS: u32 = 10 * 60 * 1_000;
