@@ -3,7 +3,7 @@
 ## Identification
 
 - Record ID: `E1-S3-INTERFACE-CHANGE-002`
-- Status: **Proposed.** §Approval names the decision each role is asked for.
+- Status: **Accepted, 2026-08-31.** §Approval records the decision each role made and the date it was signed.
 - Contract owner: T-CORE (`CACHE_SCHEMA_VERSION`); T-AUDIO (the cache-entry record)
 - Engineering owner: Engineering owner
 - Affected-track reviewers: T-CORE, T-AUDIO
@@ -84,8 +84,8 @@ only available check is that it lies within the ratified bound. This record stat
 rather than leaving a reader to infer a verification that does not exist.
 
 The silence is measured against the threshold, not against exact zero. Conditioning pads only
-until an edge *has* its 10 ms, so audio that already began quiet-but-nonzero is lawfully unpadded
-and an exact-zero test would refuse it.
+until an edge *has* its 10 ms, so audio that already began quiet-but-nonzero is lawfully unpadded;
+the measured silent region is normalized to zero so the exposed-endpoint check still holds.
 
 ## Impact
 
@@ -130,8 +130,23 @@ shape: revert the constant and the record together, and the goldens recompute.
 
 ## Approval
 
+**Every row below is signed, on 2026-08-31.** Each records a decision a role was asked for and has
+now made.
+
+Ross Todd holds every role listed. `docs/governance/PROJECT-EXECUTION-CHARTER.md` permits that for
+a personal project and requires each approval to name its role and accepted risk separately, which
+is why the rows stay separate for one signatory. A row is signed by recording the deciding role's
+name and the date beside it, which every row now carries.
+
+This acceptance covers the contract this record describes. It does **not** accept
+`evidence/gates/g1/e1-s3/e1-s3-single-worker-synthesis-and-validated-cache-v1.md`, which stays
+`Proposed` until G1: an interface record accepts a contract change, never the story that carried it.
+
 | Role | Decision sought | Status |
 |---|---|---|
-| Project owner | Accept `CACHE_SCHEMA_VERSION` taking a major increment to `2.0`, invalidating every cache key and plan hash, on the reasoning that a required field is a Breaking contract and `ADR-0001-D005` does not reach a version another story introduced | Pending |
-| Contract owner (T-CORE) | Accept the three golden identities moving to `46bf2c57d31eb5cf…`, `01ffb5593c2e0daa…`, and `d4248913a9a39a2e…`, superseding the plan hash `E1-S3-INTERFACE-CHANGE-001` cites, and that no artifact is stranded because the cache root holds none | Pending |
-| Contract owner (T-AUDIO) | Accept the `edge_conditioning` record including `calibration_source`, the three narrowed acceptance rules, and the stated limit that the ramp count is attested rather than verified | Pending |
+| Project owner | Accept `CACHE_SCHEMA_VERSION` taking a major increment to `2.0`, invalidating every cache key and plan hash, on the reasoning that a required field is a Breaking contract and `ADR-0001-D005` does not reach a version another story introduced | Accepted — Ross Todd, 2026-08-31 |
+| Contract owner (T-CORE) | Accept the three golden identities moving to `46bf2c57d31eb5cf…`, `01ffb5593c2e0daa…`, and `d4248913a9a39a2e…`, superseding the plan hash `E1-S3-INTERFACE-CHANGE-001` cites, and that no artifact is stranded because the cache root holds none | Accepted — Ross Todd, 2026-08-31 |
+| Contract owner (T-AUDIO) | Accept the `edge_conditioning` record including `calibration_source`, the three narrowed acceptance rules, and the stated limit that the ramp count is attested rather than verified | Accepted — Ross Todd, 2026-08-31 |
+
+- Effective version and date: **2026-08-31.** `CACHE_SCHEMA_VERSION` `2.0`; `SYNTHESIS_IDENTITY_VERSION`
+  `e1-s2-v1` unchanged; `e1.tts-executor.3.0` and `e1.worker.2.0` unchanged.

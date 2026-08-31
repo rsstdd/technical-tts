@@ -67,9 +67,15 @@ The project owner directed that the conditioning be implemented now regardless, 
 ## What this owes
 
 At ADR-0003 acceptance: replace `PROVISIONAL_SILENCE_RMS` with the frozen value, change the
-constructor's `CalibrationSource` to `Frozen`, and re-run the listening review, because a
-different threshold pads different segments differently and therefore changes published audio and
-every cache key derived from it.
+constructor's `CalibrationSource` to `Frozen`, and re-run the listening review. That migration must
+also increment `SYNTHESIS_IDENTITY_VERSION` or `CACHE_SCHEMA_VERSION` before any prior entry is
+reused. Both are inputs to `segment_digest`: an identity-version change makes the old key
+unreachable, while a cache-schema change also makes `cache::load_validated` independently refuse
+the old artifact version. Either route makes entries conditioned under the provisional threshold
+misses rather than hits. Existing entries must be invalidated through that versioned identity
+before reuse; changing only
+`SilenceThreshold::provisional()` would publish different audio under an identity that still
+accepts the old conditioning.
 
 ## Decision
 

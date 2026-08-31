@@ -46,9 +46,8 @@ pub const REQUIRED_EDGE_SILENCE_MS: u32 = 10;
 /// first samples of signal, which is the only side of the transition with
 /// anything to attenuate — the silence side is below the audio-profile
 /// threshold by definition, so scaling it would change nothing audible. Note
-/// that "below the threshold" is not "zero": only the exposed *endpoint* is
-/// exactly zero, and [`condition_edges`] pads one sample to make it so when
-/// the edge arrived quiet-but-nonzero.
+/// that "below the threshold" is not "zero": [`condition_edges`] normalizes
+/// the measured silent region to zero before it applies the ramp.
 pub const MAX_TRANSITION_RAMP_MS: u32 = 5;
 
 /// Longest segment audio this build will condition or publish.
@@ -363,20 +362,12 @@ pub fn condition_edges(
     let (leading_silence, trailing_silence) = measure_edge_silence(samples, sample_rate, threshold);
     let wholly_silent = leading_silence == samples.len();
 
-    // ADR-0001 §13.4 states two edge rules and satisfying one says nothing
-    // about the other: "add zero samples until each edge has at least 10 ms of
-    // silence", and "require exposed endpoints to be zero". Silence is measured
-    // against the audio-profile threshold, so an edge can hold its full 10 ms
-    // while every sample in it is merely small — which is the shape real model
-    // output has, and which `check_exposed_endpoints` in `cache.rs` then
-    // refuses. One zero is the whole of what the second rule needs; padding the
-    // full requirement again would add 10 ms to a segment that already has it.
-    let leading_padding = required.saturating_sub(leading_silence).max(usize::from(
-        samples.first().is_some_and(|edge| *edge != 0.0),
-    ));
-    let trailing_padding = required
-        .saturating_sub(trailing_silence)
-        .max(usize::from(samples.last().is_some_and(|edge| *edge != 0.0)));
+    samples[..leading_silence].fill(0.0);
+    let trailing_start = samples.len().saturating_sub(trailing_silence);
+    samples[trailing_start..].fill(0.0);
+
+    let leading_padding = required.saturating_sub(leading_silence);
+    let trailing_padding = required.saturating_sub(trailing_silence);
     if leading_padding > 0 {
         samples.splice(0..0, std::iter::repeat_n(0.0, leading_padding));
     }
@@ -536,20 +527,10 @@ mod tests {
     }
 
     #[test]
-    fn t1_e2_a_quiet_but_nonzero_edge_is_padded_to_an_exact_zero() {
-        // The shape real model output has and no fixture had. Both of
-        // ADR-0001 §13.4's edge rules apply at once -- "add zero samples until
-        // each edge has at least 10 ms of silence" *and* "require exposed
-        // endpoints to be zero" -- and satisfying the first says nothing about
-        // the second. An edge already below the silence threshold gets no
-        // padding from the arithmetic, and its first sample is still not zero.
-        //
-        // Found by running `listening-render` against real weights, which
-        // refused every take with
-        // `ExposedEndpointNotZero { edge: "first", value: 4.312751e-6 }`.
-        // `t1_e2_exposed_endpoints_are_exactly_zero` did not catch it: its
-        // fixture is signal from the first sample, so the full padding always
-        // ran and the endpoint was zero for a reason this case does not have.
+    fn t1_e2_a_quiet_but_nonzero_edge_is_normalized_without_padding() {
+        // Quiet model output already satisfies the measured-silence duration,
+        // so conditioning normalizes that measured region instead of changing
+        // the segment duration merely to make its endpoints exact zeros.
         const QUIET: f32 = 4.312_751e-6;
         let mut samples = vec![QUIET; REQUIRED * 2];
         samples.extend(speech(2_400));
@@ -568,11 +549,9 @@ mod tests {
             Some(&0.0),
             "the last sample must be exactly zero"
         );
-        // One sample apiece and not a fresh 10 ms: the edge already carries its
-        // silence, so the only thing owed is the endpoint itself.
-        assert_eq!(conditioning.leading_padding, 1);
-        assert_eq!(conditioning.trailing_padding, 1);
-        assert_eq!(samples.len(), before + 2);
+        assert_eq!(conditioning.leading_padding, 0);
+        assert_eq!(conditioning.trailing_padding, 0);
+        assert_eq!(samples.len(), before);
     }
 
     #[test]
