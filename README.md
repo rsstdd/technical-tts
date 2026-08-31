@@ -23,7 +23,7 @@ The priority order is technical correctness, comfortable listening, retention va
 
 | Area | Status |
 |---|---|
-| Architecture | Accepted in [ADR-0001](docs/adr/ADR-0001-production-rust-study-guide-tts.md), as amended by [ADR-0001-D001](docs/adr/deviations/ADR-0001-D001-asr-release-condition.md), [ADR-0001-D002](docs/adr/deviations/ADR-0001-D002-constrained-development-performance-gate.md), [ADR-0001-D003](docs/adr/deviations/ADR-0001-D003-single-instructor-fallback.md), and [ADR-0001-D004](docs/adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md) |
+| Architecture | Accepted in [ADR-0001](docs/adr/ADR-0001-production-rust-study-guide-tts.md), as amended by [ADR-0001-D001](docs/adr/deviations/ADR-0001-D001-asr-release-condition.md), [ADR-0001-D002](docs/adr/deviations/ADR-0001-D002-constrained-development-performance-gate.md), [ADR-0001-D003](docs/adr/deviations/ADR-0001-D003-single-instructor-fallback.md), [ADR-0001-D004](docs/adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md), and [ADR-0001-D006](docs/adr/deviations/ADR-0001-D006-worker-environment-lock-verification-cost.md), which supersedes D004 |
 | Delivery backlog | Approved in [DELIVERY-PLAN.md](DELIVERY-PLAN.md) |
 | Rust workspace | Four-crate workspace with a tested end-to-end skeleton and the E1-S1 contract baseline |
 | Model and voice qualification | E0-S2 rights prerequisites and E0-S3 qualification complete; full-box performance qualification remains required before G3 |
@@ -31,7 +31,7 @@ The priority order is technical correctness, comfortable listening, retention va
 | ASR verifier | Not started |
 | CLI | Product commands not implemented |
 | Schemas and fixtures | Seven published versioned schemas under `schemas/`, generated from the Rust types and checked against the checked-in files; skeleton, contract, and deterministic-audio fixtures present |
-| Identities | Canonical serialization and the BLAKE3 synthesis and verification identities implemented; the worker-bundle identity is derived mechanically, with the environment precondition [ADR-0001-D004](docs/adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md) authorizes |
+| Identities | Canonical serialization and the BLAKE3 synthesis and verification identities implemented; the worker-bundle identity is derived mechanically, with the environment precondition [ADR-0001-D006](docs/adr/deviations/ADR-0001-D006-worker-environment-lock-verification-cost.md) carries forward from D004 |
 | Continuous integration | Fast offline pull-request checks with tier-duration reporting, separated from a dispatch-only reference-machine qualification workflow |
 | Production qualification | Not started |
 

@@ -34,6 +34,24 @@ pub enum CacheError {
         fault: Box<CacheEntryFault>,
     },
 
+    /// A worker left a file in the staging transaction beside its audio.
+    ///
+    /// The stage *becomes* the published entry — ADR-0001 §12.6 renames it into
+    /// place — so anything left in it is published inside a cache entry that
+    /// claims to hold one segment's speech. Refused rather than swept, because
+    /// a file nobody expected is a worker doing something nobody described, and
+    /// deleting the evidence is the wrong half of that to automate.
+    #[error(
+        "the worker left `{unexpected}` in the staging transaction for segment `{segment_id}` \
+         beside the audio it was assigned; the attempt is quarantined for a person to read"
+    )]
+    UncontainedStagedFile {
+        /// The segment whose transaction was refused.
+        segment_id: String,
+        /// Name of the first unexpected entry found in the stage.
+        unexpected: String,
+    },
+
     /// A package request omitted or added validated cache artifacts.
     #[error(
         "package request supplied {found} cached artifacts for a plan with {required} segments; \
@@ -90,6 +108,12 @@ impl CacheError {
                 RemedyOwner::Runtime,
                 "preserve the unusable cache entry and run runtime reconciliation",
                 Some("State or checksum corruption"),
+            )),
+            Self::UncontainedStagedFile { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::WorkerRuntime,
+                "read the quarantined attempt and correct the worker that staged an unexpected \
+                 file",
+                Some("Worker protocol or containment failure"),
             )),
             Self::PackageArtifactCountMismatch { .. }
             | Self::PackageArtifactPlanMismatch { .. } => Some(RemedyAdvice::new(

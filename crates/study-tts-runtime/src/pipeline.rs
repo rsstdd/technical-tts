@@ -218,11 +218,13 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`crate::ManagedPathError::ManagedPathEscape`],
 /// [`crate::ManagedPathError::UnrootedDestination`],
 /// [`crate::CacheError::UnusableCacheEntry`],
+/// [`crate::CacheError::UncontainedStagedFile`],
 /// [`crate::CacheError::PackageArtifactCountMismatch`],
 /// [`crate::CacheError::PackageArtifactPlanMismatch`],
 /// [`crate::AudioError::UnusableAudio`],
 /// [`crate::AudioError::SynthesizerReportMismatch`],
 /// [`crate::AudioError::SynthesizerIdentityMismatch`],
+/// [`crate::AudioError::ConditioningIdentityContradiction`],
 /// [`crate::AudioError::PauseFrameOverflow`],
 /// [`crate::AudioError::PlannedLengthOverflow`],
 /// [`crate::AudioError::AssembledLengthOverflow`],
@@ -431,10 +433,11 @@ fn synthesis_requests(
                 })?
                 .clone();
             Ok(SynthesisRequest {
-                request_id: format!("e0-{}-{}", segment.cache_key, segment.id),
+                request_id: segment.request_id(),
                 segment_id: segment.id.clone(),
                 spoken_text: segment.spoken_text.clone(),
                 voice: segment.speaker.clone(),
+                voice_profile: segment.voice_profile.clone(),
                 voice_conditioning_hash,
                 style: segment.style.as_str().to_owned(),
                 language: context.language.clone(),

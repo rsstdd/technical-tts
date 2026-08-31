@@ -174,6 +174,29 @@ pub enum WorkerBundleError {
         mismatch: Box<EnvironmentMismatch>,
     },
 
+    /// `worker/pyproject.toml` declares a requirement the lock does not
+    /// resolve.
+    ///
+    /// The gap between two declared bundle inputs that nothing compared. The
+    /// lock is what the environment is restored from; `worker/pyproject.toml`
+    /// only *states* what should be resolved, and both reach the identity as
+    /// bytes. So a dependency bot that bumped the declaration and left the
+    /// lock alone moved every cache key in the project while the resolved
+    /// set, the installed environment, and the audio all stayed exactly where
+    /// they were.
+    #[error(
+        "worker requirements `{path}` {fault}; ADR-0001 §12.5 makes both this file and \
+         worker/requirements.lock synthesis-key inputs, so the worker/runtime owner must \
+         reconcile them per docs/operations/WORKER-ENVIRONMENT.md rather than derive an identity \
+         from a declaration the lock does not resolve"
+    )]
+    RequirementsDisagreeWithLock {
+        /// The requirements declaration that could not be reconciled.
+        path: PathBuf,
+        /// Exact reconciliation invariant that failed.
+        fault: Box<WorkerRequirementFault>,
+    },
+
     /// A `worker/requirements.lock` invariant is malformed or absent.
     ///
     /// The locus and not the line: a wrongly regenerated lock is exactly where
@@ -193,6 +216,38 @@ pub enum WorkerBundleError {
         locus: WorkerLockfileLocus,
         /// Exact lockfile invariant that failed.
         reason: WorkerLockfileErrorReason,
+    },
+
+    /// `worker/launcher.json` is absent or is not the record this build reads.
+    #[error(
+        "worker launcher `{path}` cannot be read as the launcher this build starts workers \
+         from ({detail}); ADR-0001 §12.5 makes inference-affecting launcher configuration a \
+         synthesis-key input, so the worker/runtime owner must repair it rather than start a \
+         worker under settings this build only partly understands"
+    )]
+    UnreadableLauncher {
+        /// The launcher that could not be read.
+        path: PathBuf,
+        /// What the reader reported, without the file's contents.
+        detail: String,
+    },
+
+    /// `worker/launcher.json` declares a layout this build does not implement.
+    ///
+    /// Checked before the shape, because a later layout may mean something
+    /// different by a field this build would otherwise read under the old
+    /// meaning — and reporting one of its new fields as unknown would send an
+    /// operator to edit a record this build cannot read anyway.
+    #[error(
+        "worker launcher declares layout `{found}` but this build reads `{supported}`; align \
+         the launcher and the build rather than start a worker under a layout it only partly \
+         understands"
+    )]
+    UnsupportedLauncher {
+        /// Layout the launcher declares.
+        found: String,
+        /// Layout this build implements.
+        supported: &'static str,
     },
 
     /// A declared bundle input exceeds the size this boundary will read.
@@ -263,6 +318,72 @@ pub enum WorkerLockfileErrorReason {
     /// The governed pin lacks one well-formed adjacent source revision.
     #[error("does not keep one full governed-source provenance commit beside its governed pin")]
     InvalidProvenance,
+}
+
+/// How `worker/pyproject.toml` disagrees with `worker/requirements.lock`.
+///
+/// `docs/operations/WORKER-ENVIRONMENT.md`
+/// §The declaration is reconciled with the lock
+/// states the rules these variants refuse, and names this enum in
+/// return. One variant per operator action, so the refusal says whether the
+/// owner must write an exact pin, regenerate the lock, or decide which of two
+/// versions is the intended one.
+///
+/// **No variant prints the requirement text**, for the reason
+/// [`WorkerLockfileErrorReason`] never prints a lockfile line: a wrongly
+/// written requirement is exactly where a `chatterbox-tts @ file:///...`
+/// direct reference to the governed model root appears, and
+/// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` keeps that path out of
+/// logs. The distribution name says everything the operator needs.
+///
+/// Boxed by its one variant in [`WorkerBundleError`] for the reason
+/// [`EnvironmentMismatch`] is: `crate::BuildError` is measured at 80 bytes in
+/// `docs/architecture/WALKING-SKELETON.md`.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum WorkerRequirementFault {
+    /// A requirement carries a range, a direct reference, or no `==` at all.
+    ///
+    /// The lock resolves one version per distribution, so a declaration that
+    /// admits more than one cannot be reconciled with it even when today's
+    /// resolution happens to satisfy both.
+    #[error("declares `{distribution}` without an exact `==` version pin")]
+    NotAnExactPin {
+        /// Canonicalized distribution name.
+        distribution: String,
+    },
+
+    /// A pinned requirement names a distribution the lock does not pin.
+    #[error("declares `{distribution}` at `{declared}`, which the lockfile does not pin")]
+    NotLocked {
+        /// Canonicalized distribution name.
+        distribution: String,
+        /// Version `worker/pyproject.toml` declares.
+        declared: String,
+    },
+
+    /// A pinned requirement disagrees with the version the lock resolved.
+    ///
+    /// The failure that actually occurred: a dependency bot raised the
+    /// declaration and could not regenerate the lock, leaving the two inputs
+    /// naming different versions of one distribution.
+    #[error("declares `{distribution}` at `{declared}` but the lockfile resolves `{locked}`")]
+    LockedAtAnotherVersion {
+        /// Canonicalized distribution name.
+        distribution: String,
+        /// Version `worker/pyproject.toml` declares.
+        declared: String,
+        /// Version `worker/requirements.lock` resolves.
+        locked: String,
+    },
+
+    /// The file uses a TOML string spelling this reader does not implement.
+    ///
+    /// A refusal rather than a best effort. A multi-line basic string or an
+    /// escaped quote desynchronizes the scan, and a desynchronized scan drops
+    /// requirements out of the comparison without saying so — which is the
+    /// silence this check exists to end.
+    #[error("uses a multi-line or escaped string this build does not read")]
+    Unreadable,
 }
 
 /// How the installed environment disagrees with `worker/requirements.lock`.
@@ -578,6 +699,13 @@ impl WorkerBundleError {
             }
             Self::UnreadableWorkerLockfile { .. } => {
                 "regenerate worker/requirements.lock per docs/operations/WORKER-ENVIRONMENT.md"
+            }
+            Self::UnreadableLauncher { .. } | Self::UnsupportedLauncher { .. } => {
+                "repair worker/launcher.json to the layout this build reads"
+            }
+            Self::RequirementsDisagreeWithLock { .. } => {
+                "reconcile worker/pyproject.toml with worker/requirements.lock per \
+                 docs/operations/WORKER-ENVIRONMENT.md"
             }
         };
         Some(RemedyAdvice::new(

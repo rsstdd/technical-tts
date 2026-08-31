@@ -39,7 +39,7 @@ is the other end of the mirror they name:
 
 | Constant | What it requires |
 |---|---|
-| `REQUIRED_BUNDLE_INPUTS` | `worker/bundle-manifest.json`, `worker/launcher.json`, `worker/requirements.lock`, `schemas/worker-protocol-v1.schema.json`, and `worker/study_tts_worker/worker.py` appear in `inputs`. |
+| `REQUIRED_BUNDLE_INPUTS` | `worker/bundle-manifest.json`, `worker/launcher.json`, `worker/requirements.lock`, `schemas/worker-protocol-v2.schema.json`, and `worker/study_tts_worker/worker.py` appear in `inputs`. |
 | `REQUIRED_IMPORT_ROOT` | `worker/study_tts_worker` appears in `import_roots`. |
 
 Each is an input ADR-0001 §12.5 names one by one, so none of them is optional. Both failures they
@@ -232,13 +232,31 @@ Only locked distributions are inspected: an unlocked one is tolerated precisely 
 worker does not load it, and the one part of it that is not inert is already refused by name.
 
 **This is the part of the check that costs something.** On the reference environment it reads
-1,263 MiB across 31,704 files, which is 1.50 s of the 3.4–3.6 s a whole `verified_hash` takes.
+1,263 MiB across 31,704 files, which is about half of the CPU time a whole `verified_hash` spends.
 That is paid once per build rather than once per segment — the bundle identity is one input to
 every cache key, derived once and reused — which is why it is affordable as written and nothing
 memoizes it.
-[`ADR-0001-D004`](../adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md) records
-the measurement, and `.github/workflows/qualification.yml` times the step on every qualification
-run so a drift from it is visible.
+[`ADR-0001-D006`](../adr/deviations/ADR-0001-D006-worker-environment-lock-verification-cost.md)
+is the record in force. It supersedes
+[`ADR-0001-D004`](../adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md), which
+banded wall time only, and states the cost as a CPU band with the wall band beside it for the
+reason below. `.github/workflows/qualification.yml` times the step on every qualification run so a
+drift from it is visible.
+
+**Judge a run by its CPU time, never by its wall time.** The reference machine is WSL2, and its
+wall clock intermittently loses seconds mid-run: about one run in eight returns the correct
+identity in 0.8 s of wall time having spent the usual 3.1 s of CPU. A process cannot consume four
+times more CPU than elapsed on a workload that is a parent, one `python -I -S` child, and two
+I/O-bound pipe threads, so the fast runs are the clock being wrong rather than the comparison
+being skipped — and the page cache is not the explanation either, since a fully warm run still
+costs 3.3 s and a cold one costs 14 s.
+
+This matters because it is the one question a timing is asked here. `ADR-0001-D004` banded wall
+time only, so a run an order of magnitude faster than the band had the same shape as a skipped
+precondition and could not be distinguished from one; that ambiguity is what
+`e1-s1-provisional-contract-baseline-v13` recorded as unexplained and carried through v14 and v15.
+`%U` and `%S` are unaffected by the clock, so they are what `ADR-0001-D006` bands and what the
+workflow records.
 
 | The fault | The refusal |
 |---|---|
@@ -367,6 +385,54 @@ Paste the printed array as `record_digests` and set `schema_version` to `1.2`. R
 means regenerating these too, and step 12 of
 [Regenerating the lock](#regenerating-the-lock) already requires the bundle hash to be recorded
 afterwards for exactly that reason.
+
+### The declaration is reconciled with the lock
+
+`worker/pyproject.toml` states which distributions the worker depends on; `worker/requirements.lock`
+records what those statements resolved to, and is what the environment is restored from and checked
+against. Both are declared bundle inputs, and **nothing compared them to each other** — which left
+one file able to move the identity of every cache entry in the project while saying nothing about
+what the worker loads.
+
+That is not hypothetical. A dependency bot raised `torch` to `2.13.0` and `setuptools` to `83.0.0`
+in `worker/pyproject.toml`, could not regenerate a hashed lock, and left `requirements.lock` at
+`torch==2.6.0+cpu` and `setuptools==78.1.0` — which is what the restored environment actually holds,
+and what the governed `chatterbox-tts` pins exactly. Every check in the sections above passed: they
+read the lock, and the lock had not moved. The bundle identity moved anyway, because the
+declaration's bytes are hashed like any other declared input.
+
+So `check_requirements_match_lock` in `crates/study-tts-runtime/src/worker_environment.rs`, which
+names this section in return, refuses before the probe runs:
+
+| The disagreement | The refusal |
+|---|---|
+| a requirement carries a range, a direct reference, or no `==` | `WorkerRequirementFault::NotAnExactPin` |
+| a pinned requirement names a distribution the lock does not pin | `WorkerRequirementFault::NotLocked` |
+| a pinned requirement disagrees with the resolved version | `WorkerRequirementFault::LockedAtAnotherVersion` |
+| the file uses a multi-line or escaped TOML string | `WorkerRequirementFault::Unreadable` |
+
+**Scanned over the whole file, not over the two tables that hold the requirements today.** A pin
+added under `[project.optional-dependencies]` would otherwise be declared and silently unchecked,
+and a check with a blind spot is worse than one whose scope is stated. The rule is therefore: every
+version-bearing requirement written anywhere in the file is an exact `==` pin, and is the version
+the lock resolved. A quoted string carrying no version operator is not a requirement and is
+skipped — `packages = ["study_tts_worker"]` is one — so a bare name with no version is outside what
+this reconciles.
+
+The comparison is one-directional. The lock resolves the transitive set and pins far more than the
+declaration names, so a pin no requirement mentions is correct rather than surplus.
+
+**The refusal names the distribution and never the requirement text**, for the reason no lockfile
+refusal prints its line: a wrongly written requirement is exactly where a
+`chatterbox-tts @ file:///...` direct reference to the governed model root appears, and
+[`../governance/RIGHTS-DATA-ARTIFACT-POLICY.md`](../governance/RIGHTS-DATA-ARTIFACT-POLICY.md)
+keeps that path out of logs.
+
+**This is a precondition, not an input.** ADR-0001 §12.5 names the hash's inputs exhaustively and
+this adds none; the digest is bit-for-bit what §12.5 specifies whether or not the check runs.
+`worker/pyproject.toml` is deliberately absent from `REQUIRED_BUNDLE_INPUTS` for the same reason —
+§12.5 names the *lockfile*, not this file — so the reconciliation runs when the manifest declares
+it, which the checked-in manifest does.
 
 ### Reading the current identity
 

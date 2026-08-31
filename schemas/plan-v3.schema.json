@@ -76,11 +76,16 @@
           "maximum": 4294967295,
           "minimum": 0,
           "type": "integer"
+        },
+        "voice_profile": {
+          "description": "Voice profile the lesson binds that speaker to.\n\nThe resolved identity, carried forward rather than re-derived, because\nthe worker protocol's `synthesize` frame asks for a *voice profile\nidentity* and the speaker name is not one: two speakers may share a\nprofile, and a worker handed a speaker name would have to know a\nlesson's bindings to resolve it.\n\nNot a synthesis-key input. ADR-0001 §12.5 keys on the conditioning\nartifact's hash, which is what actually changes the audio; the profile\nidentity names the record that artifact was resolved through, so a\nreviewer can reach its consent record. Renaming a profile directory\nmust not re-render every segment it speaks.",
+          "type": "string"
         }
       },
       "required": [
         "id",
         "speaker",
+        "voice_profile",
         "display_text",
         "spoken_text",
         "style",
@@ -91,7 +96,7 @@
       "type": "object"
     }
   },
-  "$id": "https://schemas.study-tts.example/plan-v2.schema.json",
+  "$id": "https://schemas.study-tts.example/plan-v3.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "A lesson resolved into exactly what will be synthesized, derived\ndeterministically from it.\n\nProduced only by [`RenderPlan::for_lesson`] and never read back, so it does\nnot derive `Deserialize`. Adding one now would publish an unversioned parse\nboundary that accepts unknown fields and that no caller exercises; ADR-0001\n§12.2 puts persisted plans at E2, and the loader that story needs is where a\nfail-closed boundary belongs.",
@@ -107,7 +112,7 @@
     "schema_version": {
       "description": "Layout version of this document.\n\nFirst field because it is the first thing a reader of `plan.json` needs\nand the first thing the E2 loader will read. Typed rather than authored\ntext, unlike a lesson's: nothing hand-writes a plan, so there is no\nauthoring mistake to report against the original spelling.\n\nOutside [`RenderPlan::plan_hash`] on purpose. That hash names the\nsegments to be synthesized, and a document layout is not one of them: a\nplan whose version moved while its segments did not is the same plan,\nand must not invalidate a cache.",
       "enum": [
-        "2.0"
+        "3.0"
       ],
       "type": "string"
     },

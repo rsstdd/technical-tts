@@ -177,9 +177,11 @@ pub const MANIFEST_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(0, 2);
 
 /// Version of the published worker-protocol schema.
 ///
-/// `1.0`, matching the `e1.worker.1.0` breaking frame baseline in
-/// `docs/architecture/PROVISIONAL-CONTRACT-BASELINE.md`.
-pub const WORKER_PROTOCOL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(1, 0);
+/// `2.0`, matching the `e1.worker.2.0` breaking frame baseline in
+/// `docs/architecture/PROVISIONAL-CONTRACT-BASELINE.md`. It tracks the wire
+/// version rather than counting separately: a schema describing frames this
+/// build no longer sends would be a published description of nothing.
+pub const WORKER_PROTOCOL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(2, 0);
 
 // The job snapshot's two version spellings must not drift: one labels the
 // record on disk, the other names its published schema.

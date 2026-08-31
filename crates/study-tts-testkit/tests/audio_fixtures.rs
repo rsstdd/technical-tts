@@ -20,6 +20,7 @@ use study_tts_runtime::{
     AudioError, BackendError, BuildError, CachePublisher, CacheResolveRequest,
     FileSystemCachePublisher, SynthesisReport,
 };
+use study_tts_testkit::deterministic_tone_conditioning;
 use tempfile::TempDir;
 
 fn audio_fixture(name: &str) -> PathBuf {
@@ -39,7 +40,14 @@ fn context() -> SynthesisContext {
         determinism_class: DeterminismClass::Reproducible,
         seed: 0,
         generation_parameters: std::collections::BTreeMap::new(),
-        voice_conditioning_hashes: std::collections::BTreeMap::new(),
+        // The artifact the producer below reports reading, under the speaker
+        // `segment` names. Publication cross-checks the two halves of a report,
+        // so a context omitting what the report names is a report no worker may
+        // send.
+        voice_conditioning_hashes: std::collections::BTreeMap::from([(
+            "synthetic-test-voice-v1".to_owned(),
+            deterministic_tone_conditioning("synthetic-test-voice-v1"),
+        )]),
     }
 }
 
@@ -48,6 +56,7 @@ fn segment() -> PlannedSegment {
     let mut planned = PlannedSegment {
         id: "seg-0001".to_owned(),
         speaker: "synthetic-test-voice-v1".to_owned(),
+        voice_profile: "nadia-v1".to_owned(),
         display_text: "A cache stores reusable work.".to_owned(),
         spoken_text: "A cache stores reusable work.".to_owned(),
         style: study_tts_core::DeliveryStyle::CalmExplanatory,
@@ -84,7 +93,8 @@ fn publish(fixture: &str) -> Result<(), BuildError> {
             frames,
             backend_revision: "audio-fixture-v1".to_owned(),
             context: context(),
-            voice_profile_hash: blake3::hash(b"synthetic-test-voice-v1").into(),
+            voice_conditioning_hash: deterministic_tone_conditioning("synthetic-test-voice-v1"),
+            voice_profile: "synthetic-test-voice-v1".to_owned(),
         })
     };
 

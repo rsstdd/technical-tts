@@ -248,7 +248,15 @@ def violations(
         for cited, target, pinned in citations(record, line, repository_root):
             relative_record = record.relative_to(repository_root)
             if not target.is_file():
-                yield f"{relative_record}:{number}: cited file `{cited}` does not exist"
+                # Accounted before reported, for the same reason a stale digest
+                # is: an accepted interface change may delete a published
+                # schema, and the immutable record that pinned it cannot be
+                # amended. Reporting first left superseding a record whose
+                # conclusions were still sound as the only way forward, which is
+                # the signal `evidence/README.md` reserves for a conclusion that
+                # turned out to be wrong.
+                if (record_id(record), cited) not in accounted:
+                    yield f"{relative_record}:{number}: cited file `{cited}` does not exist"
                 continue
             current = digest(target)
             if current == pinned or (record_id(record), cited) in accounted:

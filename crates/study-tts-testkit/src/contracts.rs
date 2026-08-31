@@ -21,7 +21,7 @@ use study_tts_runtime::{
     FileSystemCachePublisher, IoError, JobOwnership, JobRepository, PackagePreflightRequest,
     PackagePrepareRequest, PackagePublication, PackageWriteRequest, PackageWriter,
     PreparedPackageWriter, StagedAudioProducer, SynthesisReport, SynthesisRequest, TtsExecutor,
-    ValidatedCachedArtifact,
+    ValidatedCachedArtifact, WorkerConfiguration, WorkerTtsExecutor,
 };
 
 /// Thread-safe ordered observations shared by recording seam adapters.
@@ -453,6 +453,64 @@ pub fn run_tts_executor_contract_scenario(
 ) -> Result<SynthesisReport, BackendError> {
     executor.validate(&request)?;
     block_on(executor.synthesize(request, destination))
+}
+
+/// What one worker lifetime reported, for comparison against another's.
+///
+/// Named rather than a tuple so a reader of
+/// [`run_worker_restart_contract_scenario`] can tell the two lifetimes apart.
+#[derive(Debug)]
+pub struct WorkerLifetimeOutcome {
+    /// What the worker rendered, as it reported it.
+    pub report: SynthesisReport,
+    /// Everything the worker wrote to its standard error that lifetime.
+    pub diagnostics: String,
+}
+
+/// Starts a worker, renders, shuts it down, and does all of it again.
+///
+/// ADR-0001 §17.7 asks a worker to survive being restarted, and nothing shared
+/// between the fake and the real worker exercised it: both suites started one
+/// worker, rendered once, and dropped it. Two lifetimes driven through one
+/// function is what makes "restartable" a property rather than an assumption —
+/// a worker that leaves a lock, a staged file, or a resident model behind
+/// fails the second lifetime, and only the second.
+///
+/// The shutdown between them is the graceful one:
+/// [`WorkerTtsExecutor::shutdown`] sends the protocol's `shutdown` frame and
+/// gives the worker its grace period before the process group is killed. A
+/// restart that only worked after a `SIGKILL` would not be the property this
+/// scenario claims.
+///
+/// # Errors
+///
+/// [`BuildError::Synthesis`] when either worker cannot be started or
+/// initialized, and everything
+/// [`run_tts_executor_contract_scenario`] reports for either render.
+pub fn run_worker_restart_contract_scenario(
+    configuration: &WorkerConfiguration,
+    request: &SynthesisRequest,
+    first_destination: &Path,
+    second_destination: &Path,
+) -> Result<[WorkerLifetimeOutcome; 2], BuildError> {
+    let mut lifetimes = Vec::with_capacity(2);
+    for destination in [first_destination, second_destination] {
+        let executor = WorkerTtsExecutor::start(configuration)?;
+        let report = run_tts_executor_contract_scenario(&executor, request.clone(), destination)?;
+        executor.shutdown()?;
+        // Read after the shutdown, not before: the reader threads are joined by
+        // it, so anything the worker wrote on its way out — including its
+        // answer to the `shutdown` frame — is all there only once it returned.
+        let diagnostics = executor.diagnostics();
+        lifetimes.push(WorkerLifetimeOutcome {
+            report,
+            diagnostics,
+        });
+    }
+    let [first, second] = lifetimes
+        .try_into()
+        .unwrap_or_else(|_| unreachable!("the loop above runs exactly twice"));
+    Ok([first, second])
 }
 
 /// Runs cache miss then hit through the same cache adapter and producer.

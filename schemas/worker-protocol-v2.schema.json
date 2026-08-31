@@ -4,6 +4,10 @@
       "additionalProperties": false,
       "description": "Parameters that initialize one persistent worker.",
       "properties": {
+        "staging_root": {
+          "description": "The one directory the worker may write inside, for its lifetime.\n\nSent at initialization rather than per request because the worker\nresolves it once: a boundary re-read on every synthesis is a boundary a\nsymlink swapped in mid-session can move. ADR-0001 10.3 confines worker\nwrites to the assigned staging root, and until the worker was told the\nroot it could only recognise a literal `..` in the single path it was\nhanded -- so `t5_e1_worker_output_cannot_escape_staging_root` asserted\nmore than either end could prove.\n\nA `String` rather than a `PathBuf`: this is a wire field, and the\nprotocol carries paths as UTF-8 text that the worker resolves itself.",
+          "type": "string"
+        },
         "threads": {
           "description": "Maximum native threads assigned to this worker.\n\nFixed-width rather than `usize`, which is the pointer width of whoever\ncompiled the reader: a 32-bit build and a 64-bit build would accept\ndifferent frames under one protocol version. The `maximum` the published\nschema carries for it comes from that width, in\n[`crate::schemas::PublishedSchema::generate`].\n\nNon-zero because zero is not a smaller allowance but an unanswerable\ninstruction: no thread count means the worker cannot run at all, and\nboth ends and the published schema accepted it while nothing yet reads\nthe value. Applying it is E1-S3's; refusing a value no application\ncould honor is this boundary's, and refusing it now costs nothing\nbecause no conforming frame carries one. `NonZeroU32` rather than a\nhand-written check, so the refusal is `serde`'s at the parse and the\npublished `minimum` follows from the type.",
           "format": "uint32",
@@ -18,7 +22,8 @@
       },
       "required": [
         "worker_bundle_hash",
-        "threads"
+        "threads",
+        "staging_root"
       ],
       "type": "object"
     },
@@ -36,8 +41,8 @@
       ],
       "type": "object"
     },
-    "VoiceProfileHash": {
-      "description": "BLAKE3 over the voice-profile record a conditioning artifact was resolved through (ADR-0001 5.2), as 64 lowercase hexadecimal characters.",
+    "VoiceConditioningHash": {
+      "description": "BLAKE3 over the voice-conditioning artifact used for synthesis (ADR-0001 5.2), as 64 lowercase hexadecimal characters.",
       "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
       "type": "string"
     },
@@ -181,11 +186,11 @@
           "pattern": "^[\\x21-\\x7E]+$(?![\\s\\S])",
           "type": "string"
         },
-        "voice_profile_hashes": {
+        "voice_conditioning_hashes": {
           "additionalProperties": {
-            "$ref": "#/$defs/VoiceProfileHash"
+            "$ref": "#/$defs/VoiceConditioningHash"
           },
-          "description": "Loaded voice profiles keyed by their stable profile identifiers.",
+          "description": "Conditioning artifact loaded for each voice profile, by profile\nidentifier.\n\nThe digest the worker read from its own voice root, not one it was\nhanded: `initialize` carries no voice list, so every entry here is\nsomething the worker went and looked at.\n\nA conditioning digest rather than a digest of the profile record, which\nno Python worker can compute — the worker environment has no BLAKE3 and\n`docs/architecture/E1-S3-INTERFACE-CHANGE-001.md` records why one was\nnot added for it.",
           "minProperties": 1,
           "type": "object"
         },
@@ -198,7 +203,7 @@
         "model_revision",
         "tokenizer_revision",
         "worker_bundle_hash",
-        "voice_profile_hashes"
+        "voice_conditioning_hashes"
       ],
       "type": "object"
     },
@@ -220,8 +225,8 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e1.worker.1.0",
-                "e1.worker.1.1"
+                "e1.worker.2.0",
+                "e1.worker.2.1"
               ],
               "type": "string"
             },
@@ -252,8 +257,8 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e1.worker.1.0",
-                "e1.worker.1.1"
+                "e1.worker.2.0",
+                "e1.worker.2.1"
               ],
               "type": "string"
             },
@@ -283,8 +288,8 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e1.worker.1.0",
-                "e1.worker.1.1"
+                "e1.worker.2.0",
+                "e1.worker.2.1"
               ],
               "type": "string"
             },
@@ -318,8 +323,8 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e1.worker.1.0",
-                "e1.worker.1.1"
+                "e1.worker.2.0",
+                "e1.worker.2.1"
               ],
               "type": "string"
             },
@@ -357,8 +362,8 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e1.worker.1.0",
-                "e1.worker.1.1"
+                "e1.worker.2.0",
+                "e1.worker.2.1"
               ],
               "type": "string"
             },
@@ -389,8 +394,8 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e1.worker.1.0",
-                "e1.worker.1.1"
+                "e1.worker.2.0",
+                "e1.worker.2.1"
               ],
               "type": "string"
             },
@@ -429,8 +434,8 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e1.worker.1.0",
-                "e1.worker.1.1"
+                "e1.worker.2.0",
+                "e1.worker.2.1"
               ],
               "type": "string"
             },
@@ -465,8 +470,8 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e1.worker.1.0",
-                "e1.worker.1.1"
+                "e1.worker.2.0",
+                "e1.worker.2.1"
               ],
               "type": "string"
             },
@@ -501,8 +506,8 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e1.worker.1.0",
-                "e1.worker.1.1"
+                "e1.worker.2.0",
+                "e1.worker.2.1"
               ],
               "type": "string"
             },
@@ -545,8 +550,8 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e1.worker.1.0",
-                "e1.worker.1.1"
+                "e1.worker.2.0",
+                "e1.worker.2.1"
               ],
               "type": "string"
             },
@@ -599,8 +604,8 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e1.worker.1.0",
-                "e1.worker.1.1"
+                "e1.worker.2.0",
+                "e1.worker.2.1"
               ],
               "type": "string"
             },
@@ -618,9 +623,13 @@
               "minimum": 0,
               "type": "integer"
             },
-            "voice_profile_hash": {
-              "$ref": "#/$defs/VoiceProfileHash",
-              "description": "Voice-profile identity used for synthesis."
+            "voice_conditioning_hash": {
+              "$ref": "#/$defs/VoiceConditioningHash",
+              "description": "Conditioning artifact the worker actually loaded for this request.\n\nRead from the worker's own voice root rather than echoed from the\nrequest, which is what lets the cache's identity gate refuse a\nworker that rendered with a voice the plan did not ask for."
+            },
+            "voice_profile": {
+              "description": "Voice profile that artifact was resolved through.",
+              "type": "string"
             },
             "worker_bundle_hash": {
               "$ref": "#/$defs/WorkerBundleHash",
@@ -637,7 +646,8 @@
             "model_revision",
             "codec_revision",
             "worker_bundle_hash",
-            "voice_profile_hash"
+            "voice_conditioning_hash",
+            "voice_profile"
           ],
           "type": "object"
         },
@@ -659,8 +669,8 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e1.worker.1.0",
-                "e1.worker.1.1"
+                "e1.worker.2.0",
+                "e1.worker.2.1"
               ],
               "type": "string"
             },
@@ -691,8 +701,8 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e1.worker.1.0",
-                "e1.worker.1.1"
+                "e1.worker.2.0",
+                "e1.worker.2.1"
               ],
               "type": "string"
             },
@@ -730,8 +740,8 @@
             "protocol_version": {
               "description": "Worker protocol version.",
               "enum": [
-                "e1.worker.1.0",
-                "e1.worker.1.1"
+                "e1.worker.2.0",
+                "e1.worker.2.1"
               ],
               "type": "string"
             },
@@ -764,7 +774,7 @@
       "description": "Parameters for a synthesis request.",
       "properties": {
         "output": {
-          "description": "Managed relative output path assigned by Rust.",
+          "description": "The one path Rust assigns this take, which the worker creates exactly\nonce.\n\nThe worker opens it with `O_CREAT|O_EXCL|O_NOFOLLOW` and creates no\nparent directory: it never writes through a link planted at that path,\nnever overwrites something already there, and never brings a directory\ninto being. Said here rather than left to each end, because it is the\nhalf of ADR-0001 §10.3's staging containment that only the writer can\nkeep. The parent's half is refusing to report success for audio that is\nnot where it asked for it.\n\nFormerly described as relative, which the executor never sent: it\nassigns the absolute staging path the cache created for this attempt.",
           "type": "string"
         },
         "seed": {
@@ -816,7 +826,7 @@
       "type": "object"
     }
   },
-  "$id": "https://schemas.study-tts.example/worker-protocol-v1.schema.json",
+  "$id": "https://schemas.study-tts.example/worker-protocol-v2.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "anyOf": [
     {

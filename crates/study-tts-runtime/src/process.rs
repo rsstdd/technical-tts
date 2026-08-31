@@ -226,7 +226,7 @@ struct SupervisedChild {
 
 #[cfg(target_os = "linux")]
 #[derive(Debug, Default)]
-struct ProcessOwnership {
+pub(crate) struct ProcessOwnership {
     root_pid: Option<i32>,
     descendants: Vec<OwnedProcess>,
 }
@@ -251,7 +251,7 @@ struct ProcessRecord {
 
 #[cfg(not(target_os = "linux"))]
 #[derive(Debug, Default)]
-struct ProcessOwnership;
+pub(crate) struct ProcessOwnership;
 
 /// Runs one command with concurrent bounded capture and process-tree cleanup.
 ///
@@ -799,7 +799,7 @@ fn configure_capture_pipe<T>(_pipe: &T) -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 impl ProcessOwnership {
-    fn for_child(child: &Child) -> io::Result<Self> {
+    pub(crate) fn for_child(child: &Child) -> io::Result<Self> {
         let root_pid =
             i32::try_from(child.id()).map_err(|_| io::Error::other("child PID overflow"))?;
         Ok(Self {
@@ -808,7 +808,7 @@ impl ProcessOwnership {
         })
     }
 
-    fn refresh(&mut self) -> io::Result<()> {
+    pub(crate) fn refresh(&mut self) -> io::Result<()> {
         use rustix::process::{Pid, PidfdFlags, pidfd_open};
 
         let Some(root_pid) = self.root_pid else {
@@ -936,11 +936,11 @@ fn process_identity_is_live(pid: i32, start_time_ticks: u64) -> bool {
 
 #[cfg(not(target_os = "linux"))]
 impl ProcessOwnership {
-    fn for_child(_child: &Child) -> io::Result<Self> {
+    pub(crate) fn for_child(_child: &Child) -> io::Result<Self> {
         Ok(Self)
     }
 
-    fn refresh(&mut self) -> io::Result<()> {
+    pub(crate) fn refresh(&mut self) -> io::Result<()> {
         Ok(())
     }
 }
@@ -964,14 +964,14 @@ fn child_has_exited(child: &mut Child) -> io::Result<bool> {
 }
 
 #[cfg(unix)]
-fn configure_process_group(command: &mut Command) {
+pub(crate) fn configure_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
 
     command.process_group(0);
 }
 
 #[cfg(not(unix))]
-fn configure_process_group(_command: &mut Command) {}
+pub(crate) fn configure_process_group(_command: &mut Command) {}
 
 #[cfg(unix)]
 fn child_pid(child: &Child) -> io::Result<rustix::process::Pid> {
@@ -981,7 +981,7 @@ fn child_pid(child: &Child) -> io::Result<rustix::process::Pid> {
     Pid::from_raw(raw_pid).ok_or_else(|| io::Error::other("child PID was zero"))
 }
 
-fn terminate(
+pub(crate) fn terminate(
     mut child: Child,
     invocation: &ToolInvocation,
     mut ownership: ProcessOwnership,

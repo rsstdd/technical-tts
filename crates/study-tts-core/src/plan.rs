@@ -33,7 +33,7 @@ use crate::{
 /// `1.0` came from E1-S1. That no `plan.json` has ever been written makes the
 /// migration trivial, not the increment optional. The change is recorded in
 /// `docs/architecture/E1-S2-INTERFACE-CHANGE-002.md`.
-pub const PLAN_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(2, 0);
+pub const PLAN_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(3, 0);
 
 /// File-name and URI stem of the published render-plan schema.
 pub const PLAN_SCHEMA_STEM: &str = "plan";
@@ -238,6 +238,20 @@ pub struct PlannedSegment {
     pub id: String,
     /// Which voice speaks this segment.
     pub speaker: String,
+    /// Voice profile the lesson binds that speaker to.
+    ///
+    /// The resolved identity, carried forward rather than re-derived, because
+    /// the worker protocol's `synthesize` frame asks for a *voice profile
+    /// identity* and the speaker name is not one: two speakers may share a
+    /// profile, and a worker handed a speaker name would have to know a
+    /// lesson's bindings to resolve it.
+    ///
+    /// Not a synthesis-key input. ADR-0001 §12.5 keys on the conditioning
+    /// artifact's hash, which is what actually changes the audio; the profile
+    /// identity names the record that artifact was resolved through, so a
+    /// reviewer can reach its consent record. Renaming a profile directory
+    /// must not re-render every segment it speaks.
+    pub voice_profile: String,
     /// Text as a reviewer reads it, carried so the package a build writes can
     /// hold the transcript for the audio it selected.
     ///
@@ -263,6 +277,46 @@ pub struct PlannedSegment {
     pub take: u32,
     /// This segment's synthesis identity, which names its cache entry.
     pub cache_key: CacheKey,
+}
+
+impl PlannedSegment {
+    /// The identity of the worker request that renders this segment.
+    ///
+    /// Derived rather than assigned, and derived **here** rather than at each
+    /// use, because two boundaries need the same answer and neither owns it.
+    /// The executor puts it on the `synthesize` frame so the worker can
+    /// correlate its reply, and the cache puts it in the quarantine path
+    /// ADR-0001 §12.6 spells with an attempt and a request. Two spellings of
+    /// one rule would be one rule until somebody edited one of them, and the
+    /// quarantined artifact would then name a request that never existed.
+    ///
+    /// Unique within a plan because the cache key and the segment identity
+    /// together are: two takes of one segment differ in their key, and two
+    /// segments sharing a key differ in their identity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use study_tts_core::{CacheKey, DeliveryStyle, PlannedSegment};
+    /// let segment = PlannedSegment {
+    ///     id: "segment-a".to_owned(),
+    ///     speaker: "nadia".to_owned(),
+    ///     voice_profile: "nadia-v1".to_owned(),
+    ///     display_text: "Ten".to_owned(),
+    ///     spoken_text: "Ten".to_owned(),
+    ///     style: DeliveryStyle::CalmExplanatory,
+    ///     pause_after_ms: 0,
+    ///     take: 0,
+    ///     cache_key: "0".repeat(CacheKey::LENGTH).parse()?,
+    /// };
+    ///
+    /// assert!(segment.request_id().ends_with("-segment-a"));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[must_use]
+    pub fn request_id(&self) -> String {
+        format!("e0-{}-{}", self.cache_key, self.id)
+    }
 }
 
 /// Why a validated lesson could not be planned.
@@ -340,9 +394,22 @@ impl RenderPlan {
                         speaker: segment.speaker.clone(),
                     });
                 }
+                // Resolved here rather than at the worker boundary, so a
+                // segment naming a speaker the lesson never bound is refused
+                // while a segment is still a plan rather than a request.
+                let voice_profile = lesson
+                    .speakers()
+                    .get(&segment.speaker)
+                    .ok_or_else(|| PlanError::UnresolvedSpeaker {
+                        segment_id: segment.id.clone(),
+                        speaker: segment.speaker.clone(),
+                    })?
+                    .voice_profile
+                    .clone();
                 Ok(PlannedSegment {
                     id: segment.id.clone(),
                     speaker: segment.speaker.clone(),
+                    voice_profile,
                     display_text: segment.display_text.clone(),
                     spoken_text: segment.spoken_text.clone(),
                     style: segment.style,
@@ -390,6 +457,7 @@ fn plan_digest(segments: &[PlannedSegment]) -> blake3::Hash {
         let PlannedSegment {
             id,
             speaker,
+            voice_profile,
             display_text,
             spoken_text,
             style,
@@ -401,6 +469,11 @@ fn plan_digest(segments: &[PlannedSegment]) -> blake3::Hash {
         CanonicalValue::object([
             ("id", id.as_str().into()),
             ("speaker", speaker.as_str().into()),
+            // In the plan identity though not in the cache key: two profile
+            // directories holding identical conditioning artifacts derive one
+            // key, and a plan that rebound a segment between them would
+            // otherwise read as unchanged while its consent trail moved.
+            ("voice_profile", voice_profile.as_str().into()),
             ("display_text", display_text.as_str().into()),
             ("spoken_text", spoken_text.as_str().into()),
             ("style", style.as_str().into()),
@@ -527,9 +600,15 @@ mod tests {
         // `display_text`; the two cache keys below deliberately did not, which
         // is the separation ADR-0001 §8.3 and §12.5 ask for and the reason a
         // transcript correction reuses every cached segment.
+        //
+        // It moved again in E1-S3, when the segment began carrying the resolved
+        // `voice_profile` the worker protocol asks for by name. The cache keys
+        // below again did not, and that is the same separation: §12.5 keys on
+        // the conditioning artifact's hash, so renaming a profile directory
+        // re-plans without re-rendering a single segment.
         assert_eq!(
             first.plan_hash.as_str(),
-            "1a997b0b84cfc40b5f3bc2ee31273f9a464a0c0f094cdd5264a69337605061c5"
+            "abd889db17077103d0857a97098d50bd8c0b6786622e3c4c4ceca0d1b3dbdc0f"
         );
         assert_eq!(
             first.segments[0].cache_key.as_str(),

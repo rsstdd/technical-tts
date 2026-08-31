@@ -61,3 +61,60 @@ them.
 directory is disposable E0-S3 spike tooling rather than a product path. That
 makes the command above the only thing standing between these tests and rot, so
 run it whenever you change a script here.
+
+## E1-S3: qualifying the worker session
+
+The four `t5_e1_` names in `DELIVERY-PLAN.md` §E1-S3 are acceptance criteria,
+not `cargo test` functions — `grep 'fn t5_'` across `crates/` returns nothing,
+because every `t5_` name in this project is discharged by an operator-run
+instrument plus an evidence record citing its hashed output. E0-S3 used the same
+shape; `evidence/gates/g0/e0-s3/e0-s3-g0-qualification-report-v1.md` is what one
+looks like.
+
+The instrument is a Rust example rather than a script here, because three of the
+four criteria are about the *executor* driving a real worker. A Python harness
+would re-implement the protocol client and then qualify the re-implementation
+instead of the shipped path.
+
+```text
+cargo run --package study-tts-testkit --example worker-qualification -- \
+    --bundle-root . \
+    --model-root <governed model root> \
+    --voice-root <governed voice root> \
+    --output-root <fresh directory>
+```
+
+Every root is a required argument with no default. The governed two are named
+here only as placeholders: `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`
+keeps their real locations out of Git, CI, and logs. The output root must not
+already exist, so a rerun cannot overwrite the artifacts a previous result was
+hashed from.
+
+It prints one JSON object naming the worker bundle identity and each
+criterion's verdict, exits non-zero if any failed, and **writes that object to
+`<output root>/qualification-result.json`, reporting its SHA-256 on the last
+line**. The file is the thing an evidence record cites: a result that existed
+only in a terminal could not be hashed or cited, which an audit of the first
+E1-S3 result recorded as a finding against it. Copy that file under
+`evidence/gates/g1/e1-s3/` and cite it with the reported digest per
+`evidence/README.md`; `scripts/check-evidence-provenance.py` verifies citations
+with SHA-256, which is why the instrument reports that digest and no other.
+
+A fifth criterion, `t5_e1_worker_survives_restart_and_starts_offline`, is not one
+of the four `DELIVERY-PLAN.md` names. It is a helper criterion covering ADR-0001
+§17.7's restart and offline requirements, which nothing shared between the fake
+and the real worker exercised: both suites started one worker, rendered once and
+dropped it. It runs the same
+`run_worker_restart_contract_scenario` the T4 suite drives the protocol fake
+through, so the two ends are exercised by one function.
+
+**This is not run by `qualification.yml`, deliberately** — the same reason that
+workflow gives for its own real-model steps: naming a governed root in a public
+workflow file would put it into Git, and a scheduled run would touch artifacts
+the rights policy keeps operator-controlled.
+
+**Listening is not covered.** These criteria measure session behavior — one
+model load per lifetime, protocol-only stdout, staging containment, a stable
+bundle identity — and none of them listens to the audio. E1-S3 produces speech
+for the first time, so a listening review is owed separately before any gate
+that depends on it.

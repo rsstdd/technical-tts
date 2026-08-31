@@ -63,7 +63,11 @@ def initialize_frame(**overrides: object) -> dict[str, object]:
         "method": "initialize",
         "protocol_version": WORKER_PROTOCOL_VERSION,
         "request_id": "req-1",
-        "parameters": {"worker_bundle_hash": "a" * 64, "threads": 4},
+        "parameters": {
+            "worker_bundle_hash": "a" * 64,
+            "threads": 4,
+            "staging_root": "/staging",
+        },
     }
     frame.update(overrides)
     return frame
@@ -112,7 +116,12 @@ class ParameterShapeTests(unittest.TestCase):
         # `parameters["worker_bundle_hash"]`, so a parameters object nobody
         # checked is a KeyError dressed up as a protocol frame.
         frame = initialize_frame(
-            parameters={"worker_bundle_hash": "a" * 64, "threads": 4, "extra": 1}
+            parameters={
+                "worker_bundle_hash": "a" * 64,
+                "threads": 4,
+                "staging_root": "/staging",
+                "extra": 1,
+            }
         )
 
         with self.assertRaises(FrameError) as refused:
@@ -133,11 +142,11 @@ class ParameterShapeTests(unittest.TestCase):
 
     def test_a_nested_field_of_the_wrong_type_is_refused(self) -> None:
         for parameters, expected in [
-            ({"worker_bundle_hash": 1, "threads": 4}, "worker_bundle_hash"),
-            ({"worker_bundle_hash": "a" * 64, "threads": -1}, "threads"),
+            ({"worker_bundle_hash": 1, "threads": 4, "staging_root": "/s"}, "worker_bundle_hash"),
+            ({"worker_bundle_hash": "a" * 64, "threads": -1, "staging_root": "/s"}, "threads"),
             # `bool` is an `int` in Python, and `true` is not a thread count.
-            ({"worker_bundle_hash": "a" * 64, "threads": True}, "threads"),
-            ({"worker_bundle_hash": "a" * 64, "threads": "4"}, "threads"),
+            ({"worker_bundle_hash": "a" * 64, "threads": True, "staging_root": "/s"}, "threads"),
+            ({"worker_bundle_hash": "a" * 64, "threads": "4", "staging_root": "/s"}, "threads"),
         ]:
             with self.subTest(parameters=parameters):
                 with self.assertRaises(FrameError) as refused:
@@ -160,7 +169,11 @@ class ParameterShapeTests(unittest.TestCase):
         ]:
             with self.subTest(why=why):
                 frame = initialize_frame(
-                    parameters={"worker_bundle_hash": spelling, "threads": 4}
+                    parameters={
+                        "worker_bundle_hash": spelling,
+                        "threads": 4,
+                        "staging_root": "/staging",
+                    }
                 )
 
                 with self.assertRaises(FrameError) as refused:
@@ -231,6 +244,7 @@ class ParameterShapeTests(unittest.TestCase):
                         parameters={
                             "worker_bundle_hash": "a" * 64,
                             "threads": UNSIGNED_32_MAXIMUM + 1,
+                            "staging_root": "/staging",
                         }
                     )
                 )

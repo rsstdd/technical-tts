@@ -1,12 +1,20 @@
 # ADR-0001-D004 — Worker environment lock verification
 
-- **Status:** Approved
+- **Status:** Superseded by [`ADR-0001-D006`](ADR-0001-D006-worker-environment-lock-verification-cost.md), 2026-08-30
 - **Date:** 2026-08-29
 - **Controlling ADR and sections:** ADR-0001 §12.5 and §24
 - **Requesting story:** E1-S1
 - **Owner:** Engineering owner
 - **Approver:** Ross Todd, project owner
 - **Expiry:** None proposed; this is an extension of a production invariant, not a waiver of one
+
+## Superseded
+
+`ADR-0001-D006` supersedes this record. The environment-lock check it authorizes is **unchanged
+and still in force**; what D006 replaces is §Measured cost — this record banded wall time only,
+and the reference machine's wall clock corrupts roughly one run in eight, so a fast run could not
+be told apart from a skipped precondition. D006 retakes the bands and makes CPU time the measure.
+Everything below stands as the record of what was decided on 2026-08-29.
 
 ## Proposed deviation
 

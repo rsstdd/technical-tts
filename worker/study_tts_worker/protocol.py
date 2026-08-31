@@ -320,6 +320,22 @@ def nested(shape: Object) -> Check:
     return lambda value, path: check_object(value, shape, path)
 
 
+def string_map(value: Any, path: str) -> None:
+    """Accepts an object of arbitrary keys whose values are all strings.
+
+    For a record whose *field names* are not this build's to fix --
+    ``generation_parameters`` is the one case -- so :class:`Object` cannot
+    describe it. The values are still checked, because they reach the synthesis
+    key as text: ADR-0001 §12.5 admits no floating point into an identity, so
+    the launcher records each parameter's exact spelling and this refuses a
+    launcher that wrote one as a number instead.
+    """
+    if not isinstance(value, dict):
+        raise FrameError(f"`{path}` is not a JSON object")
+    for name in sorted(value):
+        text(value[name], f"{path}.{name}")
+
+
 def nullable(shape: Object) -> Check:
     """Checks an optional-by-null object, which ``null`` satisfies."""
 
@@ -336,6 +352,10 @@ _INITIALIZE_PARAMETERS: Final[Object] = Object(
     required={
         "worker_bundle_hash": blake3_hex,
         "threads": positive(UNSIGNED_32_MAXIMUM),
+        # The one directory the worker may write inside. Required rather than
+        # optional: a worker that defaulted the boundary would confine writes to
+        # somewhere the supervisor never chose, which is not containment.
+        "staging_root": text,
     }
 )
 

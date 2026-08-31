@@ -13,6 +13,7 @@
 
 use std::{
     collections::BTreeMap,
+    ffi::OsStr,
     fs,
     io::{self, Read},
     path::{Path, PathBuf},
@@ -22,12 +23,13 @@ use serde::{Deserialize, Serialize};
 use study_tts_core::{
     CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE,
     CacheKey, DeterminismClass, LanguageTag, PlannedSegment, Revision, SynthesisContext,
-    VoiceConditioningHash, VoiceProfileHash, WorkerBundleHash, is_blake3_hex,
+    VoiceConditioningHash, WorkerBundleHash, is_blake3_hex,
 };
 use tempfile::Builder;
 
 use crate::{
-    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, StagedAudioProducer,
+    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, ConditioningContradiction,
+    EdgeConditioning, MAX_SEGMENT_AUDIO_MS, SilenceThreshold, StagedAudioProducer, condition_edges,
     durable::{
         DurableFileSystem, RenameOutcome, publish_directory_noreplace, sync_directory_transaction,
         write_json_atomically,
@@ -75,6 +77,15 @@ const ARTIFACT_RECORD: &str = "artifact.json";
 
 /// Prefix marking sibling cache-directory transactions not yet authoritative.
 const CACHE_STAGE_PREFIX: &str = ".cache-stage-";
+
+/// Attempts this build makes at one segment before giving up.
+///
+/// One, and written out because ADR-0001 §12.6 spells the quarantine path
+/// `attempt-<attempt>-<request-id>` and a number has to go there. `resolve`
+/// runs one transaction and returns; the bounded retry policy of ADR-0001 §11.3
+/// is `DELIVERY-PLAN.md` E5-S3's, and this constant is what that story replaces
+/// with a real counter rather than a value it has to discover is hard-coded.
+const SOLE_ATTEMPT: u32 = 1;
 
 /// One segment's audio as the cache holds it, validated and ready to assemble.
 ///
@@ -188,8 +199,14 @@ struct ArtifactProvenance {
     /// Voice-conditioning artifact for this segment's speaker, absent until
     /// E1-S2 resolves voice references.
     voice_conditioning_hash: Option<VoiceConditioningHash>,
-    /// Voice-profile record the worker resolved that artifact through.
-    voice_profile_hash: VoiceProfileHash,
+    /// Voice profile the worker resolved that artifact through.
+    ///
+    /// The profile identity rather than a digest of the profile record: it
+    /// names the directory holding the consent decision a reviewer follows,
+    /// which is what this field is read for, and it is a value the worker can
+    /// actually produce — `docs/architecture/E1-S3-INTERFACE-CHANGE-001.md`
+    /// records why a digest is not.
+    voice_profile: String,
     /// Backend build that produced the audio; diagnostic, not an identity
     /// input.
     backend_revision: String,
@@ -204,7 +221,7 @@ impl ArtifactProvenance {
     /// map with that single entry reproduces exactly what
     /// [`SynthesisContext::key_for`] reads, and nothing more.
     ///
-    /// `voice_profile_hash` and `backend_revision` are deliberately absent:
+    /// `voice_profile` and `backend_revision` are deliberately absent:
     /// ADR-0001 §12.5 does not make either a synthesis-key input, so folding
     /// them in here would derive a key the planner never could.
     fn context(&self, speaker: &str) -> SynthesisContext {
@@ -390,6 +407,22 @@ fn synthesize_transaction(
             error,
         ));
     }
+    // What the stage *contains* is what gets published: the transaction below
+    // renames this directory into place, so a scratch file the worker left
+    // beside its audio would be published inside an entry claiming to hold one
+    // segment's speech. Checked here, while the producer that made it is still
+    // attributable, rather than at the rename where it is only a surprising
+    // directory listing.
+    if let Err(error) = check_stage_holds_only_audio(&stage, segment) {
+        return Err(quarantine_failed_attempt(
+            filesystem,
+            quarantine_root,
+            job_id,
+            segment,
+            &stage,
+            error,
+        ));
+    }
     let frames = match validate_wav(&audio_path) {
         Ok(frames) => frames,
         Err(fault) => {
@@ -437,11 +470,40 @@ fn synthesize_transaction(
     // whereas a key that does not match cannot name this audio at all.
     //
     // It is only as strong as the report is independent. Since E1-S2 the
-    // voice-conditioning artifact reaches the key, and the only executor in
-    // the tree echoes the requested one back rather than loading a profile;
-    // `docs/architecture/E1-S2-INTERFACE-CHANGE-001.md` §Limits this change
-    // does not close records that, and E1-S3 owns making the report an
-    // account of what the worker read.
+    // voice-conditioning artifact reaches the key, and E1-S3 made the worker
+    // report the artifact it actually read rather than echoing the requested
+    // one, which is what `docs/architecture/E1-S2-INTERFACE-CHANGE-001.md`
+    // §Limits this change does not close recorded as owed.
+    //
+    // The worker reports that artifact twice, and only the copy inside
+    // `context` reaches the key. So the two are checked against each other
+    // first: a report naming one artifact in `voice_conditioning_hash` and
+    // another in `context` would otherwise pass the gate below on the second
+    // while publishing provenance built from — and a cache key derived from —
+    // values its own top-level field contradicts. The gate cannot see it,
+    // because both sides of the comparison come from the same half of the
+    // report.
+    let in_context = report.context.voice_conditioning_for(&segment.speaker);
+    if in_context != Some(&report.voice_conditioning_hash) {
+        let error =
+            AudioError::ConditioningIdentityContradiction(Box::new(ConditioningContradiction {
+                segment_id: segment.id.clone(),
+                reported: report.voice_conditioning_hash.to_string(),
+                in_context: in_context.map_or_else(
+                    || "no conditioning artifact at all".to_owned(),
+                    ToString::to_string,
+                ),
+            }));
+        return Err(quarantine_failed_attempt(
+            filesystem,
+            quarantine_root,
+            job_id,
+            segment,
+            &stage,
+            error.into(),
+        ));
+    }
+
     let reported_key = report.context.key_for(segment);
     if reported_key != segment.cache_key {
         let error = AudioError::SynthesizerIdentityMismatch {
@@ -458,6 +520,29 @@ fn synthesize_transaction(
             error.into(),
         ));
     }
+
+    // Conditioned here: after the report gates above, which compare the
+    // worker's claims against what the worker wrote, and before the hash below,
+    // which must cover the bytes that are actually published. `frames` is
+    // replaced because conditioning adds zero padding, so the count recorded in
+    // the artifact is the conditioned one.
+    let frames = match condition_staged_audio(&audio_path) {
+        Ok(frames) => frames,
+        Err(fault) => {
+            let error = AudioError::UnusableAudio {
+                path: audio_path.clone(),
+                fault,
+            };
+            return Err(quarantine_failed_attempt(
+                filesystem,
+                quarantine_root,
+                job_id,
+                segment,
+                &stage,
+                error.into(),
+            ));
+        }
+    };
 
     let audio_blake3 = hash_file(&audio_path)?;
     let artifact = CacheArtifact {
@@ -481,7 +566,7 @@ fn synthesize_transaction(
                 .context
                 .voice_conditioning_for(&segment.speaker)
                 .cloned(),
-            voice_profile_hash: report.voice_profile_hash.clone(),
+            voice_profile: report.voice_profile.clone(),
             backend_revision: report.backend_revision.clone(),
         },
     };
@@ -558,6 +643,47 @@ fn reconcile_stages(
     Ok(())
 }
 
+/// Refuses a staging transaction holding anything but the assigned audio.
+///
+/// Only the audio, because this runs before the artifact record is written: at
+/// this point the producer has returned and nothing else has been staged, so
+/// every other name in the directory came from the worker.
+///
+/// # Errors
+///
+/// [`CacheError::UncontainedStagedFile`] naming the first unexpected entry, and
+/// [`BuildError::Io`] when the stage cannot be read — which is itself a reason
+/// not to publish it.
+fn check_stage_holds_only_audio(stage: &Path, segment: &PlannedSegment) -> Result<(), BuildError> {
+    for entry in fs::read_dir(stage).map_err(|error| io_error(stage, error))? {
+        let entry = entry.map_err(|error| io_error(stage, error))?;
+        let name = entry.file_name();
+        if name != OsStr::new(AUDIO_RECORD) {
+            return Err(CacheError::UncontainedStagedFile {
+                segment_id: segment.id.clone(),
+                unexpected: name.to_string_lossy().into_owned(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Moves one failed staging transaction to the path ADR-0001 §12.6 names.
+///
+/// The layout is the job, the segment, `take-<take>`, and then
+/// `attempt-<attempt>-<request-id>-<nonce>`: §12.6's spelling with one
+/// addition. **The nonce is not decoration.**
+/// §12.6 requires the directory to be collision-free, and an attempt number and
+/// a request identity do not make it so on their own: both are derived from the
+/// plan, so a second run of the same plan over the same job — a resume, or an
+/// operator re-running a build — reproduces them exactly and would publish into
+/// a directory that already holds an earlier failure's evidence. `tempdir_in`
+/// creates the directory as it names it, so the nonce is proof of exclusivity
+/// rather than a guess at one.
+///
+/// Nothing is overwritten and nothing is deleted: §12.6 keeps quarantined
+/// entries for a person to read.
 fn quarantine_transaction(
     filesystem: &dyn DurableFileSystem,
     quarantine_root: &Path,
@@ -566,18 +692,18 @@ fn quarantine_transaction(
     stage: &Path,
 ) -> Result<PathBuf, BuildError> {
     let job = managed::subdirectory(quarantine_root, job_id)?;
-    let cache = managed::subdirectory(&job, "cache")?;
-    let segment_dir = managed::subdirectory(&cache, &segment.id)?;
+    let segment_dir = managed::subdirectory(&job, &segment.id)?;
+    let take_dir = managed::subdirectory(&segment_dir, &format!("take-{}", segment.take))?;
     let attempt = Builder::new()
-        .prefix("attempt-")
-        .tempdir_in(&segment_dir)
-        .map_err(|error| io_error(&segment_dir, error))?
+        .prefix(&format!("attempt-{SOLE_ATTEMPT}-{}-", segment.request_id()))
+        .tempdir_in(&take_dir)
+        .map_err(|error| io_error(&take_dir, error))?
         .keep();
     let destination = attempt.join("cache-entry");
     if publish_directory_noreplace(filesystem, stage, &destination)? != RenameOutcome::Published {
         return Err(crate::DurableStateError::PublicationConflict { path: destination }.into());
     }
-    filesystem.sync_directory(&segment_dir)?;
+    filesystem.sync_directory(&take_dir)?;
     Ok(destination)
 }
 
@@ -726,6 +852,15 @@ fn load_validated(
     // the artifact.
     let frames =
         validate_wav(audio_path).map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?;
+    // ADR-0001 §12.6 lists the edge check among the conditions for *using* an
+    // entry, not only for writing one: an entry published by a build that
+    // conditioned differently is refused rather than concatenated into a master
+    // with a step at its join.
+    check_exposed_endpoints(
+        &read_canonical_samples(audio_path)
+            .map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?,
+    )
+    .map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?;
     let checksum = hash_file(audio_path)?;
     if frames != artifact.frames {
         return Err(rejected(
@@ -799,6 +934,89 @@ fn hash_stream(source: &mut impl Read) -> io::Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+/// Reads a canonical WAV's samples.
+///
+/// Separate from [`validate_wav`] because conditioning needs the samples
+/// themselves, and validation is run first on files this will never be asked
+/// for.
+fn read_canonical_samples(path: &Path) -> Result<Vec<f32>, AudioFault> {
+    let mut reader = hound::WavReader::open(path)?;
+    reader
+        .samples::<f32>()
+        .collect::<Result<Vec<f32>, _>>()
+        .map_err(AudioFault::from)
+}
+
+/// Writes conditioned samples back over the staged file.
+///
+/// Written through the same canonical spec the rest of this module asserts, so
+/// a conditioned file is indistinguishable in format from the one the worker
+/// wrote — only its edges differ.
+fn write_canonical_samples(path: &Path, samples: &[f32]) -> Result<(), AudioFault> {
+    let specification = hound::WavSpec {
+        channels: CANONICAL_CHANNELS,
+        sample_rate: CANONICAL_SAMPLE_RATE,
+        bits_per_sample: CANONICAL_BITS_PER_SAMPLE,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut writer = hound::WavWriter::create(path, specification)?;
+    for sample in samples {
+        writer.write_sample(*sample)?;
+    }
+    writer.finalize()?;
+    Ok(())
+}
+
+/// Refuses audio whose exposed endpoints are not exactly zero.
+///
+/// ADR-0001 §12.6 makes the edge check a condition of *using* a cache entry,
+/// not only of writing one, so this runs on reuse as well as after
+/// conditioning: an entry published by a build that conditioned differently is
+/// refused rather than concatenated into a master with a step at its join.
+fn check_exposed_endpoints(samples: &[f32]) -> Result<(), AudioFault> {
+    for (edge, sample) in [("first", samples.first()), ("last", samples.last())] {
+        if let Some(value) = sample
+            && *value != 0.0
+        {
+            return Err(AudioFault::ExposedEndpointNotZero {
+                edge,
+                value: *value,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Conditions one staged segment's edges in place and reports the new frames.
+///
+/// ADR-0001 §12.6 lists duration, silence, and edge checks among the conditions
+/// for publishing, and `DELIVERY-PLAN.md` E1-S3 task 4 is "validate **and
+/// condition** canonical audio before atomic cache publication". This is the
+/// conditioning half.
+///
+/// **Ordering is load-bearing.** It runs after the worker's reported frame
+/// count has been checked against what the worker actually wrote — conditioning
+/// adds frames, so checking afterwards would compare the worker's claim against
+/// this build's own edit — and before the audio is hashed, so the digest and
+/// the recorded frame count describe the bytes that are published.
+///
+/// The silence threshold is provisional while ADR-0003 is Proposed; see
+/// [`crate::SilenceThreshold`] and
+/// `docs/adr/deviations/ADR-0001-D007-provisional-edge-conditioning.md`.
+fn condition_staged_audio(path: &Path) -> Result<u32, AudioFault> {
+    let mut samples = read_canonical_samples(path)?;
+    let conditioning = condition_edges(
+        &mut samples,
+        CANONICAL_SAMPLE_RATE,
+        SilenceThreshold::provisional(),
+    );
+    if conditioning != EdgeConditioning::default() {
+        write_canonical_samples(path, &samples)?;
+    }
+    check_exposed_endpoints(&samples)?;
+    u32::try_from(samples.len()).map_err(|_| AudioFault::FrameCountOverflow)
+}
+
 /// Validates one WAV, reporting *which* property failed and leaving the path
 /// and the remedy to the caller, which is the only one that knows whether the
 /// file is published or staged.
@@ -846,6 +1064,16 @@ fn validate_wav(path: &Path) -> Result<u32, AudioFault> {
     if frames == 0 {
         return Err(AudioFault::Empty);
     }
+    let max_frames =
+        u32::try_from(u64::from(MAX_SEGMENT_AUDIO_MS) * u64::from(CANONICAL_SAMPLE_RATE) / 1_000)
+            .unwrap_or(u32::MAX);
+    if frames > max_frames {
+        return Err(AudioFault::TooLong {
+            frames,
+            max_frames,
+            max_milliseconds: MAX_SEGMENT_AUDIO_MS,
+        });
+    }
     Ok(frames)
 }
 
@@ -886,6 +1114,7 @@ mod tests {
         PlannedSegment {
             id: "seg-0001".to_owned(),
             speaker: "nadia".to_owned(),
+            voice_profile: "nadia-v1".to_owned(),
             display_text: "Same speech.".to_owned(),
             spoken_text: "Same speech.".to_owned(),
             style: study_tts_core::DeliveryStyle::Calm,
@@ -906,8 +1135,22 @@ mod tests {
             determinism_class: DeterminismClass::Reproducible,
             seed: 0,
             generation_parameters: BTreeMap::new(),
-            voice_conditioning_hashes: BTreeMap::new(),
+            // The speaker this module's `planned` segment names, mapped to the
+            // artifact `producer_report` reports reading. The two halves of a
+            // report must agree about the conditioning artifact, so a helper
+            // pair that disagreed would be building a report no worker may
+            // produce — see
+            // the test named for a report that contradicts itself.
+            voice_conditioning_hashes: BTreeMap::from([(
+                "nadia".to_owned(),
+                producer_conditioning(),
+            )]),
         }
+    }
+
+    /// The conditioning artifact this module's producer reports reading.
+    fn producer_conditioning() -> VoiceConditioningHash {
+        blake3::hash(b"voice").into()
     }
 
     /// What a producer that used [`producer_context`] reports.
@@ -918,7 +1161,8 @@ mod tests {
             frames,
             backend_revision: "test-backend-v1".to_owned(),
             context: producer_context(),
-            voice_profile_hash: blake3::hash(b"voice").into(),
+            voice_conditioning_hash: producer_conditioning(),
+            voice_profile: "nadia-v1".to_owned(),
         }
     }
 
@@ -993,6 +1237,11 @@ mod tests {
         let audio = dir.join("audio.wav");
         let artifact = dir.join("artifact.json");
         write_tone(&audio, 2_400, CANONICAL_SAMPLE_RATE);
+        // Conditioned as publication conditions it. A published entry is
+        // conditioned audio by definition, so a fixture that skipped this would
+        // be a file the cache could never have written — and the edge check on
+        // reuse would refuse it.
+        let frames = condition_staged_audio(&audio).expect("condition the fixture's edges");
         let record = CacheArtifact {
             schema_version: CACHE_SCHEMA_VERSION.to_owned(),
             cache_key: segment.cache_key.clone(),
@@ -1000,7 +1249,7 @@ mod tests {
             sample_rate: CANONICAL_SAMPLE_RATE,
             channels: CANONICAL_CHANNELS,
             sample_format: CANONICAL_SAMPLE_FORMAT.to_owned(),
-            frames: 2_400,
+            frames,
             provenance: ArtifactProvenance {
                 worker_bundle_hash: context.worker_bundle_hash.clone(),
                 model_repository: context.model_repository.clone(),
@@ -1010,8 +1259,11 @@ mod tests {
                 determinism_class: context.determinism_class,
                 seed: context.seed,
                 generation_parameters: context.generation_parameters.clone(),
-                voice_conditioning_hash: None,
-                voice_profile_hash: blake3::hash(b"voice").into(),
+                // From the context, as publication builds it: an entry whose
+                // recorded provenance omitted an input the context carries
+                // would not recompute the key filed beside it.
+                voice_conditioning_hash: context.voice_conditioning_for(&segment.speaker).cloned(),
+                voice_profile: "nadia-v1".to_owned(),
                 backend_revision: "test-backend-v1".to_owned(),
             },
         };
@@ -1448,6 +1700,15 @@ mod tests {
                 write_tone(destination, 2_400, CANONICAL_SAMPLE_RATE);
                 Ok(SynthesisReport {
                     context: drifted.clone(),
+                    // Kept consistent with the drifted context, because a
+                    // worker that drifted reports one artifact, not two. A
+                    // report contradicting itself is a different failure with
+                    // its own gate and its own test, and leaving this half
+                    // undrifted would test that one instead of this one.
+                    voice_conditioning_hash: drifted
+                        .voice_conditioning_for(&segment.speaker)
+                        .cloned()
+                        .unwrap_or_else(producer_conditioning),
                     ..producer_report(2_400, CANONICAL_SAMPLE_RATE)
                 })
             };
@@ -1494,6 +1755,55 @@ mod tests {
     }
 
     #[test]
+    fn t1_e1_a_report_whose_conditioning_identity_contradicts_itself_is_refused() {
+        // The worker reports the conditioning artifact twice and only the copy
+        // inside `context` reaches the synthesis key. A report that names one
+        // artifact in `voice_conditioning_hash` and another in `context` would
+        // therefore satisfy the identity gate — both sides of that comparison
+        // come from the same half of the report — while publishing provenance
+        // built from the half the other half contradicts. Nothing downstream
+        // could then say which voice produced the audio.
+        let workspace = TempDir::new().expect("create cache workspace");
+        let (cache_root, quarantine_root) = crash_test_roots(workspace.path());
+        let segment = synthesized_segment();
+
+        let mut producer = |destination: &Path| {
+            write_tone(destination, 2_400, CANONICAL_SAMPLE_RATE);
+            Ok(SynthesisReport {
+                // The context is left honest, so the key still derives and the
+                // identity gate below has nothing to catch. Only the worker's
+                // own account of what it read is changed.
+                voice_conditioning_hash: "7".repeat(64).parse().expect("a digest of sevens parses"),
+                ..producer_report(2_400, CANONICAL_SAMPLE_RATE)
+            })
+        };
+
+        let error = resolve(
+            &OsDurableFileSystem,
+            &cache_root,
+            &quarantine_root,
+            "job",
+            &segment,
+            &mut producer,
+        )
+        .expect_err("a self-contradicting report must not publish");
+
+        assert!(
+            matches!(
+                error,
+                BuildError::Audio(AudioError::ConditioningIdentityContradiction(_))
+            ),
+            "a report contradicting itself must name that, got {error:?}"
+        );
+        let (_, entry) = resolve_entry_location(&cache_root, &segment.cache_key)
+            .expect("resolve cache destination");
+        assert!(
+            !entry.exists(),
+            "a self-contradicting report must leave no published entry"
+        );
+    }
+
+    #[test]
     fn t1_e0_valid_entry_loads() {
         let workspace = TempDir::new().expect("create cache workspace");
         let (dir, audio, artifact) = published_entry(workspace.path(), "abcdef");
@@ -1501,7 +1811,9 @@ mod tests {
         let cached = load_validated(&synthesized_segment(), &dir, &audio, &artifact)
             .expect("entry should load");
 
-        assert_eq!(cached.frames, 2_400);
+        // 2,400 written frames plus the 10 ms of zero padding conditioning
+        // adds at each exposed edge, which is 240 frames at the canonical rate.
+        assert_eq!(cached.frames, 2_400 + 240 * 2);
         assert_eq!(cached.segment_id, "seg-0001");
     }
 
@@ -1535,6 +1847,10 @@ mod tests {
         // Path 5: audio that no longer matches its record.
         let (dir4, audio4, artifact4) = published_entry(workspace.path(), "ee5555");
         write_tone(&audio4, 1_200, CANONICAL_SAMPLE_RATE);
+        // Conditioned like any published audio, so what differs from the record
+        // is the frame *count* alone. An unconditioned tone would be refused
+        // for its edges first, and this path is about the count.
+        condition_staged_audio(&audio4).expect("condition the replacement's edges");
         let audio_mismatch = load_validated(&synthesized_segment(), &dir4, &audio4, &artifact4)
             .expect_err("frame mismatch must be rejected");
 
@@ -1640,7 +1956,7 @@ mod tests {
         // Fields ADR-0001 §12.5 does not make synthesis-key inputs must not
         // move the derived key. A check that folded them in would refuse
         // entries a planner could never have produced a matching key for.
-        for diagnostic in ["voice_profile_hash", "backend_revision"] {
+        for diagnostic in ["voice_profile", "backend_revision"] {
             let (dir, audio, artifact) = published_entry(workspace.path(), diagnostic);
             overwrite_provenance(&artifact, diagnostic, json!("0".repeat(64)));
 

@@ -14,8 +14,7 @@ use std::{
 
 use study_tts_core::{
     CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, CacheKey, DeterminismClass,
-    LanguageTag, Revision, SynthesisContext, VoiceConditioningHash, VoiceProfileHash,
-    WorkerBundleHash,
+    LanguageTag, Revision, SynthesisContext, VoiceConditioningHash, WorkerBundleHash,
 };
 use thiserror::Error;
 
@@ -28,7 +27,13 @@ use thiserror::Error;
 /// breaking under `ContractDescriptor::assess_successor`. Raised again by
 /// `docs/architecture/E1-S2-INTERFACE-CHANGE-001.md`, which made
 /// [`SynthesisRequest::voice_conditioning_hash`] required for the same reason.
-pub const TTS_EXECUTOR_CONTRACT_VERSION: &str = "e1.tts-executor.2.0";
+/// Raised again by `docs/architecture/E1-S3-INTERFACE-CHANGE-001.md`:
+/// [`SynthesisRequest::voice_profile`] became required so the worker receives
+/// the profile identity its protocol asks for, and
+/// [`SynthesisReport::voice_conditioning_hash`] replaced a reported profile
+/// hash the worker cannot compute, which is what makes the cache's identity
+/// gate evidence rather than a tautology.
+pub const TTS_EXECUTOR_CONTRACT_VERSION: &str = "e1.tts-executor.3.0";
 
 /// Stable identity and supported request envelope of one backend.
 ///
@@ -125,9 +130,20 @@ pub struct SynthesisRequest {
     /// Speaker the plan selected, which is also a synthesis-key input.
     ///
     /// The speaker's *name*, not the profile identity: two speakers may share
-    /// one voice profile and must not share a cache entry. E1-S3 adds the
-    /// profile identity the worker protocol's `voice` field wants.
+    /// one voice profile and must not share a cache entry.
+    /// [`SynthesisRequest::voice_profile`] carries the identity the worker
+    /// protocol's `voice` field wants.
     pub voice: String,
+    /// Voice profile the plan resolved that speaker to.
+    ///
+    /// What the worker is actually asked to load, and what the protocol's
+    /// `synthesize` frame means by "voice profile identity". Carried rather
+    /// than derived, because resolving a speaker to a profile needs the
+    /// lesson's bindings and a worker has never seen a lesson.
+    ///
+    /// Not a synthesis-key input: ADR-0001 §12.5 keys on the conditioning
+    /// artifact, which [`SynthesisRequest::voice_conditioning_hash`] carries.
+    pub voice_profile: String,
     /// Conditioning artifact the resolved voice profile carries.
     ///
     /// Required rather than implied, because it is an ADR-0001 §12.5
@@ -191,13 +207,28 @@ pub struct SynthesisReport {
     /// plan derived. Comparing a whole identity catches a field that a
     /// field-by-field check would stop covering the moment somebody adds one.
     pub context: SynthesisContext,
-    /// Voice-profile identity the executor loaded for this segment's speaker.
+    /// The conditioning artifact the executor's worker actually resolved.
     ///
-    /// Distinct from the conditioning hash inside `context`: that one is the
-    /// artifact the key is derived from, while this names the profile record
-    /// the worker resolved it through, which a reviewer needs to trace an
-    /// unexpected voice back to a consent record.
-    pub voice_profile_hash: VoiceProfileHash,
+    /// **The field the cache's identity gate rests on.** It is reported by the
+    /// worker from the voice root the worker itself read, never echoed from the
+    /// request, so a worker whose voice root disagrees with the planner's
+    /// derives a different key and is refused before it can publish. An
+    /// executor that echoed the requested value would satisfy every test in
+    /// this workspace while leaving that gate doing nothing —
+    /// `docs/architecture/E1-S2-INTERFACE-CHANGE-001.md` §Limits this change
+    /// does not close records that as owed to E1-S3, and this field is how it
+    /// is paid.
+    ///
+    /// Replaces a reported `VoiceProfileHash`, which no Python worker can
+    /// produce: the worker environment has no BLAKE3 and
+    /// `docs/architecture/E1-S3-INTERFACE-CHANGE-001.md` records why a
+    /// dependency was not added for one.
+    pub voice_conditioning_hash: VoiceConditioningHash,
+    /// Voice profile the worker resolved that artifact through.
+    ///
+    /// Names the record a reviewer follows to a consent decision. Diagnostic
+    /// rather than an identity input, like `backend_revision`.
+    pub voice_profile: String,
 }
 
 /// A descriptor with every identity input populated, for tests in this crate.
@@ -269,6 +300,40 @@ pub enum BackendValidationError {
         /// Backend-declared maximum.
         maximum: usize,
     },
+    /// The backend does not declare the requested delivery style.
+    ///
+    /// Refused before synthesis for the reason an unspoken language is: a
+    /// backend handed a style it has no parameters for does not fail, it
+    /// renders the delivery it does have — and that take is published under a
+    /// key naming the style nobody rendered.
+    #[error(
+        "executor does not declare the style `{requested}`; it declares {declared}, and the lesson \
+         owner must set the segment style to one of those or select a backend that offers the \
+         authored delivery"
+    )]
+    UndeclaredStyle {
+        /// Style the request asks for.
+        requested: String,
+        /// Styles the backend declares, rendered for the message above.
+        declared: String,
+    },
+    /// The backend has not loaded the requested voice profile.
+    ///
+    /// The sharpest case of the same rule: ADR-0001 §12.5 keys every entry on
+    /// the conditioning artifact, so a take rendered with whatever voice the
+    /// backend happened to hold would be filed under the artifact the plan
+    /// resolved and never loaded.
+    #[error(
+        "executor has not loaded the voice profile `{requested}`; it holds {declared}, and the \
+         project owner must attach the profile's governed root or bind the speaker to a profile \
+         the worker holds"
+    )]
+    UndeclaredVoiceProfile {
+        /// Voice profile the request asks for.
+        requested: String,
+        /// Voice profiles the backend declares, rendered for the message above.
+        declared: String,
+    },
     /// The requested intermediate format differs from the canonical format.
     #[error(
         "requested audio format is {sample_rate} Hz, {channels} channels, `{sample_format}`; the \
@@ -331,6 +396,56 @@ pub enum BackendError {
         /// Redacted protocol diagnostic.
         message: String,
     },
+    /// A success frame restated an identity the executor did not initialize
+    /// with.
+    #[error(
+        "executor refused request `{request_id}`: the worker synthesized under a different \
+         {identity} than it initialized with ({message})"
+    )]
+    IdentityDrift {
+        /// Request the refusal belongs to.
+        request_id: String,
+        /// Which of the reported identities disagreed.
+        identity: DriftedIdentity,
+        /// The disagreement, as expected and found.
+        message: String,
+    },
+}
+
+/// An identity a synthesis success frame restates, and may disagree on.
+///
+/// A distinct variant per identity rather than one opaque refusal: each is a
+/// separate ADR-0001 §12.5 key input, so a test asserting "the codec drifted"
+/// must not pass for a build that only noticed the model.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DriftedIdentity {
+    /// The worker bundle the audio was produced by.
+    WorkerBundle,
+    /// The speech model revision.
+    Model,
+    /// The tokenizer or codec revision.
+    Codec,
+    /// The voice profile the conditioning artifact was resolved through.
+    VoiceProfile,
+}
+
+impl DriftedIdentity {
+    /// How this identity is named in a refusal an operator reads.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WorkerBundle => "worker bundle identity",
+            Self::Model => "model revision",
+            Self::Codec => "codec revision",
+            Self::VoiceProfile => "voice profile",
+        }
+    }
+}
+
+impl std::fmt::Display for DriftedIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 /// Object-safe asynchronous speech executor from ADR-0001 §10.4.

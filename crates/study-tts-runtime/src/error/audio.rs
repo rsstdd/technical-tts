@@ -6,6 +6,20 @@ use thiserror::Error;
 
 use super::{RemedyAdvice, RemedyOwner};
 
+/// The two conditioning identities one worker report carried.
+///
+/// A named payload rather than three inline fields, so
+/// [`AudioError::ConditioningIdentityContradiction`] costs one pointer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConditioningContradiction {
+    /// The segment whose report disagreed with itself.
+    pub segment_id: String,
+    /// The artifact the worker reported it read.
+    pub reported: String,
+    /// The artifact named by the identity inputs the same report returned.
+    pub in_context: String,
+}
+
 /// Why rendered or assembled audio cannot proceed.
 #[derive(Debug, Error)]
 pub enum AudioError {
@@ -69,6 +83,34 @@ pub enum AudioError {
         /// Synthesis key recomputed from what the worker reports it used.
         reported: study_tts_core::CacheKey,
     },
+
+    /// A report's two conditioning identities name different artifacts.
+    ///
+    /// The worker reports the conditioning artifact it read twice: once as
+    /// [`crate::SynthesisReport::voice_conditioning_hash`], and once inside the
+    /// context the cache recomputes the synthesis key from. Only the second
+    /// reaches the key, so a report whose two values disagree passes the
+    /// identity gate while its published provenance names an artifact the
+    /// worker did not say it used. Distinct from
+    /// [`AudioError::SynthesizerIdentityMismatch`], which is a worker
+    /// disagreeing with the *plan*: this is a worker disagreeing with itself,
+    /// and the plan cannot see it.
+    ///
+    /// Boxed for the reason [`crate::BuildError::Lesson`] is: three owned
+    /// strings inline would push `BuildError` past the 80-byte baseline that
+    /// `t1_e0_build_error_does_not_grow_during_category_refactor` holds it to,
+    /// and that baseline mirrors a measurement in
+    /// `docs/architecture/WALKING-SKELETON.md` §Provisional boundary ownership.
+    #[error(
+        "segment `{}` was rendered by a worker reporting conditioning artifact `{}` while the \
+         identity inputs it returned name `{}`; a report that contradicts itself cannot say \
+         which voice produced this audio, and the worker/runtime owner must correct it before \
+         this build is rerun",
+        .0.segment_id,
+        .0.reported,
+        .0.in_context
+    )]
+    ConditioningIdentityContradiction(Box<ConditioningContradiction>),
 
     /// A segment's trailing pause is too long to express as a frame count.
     ///
@@ -137,6 +179,11 @@ impl AudioError {
                 "correct the worker report before rerunning the build",
                 Some("Worker protocol or containment failure"),
             )),
+            Self::ConditioningIdentityContradiction { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::WorkerRuntime,
+                "correct the worker report before rerunning the build",
+                Some("Worker protocol or containment failure"),
+            )),
             Self::SynthesizerIdentityMismatch { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::WorkerRuntime,
                 "correct the worker's synthesis identities before rerunning the build",
@@ -186,6 +233,40 @@ pub enum AudioFault {
         required_sample_rate: u32,
         /// The one bit depth this project accepts.
         required_bits_per_sample: u16,
+    },
+
+    /// The stream is longer than one segment may be.
+    ///
+    /// A security ceiling rather than an editorial one: the samples are held in
+    /// memory to be conditioned, so an unbounded file is the process.
+    /// `crate::MAX_SEGMENT_AUDIO_MS` is the value and
+    /// `docs/architecture/WALKING-SKELETON.md` §Provisional resource ceilings
+    /// records it.
+    #[error(
+        "it carries {frames} frames, beyond the provisional {max_frames}-frame \
+         ({max_milliseconds} ms) ceiling for one segment"
+    )]
+    TooLong {
+        /// Frames the stream carries.
+        frames: u32,
+        /// The most this build reads or conditions.
+        max_frames: u32,
+        /// The same ceiling as the duration the document records.
+        max_milliseconds: u32,
+    },
+
+    /// An exposed edge does not begin or end at exactly zero.
+    ///
+    /// ADR-0001 §13.4 requires exposed endpoints to be exactly zero so assembly
+    /// can concatenate segments without a step at the join. Exactly, not
+    /// nearly: a value that is merely small is still a discontinuity when the
+    /// previous segment ended at zero.
+    #[error("its {edge} sample is `{value}` rather than exactly zero")]
+    ExposedEndpointNotZero {
+        /// Which end of the stream, for a reader repairing it.
+        edge: &'static str,
+        /// The value found there.
+        value: f32,
     },
 
     /// A sample is non-finite or beyond full scale.

@@ -296,8 +296,10 @@ fn t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest() {
     assert_eq!(spec.sample_format, hound::SampleFormat::Float);
     assert_eq!(
         reader.duration(),
-        9_600,
-        "Rust assembly must write two 2,400-frame tones plus exact 75 ms and 125 ms pauses"
+        9_600 + 2 * 480,
+        "Rust assembly must write two 2,400-frame tones plus exact 75 ms and 125 ms pauses, \
+         each tone carrying the 10 ms of zero padding ADR-0001 §13.4 requires at both of its \
+         exposed edges"
     );
 
     let manifest: Value =

@@ -19,8 +19,8 @@
 //! `t3_e1_both_protocol_ends_decide_the_committed_cases_alike` reads it here
 //! and `SharedContractCaseTests` reads it there. Each end used to carry its own
 //! cases, and they agreed only by coincidence — this end accepted
-//! `e1.worker.1.1` while that one refused it, and that end accepted a
-//! `trace_context` under `e1.worker.1.0` while this one refused it. A rule only
+//! `e1.worker.2.1` while that one refused it, and that end accepted a
+//! `trace_context` under `e1.worker.2.0` while this one refused it. A rule only
 //! one end enforces is a rule the other end can send past.
 
 use std::collections::BTreeMap;
@@ -29,14 +29,14 @@ use std::num::NonZeroU32;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use study_tts_core::{MAX_REVISION_BYTES, Revision, VoiceProfileHash, WorkerBundleHash};
+use study_tts_core::{MAX_REVISION_BYTES, Revision, VoiceConditioningHash, WorkerBundleHash};
 use thiserror::Error;
 
 /// Baseline wire version in the provisional contract record.
-pub const WORKER_PROTOCOL_VERSION: &str = "e1.worker.1.0";
+pub const WORKER_PROTOCOL_VERSION: &str = "e1.worker.2.0";
 
 /// Optional trace-extension version in the provisional contract record.
-pub const WORKER_PROTOCOL_EXTENSION_VERSION: &str = "e1.worker.1.1";
+pub const WORKER_PROTOCOL_EXTENSION_VERSION: &str = "e1.worker.2.1";
 
 /// Mirrors the frame ceiling in the E0-S4 record's wire-compatibility section.
 pub const MAX_WORKER_FRAME_BYTES: usize = 1024 * 1024;
@@ -87,6 +87,19 @@ pub struct InitializeParameters {
     /// hand-written check, so the refusal is `serde`'s at the parse and the
     /// published `minimum` follows from the type.
     pub threads: NonZeroU32,
+    /// The one directory the worker may write inside, for its lifetime.
+    ///
+    /// Sent at initialization rather than per request because the worker
+    /// resolves it once: a boundary re-read on every synthesis is a boundary a
+    /// symlink swapped in mid-session can move. ADR-0001 10.3 confines worker
+    /// writes to the assigned staging root, and until the worker was told the
+    /// root it could only recognise a literal `..` in the single path it was
+    /// handed -- so `t5_e1_worker_output_cannot_escape_staging_root` asserted
+    /// more than either end could prove.
+    ///
+    /// A `String` rather than a `PathBuf`: this is a wire field, and the
+    /// protocol carries paths as UTF-8 text that the worker resolves itself.
+    pub staging_root: String,
 }
 
 /// Parameters for a synthesis request.
@@ -103,7 +116,19 @@ pub struct WorkerSynthesisParameters {
     pub seed: u64,
     /// Take number within the synthesis base identity.
     pub take: u32,
-    /// Managed relative output path assigned by Rust.
+    /// The one path Rust assigns this take, which the worker creates exactly
+    /// once.
+    ///
+    /// The worker opens it with `O_CREAT|O_EXCL|O_NOFOLLOW` and creates no
+    /// parent directory: it never writes through a link planted at that path,
+    /// never overwrites something already there, and never brings a directory
+    /// into being. Said here rather than left to each end, because it is the
+    /// half of ADR-0001 §10.3's staging containment that only the writer can
+    /// keep. The parent's half is refusing to report success for audio that is
+    /// not where it asked for it.
+    ///
+    /// Formerly described as relative, which the executor never sent: it
+    /// assigns the absolute staging path the cache created for this attempt.
     pub output: String,
     /// Optional 1.1 trace extension; absent means no trace correlation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -273,10 +298,20 @@ pub struct WorkerInitializationIdentities {
     pub tokenizer_revision: Revision,
     /// Identity of the executable worker bundle.
     pub worker_bundle_hash: WorkerBundleHash,
-    /// Loaded voice profiles keyed by their stable profile identifiers.
-    #[serde(deserialize_with = "deserialize_voice_profile_hashes")]
-    #[schemars(schema_with = "nonempty_voice_profile_hashes_json_schema")]
-    pub voice_profile_hashes: BTreeMap<String, VoiceProfileHash>,
+    /// Conditioning artifact loaded for each voice profile, by profile
+    /// identifier.
+    ///
+    /// The digest the worker read from its own voice root, not one it was
+    /// handed: `initialize` carries no voice list, so every entry here is
+    /// something the worker went and looked at.
+    ///
+    /// A conditioning digest rather than a digest of the profile record, which
+    /// no Python worker can compute — the worker environment has no BLAKE3 and
+    /// `docs/architecture/E1-S3-INTERFACE-CHANGE-001.md` records why one was
+    /// not added for it.
+    #[serde(deserialize_with = "deserialize_voice_conditioning_hashes")]
+    #[schemars(schema_with = "nonempty_voice_conditioning_hashes_json_schema")]
+    pub voice_conditioning_hashes: BTreeMap<String, VoiceConditioningHash>,
 }
 
 /// Reads the loaded voice profiles, refusing an empty set or a repeated name.
@@ -291,9 +326,9 @@ pub struct WorkerInitializationIdentities {
 /// Not in `fixtures/contracts/e1-s1-worker-protocol-cases.ndjson` with the
 /// other duplicate-name cases: both ends read that file through their request
 /// parser, and only this end parses a response at all.
-fn deserialize_voice_profile_hashes<'de, D>(
+fn deserialize_voice_conditioning_hashes<'de, D>(
     deserializer: D,
-) -> Result<BTreeMap<String, VoiceProfileHash>, D::Error>
+) -> Result<BTreeMap<String, VoiceConditioningHash>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -326,6 +361,28 @@ pub enum WorkerFailureCode {
     ResourceExhausted,
     /// Worker internal state became unusable.
     Internal,
+}
+
+impl WorkerFailureCode {
+    /// The code as the protocol spells it on the wire.
+    ///
+    /// Carried into [`crate::BackendError::Execution`] so a refusal names the
+    /// backend's own stable code rather than a phrase this build invented.
+    /// Pinned to the serde representation by
+    /// `t1_e1_worker_failure_code_spelling_matches_its_serde_form`, so the
+    /// frame and the reported code cannot drift apart.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidRequest => "invalid_request",
+            Self::InitializationFailed => "initialization_failed",
+            Self::SynthesisFailed => "synthesis_failed",
+            Self::OutputFailed => "output_failed",
+            Self::Timeout => "timeout",
+            Self::CancellationFailed => "cancellation_failed",
+            Self::ResourceExhausted => "resource_exhausted",
+            Self::Internal => "internal",
+        }
+    }
 }
 
 /// Responses and events one worker may emit on protocol-only stdout.
@@ -403,8 +460,14 @@ pub enum WorkerResponseFrame {
         codec_revision: String,
         /// Worker-bundle identity used for synthesis.
         worker_bundle_hash: WorkerBundleHash,
-        /// Voice-profile identity used for synthesis.
-        voice_profile_hash: VoiceProfileHash,
+        /// Conditioning artifact the worker actually loaded for this request.
+        ///
+        /// Read from the worker's own voice root rather than echoed from the
+        /// request, which is what lets the cache's identity gate refuse a
+        /// worker that rendered with a voice the plan did not ask for.
+        voice_conditioning_hash: VoiceConditioningHash,
+        /// Voice profile that artifact was resolved through.
+        voice_profile: String,
     },
     /// Cancellation completed for the active request.
     Cancelled {
@@ -474,7 +537,13 @@ impl WorkerResponseFrame {
         }
     }
 
-    fn request_id(&self) -> &str {
+    /// The request this frame answers.
+    ///
+    /// Crate-visible because [`crate::worker_client`] correlates every response
+    /// to the request in flight: an uncorrelated answer means the two ends
+    /// disagree about which request that is, and one segment's audio could then
+    /// be published under another's key.
+    pub(crate) fn request_id(&self) -> &str {
         match self {
             Self::Initialized { request_id, .. }
             | Self::Capabilities { request_id, .. }
@@ -485,6 +554,35 @@ impl WorkerResponseFrame {
             | Self::Shutdown { request_id, .. }
             | Self::Failure { request_id, .. } => request_id,
         }
+    }
+
+    /// The `event` discriminant, for a diagnostic that names what arrived.
+    ///
+    /// Only the discriminant. The frame's own fields are not printed: a
+    /// [`WorkerResponseFrame::Failure`] carries a backend message, and
+    /// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` keeps what a worker
+    /// says about its inputs out of a refusal a log will carry.
+    pub(crate) fn event_name(&self) -> &'static str {
+        match self {
+            Self::Initialized { .. } => "initialized",
+            Self::Capabilities { .. } => "capabilities",
+            Self::Health { .. } => "health",
+            Self::Progress { .. } => "progress",
+            Self::SynthesisSucceeded { .. } => "synthesis_succeeded",
+            Self::Cancelled { .. } => "cancelled",
+            Self::Shutdown { .. } => "shutdown",
+            Self::Failure { .. } => "failure",
+        }
+    }
+
+    /// Whether this frame is an interim event rather than an answer.
+    ///
+    /// ADR-0001 §10.2 shows `progress` arriving between a `synthesize` request
+    /// and its result, so a client that took the first correlated frame as the
+    /// answer would read a progress event as a finished render. It is the one
+    /// frame that does not end an exchange.
+    pub(crate) fn is_interim(&self) -> bool {
+        matches!(self, Self::Progress { .. })
     }
 
     fn active_request_id(&self) -> Option<&str> {
@@ -694,10 +792,10 @@ fn revision_json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     })
 }
 
-fn nonempty_voice_profile_hashes_json_schema(
+fn nonempty_voice_conditioning_hashes_json_schema(
     generator: &mut schemars::SchemaGenerator,
 ) -> schemars::Schema {
-    let value_schema = generator.subschema_for::<VoiceProfileHash>();
+    let value_schema = generator.subschema_for::<VoiceConditioningHash>();
     schemars::json_schema!({
         "type": "object",
         "minProperties": 1,
@@ -748,13 +846,13 @@ mod tests {
     fn complete_initialized_response() -> serde_json::Value {
         serde_json::json!({
             "event": "initialized",
-            "protocol_version": "e1.worker.1.0",
+            "protocol_version": "e1.worker.2.0",
             "request_id": "request-1",
             "identities": {
                 "model_revision": "model-v1",
                 "tokenizer_revision": "tokenizer-v1",
                 "worker_bundle_hash": "1".repeat(64),
-                "voice_profile_hashes": {
+                "voice_conditioning_hashes": {
                     "synthetic-test-voice-v1": "2".repeat(64),
                 },
             },
@@ -778,7 +876,7 @@ mod tests {
             "model_revision",
             "tokenizer_revision",
             "worker_bundle_hash",
-            "voice_profile_hashes",
+            "voice_conditioning_hashes",
         ] {
             let mut frame = complete_initialized_response();
             frame["identities"]
@@ -808,7 +906,7 @@ mod tests {
             ),
             ("worker_bundle_hash", serde_json::json!("abc")),
             (
-                "voice_profile_hashes",
+                "voice_conditioning_hashes",
                 serde_json::json!({"synthetic-test-voice-v1": "abc"}),
             ),
         ];
@@ -840,7 +938,7 @@ mod tests {
         assert!(matches!(unknown_error, WorkerFrameError::Malformed(_)));
 
         let mut empty = complete_initialized_response();
-        empty["identities"]["voice_profile_hashes"] = serde_json::json!({});
+        empty["identities"]["voice_conditioning_hashes"] = serde_json::json!({});
         let empty_error = parse_worker_response(
             &serde_json::to_vec(&empty).expect("the initialized response serializes"),
         )
@@ -864,10 +962,10 @@ mod tests {
     fn t1_e1_a_response_naming_one_voice_profile_twice_is_refused() {
         let frame = format!(
             concat!(
-                r#"{{"event":"initialized","protocol_version":"e1.worker.1.0","#,
+                r#"{{"event":"initialized","protocol_version":"e1.worker.2.0","#,
                 r#""request_id":"request-1","identities":{{"#,
                 r#""model_revision":"model-v1","tokenizer_revision":"tokenizer-v1","#,
-                r#""worker_bundle_hash":"{bundle}","voice_profile_hashes":{{"#,
+                r#""worker_bundle_hash":"{bundle}","voice_conditioning_hashes":{{"#,
                 r#""synthetic-test-voice-v1":"{first}","#,
                 r#""synthetic-test-voice-v1":"{second}"}}}}}}"#,
             ),
@@ -889,7 +987,7 @@ mod tests {
     fn t1_e0_worker_protocol_1_0_refuses_explicit_null_trace_context() {
         let error = parse_worker_request(
             concat!(
-                r#"{"method":"synthesize","protocol_version":"e1.worker.1.0","#,
+                r#"{"method":"synthesize","protocol_version":"e1.worker.2.0","#,
                 r#""request_id":"request-1","parameters":{"text":"reviewed","#,
                 r#""voice":"voice-1","style":"calm","seed":7,"take":0,"#,
                 r#""output":"request-1.wav","trace_context":null}}"#,
@@ -908,9 +1006,9 @@ mod tests {
     /// A digest field refuses a well-formed JSON string that is not a digest.
     ///
     /// The mutation check for typing these fields: with `worker_bundle_hash`
-    /// and `voice_profile_hash` back as `String`, both frames below parse and
-    /// this test fails. Both directions are covered because a rule enforced on
-    /// only one of them lets the other end send past it.
+    /// and `voice_conditioning_hash` back as `String`, both frames below parse
+    /// and this test fails. Both directions are covered because a rule enforced
+    /// on only one of them lets the other end send past it.
     ///
     /// A truncated digest is the case that matters rather than obvious junk: it
     /// is what a hand-edited or half-copied identity looks like, and it is the
@@ -924,7 +1022,7 @@ mod tests {
     fn t1_e1_a_frame_naming_an_identity_that_is_not_a_digest_is_refused() {
         let request = parse_worker_request(
             concat!(
-                r#"{"method":"initialize","protocol_version":"e1.worker.1.0","#,
+                r#"{"method":"initialize","protocol_version":"e1.worker.2.0","#,
                 r#""request_id":"request-1","parameters":{"#,
                 r#""worker_bundle_hash":"abc","threads":1}}"#,
             )
@@ -939,11 +1037,11 @@ mod tests {
 
         let response = parse_worker_response(
             concat!(
-                r#"{"event":"synthesis_succeeded","protocol_version":"e1.worker.1.0","#,
+                r#"{"event":"synthesis_succeeded","protocol_version":"e1.worker.2.0","#,
                 r#""request_id":"request-1","sample_rate":24000,"channels":1,"frames":10,"#,
                 r#""model_revision":"m","codec_revision":"c","#,
                 r#""worker_bundle_hash":"11111111111111111111111111111111"#,
-                r#"11111111111111111111111111111111","voice_profile_hash":"abc"}"#,
+                r#"11111111111111111111111111111111","voice_conditioning_hash":"abc"}"#,
             )
             .as_bytes(),
         )
@@ -959,7 +1057,7 @@ mod tests {
     fn t1_e1_cancelled_active_request_id_past_the_ceiling_is_refused() {
         let frame = serde_json::json!({
             "event": "cancelled",
-            "protocol_version": "e1.worker.1.0",
+            "protocol_version": "e1.worker.2.0",
             "request_id": "cancel-request",
             "active_request_id": "r".repeat(MAX_WORKER_REQUEST_ID_BYTES + 1),
         });

@@ -42,7 +42,7 @@ mod tool;
 mod voice_profile;
 mod worker_bundle;
 
-pub use audio::{AudioError, AudioFault};
+pub use audio::{AudioError, AudioFault, ConditioningContradiction};
 pub use cache::{CacheEntryFault, CacheError, PackageArtifactMismatch};
 pub use io_error::IoError;
 pub use managed_path::ManagedPathError;
@@ -53,7 +53,7 @@ pub use tool::{ToolError, ToolInvocation, ToolOperation, ToolOutputStream};
 pub use voice_profile::VoiceProfileError;
 pub use worker_bundle::{
     EnvironmentMismatch, RuntimeIdentityMismatch, WorkerBundleError, WorkerLockfileErrorReason,
-    WorkerLockfileLocus,
+    WorkerLockfileLocus, WorkerRequirementFault,
 };
 
 /// Why a build or publication was refused, grouped by its owning boundary.
@@ -328,6 +328,12 @@ mod tests {
                 "preserve the unusable cache entry and run runtime reconciliation",
                 Some("State or checksum corruption"),
             )),
+            CacheError::UncontainedStagedFile { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::WorkerRuntime,
+                "read the quarantined attempt and correct the worker that staged an unexpected \
+                 file",
+                Some("Worker protocol or containment failure"),
+            )),
             CacheError::PackageArtifactCountMismatch { .. }
             | CacheError::PackageArtifactPlanMismatch { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::Runtime,
@@ -381,6 +387,11 @@ mod tests {
                 Some("Invalid or over-range audio"),
             )),
             AudioError::SynthesizerReportMismatch { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::WorkerRuntime,
+                "correct the worker report before rerunning the build",
+                Some("Worker protocol or containment failure"),
+            )),
+            AudioError::ConditioningIdentityContradiction { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::WorkerRuntime,
                 "correct the worker report before rerunning the build",
                 Some("Worker protocol or containment failure"),

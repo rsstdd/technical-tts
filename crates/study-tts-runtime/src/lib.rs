@@ -6,6 +6,7 @@
 //! policy that refused rather than the first thing that happened to break.
 
 mod assembly;
+mod audio_edges;
 mod cache;
 mod cache_port;
 mod distinct_map;
@@ -25,20 +26,27 @@ mod synthesis;
 mod tools;
 mod voice_gate;
 mod worker_bundle;
+mod worker_client;
 mod worker_environment;
+mod worker_executor;
+mod worker_launcher;
 mod worker_protocol;
 
+pub use audio_edges::{
+    CalibrationSource, EdgeConditioning, MAX_SEGMENT_AUDIO_MS, ProvisionalCalibration,
+    SilenceThreshold, condition_edges,
+};
 pub use cache::ValidatedCachedArtifact;
 pub use cache_port::{
     CACHE_PUBLICATION_CONTRACT_VERSION, CachePublisher, CacheResolveRequest,
     FileSystemCachePublisher, StagedAudioProducer,
 };
 pub use error::{
-    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, DurableStateError,
-    EnvironmentMismatch, IoError, ManagedPathError, PackageArtifactMismatch, PublicationError,
-    RemedyAdvice, RemedyOwner, RightsError, RuntimeIdentityMismatch, ToolError, ToolInvocation,
-    ToolOperation, ToolOutputStream, VoiceProfileError, WorkerBundleError,
-    WorkerLockfileErrorReason, WorkerLockfileLocus,
+    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, ConditioningContradiction,
+    DurableStateError, EnvironmentMismatch, IoError, ManagedPathError, PackageArtifactMismatch,
+    PublicationError, RemedyAdvice, RemedyOwner, RightsError, RuntimeIdentityMismatch, ToolError,
+    ToolInvocation, ToolOperation, ToolOutputStream, VoiceProfileError, WorkerBundleError,
+    WorkerLockfileErrorReason, WorkerLockfileLocus, WorkerRequirementFault,
 };
 pub use job_repository::{
     FileSystemJobRepository, JOB_STATE_CONTRACT_VERSION, JobOwnership, JobRepository,
@@ -57,17 +65,22 @@ pub use schemas::{
     SCHEMA_DIRECTORY, WORKER_PROTOCOL_SCHEMA_VERSION,
 };
 pub use synthesis::{
-    BackendDescriptor, BackendError, BackendValidationError, SynthesisReport, SynthesisRequest,
-    TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, validate_executor_request,
+    BackendDescriptor, BackendError, BackendValidationError, DriftedIdentity, SynthesisReport,
+    SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, validate_executor_request,
 };
 pub use worker_bundle::{
     BUNDLE_MANIFEST_PATH, BUNDLE_MANIFEST_SCHEMA_VERSION, BundleManifest, DeclaredStartupModule,
     MAX_BUNDLE_INPUT_BYTES, PythonRuntimeIdentity, REQUIRED_BUNDLE_INPUTS, REQUIRED_IMPORT_ROOT,
-    StartupModuleName, WORKER_BUNDLE_IDENTITY_VERSION, WORKER_ENTRYPOINT_PATH,
+    StartupModuleName, WORKER_BUNDLE_IDENTITY_VERSION, WORKER_ENTRY_MODULE, WORKER_ENTRYPOINT_PATH,
     WORKER_LAUNCHER_PATH, WORKER_LOCKFILE_PATH, WORKER_PACKAGE_ROOT, WORKER_PROTOCOL_SCHEMA_PATH,
-    WorkerBundle,
+    WORKER_REQUIREMENTS_PATH, WorkerBundle,
 };
 pub use worker_environment::WORKER_INTERPRETER_PATH;
+pub use worker_executor::{
+    PROTOCOL_FAKE_BUNDLE_HASH, WORKER_INITIALIZE_DEADLINE, WORKER_REQUEST_DEADLINE,
+    WorkerConfiguration, WorkerTtsExecutor,
+};
+pub use worker_launcher::{LAUNCHER_SCHEMA_VERSION, THREAD_ENVIRONMENT, WorkerLauncher};
 pub use worker_protocol::{
     InitializeParameters, MAX_WORKER_FRAME_BYTES, MAX_WORKER_REQUEST_ID_BYTES, TraceContext,
     WORKER_PROTOCOL_EXTENSION_VERSION, WORKER_PROTOCOL_VERSION, WorkerCapabilities,
