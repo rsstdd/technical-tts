@@ -1,7 +1,10 @@
 # E1-S3 Single-Worker Synthesis and Validated Cache v1
 
 - Date/time and timezone: 2026-08-30, Europe/Berlin
-- Candidate revision: working tree on `fix/issue-59-retired-grant` at the E1-S3 governance preflight
+- Candidate revision: opened on the working tree of `fix/issue-59-retired-grant` at the E1-S3
+  governance preflight; the candidate it now describes is `story/e1-s3-single-worker-cache` at
+  worker bundle identity `58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750`, after
+  five rounds of audit remediation
 - Accountable owner: Engineering owner
 - Approvers: Engineering owner and project owner
 - Status: Proposed
@@ -119,8 +122,8 @@ is a governed-backend change requiring ADR-0002 re-qualification, and is deferre
 
 **Nothing was published under the moved identity.** The cache root `data/qualification/cache`
 holds no files, and `8e7cc2f0…` appears nowhere in the tree outside this record. It could not have:
-this build's worker refuses `synthesize` with `initialization_failed` naming E1-S3, so no audio has
-ever been published under any synthesis key.
+the worker as it stood at this finding refused `synthesize` with `initialization_failed` naming
+E1-S3, so no audio had ever been published under any synthesis key.
 
 **Resolution.** `worker/pyproject.toml` is reverted to agree with the lock, the governed backend,
 and the restored environment; `git diff` confirms the file returns to blob `43f2aaf`, its pre-bump
@@ -303,12 +306,13 @@ worker parses it once. Both ends moved in one change and both suites went red on
 they did.
 
 **The worker-bundle identity moved twice**, to `84baafe98bf861cb805001ec831e98c10532b07b063970fac32e26cbfc3f7227`.
-Nothing is stranded: the cache root holds no entries and this build's worker still refuses
-`synthesize`, so nothing has ever been published under any synthesis key.
+Nothing is stranded: the cache root held no entries and the worker still refused `synthesize`, so
+nothing had been published under any synthesis key.
 
-**Not done, and named rather than implied.** The real Chatterbox backend is not written:
-`worker/study_tts_worker/worker.py` still refuses `initialize` and `synthesize` naming E1-S3. This
-step delivered the interfaces it needs, not the backend itself.
+**Not done at this step, and named rather than implied.** The real Chatterbox backend was not
+written yet: `worker/study_tts_worker/worker.py` still refused `initialize` and `synthesize` naming
+E1-S3. This step delivered the interfaces it needs, not the backend itself, which landed
+later in the story: §T5 qualification result and §Listening material are taken against it.
 
 ## Verification run
 
@@ -320,7 +324,6 @@ step delivered the interfaces it needs, not the backend itself.
 | Python worker, after the launcher move | `python3 -m unittest discover --start-directory worker/tests` | 45 passed |
 | Doctests | `cargo test --offline --workspace --doc --locked` | Passed |
 | Rust conventions | `python3 scripts/check-rust-conventions.py` | Clean |
-| Python worker | `python3 -m unittest discover --start-directory worker/tests` | 44 passed |
 | Published schemas current | `cargo run --offline --locked -p study-tts-runtime --example generate-schemas` then `git diff --exit-code -- schemas/` | No diff |
 | Worker bundle identity | `./target/debug/examples/worker-bundle-hash`, freshly built | `75d563103eccc76616ce97b66e2d4648b2a258cda1118e6ffc9ccc20b9d2bab3` |
 | Bundle identity cost, 24 runs | `/usr/bin/time -f '%e %U %S' ./target/debug/examples/worker-bundle-hash` | CPU 3.02–3.19 s; wall 3.25–3.42 s uncorrupted, 0.77–0.80 s on 3 of 24 |
@@ -368,7 +371,10 @@ quoted in §Finding 1 was taken on a binary that predated the freshly built one,
 
 ## Story acceptance criteria
 
-Added as the work landed, per §Scope and decision. The story half is accepted when all six hold.
+Added as the work landed, per §Scope and decision. The story half is accepted when all seven
+hold. **Restated 2026-08-31.** As first written this said six, while §Story result had answered
+seven since the listening review was taken: criterion 7 below is that seventh, written down rather
+than left implied by the row that answers it. The fifth audit's fourth finding is this.
 
 1. Every one of the eight defects raised against the in-progress work is closed by a check that
    fails against the defect before it passes against the fix.
@@ -385,11 +391,20 @@ Added as the work landed, per §Scope and decision. The story half is accepted w
    not optional — a criterion that forbade it would have been asking the identity to lie. What
    the criterion was protecting is that the identity never moves for anything else, and that is
    what it now says.
-4. The four `t5_e1_` criteria are discharged on the reference machine by an instrument whose
-   output is hashed and cited here.
+4. The five reference-machine criteria are discharged by an instrument whose output is hashed and
+   cited here. **Restated 2026-08-31.** As first written this said *four*, which is how many
+   `t5_e1_` names `DELIVERY-PLAN.md` carries — but the instrument runs and reports five, the fifth
+   being `t5_e1_worker_survives_restart_and_starts_offline`, a helper criterion covering ADR-0001
+   §17.7's restart and offline requirements that the plan never named. §T5 qualification result and
+   `scripts/qualification/README.md` both say so; the criterion did not, so it counted a different
+   number from the result answering it. The fifth audit's fourth finding is this.
 5. `cargo fmt --check`, Clippy with `-D warnings`, the workspace suite, doctests, the Rust
    conventions check, the Python worker suite, and published-schema drift all pass.
 6. Anything not run is named rather than omitted.
+7. A human listening review of published audio is taken, bound to the bytes it was made against,
+   and its limits stated. **Added 2026-08-31**, for the reason the preamble gives: ADR-0001 §17.5
+   makes it a gate condition and §Story result has answered it since it was taken, so the criteria
+   list was the half that was missing.
 
 ## Story result
 
@@ -397,11 +412,11 @@ Added as the work landed, per §Scope and decision. The story half is accepted w
 |---|---|
 | 1 — eight defects closed red-before-green | Met. §Story findings |
 | 2 — no unrecorded contract version move | Met under the restated criterion. The worker protocol moved to `e1.worker.2.0`, the plan schema to v3, and the `TtsExecutor` contract to 3.0, all under `E1-S3-INTERFACE-CHANGE-001`; the audit remediation folded `staging_root` into the same unreleased 2.0 under `ADR-0001-D005`. The launcher record is unchanged. The schema-drift test passes against the moved shapes |
-| 3 — identity moves only for a declared input | Met under the restated criterion. `84baafe98bf861cb…` → `839baa220e90ab89…` during the story, then → `7b065eeb5319c6bc…` under the first audit remediation, → `6a158816945dd7d6…` under the second, and → `d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af` under the third. Every move follows a change to `worker/study_tts_worker/`, a declared bundle input. Nothing is stranded by either: the cache root holds no entries, and the shipped worker refused `synthesize` until this work |
-| 4 — four T5 criteria | Met. All five pass on the reference machine against real weights, in a loopback-only network namespace, and the instrument's output is hashed and cited as `e1-s3-qualification-result-v1.json`. §T5 qualification result |
+| 3 — identity moves only for a declared input | Met under the restated criterion. `84baafe98bf861cb…` → `839baa220e90ab89…` during the story, then → `7b065eeb5319c6bc…` under the first audit remediation, → `6a158816945dd7d6…` under the second, → `d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af` under the third, and → `58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750` under the fourth. Every move follows a change to `worker/study_tts_worker/`, a declared bundle input — the fourth one to a docstring in it, which is the case `e1-s3-protocol-docstring-identity-reconciliation-v1` reconciles. Nothing is stranded by either: the cache root holds no entries, and the shipped worker refused `synthesize` until this work |
+| 4 — five reference-machine criteria | Met. All five pass on the reference machine against real weights, in a loopback-only network namespace, and the instrument's output is hashed and cited as `e1-s3-qualification-result-v1.json`. §T5 qualification result |
 | 5 — checks | Met for everything run |
 | 6 — what was not run | Met. §Verification run, and §Limits below |
-| 7 — the listening review | Met. Taken 2026-08-31 by Ross Todd on laptop built-in speakers against the set §Finding 11 made publishable, accepted 6 of 6 with no findings, and bound to those bytes by `check_listening_review.py`. §Review result; §What this review does not cover states its limits |
+| 7 — the listening review | **Pending.** The 2026-08-31 review remains valid for its recorded bytes, but those bytes contain one inserted zero at each quiet edge. The current conditioner instead zeroes the measured quiet edge without adding frames, so a new render and review are required. §Historical review result |
 
 ## Story findings
 
@@ -445,10 +460,10 @@ Discharged by `cargo run --package study-tts-testkit --example worker-qualificat
 is why: every `t5_` name in this project is an acceptance criterion answered by an operator-run
 instrument and a record, the shape E0-S3 used.
 
-Rerun on the reference machine on 2026-08-31, **after the second audit remediation**, against the
-real model and the governed voice root, **inside a loopback-only network namespace**. Every
-earlier run is superseded: the bundle identity moved twice, three criteria changed what they test,
-and a fifth was added.
+Rerun on the reference machine on 2026-08-31, **after the fourth audit remediation**, against the
+real model and the governed voice root, **inside a loopback-only network namespace**. Every earlier
+run is superseded: the bundle identity moved four times across the remediation rounds, three
+criteria changed what they test, and a fifth was added.
 
 **This run is the record's only T5 result.** Earlier revisions of this section described a run and
 then said elsewhere that the instrument still had to be re-run, which the second audit raised as
@@ -461,8 +476,8 @@ The raw result is filed beside this record:
 
 | Artifact | Value |
 |---|---|
-| `evidence/gates/g1/e1-s3/e1-s3-qualification-result-v1.json` | SHA-256 `53fd6bf70d397f9b0419a7542d1cade5d08324a9834f44ff8db761adaf4d9ea2` |
-| Worker bundle identity | `d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af` |
+| `evidence/gates/g1/e1-s3/e1-s3-qualification-result-v1.json` | SHA-256 `03588f082735ee3e2ab706fd1dd7a8e5410510b1b79549e47964611709214ee1` |
+| Worker bundle identity | `58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750` |
 | Criteria | 5 of 5 pass |
 | Network namespace | interfaces `["lo"]`, 0 IP routes, `/proc/self/ns/net` inode 4026532310 |
 
@@ -476,9 +491,9 @@ string names counts, criteria, and digests only.
 
 | Criterion | Result | Observed |
 |---|---|---|
-| `t5_e1_worker_bundle_hash_matches_when_all_declared_bundle_inputs_match` | Pass, re-derived | Two derivations on the qualified interpreter agreed at `d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af` after the third remediation, superseding `6a158816945dd7d6…`, `7b065eeb5319c6bc…` and, before them, `839baa220e90ab89…`. Derived with `cargo run --package study-tts-runtime --example worker-bundle-hash`, which needs the bundle root and the qualified interpreter but no governed root. Sensitivity to a moved input is pinned at T1 by `t1_e1_worker_bundle_hash_changes_on_owned_runtime_input` |
+| `t5_e1_worker_bundle_hash_matches_when_all_declared_bundle_inputs_match` | Pass, re-derived | Two derivations on the qualified interpreter agreed at `58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750` after the fourth remediation, superseding `d66e84e4512e2249…`, `6a158816945dd7d6…`, `7b065eeb5319c6bc…` and, before them, `839baa220e90ab89…`. Derived with `cargo run --package study-tts-runtime --example worker-bundle-hash`, which needs the bundle root and the qualified interpreter but no governed root. Sensitivity to a moved input is pinned at T1 by `t1_e1_worker_bundle_hash_changes_on_owned_runtime_input` |
 | `t5_e1_model_load_occurs_once_per_worker_lifetime` | Pass | 3 takes through one worker reported 1 model load |
-| `t5_e1_worker_protocol_stdout_remains_clean` | Pass | Every frame of a completed session parsed off standard output **and nothing followed the last one**, while 18,702 bytes of backend diagnostics went to standard error. The second clause is new and is the point: the criterion used to be recorded while the session was still open, and nothing read the response stream after the final request — so a worker could write anything past its last frame, an unterminated tail most of all, and still pass. `shutdown` now drains the stream and refuses anything but the shutdown response, and the criterion is recorded from that result |
+| `t5_e1_worker_protocol_stdout_remains_clean` | Pass | Every frame of a completed session parsed off standard output **and nothing followed the last one**, while 30,618 bytes of backend diagnostics went to standard error. The second clause is new and is the point: the criterion used to be recorded while the session was still open, and nothing read the response stream after the final request — so a worker could write anything past its last frame, an unterminated tail most of all, and still pass. `shutdown` now drains the stream and refuses anything but the shutdown response, and the criterion is recorded from that result |
 | `t5_e1_worker_output_cannot_escape_staging_root` | Pass | A contained take wrote only its assigned path; **five** shapes refused — a symlink planted at the assigned path, a path that walks upward, a path that already exists, **an absolute path outside the staging root**, and **a path whose parent is a symlink out of the root**; zero files outside the staging root. The last two are the shapes the pre-remediation worker could not refuse, because it was told a path and no root |
 | `t5_e1_worker_survives_restart_and_starts_offline` | Pass | Two worker lifetimes through one configuration reported identical synthesis identities, both applied their offline settings, **and both ran inside a namespace holding only `lo` with no IP route**. The last clause is new and is what the criterion's name always claimed: it previously passed on the worker's own diagnostics alone, which prove it configured `huggingface_hub` and `transformers` and prove nothing about the backend, a transitive dependency, or a socket. Not a `DELIVERY-PLAN.md` name: a helper criterion covering ADR-0001 §17.7's restart and offline requirements, driven by the same `run_worker_restart_contract_scenario` the T4 suite drives the protocol fake through |
 
@@ -493,7 +508,7 @@ defects in this record rather than in the code.
 | # | Finding | Disposition |
 |---|---|---|
 | 1 | The tree failed both suites because `fixtures/contracts/` had been deleted from the working tree while `docs/testing/TEST-DATA-MANIFEST.md` still listed every file active | All 27 restored. Four of the five this story had modified reproduce their recorded SHA-256 byte for byte from the protocol version bump alone, which proves them the same files the manifest attests. The fifth, `e1-s1-worker-protocol-cases.ndjson`, is a **reconstruction, not a restoration**: its `previous-major-version` case had to move from `e0.worker.0.1` to `e1.worker.1.0`, and the prose beside it is rewritten rather than recovered. Its manifest row is re-pinned |
-| 2 | The worker used `profile_id` from a record's contents as a path component, and never validated model artifact checksums | Containment fixed: a profile is read only from the directory that names it, so `voice_root / identity` is the directory the record was found in and the existence check and the load no longer speak about two paths that may differ. **Model-artifact checksum validation is not done** and is issue #66, sequenced before G1 and before E1-S4 so the synthesis key moves once: it needs a declared checksum manifest for the weights, which does not exist |
+| 2 | The worker used `profile_id` from a record's contents as a path component, and never validated model artifact checksums | Containment fixed: a profile is read only from the directory that names it, so `voice_root / identity` is the directory the record was found in and the existence check and the load no longer speak about two paths that may differ. **Model-artifact checksum validation is not done** and is issue #66, sequenced before G1 and before E1-S4 so the synthesis key moves once: it needs a declared checksum manifest for the weights, which does not exist. **Closed by the third remediation below**: `model_gate` declares the four artifacts and their SHA-256 digests in Git and verifies them in `for_bundle`, and the premise that no manifest exists turned out to be stale |
 | 3 | The cache derived its identity gate from `report.context` while `SynthesisReport::voice_conditioning_hash` was ignored, so a report contradicting itself could publish | The two are cross-checked before the gate, refusing `AudioError::ConditioningIdentityContradiction`. Both test doubles turned out to be internally inconsistent; fixing them showed the fake's "resolved" conditioning was `blake3(profile_id)` while the planner resolves `blake3(file bytes)`, so it had never matched — the echo was concealing it |
 | 4 | Worker launches inherited the ambient environment; `env_clear` was never called | Called before anything is declared. The test written first observed **over 100** inherited variables, including `PYENV_ROOT`, `LD_LIBRARY_PATH` and `SSL_CERT_FILE`. The child now holds exactly the declared set, which meant declaring the offline variables from Rust too — over the same allowlist the Python end uses, never over `worker/launcher.json`, because iterating that file would make a declared bundle input a place to set `PYTHONPATH` |
 | 5 | The staging-containment criterion admitted it could not prove its own name | `initialize` carries `staging_root`; containment is decided against the resolved parent. See §Limits |
@@ -783,7 +798,7 @@ an attestation with a measurement.
 | 5 | Offline qualification was self-attestation. The criterion passed when the worker's stderr contained `offline environment applied:`, which proves it configured `huggingface_hub` and `transformers` and proves nothing about the backend, a dependency, or a socket | The instrument now **refuses to start** outside a loopback-only network namespace, reading `/proc/net/dev` and `/proc/net/route` before it creates the output root — the same check `validate_network_isolation` has made for the E0-S3 harness since G0, now two-sided between the two files. Interfaces, route count, and namespace inode are recorded in the result. The diagnostics check stays: the namespace proves egress was denied, the diagnostics prove the worker configured itself, and neither implies the other |
 | 6 | Worker and model identities were not bound to the loaded artifacts. Rust sent the bundle identity it had verified and then believed whatever the worker answered with, and that answer reached every cache key | **Rust half closed**: the echo is compared against what was sent, before `capabilities`, refusing `BackendValidationError::BundleIdentityNotEchoed`. `t4_e1_a_worker_echoing_another_bundle_identity_is_refused_at_start` drives a new `drift-bundle-at-initialize` fake behavior — the existing `drift-bundle` spoils a *synthesis* frame and could not reach this. **Model half not done**: issue #66, sequenced before G1 and before E1-S4 so the synthesis key moves once. Note for whoever works it that `bundle-manifest.json` in the governed model root already carries a `model/artifacts` array with `sha256` and byte counts, so the issue's premise that no such array exists is partly stale |
 | 7 | Staging containment had a parent-directory race. The worker resolved and checked the destination's parent, released that pathname, generated audio, and later opened the resulting string. `O_NOFOLLOW` protects the final component only | `_contained_output` now returns an **open directory descriptor** and the file name, and the write goes through `dir_fd`, so no part of the path is walked twice. Containment is re-read off the descriptor via `/proc/self/fd`, which reports where the directory this process *holds* actually is, so an ancestor swapped during the open is caught rather than raced with. The pre-fix contract was reproduced first and demonstrably wrote outside the root; `test_an_ancestor_swapped_after_the_check_cannot_redirect_the_write` pins it. **Residual, recorded rather than closed**: a directory proven inside the root and then *moved* out keeps the descriptor pointing at it, because a descriptor follows the inode. Closing that needs the root held open and every component reopened relative to it, and whoever can move a directory out of the staging root can already write inside it |
-| 8 | Graceful shutdown did not prove the process tree was gone. If the child exited during the grace period, shutdown discarded its process ownership and returned without signalling or checking anything | Ownership is refreshed **before the worker is asked to leave**, which is the only moment its children are still nameable — `/proc/<pid>/task/*/children` disappears with the process. On the graceful path `contain_descendants` signals the recorded descendants by pidfd and proves them gone. Not by process group: the child has been reaped by then, its PID is free, and a group kill by number could reach a stranger. `t4_e1_a_gracefully_shut_down_worker_leaves_no_descendant_behind` starts a real descendant and asks the kernel |
+| 8 | Graceful shutdown did not prove the process tree was gone. If the child exited during the grace period, shutdown discarded its process ownership and returned without signalling or checking anything | Ownership is refreshed **before the worker is asked to leave**, which is the only moment its children are still nameable — `/proc/<pid>/task/*/children` disappears with the process. On the graceful path `contain_descendants` signals the recorded descendants by pidfd and proves them gone. Not by process group: the child has been reaped by then, its PID is free, and a group kill by number could reach a stranger. `t4_e1_a_gracefully_shut_down_worker_leaves_no_descendant_behind` starts a real descendant and asks the kernel. **Corrected by the fourth remediation below**: the reasoning in this row is wrong about the kernel — a reaped leader's PID is *not* free while its process group still has a member, and the fix that followed from believing otherwise left the window finding 2 of the fourth audit found |
 | 9 | The protocol-cleanliness test could miss trailing stdout contamination. On end of input the reader silently dropped a nonempty unterminated frame, and nothing read the channel after the last request | `ProtocolEvent::Unterminated` reports the tail rather than dropping it, and `shutdown` drains the stream and refuses anything but the shutdown response — which also closes the finding's second half, that the shutdown response was never validated. The T5 criterion is now recorded **from that result**, after shutdown, because the end of the stream is the part an open session cannot see. `t4_e1_trailing_bytes_past_the_last_frame_are_refused` pins it. The drain runs before the reader threads are joined: the response channel holds one frame, so a worker that wrote past its last frame leaves the reader blocked on a full channel and joining first is a deadlock rather than a wait |
 | 10 | This record contradicted itself about qualification completion — §T5 described a completed run while two later sections said the instrument must still be re-run, and §Audit remediation claimed the T5 table carried `Owed` rows it did not carry | One statement, in one place. §T5 qualification result carries the only T5 result this record claims, re-run after the remediation above and cited by digest; the sections that said otherwise are rewritten to describe what they actually cover. The two audits are now named apart, since "the audit remediation" meant different things in different paragraphs |
 
@@ -860,16 +875,18 @@ gate's own test agree with the defect — `t1_e2_exposed_endpoints_are_exactly_z
 that is signal from the first sample, so the full padding always ran and the endpoint was zero for
 a reason a real take does not have.
 
-**Closed.** The project owner directed the padding fix on 2026-08-31: `condition_edges` still pads
+**Closed at that round.** The project owner directed the padding fix on 2026-08-31: `condition_edges` still pads
 by silence duration, and additionally pads **one zero** at any edge whose sample is not exactly
 zero. That is the only mechanism ADR-0001 §13.4 names — "add zero samples" — it keeps the silence
 measurement's documented meaning, and it leaves a join reading `0.0` → `0.0`.
-`t1_e2_a_quiet_but_nonzero_edge_is_padded_to_an_exact_zero` fails against the old code with the
-exact value the real render refused.
+That mechanism was later superseded by §Quiet-edge normalization correction: the current test is
+`t1_e2_a_quiet_but_nonzero_edge_is_normalized_without_padding`, which preserves the exact endpoint
+without changing duration.
 
-Measured after the fix, on the 2026-08-31 set §Listening material now cites: every sample carries
+Measured after that fix, on the 2026-08-31 set §Historical listening material now cites: every sample carries
 exactly one leading and one trailing zero, first and last samples exactly `0.0`, and each is two
-frames longer than the take it replaces — which is the fix and nothing else.
+frames longer than the take it replaces. Those are the historical bytes the later normalization
+correction invalidates.
 
 ## Third remediation — the four issues the second audit left open
 
@@ -953,6 +970,177 @@ That record's own §Approvals now also carries the correction §Finding 11 recor
 correction it accounts for was necessary but did not by itself make a take publishable, so the
 listening set it superseded was replaced twice rather than once.
 
+## Fourth remediation — the audit of 2026-08-31 (findings 1 to 4)
+
+### Fourth audit — four findings
+
+A fourth audit raised three Major findings and one Minor against the tree the third remediation
+left. All four are closed here.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | Voice profiles were loaded before the consent and integrity gates ran. The worker deserializes **every** `conditionals.pt` beneath the governed root during `initialize`, and both instruments started the executor before calling the Rust gate — so a revoked, unpermitted, or checksum-invalid profile went through `torch.load` before anything could refuse it, including one unrelated to the selected voice | `voice_gate::admit_voice_root` runs the consent, rights, scope, and checksum gate over every profile the worker would load, and it is called from `WorkerConfiguration::for_bundle` beside `verify_model_artifacts` — not from the instruments. `for_bundle` is the only constructor of a launchable configuration, so no caller reaches a worker around it, which is the same structural argument `model_gate` records for the weights. **Corrected 2026-08-31 by the fifth audit:** that sentence was false. `WorkerConfiguration::for_protocol_fake` is also public and takes a caller-chosen program and environment, so it could be pointed at the bundle interpreter over a governed root; the claim is made true in §Fifth remediation, finding 2, and the gate's skip list is corrected there too — it *skipped* a directory name that is not UTF-8, which the worker still loads. The skip list is two-sided with `_voice_conditioning` in `worker/study_tts_worker/worker.py` and must skip *at most* what that skips, since anything skipped here and loaded there reaches `torch.load` ungated; `t1_e1_the_gate_skips_exactly_what_the_worker_skips` pins the three cases, and two further T1 tests refuse a revoked and an altered profile **the request never names** |
+| 2 | Graceful shutdown had a process-tree escape race. Descendants are enumerated once, before the worker is asked to leave, and the voluntary path signalled only those recorded pidfds — so a worker that started a child *after* enumeration and then exited left it running. The existing test spawns at startup and could not see it | The two shutdown paths are collapsed into one. `wait_for_voluntary_exit` now observes the exit with `waitid(…, WNOWAIT)` instead of `try_wait`, so the child is **not reaped**: its PID stays allocated, and with it the process group ID that equals it, because POSIX keeps a process group ID unusable while the group still has a member. `terminate` then runs on both paths — group kill, reap, and the existing proof that the group is empty *and* every recorded descendant is gone. `contain_descendants` and the branch that called it are deleted; the fix is a net deletion. `t4_e1_a_descendant_started_during_shutdown_is_contained` drives a new `spawn-descendant-at-shutdown` fake behavior that starts its child in answer to the `shutdown` frame, and failed before the change for exactly the stated reason |
+| 3 | A breaking cache contract was implemented without acceptance. The code publishes `CACHE_SCHEMA_VERSION` `2.0` while `docs/architecture/E1-S3-INTERFACE-CHANGE-002.md` was `Proposed` with all three approvals `Pending`, and a Proposed record authorizes nothing | That record is now `Accepted`, signed 2026-08-31, with all three rows decided: the project owner's major increment to `2.0`, T-CORE's three golden identities superseding the plan hash `E1-S3-INTERFACE-CHANGE-001` cites, and T-AUDIO's `edge_conditioning` record with its three narrowed acceptance rules and the stated limit that the ramp count is attested rather than verified. Nothing in the tree changed to close this finding; the implementation was correct and unauthorized, and what was missing was a decision |
+| 4 | Source and record still described superseded behavior — `AGENTS.md` §State said the product worker refuses `initialize` and `synthesize`; a TODO in `worker_executor.rs` said the model artifacts were unverified, immediately above the check that verifies them; `protocol.py` named the deleted `schemas/worker-protocol-v1.schema.json` twice; and this record's §Review asked approval for issue #60 and a superseded bundle hash rather than for the E1-S3 candidate | All four corrected, and two more of the same class found while doing it: §Limits still said the listening review "must be retaken before G1" after it had been retaken and accepted, and carried a bullet saying the model's bytes are never hashed beside one saying `model_gate` hashes them. §Review now asks for the decisions this candidate needs and says why the preflight rows were replaced. The `protocol.py` correction moved the bundle identity, which is what §What the fourth remediation costs this record is about |
+
+### What the fourth remediation costs this record
+
+`worker/study_tts_worker/protocol.py` is a declared bundle input, so correcting two references to a
+schema file that no longer exists moved the worker bundle identity to
+`58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750`, superseding
+`d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af`. `worker.py` moved too, for the
+two-sided comment finding 1 owes.
+
+The T5 qualification result was therefore retaken, and §T5 qualification result carries the new
+one. **The listening review was not retaken.** The worker reports `deterministic_seed: false`, so a
+re-render would produce different bytes and could not be compared with the reviewed set — the
+review would have had to be taken again by a person. It is carried forward instead, under
+`e1-s3-protocol-docstring-identity-reconciliation-v1`, on the argument that a docstring in a
+declared input cannot reach audio. That argument is written down and signed rather than assumed,
+because it is exactly the kind of accommodation this record has refused elsewhere.
+
+### Verification run for the fourth remediation
+
+Taken on the reference machine, 2026-08-31. Every check below actually ran; what did not run is
+named after the table rather than omitted.
+
+| Check | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | Clean |
+| Rust conventions | `python3 scripts/check-rust-conventions.py` | Clean |
+| Lints | `cargo clippy --offline --workspace --all-targets --all-features --locked -- -D warnings` | Clean |
+| Tests | `cargo test --offline --workspace --all-targets --locked` | 387 passed, 0 failed |
+| Doctests | `cargo test --offline --workspace --doc --locked` | 8 passed, 0 failed |
+| Python worker, system interpreter | `python3 -m unittest discover --start-directory worker/tests` | 64 passed, 2 skipped |
+| Python worker, restored environment | `worker/.venv/bin/python -m unittest discover --start-directory worker/tests` | 64 passed, 0 skipped |
+| Qualification tooling | `(cd scripts/qualification && python3 -m unittest discover --start-directory tests)` | 33 passed |
+| Provenance checker's own tests | `python3 -m unittest discover -s scripts/tests -p 'test_check_evidence_provenance.py'` | 23 passed |
+| Evidence provenance | `python3 scripts/check-evidence-provenance.py` | Exit `0`, no unaccounted mismatches |
+| Whitespace | `git diff --check` | Clean |
+| Worker bundle identity | `cargo run -p study-tts-runtime --example worker-bundle-hash` | `58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750` |
+| T5 qualification | `unshare --user --map-root-user --net ./target/debug/examples/worker-qualification …` | 5 of 5 pass, in a namespace holding only `lo` with no IP route. §T5 qualification result |
+| Listening review still binds to its audio | `python3 scripts/qualification/check_listening_review.py …/listening` | Exit `0`; all six sample digests match the sheet, and the key was revealed |
+
+Two tests were written red and failed first, for the reason each finding gives:
+`t4_e1_a_descendant_started_during_shutdown_is_contained` reported the surviving PID before the
+shutdown paths were collapsed, and the four `admit_voice_root` tests could not compile against a
+gate that did not exist.
+
+**Not run, and not claimed.** Hosted CI and the protected reference-machine qualification workflow
+were not run. `cargo deny check` was not run. No audio was re-rendered and no listening review was
+retaken — that is the decision `e1-s3-protocol-docstring-identity-reconciliation-v1` records, not
+an omission. The `setsid` residual in shutdown containment is stated in §Limits and is not
+covered by any test here, because nothing can name a process that has left every group and holds
+no recorded pidfd.
+
+## Fifth remediation — the audit of 2026-08-31 (findings 1 to 4)
+
+### Fifth audit — four findings
+
+A fifth audit raised three Major findings and one Minor. Three of them attack the *arguments* the
+fourth remediation wrote rather than the mechanisms it built, which is the more useful kind of
+finding and the harder one to see from inside. All four are closed here. None was a false positive,
+and the first was reproduced against the real Python before it was believed.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | The pre-load voice gate was bypassable through a non-UTF-8 profile name. `admit_voice_root` **skipped** a loadable profile directory whose name is not UTF-8, on the recorded ground that such a name "cannot equal any `profile_id` a JSON record states". It can. Python reads the directory name through `surrogateescape`, so the byte `0xff` arrives as a lone surrogate; `profile.json` is read as UTF-8 and `json.loads` decodes the six ASCII characters `\udcff` to that same surrogate; the two compare equal, the path re-encodes to the original bytes, and `_load_backend` deserializes the artifact. An entry this build skipped was one the worker loaded — with no consent, rights, scope, or checksum check | Refused rather than skipped. `VoiceProfileError::VoiceProfileNameNotUtf8` names the entry and the root, and the refusal sits after `holds_a_loadable_profile`, so a stray file or a directory without `profile.json` is still skipped by both sides. This is the one place the two filters may disagree, and it disagrees in the only safe direction: Rust now skips strictly *less* than the worker, which is what the two-sided rule asks for. `t1_e1_a_profile_name_that_is_not_utf8_refuses_the_root` builds the name from bytes and failed first — the root was admitted. The false comment is replaced with the mechanism, per `rust-comment` |
+| 2 | `for_bundle` was not structurally the only route to a real worker. `WorkerConfiguration::for_protocol_fake` is public and takes an arbitrary program, argument list, and environment: pointed at the bundle interpreter with the governed-root variables set, it starts the **real** worker with neither `verify_model_artifacts` nor `admit_voice_root` having run. `start` sends `initialize` first and compares identities afterwards, so the model and every `conditionals.pt` are loaded before `ModelRevisionNotEchoed` refuses the session. The gates were skippable, not merely deferred | The fake is never told where a governed root is. `for_protocol_fake` returns `Result` and refuses an environment naming either variable in `GOVERNED_ROOT_ENVIRONMENT`, with `WorkerBundleError::ProtocolFakeNamedAGovernedRoot`. A real worker started that way then hits `_governed_root`'s refusal, which runs *before* the `torch` import, so nothing is deserialized. Refused by **name and not by value**, because a stand-in root and a real one are the same string to that constructor. `t4_e1_the_governed_root_variables_are_the_ones_the_launcher_declares` reads `worker/launcher.json` and refuses the drift, which is the half that keeps the mirror from coming apart; `t1_e1_the_protocol_fake_cannot_be_handed_a_governed_root` is table-driven over the constant and failed first. The two doc comments that claimed `for_bundle` was the only route now say what is actually true |
+| 3 | Full process-tree containment remains knowingly incomplete. A descendant that calls `setsid()` between the last enumeration and its parent's exit is in no group this build owns and holds no recorded pidfd. ADR-0001 §10.3 requires the parent to terminate the full child process tree; the residual was stated in §Limits, but a §Limits bullet in a `Proposed` record accepts nothing, so an accepted-ADR conflict was being carried silently | Put to the owner instead. `ADR-0001-D008` is Approved and signed 2026-08-31, permitting E1-S3 to ship group-plus-pidfd containment, naming the four mechanisms that would close it and why each is rejected *now* — a PID namespace needs `Command::pre_exec`, which `unsafe_code = "forbid"` bans workspace-wide; an `unshare` wrapper replaces the bundle interpreter as the spawned program and so breaks the identity every cache key rests on; cgroup v2 `cgroup.kill` needs delegation the reference environment does not require; `PR_SET_CHILD_SUBREAPER` is process-global state a library may not set for its caller. `DELIVERY-PLAN.md` §Story E5-S4 carries the closure task and `t4_e5_a_descendant_that_leaves_its_process_group_is_still_contained`, which is the deviation's expiry. **No code changed to close this finding, and no test was written to assert the escape is contained** — it is not, and a test shaped to pass against it would be the weakened control `CLAUDE.md` forbids. `WorkerClient::shutdown`'s own doc comment now states what it reaches |
+| 4 | This record contradicted itself. §Story acceptance criteria said acceptance needs six criteria while §Story result answered seven, and criterion 4 said four `t5_e1_` criteria while the result row and the filed `qualification-result.json` both report five | Both corrected in place, under the "**Restated 2026-08-31**" convention criteria 2 and 3 already use, so the correction is visible rather than retroactive. Criterion 7 is the listening review, which ADR-0001 §17.5 makes a gate condition and which §Story result has answered since it was taken. Criterion 4 now says five and names the fifth: `t5_e1_worker_survives_restart_and_starts_offline` is a helper criterion `DELIVERY-PLAN.md` never named, which §T5 qualification result and `scripts/qualification/README.md` both already explained — the criteria list was the only place that had not caught up |
+
+### What the fifth remediation costs this record
+
+**Nothing that a person had to redo at this round.** No declared bundle input changed: the fix for finding 1 is
+Rust-only, and `worker/study_tts_worker/` is untouched. `worker-bundle-hash` was re-derived to
+prove it, and still answers
+`58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750`. The T5 qualification result
+and the 2026-08-31 listening review therefore both still describe the code that ships, and neither
+was retaken.
+
+The Python half of finding 1 was considered and declined. Adding the same refusal to
+`_voice_conditioning` would be defence in depth, but `worker.py` is a declared input, so it would
+have moved the identity, superseded the qualification result, and forced a third carry-forward of
+the listening review — for a path the Rust gate already closes by refusing the whole root before
+any worker starts. The docstring on the Python side already states the rule correctly and needed no
+edit, because the correction makes Rust skip *less*.
+
+What it does cost is a governance obligation and a smaller safety claim. `ADR-0001-D008` is an
+accepted deviation from ADR-0001 §10.3 that E5-S4 now owes closure on, and finding 2's argument
+now rests on a two-element denylist pinned to `worker/launcher.json` rather than on `for_bundle`
+being the sole constructor. Both are recorded in §Limits rather than rounded away.
+
+Three rows were added to `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Enforcement — one of
+them owed since the fourth remediation landed `admit_voice_root` without one. That moved the
+policy's digest, which two accepted G0 records pin;
+`e1-s3-rights-policy-enforcement-rows-reconciliation-v1` accounts for both and is Accepted.
+
+### Verification run for the fifth remediation
+
+Taken on the reference machine, 2026-08-31. Every check below actually ran; what did not run is
+named after the table rather than omitted.
+
+| Check | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | Clean |
+| Rust conventions | `python3 scripts/check-rust-conventions.py` | Clean |
+| Lints | `cargo clippy --offline --workspace --all-targets --all-features --locked -- -D warnings` | Clean |
+| Tests | `cargo test --offline --workspace --all-targets --locked` | 390 passed, 0 failed |
+| Doctests | `cargo test --offline --workspace --doc --locked` | 8 passed, 0 failed |
+| Python worker, system interpreter | `python3 -m unittest discover --start-directory worker/tests` | 64 passed, 2 skipped |
+| Python worker, restored environment | `worker/.venv/bin/python -m unittest discover --start-directory worker/tests` | 64 passed, 0 skipped |
+| Qualification tooling | `(cd scripts/qualification && python3 -m unittest discover --start-directory tests)` | 33 passed |
+| Provenance checker's own tests | `python3 -m unittest discover -s scripts/tests -p 'test_check_evidence_provenance.py'` | 23 passed |
+| Evidence provenance | `python3 scripts/check-evidence-provenance.py` | Exit `0`, no unaccounted mismatches |
+| Whitespace | `git diff --check` | Clean |
+| Worker bundle identity | `cargo run -p study-tts-runtime --example worker-bundle-hash` | `58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750`, **unmoved**, which is the premise this round rests on |
+
+Three tests were written red and failed first, for the reason each finding gives:
+`t1_e1_a_profile_name_that_is_not_utf8_refuses_the_root` was admitted by the gate before the
+refusal replaced the skip; `t1_e1_the_protocol_fake_cannot_be_handed_a_governed_root` was run
+against a constructor that returned `Ok` with no check, so the red is the missing refusal rather
+than a missing signature; and `t4_e1_the_governed_root_variables_are_the_ones_the_launcher_declares`
+is a pin rather than a defect and passed on its first run, which is stated rather than dressed up.
+
+**Not run, and not claimed.** Hosted CI and the protected reference-machine qualification workflow
+were not run. `cargo deny check` was not run. **`worker-qualification` and `listening-render` were
+deliberately not re-run**, because no declared bundle input moved and `worker-bundle-hash` proves
+it; at that point the filed T5 result and accepted listening review still described the code. No
+test asserts the `setsid` escape is contained, because it is not — `ADR-0001-D008` is where that
+is decided rather than a gap left implicit.
+
+### Quiet-edge normalization correction
+
+A subsequent review found that `condition_edges` satisfied an already-long-enough quiet edge by
+inserting one zero sample. The output passed the exact-endpoint check, but its duration changed even
+though the measured silence already met the requirement. The conditioner now zeroes the measured
+quiet leading and trailing samples and adds no padding in that case.
+
+This is Rust-only and does not move the worker bundle identity, so the recorded five-of-five T5 run
+still supports the worker criteria and need not be repeated. It does change the conditioned WAV
+bytes and frame count. The 2026-08-31 listening review is therefore historical evidence for its
+recorded set, not acceptance evidence for the current candidate; a new listening render and human
+review are the one remaining qualification item.
+
+Verification after this correction:
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all -- --check` | Clean |
+| `cargo clippy --offline --workspace --all-targets --all-features --locked -- -D warnings` | Clean |
+| `cargo test --offline --workspace --all-targets --locked` | 393 passed, 0 failed |
+| `cargo test --offline --workspace --doc --locked` | 8 passed, 0 failed |
+| `python3 -m unittest discover --start-directory worker/tests` | 64 passed, 2 skipped on the system interpreter |
+| `(cd scripts/qualification && python3 -m unittest discover --start-directory tests)` | 36 passed |
+| `python3 scripts/check-rust-conventions.py` | Clean |
+| `python3 scripts/check-evidence-provenance.py` | Exit `0` |
+| `git diff --check` | Clean |
+
+**Not run, and not claimed:** the protected reference-machine workflow, a new real-worker T5 run,
+and a post-correction listening render and review. The existing T5 artifact remains applicable for
+the reason above; the listening review does not.
+
 ## Limits the story does not close
 
 - **The model's bytes are verified, not keyed.** `model_gate` refuses weights that are not the
@@ -965,6 +1153,34 @@ listening set it superseded was replaced twice rather than once.
   revision the worker reports as `tokenizer_revision` is still read from the acquisition record and
   never hashed. It reaches every cache key. Closing it means declaring and hashing the code tree
   the same way, and is not attempted here.
+- **Shutdown containment reaches the process group and what it enumerated, and nothing else.** A
+  descendant that calls `setsid()` between the last enumeration and its parent's exit is in no
+  group this build owns and holds no pidfd it recorded, so nothing can name it, and
+  `wait_for_containment` reports success without having seen it. Both halves of the containment are
+  real — the group kill reaches a child started after enumeration, and the recorded pidfds reach a
+  child that left the group *before* it — but their union is not the whole tree, and ADR-0001 §10.3
+  requires the whole tree. **This is now an owner-approved deviation rather than a limitation this
+  record states on its own authority:** `ADR-0001-D008`, Approved 2026-08-31, names the four
+  mechanisms that would close it and why each is rejected now, and expires at E5-S4's
+  `t4_e5_a_descendant_that_leaves_its_process_group_is_still_contained`. It also says the owner must
+  revisit it before any worker pool above size one, since a pool multiplies the escapees. The fifth
+  audit's third finding was that a §Limits bullet in a `Proposed` record accepts nothing, which was
+  correct.
+- **No configuration this crate builds can reach a governed root ungated, but the argument is a
+  denylist now.** `for_bundle` gates the model artifacts and every voice profile, and
+  `for_protocol_fake` refuses the two variable names in `GOVERNED_ROOT_ENVIRONMENT` so it cannot be
+  pointed at the real worker over a governed root. The second half is a mirror of
+  `worker/launcher.json`, pinned by a test, rather than a structural impossibility — a worker that
+  learned where its roots are by some other means would be outside it. That is a smaller claim than
+  "`for_bundle` is the only constructor", which is what the fifth audit's second finding showed was
+  false, and it is the claim this record makes.
+- **The worker still loads every voice in the governed root.** `admit_voice_root` gates all of them
+  first, so nothing ungated is deserialized, but the blast radius is still the root rather than the
+  request: one revoked profile refuses every build until it is moved out. Narrowing it means
+  `initialize` carrying the admitted profile list so the worker loads only those, which is a change
+  to `e1.worker.2.0` and needs its own interface-change record. Not folded in here, for the reason
+  the model half of the second audit's finding 6 was not: a remediation round is the wrong place
+  for an interface change.
 - **Staging containment is a walk, not a sandbox.** §Third remediation records the residual: a
   directory proven inside the staging root and then *moved* out of it carries the held descriptor
   with it, because a descriptor follows the inode. No in-process change closes that; it needs a
@@ -1003,11 +1219,12 @@ listening set it superseded was replaced twice rather than once.
   leftover file *and* a leftover directory, the latter being the shape a check written with
   `is_file` would have walked past. With the T5 refusals, containment is covered at every point
   either end can observe.
-- **The listening review was complete and accepted, and is now superseded.** `ADR-0001-D007`'s edge
-  conditioning pads every segment, and since the ramp correction below it ramps them too, so the
-  published samples differ from the ones reviewed
-  and the review must be retaken before G1. What follows describes the review as taken on
-  2026-08-31 and is retained because its method and limitations still apply to the retake.
+- **The listening review was superseded twice; the second retake is pending.** An earlier review was complete and
+  accepted against takes that `ADR-0001-D007`'s edge conditioning and the ramp correction then
+  changed, so the published samples no longer matched the ones reviewed. That retake was taken on
+  2026-08-31 and remains recorded below as history. Quiet-edge normalization then changed those
+  published bytes again by replacing one-sample padding with zeroing of the already-measured silent
+  region. No post-correction listening set or completed review is recorded yet.
 
   **The retake has an instrument; the original did not.** The 2026-08-31 takes were produced by
   piping a hand-built NDJSON session into the worker, which left the material unreproducible — that
@@ -1019,20 +1236,10 @@ listening set it superseded was replaced twice rather than once.
   or one whose digests no longer match the audio, and is the sanctioned way to reveal the mapping.
   `scripts/qualification/README.md` §E1-S3: the listening review carries the procedure.
 
-   E1-S3 produces
-  audio for the first time, and the four T5 criteria measure session behavior without listening to
-  any of it. Six takes were rendered and reviewed on 2026-08-31; all six were accepted with no
-  findings on any of the five criteria. §Listening material records the review, the bytes it was
-  taken against, and the three limitations that bound what it can be read as covering — chiefly
-  that it was taken on laptop built-in speakers, which mask low-level noise.
-- **The model's own bytes are never hashed.** `model_revision` and `tokenizer_revision` reach every
-  cache key as strings a record states, never as a measurement, so replacing the weights under an
-  unchanged acquisition record leaves every key in place. Voices do not have this gap —
-  `voice_gate::load_profile` verifies `conditionals.pt` against the digest its record states — and
-  the model path should be the same shape. Issue #66 carries the design: artifact digests declared
-  in the model root, a derived `model_artifacts_hash` pinned in Git and reaching
-  `SynthesisContext`, verified by Rust before the worker starts. Sequenced before G1, because
-  adding a key input after the interface freeze needs a migration procedure it does not need now.
+  E1-S3 produces audio for the first time, and the other T5 criteria measure session behavior
+  without listening to any of it. Six takes were rendered and reviewed on 2026-08-31; that accepted
+  review is historical context for the superseded bytes. The current post-correction review remains
+  pending.
 - **Restart after a timeout is not implemented.** A timed-out executor now kills its worker tree
   and refuses every later request, which is what ADR-0001 §10.3 asks of it, but recovery is E5-S3's
   and is noted on that issue.
@@ -1042,12 +1249,13 @@ listening set it superseded was replaced twice rather than once.
   `check_requirements_match_lock` a no-op. The reconciliation must be decoupled from manifest
   membership before the file can leave.
 
-## Listening material
+## Historical listening material
 
 Re-rendered 2026-08-31 after the third remediation, once §Finding 11 was closed and
-`listening-render` could publish a take at all. **This is the reviewed set**, and every earlier one
-is superseded: the 2026-08-30 set was reviewed against audio the build no longer produces, and
-neither 2026-08-31 set before this one was ever reviewed. Rendered by
+`listening-render` could publish a take at all. This set was reviewed and accepted, but quiet-edge
+normalization has now superseded it: these files contain one inserted zero at each edge, while the
+current conditioner zeroes the measured quiet region without adding frames. No current
+post-correction set has been rendered or reviewed. Rendered by
 `cargo run --package study-tts-testkit --example listening-render`. The 2026-08-30 set it replaced
 was produced by piping a hand-built NDJSON session into the worker and could not be re-rendered.
 Governed output, so the location is named by root rather than reproduced here, per
@@ -1063,7 +1271,7 @@ Governed output, so the location is named by root rather than reproduced here, p
 | Voice profile | `owner-fallback-v1` |
 | Style | `calm_explanatory` |
 | Seed | 42, from `worker/launcher.json` |
-| Worker bundle identity | `d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af` |
+| Worker bundle identity that rendered it | `d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af`, superseded by `58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750`. The review is carried across that move by `e1-s3-protocol-docstring-identity-reconciliation-v1`, not re-rendered |
 | Exposed endpoints | Every sample: first and last sample exactly `0.0`, one zero padded at each edge |
 | Completed review sheet | SHA-256 `d744eb70c45760c8587a42a6c2c23f42896f2931d0c5ef26a91336a82bd7f167` |
 | Pending sheet, as rendered | SHA-256 `7f8fe2df628cb36cf8becea7bcdbcab4012f210cadbeb5daf31f999281759a39` |
@@ -1083,11 +1291,11 @@ The order is randomized and the mapping withheld in `randomization-key.json`;
 `scripts/qualification/check_listening_review.py` reveals it only once the sheet is complete and
 still matches these bytes.
 
-### Review result
+### Historical review result
 
-**Taken and accepted.** Reviewed 2026-08-31 by Ross Todd on laptop built-in speakers, against the
-six samples and digests §Listening material cites. It is the first listening review this story has
-completed against audio this build actually produces.
+**Taken and accepted for the superseded bytes.** Reviewed 2026-08-31 by Ross Todd on laptop built-in
+speakers, against the six samples and digests §Historical listening material cites. It does not
+accept the current conditioner; the post-correction review is pending.
 
 `python3 scripts/qualification/check_listening_review.py` accepted the sheet and revealed the key,
 which is what binds a judgment to bytes rather than to a filename: it re-hashes every sample
@@ -1102,7 +1310,7 @@ completed against a different render cannot be filed against this one.
 | `pacing` | none |
 | `noise_or_artifacts` | none |
 
-**Overall finding: accept 6 of 6, no findings on any criterion.**
+**Historical finding: accept 6 of 6, no findings on any criterion.**
 
 The revealed mapping, recorded so a retake can be compared line for line rather than sample for
 sample: `sample-01`→`line-03`, `sample-02`→`line-05`, `sample-03`→`line-06`, `sample-04`→`line-01`,
@@ -1111,11 +1319,19 @@ sample: `sample-01`→`line-03`, `sample-02`→`line-05`, `sample-03`→`line-06
 The five criteria are E0-S3's. Its sixth, `audible_difference_from_other_runs`, is not applicable:
 it compared ten runs of one line for determinism, while these are six different lines.
 
-The superseded review of the 2026-08-30 set — completed by Ross Todd on laptop built-in speakers,
-sheet SHA-256 `08fbf7fcb1e98f0fe3252b74cccac490bf253bcce46a98543eb8e826fd4888ea` — accepted 6 of 6
-with no findings on any criterion. It is recorded here as history, not as a result: it was taken
-against audio this build no longer produces, because `ADR-0001-D007`'s edge conditioning pads and
-ramps every segment. The 2026-08-31 re-render is superseded in turn by the ramp correction.
+Three earlier sets are superseded, and only one of them was ever reviewed. The **2026-08-30** set
+was reviewed by Ross Todd on laptop built-in speakers — sheet SHA-256
+`08fbf7fcb1e98f0fe3252b74cccac490bf253bcce46a98543eb8e826fd4888ea`, accept 6 of 6, no findings — and
+that judgment is recorded here as history rather than as a result, because `ADR-0001-D007`'s edge
+conditioning pads and ramps every segment and the build no longer produces the audio it was taken
+against. The two **earlier 2026-08-31** renders were superseded before anyone listened to them: the
+first by the ramp correction, the second by §Finding 11, which is why `listening-2026-08-31-180808`
+is the first set a person has both heard and been able to accept against published bytes.
+
+The bundle-identity move recorded above is the one supersession this record does **not** treat as
+invalidating: it changed ten lines, all inside docstrings, and
+`e1-s3-protocol-docstring-identity-reconciliation-v1` §Why the review carries and the qualification
+did not sets out the argument and the three signatures behind it.
 
 ### What this review does not cover
 
@@ -1135,8 +1351,18 @@ Ross Todd holds every role below. `docs/governance/PROJECT-EXECUTION-CHARTER.md`
 personal project and requires each approval to name its role and accepted risk separately, which is
 why the rows stay separate for one signatory.
 
+The rows below were written at the governance preflight and asked approval for the two findings
+that opened this record — issue #60, the reverted declaration, and the identity's return to
+`75d56310…9d2bab3`. Those decisions were made and are recorded in
+`e1-s3-worker-backend-provenance-reconciliation-v1`, which is `Accepted`. Asking for them again
+here would have a reader approve the story on the strength of a settled preflight rather than on
+the candidate this record now describes, which is what the fourth audit's Minor finding was about.
+The rows are therefore the decisions **this candidate** needs, restated again after the fifth
+audit: two of them asked approval for reasoning that audit showed was wrong.
+
 | Role | Name | Decision sought | Date |
 |---|---|---|---|
-| Project owner | Ross Todd | Accept that issue #60 is closed on a reproduction rather than left open, and that `worker/pyproject.toml`'s membership of the bundle identity is raised as an open question rather than decided here | |
-| Engineering owner | Ross Todd | Accept the reverted declaration, the identity's return to `75d56310…9d2bab3`, and the reconciliation check with its four tests and its stated scope | |
-| Worker owner | Ross Todd for T-WORKER | Accept that the bundle identity moved unnoticed through a declared input for one merged commit, that nothing was published under `8e7cc2f0…`, and that the provenance reconciliation is owed before commit | |
+| Project owner | Ross Todd | Pending the post-correction listening review; criterion 7 is not yet met | |
+| Engineering owner | Ross Todd | Accept the three gates that now precede a worker — the derived bundle identity, `model_gate`'s four SHA-256-pinned artifacts, and `admit_voice_root` over every profile in the governed root — all inside `WorkerConfiguration::for_bundle`; and accept that the property relied on is **not** that `for_bundle` is the sole constructor — the fifth audit showed it is not, since `for_protocol_fake` takes a caller-chosen program and environment — but that `for_bundle` is the only constructor *given* a governed root and `for_protocol_fake` is *refused* one, which together leave no configuration this crate builds that reaches a governed root ungated. The second half is a denylist mirrored to `worker/launcher.json` and pinned by a test, which §Limits states as the smaller claim it is | |
+| Worker owner | Ross Todd for T-WORKER | Accept that `shutdown` now observes a voluntary exit without reaping it so the process group is still signallable, and that the tree is proven gone by group *and* recorded pidfd on both paths; and accept `ADR-0001-D008` as the owner-approved permission for the residual that a descendant calling `setsid()` between the last enumeration and its parent's exit is reachable by neither, expiring at E5-S4 and to be revisited before any worker pool above size one | |
+| Contract owner (T-AUDIO) | Ross Todd for T-AUDIO | Accept the five-of-five T5 qualification result; defer candidate audio acceptance until the quiet-edge-normalized listening set is rendered and reviewed | |
