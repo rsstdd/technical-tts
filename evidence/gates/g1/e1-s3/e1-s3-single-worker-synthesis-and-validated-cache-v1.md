@@ -386,9 +386,9 @@ Added as the work landed, per §Scope and decision. The story half is accepted w
 | Criterion | Result |
 |---|---|
 | 1 — eight defects closed red-before-green | Met. §Story findings |
-| 2 — no published contract version moves | Met. The protocol, plan schema, executor contract, and launcher record are all unchanged; the schema-drift test passes untouched |
-| 3 — one identity move | Met. `84baafe98bf861cb…` → `839baa220e90ab894f3f5e8b3bee1f7ef76d178a2359fe862e9bd932ebea8d95`. No artifact stranded: the cache root holds no entries and the shipped worker refused `synthesize` until this work |
-| 4 — four T5 criteria | Met, all four pass. §T5 qualification result |
+| 2 — no published contract version moves | **Not met, and superseded by a decision.** The criterion was written for the governance preflight, before `E1-S3-INTERFACE-CHANGE-001` was accepted. The story then moved the worker protocol to `e1.worker.2.0`, the plan schema to v3, and the `TtsExecutor` contract to 3.0, all under that record; the audit remediation folded `staging_root` into the same unreleased 2.0 under `ADR-0001-D005`. The schema-drift test passes against the moved shapes. The project owner should restate this criterion to say what it now means |
+| 3 — one identity move | **Not met as written.** The identity has moved twice: `84baafe98bf861cb…` → `839baa220e90ab89…` during the story, then → `7b065eeb5319c6bc0d7b69f15f085fbe23e7ac70576dcf3ece570fe2a54884e3` under the audit remediation, which changed `worker/study_tts_worker/` and so had to. Nothing is stranded by either move — the cache root holds no entries and the shipped worker refused `synthesize` until this work — but the criterion says *at most once*, and whether to restate it or accept the second move is the project owner's |
+| 4 — four T5 criteria | **Not met yet.** Two of the four are marked Owed pending a rerun on the reference machine, and no hashed instrument output is cited. §T5 qualification result |
 | 5 — checks | Met for everything run |
 | 6 — what was not run | Met. §Verification run, and §Limits below |
 
@@ -448,7 +448,7 @@ file's SHA-256; the rerun owed above is what produces the file this table will c
 
 | Criterion | Result | Observed |
 |---|---|---|
-| `t5_e1_worker_bundle_hash_matches_when_all_declared_bundle_inputs_match` | Pass | Two derivations on the qualified interpreter agreed at `839baa220e90ab89…`. Sensitivity to a moved input is pinned at T1 by `t1_e1_worker_bundle_hash_changes_on_owned_runtime_input` |
+| `t5_e1_worker_bundle_hash_matches_when_all_declared_bundle_inputs_match` | Pass, re-derived | Two derivations on the qualified interpreter agreed at `7b065eeb5319c6bc0d7b69f15f085fbe23e7ac70576dcf3ece570fe2a54884e3` after the audit remediation, superseding the pre-remediation `839baa220e90ab89…`. Derived with `cargo run --package study-tts-runtime --example worker-bundle-hash`, which needs the bundle root and the qualified interpreter but no governed root. Sensitivity to a moved input is pinned at T1 by `t1_e1_worker_bundle_hash_changes_on_owned_runtime_input` |
 | `t5_e1_model_load_occurs_once_per_worker_lifetime` | Pass | Three takes through one worker reported one model load |
 | `t5_e1_worker_protocol_stdout_remains_clean` | Pass | Every frame of a completed session parsed off standard output, while 12,272 bytes of backend diagnostics went to standard error |
 | `t5_e1_worker_output_cannot_escape_staging_root` | **Owed** | The result above was taken before `initialize` carried `staging_root`. The criterion now also drives an absolute path outside the root and a path whose parent is a symlink out of it, neither of which the recorded run exercised, so it must be retaken |
@@ -478,9 +478,12 @@ carries **Owed** rows.
 ### What the remediation costs this record
 
 The worker bundle identity moves again, because `worker/study_tts_worker/` is a declared bundle
-input and this remediation changed it. Every digest in the sections above that names
-`839baa220e90ab89…` describes the pre-remediation bundle. The instrument must be rerun on the
-reference machine before this record is accepted at G1, and the listening review retaken —
+input and this remediation changed it. It is now
+`7b065eeb5319c6bc0d7b69f15f085fbe23e7ac70576dcf3ece570fe2a54884e3`, re-derived twice on the
+qualified interpreter; every other digest in the sections above that names `839baa220e90ab89…`
+describes the pre-remediation bundle and is superseded. The T5 instrument must still be rerun on
+the reference machine before this record is accepted at G1 — deriving the identity needs no
+governed root, but the other four criteria do — and the listening review retaken —
 `ADR-0001-D007`'s edge conditioning changes the published samples, so the audio reviewed on
 2026-08-31 is not the audio this build now produces.
 
@@ -513,7 +516,20 @@ reference machine before this record is accepted at G1, and the listening review
   leftover file *and* a leftover directory, the latter being the shape a check written with
   `is_file` would have walked past. With the T5 refusals, containment is covered at every point
   either end can observe.
-- **The listening review was complete and accepted, and is now superseded.** `ADR-0001-D007`'s edge conditioning pads and ramps every segment, so the published samples differ from the ones reviewed and the review must be retaken before G1. What follows describes the review as taken on 2026-08-31 and is retained because its method and limitations still apply to the retake.
+- **The listening review was complete and accepted, and is now superseded.** `ADR-0001-D007`'s edge
+  conditioning pads and ramps every segment, so the published samples differ from the ones reviewed
+  and the review must be retaken before G1. What follows describes the review as taken on
+  2026-08-31 and is retained because its method and limitations still apply to the retake.
+
+  **The retake has an instrument; the original did not.** The 2026-08-31 takes were produced by
+  piping a hand-built NDJSON session into the worker, which left the material unreproducible — that
+  session predates the required `staging_root` and cannot even be replayed against the worker that
+  exists now. `crates/study-tts-testkit/examples/listening-render.rs` replaces it: it renders
+  through `WorkerTtsExecutor`, reads its words from the committed
+  `fixtures/listening/e1-s3-listening-script.json`, blinds the takes, and writes a pending sheet
+  plus a separate key. `scripts/qualification/check_listening_review.py` refuses an incomplete sheet
+  or one whose digests no longer match the audio, and is the sanctioned way to reveal the mapping.
+  `scripts/qualification/README.md` §E1-S3: the listening review carries the procedure.
 
    E1-S3 produces
   audio for the first time, and the four T5 criteria measure session behavior without listening to

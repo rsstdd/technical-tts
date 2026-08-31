@@ -113,8 +113,57 @@ workflow gives for its own real-model steps: naming a governed root in a public
 workflow file would put it into Git, and a scheduled run would touch artifacts
 the rights policy keeps operator-controlled.
 
-**Listening is not covered.** These criteria measure session behavior — one
-model load per lifetime, protocol-only stdout, staging containment, a stable
+**Listening is not covered by these criteria.** They measure session behavior —
+one model load per lifetime, protocol-only stdout, staging containment, a stable
 bundle identity — and none of them listens to the audio. E1-S3 produces speech
-for the first time, so a listening review is owed separately before any gate
-that depends on it.
+for the first time, so the review below is owed separately before any gate that
+depends on it.
+
+## E1-S3: the listening review
+
+Rendered by a second example, for the same reason the qualification instrument
+is one: the takes must come through `WorkerTtsExecutor`, the path production
+uses.
+
+```text
+cargo run --package study-tts-testkit --example listening-render -- \
+    --bundle-root . \
+    --model-root <governed model root> \
+    --voice-root <governed voice root> \
+    --output-root <fresh directory>
+```
+
+The words are `fixtures/listening/e1-s3-listening-script.json`, committed and
+registered in `docs/testing/TEST-DATA-MANIFEST.md` so a retake reviews the same
+text and only the audio differs. The voice profile is read from the governed
+voice root rather than named here.
+
+It renders one take per line, copies them to shuffled `sample-NN.wav` under
+`<output root>/listening/`, and writes two records beside them:
+
+- `review-sheet.json`, **pending** — five criteria and a disposition per sample,
+  all `null`. The instrument records no verdict, because the verdict is the one
+  thing it exists to ask a human for.
+- `randomization-key.json` — which line produced which sample.
+
+Answer every criterion for every sample before opening the key. Write `none`
+where nothing was heard; a blank is not a finding. Then:
+
+```text
+python3 scripts/qualification/check_listening_review.py <output root>/listening
+```
+
+That refuses an incomplete sheet, refuses one whose recorded digests no longer
+match the audio beside it, and only then prints the mapping. Publish the
+completed sheet under the governed evidence root and cite it by SHA-256.
+
+**What the blinding does and does not enforce.** Nothing stops an operator
+reading `randomization-key.json` early, and the instrument does not pretend
+otherwise — the blinding is a discipline. What *is* mechanical is the binding
+between a judgment and the bytes it was made against: every finding is recorded
+under a take's SHA-256, so a retake that renders new audio into the same
+directory cannot inherit the previous review.
+
+**Retake the review whenever the audio changes**, not only when the text does.
+`ADR-0001-D007`'s edge conditioning pads and ramps every segment, so a build
+that changes it produces different samples from the same script.
