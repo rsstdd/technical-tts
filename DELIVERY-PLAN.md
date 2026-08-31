@@ -926,9 +926,11 @@ E5 begins after E2 and may proceed independently of E4 for audio, pooling, lifec
 4. Ensure failed assembly and encoding preserve the canonical master and prior release.
 5. Exercise cache verification, dry-run prune, explicit prune, and archive reconstruction.
 6. Enforce a configured cache budget with an eviction policy that preserves every prune root.
+7. Contain the full worker process tree, including a descendant that leaves the process group the worker was spawned as leader of, closing `ADR-0001-D008`.
 
 **Tests**
 
+- `t4_e5_a_descendant_that_leaves_its_process_group_is_still_contained`
 - `t4_e5_managed_path_escape_is_rejected`
 - `t4_e5_oversized_or_malformed_protocol_frame_is_rejected`
 - `t4_e5_duplicate_request_id_is_rejected`

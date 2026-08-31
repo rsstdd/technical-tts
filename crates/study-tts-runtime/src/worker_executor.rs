@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use study_tts_core::{
     CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, DeterminismClass,
-    LanguageTag, Revision, WorkerBundleHash,
+    LanguageTag, Revision, VoiceUse, WorkerBundleHash,
 };
 
 use crate::model_gate::verify_model_artifacts;
@@ -31,15 +31,16 @@ use crate::synthesis::{
     BackendDescriptor, BackendError, BackendValidationError, DriftedIdentity, SynthesisReport,
     SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, validate_executor_request,
 };
+use crate::voice_gate::admit_voice_root;
 use crate::worker_bundle::{WORKER_ENTRY_MODULE, WORKER_PACKAGE_ROOT, WorkerBundle};
 use crate::worker_client::WorkerClient;
 use crate::worker_environment::WORKER_INTERPRETER_PATH;
-use crate::worker_launcher::WorkerLauncher;
+use crate::worker_launcher::{GOVERNED_ROOT_ENVIRONMENT, WorkerLauncher};
 use crate::worker_protocol::{
     InitializeParameters, WORKER_PROTOCOL_VERSION, WorkerRequestFrame, WorkerResponseFrame,
     WorkerSynthesisParameters,
 };
-use crate::{BuildError, ToolInvocation, ToolOperation};
+use crate::{BuildError, ToolInvocation, ToolOperation, WorkerBundleError};
 
 /// Deadline for `initialize`, which loads the model once per lifetime.
 ///
@@ -165,19 +166,28 @@ impl WorkerConfiguration {
     /// that actually ran. An identity a caller passed in would be a claim about
     /// a bundle nobody checked.
     ///
+    /// `requested` is the use every profile in the governed voice root is
+    /// gated for, because starting a worker *is* a use of all of them: the
+    /// worker deserializes every one during `initialize`, not only the profile
+    /// a later request names.
+    ///
     /// # Errors
     ///
     /// [`crate::WorkerBundleError::UnreadableLauncher`] or
     /// [`crate::WorkerBundleError::UnsupportedLauncher`] when the launcher is
-    /// not the record this build reads, and everything
+    /// not the record this build reads, everything
     /// [`crate::WorkerBundle::verified_hash`] reports when the bundle cannot be
     /// identified — including [`crate::ToolError::MissingTool`] when the
-    /// interpreter it names is absent.
+    /// interpreter it names is absent — everything
+    /// [`crate::verify_model_artifacts`] reports for weights that are not the
+    /// pinned bytes, and everything [`crate::admit_voice_root`] reports for a
+    /// governed voice root holding a profile that is not rights-clean.
     pub fn for_bundle(
         bundle_root: &Path,
         model_root: &Path,
         voice_root: &Path,
         staging_root: &Path,
+        requested: VoiceUse,
     ) -> Result<Self, BuildError> {
         // Identity before anything else, so a bundle that cannot be identified
         // never reaches the point of having a launchable configuration at all.
@@ -189,6 +199,13 @@ impl WorkerConfiguration {
         // bytes that produced the audio. Issue #66, and the model half of the
         // 2026-08-31 audit's sixth finding.
         let model_revision = verify_model_artifacts(model_root)?;
+        // And every voice the worker will hold before any of them is read as an
+        // object. `initialize` walks the whole governed root and deserializes
+        // each `conditionals.pt`, so gating only the profile a request names
+        // left a revoked or altered one to go through `torch.load` first and be
+        // refused afterwards, if at all. ADR-0001 §11.2 puts this validation
+        // before initialization, and this is the last place that is still true.
+        admit_voice_root(voice_root, requested)?;
         let launcher = WorkerLauncher::read(bundle_root)?;
         // Absolute from here on — the bundle root and both governed roots. The
         // child is given a working directory of its own, so every path handed
@@ -243,19 +260,49 @@ impl WorkerConfiguration {
     /// way around [`WorkerConfiguration::for_bundle`]: whatever a caller points
     /// `program` at runs under the synthetic backend's name, never under a real
     /// bundle's.
-    #[must_use]
+    ///
+    /// **And it is never told where a governed root is.** A synthetic identity
+    /// is not containment: pointed at the bundle interpreter with
+    /// [`GOVERNED_ROOT_ENVIRONMENT`] set, this would start the *real* worker,
+    /// and `initialize` loads the model and every `conditionals.pt` before the
+    /// identity it answers with can be compared — so the refusal would arrive
+    /// after the deserialization the gates exist to precede. Refusing those
+    /// variables here is what makes the claim in
+    /// [`crate::admit_voice_root`] true of the crate rather than only of
+    /// [`WorkerConfiguration::for_bundle`].
+    ///
+    /// # Errors
+    ///
+    /// [`crate::WorkerBundleError::ProtocolFakeNamedAGovernedRoot`] when
+    /// `environment` names either governed-root variable, whatever value it
+    /// carries: a stand-in root and a real one are indistinguishable here, and
+    /// the fake needs neither.
     pub fn for_protocol_fake(
         program: PathBuf,
         arguments: Vec<String>,
         environment: BTreeMap<String, String>,
         staging_root: PathBuf,
         deadline: Duration,
-    ) -> Self {
-        Self {
-            // The fake is an absolute path and imports nothing, so its working
-            // directory is its own location rather than an import root: an
-            // inherited one would make these tests depend on where cargo was
-            // invoked from.
+    ) -> Result<Self, BuildError> {
+        // By name and not by value, because a stand-in root and a real one are
+        // the same string to this constructor and only the caller knows which
+        // it meant. The fake resolves neither root, so refusing the names
+        // outright costs nothing it needs and leaves no version of the
+        // arrangement for a caller to reach a governed root through.
+        for variable in GOVERNED_ROOT_ENVIRONMENT {
+            if environment.contains_key(variable) {
+                return Err(WorkerBundleError::ProtocolFakeNamedAGovernedRoot {
+                    variable: (*variable).to_owned(),
+                }
+                .into());
+            }
+        }
+        Ok(Self {
+            // The fake imports nothing, so it needs no import root and its
+            // own directory will do. `parent` is `None` only for a root path,
+            // and `.` there is inert rather than the inherited directory an
+            // import root exists to avoid: a program at the root has no
+            // sibling for a relative path to resolve against.
             working_directory: program.parent().unwrap_or(Path::new(".")).to_path_buf(),
             program,
             arguments,
@@ -276,7 +323,7 @@ impl WorkerConfiguration {
             generation_parameters: BTreeMap::new(),
             initialize_deadline: deadline,
             request_deadline: deadline,
-        }
+        })
     }
 }
 
@@ -395,16 +442,18 @@ impl WorkerTtsExecutor {
         };
 
         // `initialize` *sends* the bundle identity this build derived and
-        // verified, so the worker's is an echo and nothing else — and it is the
-        // echo, not the verified value, that reaches [`BackendDescriptor`] and
-        // therefore every cache key ADR-0001 §12.5 builds. Compared before
-        // `capabilities`, so a worker this build cannot name never opens a
-        // session at all.
+        // verified, so the worker's is an echo and nothing else. Compared
+        // before `capabilities`, so a worker this build cannot name never opens
+        // a session at all; the descriptor below retains the verified value,
+        // not an untrusted echo that merely compared equal once.
         //
-        // TODO(rsstdd): the model half of this rule is issue #66. Model and
-        // tokenizer revisions are still strings the worker read out of the
-        // governed root's acquisition record, never digests of the bytes it
-        // loaded, so changed weights keep an unchanged synthesis identity.
+        // TODO(rsstdd): issue #66's remainder. The model's own weights are
+        // now proven — `verify_model_artifacts` hashed them above and
+        // `ModelRevisionNotEchoed` below refuses a worker that answers with
+        // another revision — so changed weights under an unchanged revision
+        // refuse the build rather than keying audio to bytes nobody hashed.
+        // The tokenizer and codec revisions are still strings the worker read
+        // out of the governed acquisition record and nothing hashed.
         if identities.worker_bundle_hash != configuration.worker_bundle_hash {
             return Err(BackendError::InvalidRequest {
                 request_id: "initialize".to_owned(),
@@ -483,7 +532,7 @@ impl WorkerTtsExecutor {
             declared_styles: capabilities.styles.iter().cloned().collect(),
             descriptor: BackendDescriptor {
                 contract_version: TTS_EXECUTOR_CONTRACT_VERSION.to_owned(),
-                worker_bundle_hash: identities.worker_bundle_hash,
+                worker_bundle_hash: configuration.worker_bundle_hash.clone(),
                 model_repository: configuration.model_repository.clone(),
                 model_revision: identities.model_revision,
                 tokenizer_revision: identities.tokenizer_revision,
@@ -495,6 +544,14 @@ impl WorkerTtsExecutor {
                 },
                 seed: configuration.seed,
                 generation_parameters: configuration.generation_parameters.clone(),
+                // Saturating rather than refused, and exact rather than a
+                // fallback: the only use of this is
+                // `spoken_text.len() > max_text_bytes`, and no `String` is
+                // longer than `usize::MAX`. A worker declaring a ceiling
+                // wider than this build can represent is declaring one no
+                // request could reach, which is what `usize::MAX` says here.
+                // Every other declared value above is refused instead,
+                // because coercing those would change what they mean.
                 max_text_bytes: usize::try_from(capabilities.max_text_bytes).unwrap_or(usize::MAX),
             },
             request_deadline: configuration.request_deadline,
@@ -609,6 +666,12 @@ impl WorkerTtsExecutor {
                     self.descriptor.model_revision.as_str(),
                     &model_revision,
                 )?;
+                // One value under two protocol spellings: `initialize`
+                // answers with `tokenizer_revision` and a success frame with
+                // `codec_revision`, and the worker sends its own
+                // `codec_revision` for both. Both schema descriptions read
+                // "Tokenizer or codec revision". Reconciling the names would
+                // move `e1.worker.2.0`, which is frozen.
                 check_identity(
                     &request.request_id,
                     DriftedIdentity::Codec,
@@ -704,24 +767,25 @@ impl TtsExecutor for WorkerTtsExecutor {
         // The worker-declared half of the envelope, which only this type knows:
         // `validate_executor_request` is shared with every executor and reads
         // the descriptor, and these two lists are deliberately not on it.
-        let declared = if self.declared_styles.contains(&request.style) {
-            None
-        } else {
+        //
+        // One refusal per request, style first. The envelope table in
+        // `study-tts-testkit/tests/worker_contract.rs` pins each case to its
+        // own variant, so a request stepping outside one list is refused by
+        // that list's invariant rather than the other's.
+        let undeclared = if !self.declared_styles.contains(&request.style) {
             Some(BackendValidationError::UndeclaredStyle {
                 requested: request.style.clone(),
                 declared: render_declared(&self.declared_styles),
             })
-        }
-        .or_else(|| {
-            if self.declared_voices.contains(&request.voice_profile) {
-                return None;
-            }
+        } else if !self.declared_voices.contains(&request.voice_profile) {
             Some(BackendValidationError::UndeclaredVoiceProfile {
                 requested: request.voice_profile.clone(),
                 declared: render_declared(&self.declared_voices),
             })
-        });
-        if let Some(source) = declared {
+        } else {
+            None
+        };
+        if let Some(source) = undeclared {
             return Err(BackendError::InvalidRequest {
                 request_id: request.request_id.clone(),
                 source,
@@ -810,6 +874,7 @@ mod tests {
             Path::new("/governed/models"),
             Path::new("/governed/voices"),
             Path::new("/staging"),
+            VoiceUse::PrivateSynthesis,
         )
         .expect_err("a bundle whose interpreter is absent cannot be launched");
 
@@ -820,6 +885,40 @@ mod tests {
             matches!(source, ToolError::MissingTool { .. }),
             "the refusal must name the missing interpreter, not {error:?}"
         );
+    }
+
+    #[test]
+    fn t1_e1_the_protocol_fake_cannot_be_handed_a_governed_root() {
+        // A synthetic bundle identity refuses the *session*, not the load. A
+        // caller pointing this constructor at the bundle interpreter with a
+        // governed root in the environment would start the real worker, and
+        // `initialize` deserializes the model and every `conditionals.pt`
+        // before the identity it answers with can be compared — so the gates
+        // `for_bundle` runs would have been skipped rather than deferred.
+        //
+        // Driven off the constant rather than two literals, so a third
+        // governed-root variable is covered the day it is added.
+        for variable in GOVERNED_ROOT_ENVIRONMENT {
+            let error = WorkerConfiguration::for_protocol_fake(
+                PathBuf::from("/unused/fake-worker"),
+                vec!["deterministic".to_owned()],
+                BTreeMap::from([((*variable).to_owned(), "/unused/root".to_owned())]),
+                PathBuf::from("/unused/staging"),
+                Duration::from_secs(1),
+            )
+            .expect_err("the protocol fake must refuse a governed-root variable");
+
+            let BuildError::WorkerBundle(source) = &error else {
+                panic!("the wrong error was produced for `{variable}`: {error:?}");
+            };
+            assert!(
+                matches!(
+                    source,
+                    WorkerBundleError::ProtocolFakeNamedAGovernedRoot { .. }
+                ),
+                "the refusal must name the governed-root variable `{variable}`: {error:?}"
+            );
+        }
     }
 
     #[test]

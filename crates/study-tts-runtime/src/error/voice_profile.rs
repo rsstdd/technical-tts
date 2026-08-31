@@ -90,6 +90,31 @@ pub enum VoiceProfileError {
         recorded: String,
     },
 
+    /// The voice-profile root holds a loadable profile whose directory name is
+    /// not UTF-8.
+    ///
+    /// Refused rather than skipped, and the reason is the whole point of the
+    /// gate. The worker reads the same name through Python's
+    /// `surrogateescape`, so `voice-\xff-v1` reaches it as a string holding a
+    /// lone surrogate — and a `profile.json` whose `profile_id` carries that
+    /// same surrogate compares equal to it, which is all
+    /// `worker.py::_voice_conditioning` requires before `_load_backend`
+    /// deserializes the artifact. An entry this build cannot name is therefore
+    /// an entry the worker can, so skipping it would leave exactly one profile
+    /// reaching `torch.load` with no consent, rights, scope, or checksum check.
+    #[error(
+        "voice profile root `{root}` is refused: it holds a profile directory named `{name}`, \
+         which is not UTF-8 and so cannot be gated, while the worker would still load it; the \
+         project owner must rename the directory or move it out of the governed root before any \
+         profile in it is used"
+    )]
+    VoiceProfileNameNotUtf8 {
+        /// The voice-profile root the build was given.
+        root: PathBuf,
+        /// The entry's name, rendered lossily so it can be found on disk.
+        name: String,
+    },
+
     /// A profile file no longer hashes to what its record says.
     #[error(
         "voice profile at `{profile_dir}` is refused: `{path}` does not match its recorded \
@@ -113,6 +138,7 @@ impl VoiceProfileError {
             | Self::MissingVoiceProfileDirectory { .. }
             | Self::VoiceProfileNotDirectory { .. }
             | Self::VoiceProfileIdMismatch { .. }
+            | Self::VoiceProfileNameNotUtf8 { .. }
             | Self::VoiceChecksumMismatch { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::ProjectOwner,
                 "supply or correct the voice profile record before use",

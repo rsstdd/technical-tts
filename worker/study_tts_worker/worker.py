@@ -432,6 +432,14 @@ def _voice_conditioning(voice_root: Path) -> dict[str, str]:
     against the record instead -- `voice_gate::load_profile`, on the Rust side,
     before any synthesis runs.
 
+    The skip list below is the other end of `voice_gate::admit_voice_root`,
+    which runs the consent, rights, scope, and checksum gate over every entry
+    this function would return -- before this process is started at all. It
+    must skip at most what this skips, because `_load_backend` deserializes
+    every profile named here, so anything skipped there and loaded here reaches
+    `torch.load` ungated. The two filters are one rule written twice, and
+    neither may narrow without the other.
+
     Raises:
         BackendUnavailable: if the root holds no usable profile.
     """

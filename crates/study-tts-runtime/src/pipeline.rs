@@ -237,6 +237,12 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// identifier the lesson gate already refused, so an unusable spelling is
 /// reported as the authoring mistake it is.
 ///
+/// [`crate::VoiceProfileError::VoiceProfileNameNotUtf8`] is not among them
+/// either. It belongs to [`crate::admit_voice_root`], which walks a whole
+/// governed root before a worker is started; this function is handed an
+/// executor that already exists and resolves only the profiles a lesson names,
+/// each through a `profile_id` the lesson gate has already accepted as text.
+///
 /// Durable ownership and publication may return
 /// [`crate::DurableStateError::LiveJobLock`],
 /// [`crate::DurableStateError::MalformedJobLock`],

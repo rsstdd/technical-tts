@@ -58,6 +58,13 @@ enum Behavior {
     /// The descendant's PID goes to standard error so a test can ask the kernel
     /// whether it survived rather than infer it from a timeout.
     SpawnDescendant,
+    /// Starts a child only once it is asked to leave, then leaves.
+    ///
+    /// The descendant no enumeration can have seen: a supervisor records the
+    /// tree before sending `shutdown`, because `/proc` loses it afterwards, so
+    /// a helper started in answer to that frame is reachable only through the
+    /// process group its parent was spawned into.
+    SpawnDescendantAtShutdown,
     /// Sleeps out [`DESCENDANT_LIFETIME`], reading and writing nothing.
     ///
     /// What [`Behavior::SpawnDescendant`] starts. Bounded rather than endless
@@ -125,21 +132,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     if behavior == Behavior::SpawnDescendant {
-        // Inherits the process group deliberately: a real backend's helper is
-        // in the group its parent was spawned into, which is what makes the
-        // group kill the backstop it is. Every stream is null so the descendant
-        // can never be mistaken for the worker on stdout or stderr.
-        let descendant = Command::new(std::env::current_exe()?)
-            .arg("descendant-park")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-        // The other end of this line is
-        // `t4_e1_a_gracefully_shut_down_worker_leaves_no_descendant_behind` in
-        // `crates/study-tts-testkit/tests/worker_contract.rs`, which asks the
-        // kernel about this PID rather than inferring containment.
-        eprintln!("fake worker descendant pid: {}", descendant.id());
+        spawn_descendant()?;
     }
     if behavior == Behavior::Stderr {
         eprintln!("fake worker diagnostic on stderr");
@@ -220,6 +213,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         let leaving = matches!(frame, WorkerRequestFrame::Shutdown { .. });
+        // Started before the response, so the descendant certainly exists by
+        // the time the supervisor observes this worker exit. Anything later
+        // would test the fake's scheduling rather than the containment.
+        if leaving && behavior == Behavior::SpawnDescendantAtShutdown {
+            spawn_descendant()?;
+        }
         let response = respond(frame, behavior)?;
         serde_json::to_writer(&mut stdout, &response)?;
         stdout.write_all(b"\n")?;
@@ -232,6 +231,27 @@ fn main() -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
     }
+    Ok(())
+}
+
+/// Starts a parked child and announces its PID on standard error.
+///
+/// Inherits the process group deliberately: a real backend's helper is in the
+/// group its parent was spawned into, which is what makes the group kill the
+/// backstop it is. Every stream is null so the descendant can never be mistaken
+/// for the worker on stdout or stderr.
+///
+/// The other end of the announced line is `descendant_pid` in
+/// `crates/study-tts-testkit/tests/worker_contract.rs`, whose tests ask the
+/// kernel about this PID rather than inferring containment from a timeout.
+fn spawn_descendant() -> Result<(), Box<dyn Error>> {
+    let descendant = Command::new(std::env::current_exe()?)
+        .arg("descendant-park")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    eprintln!("fake worker descendant pid: {}", descendant.id());
     Ok(())
 }
 
@@ -281,6 +301,7 @@ fn parse_behavior(value: Option<&str>) -> Result<Behavior, Box<dyn Error>> {
         "stderr" => Ok(Behavior::Stderr),
         "exit" => Ok(Behavior::Exit),
         "spawn-descendant" => Ok(Behavior::SpawnDescendant),
+        "spawn-descendant-at-shutdown" => Ok(Behavior::SpawnDescendantAtShutdown),
         "descendant-park" => Ok(Behavior::DescendantPark),
         unknown => Err(format!("unknown fake-worker behavior `{unknown}`").into()),
     }

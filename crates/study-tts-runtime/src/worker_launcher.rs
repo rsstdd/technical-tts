@@ -64,6 +64,19 @@ pub const REQUIRED_OFFLINE_ENVIRONMENT: [&str; 2] = ["HF_HUB_OFFLINE", "TRANSFOR
 /// `worker/study_tts_worker/worker.py`.
 pub const OPTIONAL_OFFLINE_ENVIRONMENT: [&str; 1] = ["HF_HUB_DISABLE_PROGRESS_BARS"];
 
+/// The variable names under which a governed root reaches a worker.
+///
+/// A denylist for [`crate::WorkerConfiguration::for_protocol_fake`], and
+/// nothing else. [`WorkerLauncher::child_environment`] still publishes the two
+/// roots under the names *the launcher declares* rather than under these, for
+/// the reason it gives; this constant exists because the protocol fake reads no
+/// launcher and so has no other way to recognise the arrangement it must never
+/// be handed. Mirrors `model_root_environment_variable` and
+/// `voice_root_environment_variable` in `worker/launcher.json`, and
+/// `t4_e1_the_governed_root_variables_are_the_ones_the_launcher_declares` reads
+/// that file and refuses the drift.
+pub const GOVERNED_ROOT_ENVIRONMENT: [&str; 2] = ["STUDY_TTS_MODEL_ROOT", "STUDY_TTS_VOICE_ROOT"];
+
 /// Interpreter settings the worker is started with, and their values.
 ///
 /// Declared rather than inherited, because `WorkerClient::spawn` clears the
@@ -472,5 +485,26 @@ mod tests {
                 "`{case}` must be refused as unreadable: {error:?}"
             );
         }
+    }
+
+    #[test]
+    fn t4_e1_the_governed_root_variables_are_the_ones_the_launcher_declares() {
+        // The half that keeps the mirror from coming apart. `for_protocol_fake`
+        // refuses an environment naming either of these, and it reads no
+        // launcher — so a launcher that renamed a governed-root variable would
+        // leave the fake denying a name nothing uses and admitting the one that
+        // matters. Read from the shipped file rather than restated here, which
+        // would be a third copy to drift.
+        let launcher =
+            WorkerLauncher::read(&repository_root()).expect("the checked-in launcher is readable");
+
+        assert_eq!(
+            [
+                launcher.model_root_environment_variable.as_str(),
+                launcher.voice_root_environment_variable.as_str(),
+            ],
+            GOVERNED_ROOT_ENVIRONMENT,
+            "`GOVERNED_ROOT_ENVIRONMENT` must name exactly what `worker/launcher.json` declares"
+        );
     }
 }

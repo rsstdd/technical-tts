@@ -38,7 +38,7 @@ WAV and report validation, checksums, key locking, no-replace publication,
 directory synchronization, and collision-free quarantine.
 
 E1-S3 moved that quarantine to the layout ADR-0001 §12.6 names —
-`quarantine/<job-id>/<segment-id>/take-<take>/attempt-<attempt>-<request-id>/` — in
+`quarantine/<job-id>/<segment-id>/take-<take>/attempt-<attempt>-<request-id>-<nonce>/` — in
 `quarantine_transaction` in `crates/study-tts-runtime/src/cache.rs`, which names §12.6 in return.
 It keeps a nonce as a final path element, because an attempt number and a request identity are
 both derived from the plan and therefore repeat exactly when a job is resumed or re-run: without

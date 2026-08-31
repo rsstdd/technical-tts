@@ -27,7 +27,7 @@
 //! citing its hashed output — the shape E0-S3 used, recorded in
 //! `evidence/gates/g0/e0-s3/e0-s3-g0-qualification-report-v1.md`.
 //!
-//! Rust rather than a Python harness because three of the four criteria are
+//! Rust rather than a Python harness because three of the five criteria are
 //! about the *executor* driving a real worker. A Python harness would
 //! re-implement the protocol client and then qualify the re-implementation
 //! instead of the shipped path. Every take goes through
@@ -185,6 +185,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         &configuration.model_root,
         &configuration.voice_root,
         &configuration.staging_root,
+        // Gates every profile the worker will deserialize, before the child
+        // exists — not only the one `governed_voice` selects below, which is
+        // why that call can no longer be the first governed read. Same scope:
+        // a run that qualifies a worker and never reaches a lesson.
+        VoiceUse::VoiceQualification,
     )?;
     let executor = WorkerTtsExecutor::start(&launch)?;
     let descriptor = executor.descriptor();
@@ -216,7 +221,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         descriptor.worker_bundle_hash.as_str(),
         &isolation,
         &outcomes,
-    );
+    )?;
     println!("{result}");
 
     // Written and hashed, not only printed. The E1-S3 story record requires the
@@ -276,8 +281,9 @@ fn bundle_identity_is_stable(configuration: &Configuration) -> Result<Outcome, B
 ///
 /// Counted from the worker's own diagnostics rather than from a protocol field,
 /// so the observation costs the protocol nothing and cannot be satisfied by a
-/// worker that merely says it loaded once. `Loading` and `loaded` are what the
-/// backend's own load path prints; a reload would print them again.
+/// worker that merely says it loaded once. `loaded PerthNet` is the exact
+/// diagnostic token pinned as the qualification contract for
+/// `chatterbox-tts==0.1.2`; a reload would print it again.
 fn model_loads_once(
     configuration: &Configuration,
     executor: &WorkerTtsExecutor,
@@ -707,32 +713,26 @@ fn render_result(
     worker_bundle_hash: &str,
     isolation: &NetworkIsolation,
     outcomes: &[Outcome],
-) -> String {
-    let criteria: Vec<String> = outcomes
+) -> Result<String, serde_json::Error> {
+    let criteria: Vec<serde_json::Value> = outcomes
         .iter()
         .map(|outcome| {
-            format!(
-                "    {{\"criterion\": \"{}\", \"result\": \"{}\", \"observed\": \"{}\"}}",
-                outcome.criterion,
-                if outcome.passed { "pass" } else { "fail" },
-                outcome.observed.replace('"', "'")
-            )
+            serde_json::json!({
+                "criterion": outcome.criterion,
+                "result": if outcome.passed { "pass" } else { "fail" },
+                "observed": outcome.observed,
+            })
         })
         .collect();
-    format!(
-        "{{\n  \"worker_bundle_hash\": \"{worker_bundle_hash}\",\n  \"network_isolation\": \
-         {{\"interfaces\": [{}], \"routes\": {}, \"namespace_inode\": {}}},\n  \"criteria\": \
-         [\n{}\n  ]\n}}",
-        isolation
-            .interfaces
-            .iter()
-            .map(|name| format!("\"{name}\""))
-            .collect::<Vec<_>>()
-            .join(", "),
-        isolation.routes,
-        isolation.namespace_inode,
-        criteria.join(",\n")
-    )
+    serde_json::to_string_pretty(&serde_json::json!({
+        "worker_bundle_hash": worker_bundle_hash,
+        "network_isolation": {
+            "interfaces": isolation.interfaces,
+            "routes": isolation.routes,
+            "namespace_inode": isolation.namespace_inode,
+        },
+        "criteria": criteria,
+    }))
 }
 
 #[cfg(test)]
@@ -795,6 +795,30 @@ mod tests {
         assert!(
             refusal.contains("voice_qualification"),
             "the refusal does not name the requested use: {refusal}"
+        );
+    }
+
+    #[test]
+    fn t1_e1_qualification_observations_are_json_escaped() {
+        let isolation = NetworkIsolation {
+            interfaces: vec!["lo".to_owned()],
+            routes: 0,
+            namespace_inode: 1,
+        };
+        let outcomes = [Outcome::new(
+            "criterion-escape",
+            true,
+            "quoted \"value\" with \\ and newline\n".to_owned(),
+        )];
+
+        let rendered = render_result("bundle", &isolation, &outcomes)
+            .expect("serialize the qualification result");
+        let result: serde_json::Value =
+            serde_json::from_str(&rendered).expect("the qualification result is JSON");
+
+        assert_eq!(
+            result["criteria"][0]["observed"],
+            "quoted \"value\" with \\ and newline\n"
         );
     }
 }

@@ -74,7 +74,7 @@ pub use synthesis::{
     BackendDescriptor, BackendError, BackendValidationError, DriftedIdentity, SynthesisReport,
     SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, validate_executor_request,
 };
-pub use voice_gate::resolve_voice_conditioning;
+pub use voice_gate::{admit_voice_root, resolve_voice_conditioning};
 pub use worker_bundle::{
     BUNDLE_MANIFEST_PATH, BUNDLE_MANIFEST_SCHEMA_VERSION, BundleManifest, DeclaredStartupModule,
     MAX_BUNDLE_INPUT_BYTES, PythonRuntimeIdentity, REQUIRED_BUNDLE_INPUTS, REQUIRED_IMPORT_ROOT,

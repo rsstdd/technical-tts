@@ -262,6 +262,32 @@ pub enum WorkerBundleError {
         /// The ceiling this boundary enforces.
         max_bytes: usize,
     },
+
+    /// The protocol fake was handed the environment a governed root reaches a
+    /// worker through.
+    ///
+    /// [`crate::WorkerConfiguration::for_protocol_fake`] exists to speak the
+    /// protocol without weights, and it takes a caller-chosen program: pointed
+    /// at the bundle interpreter with these variables set, it would start the
+    /// *real* worker with neither `verify_model_artifacts` nor
+    /// `admit_voice_root` having run, and `initialize` loads the model and
+    /// every `conditionals.pt` before the identity it answers with can be
+    /// compared.
+    /// Refusing the variables is what makes "no configuration this crate builds
+    /// launches a process that can find a governed root ungated" true rather
+    /// than merely intended. A configuration over a governed root comes from
+    /// [`crate::WorkerConfiguration::for_bundle`], which gates both.
+    #[error(
+        "the protocol fake was given `{variable}`, which is how a governed root reaches a \
+         worker; it speaks the protocol without weights and is never told where a governed \
+         root is, so the worker/runtime owner must build this configuration with \
+         `WorkerConfiguration::for_bundle`, which gates the model artifacts and every voice \
+         profile first"
+    )]
+    ProtocolFakeNamedAGovernedRoot {
+        /// The governed-root variable the caller's environment named.
+        variable: String,
+    },
 }
 
 /// Where in `worker/requirements.lock` an invariant failed.
@@ -702,6 +728,10 @@ impl WorkerBundleError {
             }
             Self::UnreadableLauncher { .. } | Self::UnsupportedLauncher { .. } => {
                 "repair worker/launcher.json to the layout this build reads"
+            }
+            Self::ProtocolFakeNamedAGovernedRoot { .. } => {
+                "build the configuration with WorkerConfiguration::for_bundle, which gates the \
+                 model artifacts and every voice profile before a worker can be launched"
             }
             Self::RequirementsDisagreeWithLock { .. } => {
                 "reconcile worker/pyproject.toml with worker/requirements.lock per \

@@ -978,7 +978,7 @@ fn check_requirements_match_lock(
             }));
         }
 
-        let declared = rest[operator.len()..].to_owned();
+        let declared = rest[operator.len()..].trim().to_owned();
         let Some(pin) = pins.iter().find(|pin| pin.name == distribution) else {
             return Err(requirement_fault(WorkerRequirementFault::NotLocked {
                 distribution,
@@ -3128,7 +3128,7 @@ mod tests {
             "requires-python = \"==3.12.*\"\n",
             "dependencies = [\n",
             "  \"Chatterbox_TTS==0.1.2\",\n",
-            "  \"torch==2.6.0+cpu\",\n",
+            "  \"torch == 2.6.0+cpu  \",\n",
             "]\n",
             "[tool.setuptools]\n",
             "packages = [\"study_tts_worker\"]\n",

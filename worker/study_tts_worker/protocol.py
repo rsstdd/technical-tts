@@ -19,7 +19,7 @@ are enforced here because they cannot be enforced anywhere else in this process:
 * **Unknown fields are refused, at every depth.** This is a project-owned
   format, so a field this worker cannot honor is an error rather than something
   to ignore -- the requester would otherwise believe it had been applied. The
-  shapes below mirror ``schemas/worker-protocol-v1.schema.json``, which
+  shapes below mirror ``schemas/worker-protocol-v2.schema.json``, which
   describes each method's parameters and not only the frame that carries them.
 
 :class:`Object`, :func:`check_object`, and the field checks beside them carry no
@@ -114,7 +114,7 @@ UNSIGNED_32_MAXIMUM: Final[int] = 2**32 - 1
 width, so without this a frame carrying ``4294967296`` was answered here and
 dropped by ``serde_json`` there -- the sender seeing a response for a request
 its counterpart never accepted.
-``schemas/worker-protocol-v1.schema.json`` publishes the same ceilings from the
+``schemas/worker-protocol-v2.schema.json`` publishes the same ceilings from the
 Rust types, in ``study_tts_runtime::schemas::publish_integer_bounds``.
 """
 

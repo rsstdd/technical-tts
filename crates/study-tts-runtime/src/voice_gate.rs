@@ -21,7 +21,7 @@ use study_tts_core::{
     validate_profile_for_use,
 };
 
-use crate::{BuildError, IoError, VoiceProfileError, cache};
+use crate::{BuildError, IoError, VoiceProfileError, cache, error::io_error};
 
 /// Resolves every voice a lesson speaks with into its conditioning identity.
 ///
@@ -94,6 +94,105 @@ fn resolve_by_profile(
         resolved.insert(segment.speaker.clone(), conditioning);
     }
     Ok(resolved)
+}
+
+/// Gates every profile a worker will load, before one can be started.
+///
+/// The worker deserializes *every* `conditionals.pt` beneath the governed root
+/// during `initialize`, not only the profile a later request names, so the
+/// blast radius of an ungated root is the whole root. This runs the same
+/// fail-closed check [`resolve_voice_conditioning`] runs over each of them,
+/// from [`crate::WorkerConfiguration::for_bundle`] — the only constructor that
+/// is *given* a voice root, and therefore the only one that could gate it.
+/// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` requires a profile load to
+/// fail closed, and ADR-0001 §11.2 puts that validation *before*
+/// initialization; a gate that ran afterwards would refuse a revoked voice only
+/// after its bytes had been through `torch.load`.
+///
+/// The other constructor,
+/// [`crate::WorkerConfiguration::for_protocol_fake`], takes a caller-chosen
+/// program and environment, so being the only *gating* constructor is not by
+/// itself the property that matters: a caller could point that fake at the
+/// bundle interpreter and hand it a governed root, and `initialize` would load
+/// every profile before the synthetic identity refused the session. That route
+/// is closed at the fake, which refuses the environment a governed root reaches
+/// a worker through. The two together are what make it true that no
+/// configuration this crate builds launches a process that can find a governed
+/// root ungated.
+///
+/// The consequence is worth stating out loud: every profile beneath the root
+/// must be rights-clean or no worker starts. A revoked profile has to be moved
+/// out of the governed root, which is what the rights policy's revocation path
+/// asks for anyway.
+///
+/// **The skip list is load-bearing and mirrors
+/// `worker/study_tts_worker/worker.py` `_voice_conditioning`,** whose docstring
+/// names this function in return. It skips an entry that is not a directory, is
+/// a symlink, or holds no `profile.json` — and this must skip *at most* those,
+/// because anything skipped here that the worker still loads is a profile that
+/// reached `torch.load` ungated. Skipping more is a false refusal; skipping
+/// less is the defect. Where the two cannot agree — a directory name the worker
+/// can spell and this build cannot — the entry is refused rather than skipped,
+/// which keeps that rule intact in the only direction that is safe.
+///
+/// # Errors
+///
+/// Whatever [`resolve_voice_conditioning`] returns for the first profile it
+/// refuses, [`VoiceProfileError::VoiceProfileNameNotUtf8`] for a loadable
+/// profile whose directory name this build cannot spell but the worker can, and
+/// [`IoError::FileSystem`] when the root itself cannot be listed — the variant
+/// every other directory walk in this crate reports, because enumerating a
+/// governed root is an operation the build performs rather than an input it was
+/// told to read.
+pub fn admit_voice_root(root: &Path, requested: VoiceUse) -> Result<(), BuildError> {
+    let listing = fs::read_dir(root).map_err(|source| io_error(root, source))?;
+    let mut candidates = Vec::new();
+    for entry in listing {
+        let entry = entry.map_err(|source| io_error(root, source))?;
+        candidates.push(entry.path());
+    }
+    // Sorted so a root with two bad profiles refuses the same one every time.
+    // A refusal that depends on directory order is a refusal an operator
+    // cannot reproduce from the message they were given.
+    candidates.sort();
+
+    for candidate in candidates {
+        if !holds_a_loadable_profile(&candidate) {
+            continue;
+        }
+        // Refused rather than skipped, which is the one place this filter may
+        // not mirror the worker's. A name that is not UTF-8 was assumed to be
+        // one no `profile_id` could equal; it is not. Python reads the same
+        // directory name through `surrogateescape`, so `voice-\xff-v1` reaches
+        // `_voice_conditioning` as a string holding a lone surrogate — and JSON
+        // carries that surrogate too, so a record stating it compares equal,
+        // which is the only agreement the worker asks for before
+        // `_load_backend` deserializes the artifact. An entry this build cannot
+        // name is an entry the worker can, so skipping it is the ungated
+        // `torch.load` this gate exists to prevent.
+        let Some(profile_id) = candidate.file_name().and_then(|name| name.to_str()) else {
+            return Err(VoiceProfileError::VoiceProfileNameNotUtf8 {
+                root: root.to_path_buf(),
+                name: candidate
+                    .file_name()
+                    .unwrap_or(candidate.as_os_str())
+                    .to_string_lossy()
+                    .into_owned(),
+            }
+            .into());
+        };
+        resolve_voice_conditioning(root, profile_id, requested)?;
+    }
+    Ok(())
+}
+
+/// Whether the worker would read `candidate` as a voice profile.
+///
+/// `symlink_metadata` rather than `metadata`, so a symlinked directory is a
+/// symlink here as it is to `_voice_conditioning`'s `candidate.is_symlink()`.
+fn holds_a_loadable_profile(candidate: &Path) -> bool {
+    fs::symlink_metadata(candidate).is_ok_and(|metadata| metadata.is_dir())
+        && candidate.join("profile.json").is_file()
 }
 
 /// Loads one profile from the root and returns the conditioning identity that
@@ -302,9 +401,13 @@ fn verify_checksum(dir: &Path, record: &'static str, recorded: &str) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use study_tts_core::ValidatedLesson;
+    use std::{fs, path::Path};
 
-    use super::resolve_by_profile;
+    use study_tts_core::{ValidatedLesson, VoiceUse};
+    use tempfile::TempDir;
+
+    use super::{admit_voice_root, resolve_by_profile};
+    use crate::{BuildError, VoiceProfileError};
 
     /// Two speakers naming one profile load that profile once.
     ///
@@ -314,6 +417,159 @@ mod tests {
     /// `t4_e1_two_speakers_may_share_one_voice_profile` in `study-tts-testkit`,
     /// which proves a shared profile resolves through the pipeline but cannot
     /// count reads.
+    /// A synthetic profile directory whose consent carries `consent_status`.
+    ///
+    /// Written by hand rather than through `study-tts-testkit`, which depends
+    /// on this crate and so cannot be depended on back. Nothing here is real
+    /// voice material: `reference.wav` is a fixed byte string that is never
+    /// decoded, because the gate hashes both artifacts and parses neither.
+    /// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Storage and access
+    /// keeps real references out of the suite entirely.
+    fn write_profile(root: &Path, profile_id: &str, consent_status: &str) {
+        let dir = root.join(profile_id);
+        fs::create_dir_all(&dir).expect("create a profile directory");
+
+        let reference = b"synthetic-reference-v1".as_slice();
+        let conditionals = b"synthetic-conditionals-v1".as_slice();
+        fs::write(dir.join("reference.wav"), reference).expect("write a reference");
+        fs::write(dir.join("conditionals.pt"), conditionals).expect("write conditioning");
+        let reference_hash = blake3::hash(reference).to_hex().to_string();
+
+        let profile = serde_json::json!({
+            "schema_version": "0.1-voice",
+            "profile_id": profile_id,
+            "reference_wav_blake3": reference_hash,
+            "conditionals_blake3": blake3::hash(conditionals).to_hex().to_string(),
+            "extractor_identity": "synthetic-extractor-v1",
+            "approval": "approved",
+        });
+        let consent = serde_json::json!({
+            "schema_version": "0.1-voice",
+            "declaration": "Synthetic test fixture; no human voice.",
+            "permitted_use": ["voice_qualification"],
+            "reference_wav_blake3": reference_hash,
+            "created": "2026-08-31",
+            "consent_status": consent_status,
+            "rights_record_id": "rights-voice-owner-fallback-v1",
+        });
+        fs::write(
+            dir.join("profile.json"),
+            serde_json::to_vec(&profile).expect("serialize a profile record"),
+        )
+        .expect("write a profile record");
+        fs::write(
+            dir.join("consent.json"),
+            serde_json::to_vec(&consent).expect("serialize a consent record"),
+        )
+        .expect("write a consent record");
+    }
+
+    #[test]
+    fn t1_e1_a_root_whose_every_profile_is_rights_clean_is_admitted() {
+        let root = TempDir::new().expect("create a voice root");
+        write_profile(root.path(), "first-voice-v1", "granted");
+        write_profile(root.path(), "second-voice-v1", "granted");
+
+        admit_voice_root(root.path(), VoiceUse::VoiceQualification)
+            .expect("two rights-clean profiles are admitted");
+    }
+
+    #[test]
+    fn t1_e1_a_revoked_profile_the_request_never_names_refuses_the_root() {
+        // The defect this closes: the worker loads every `conditionals.pt`
+        // beneath the root during `initialize`, so a revoked profile is
+        // deserialized whether or not any later request names it. Gating only
+        // the selected voice left the rest of the root ungated.
+        let root = TempDir::new().expect("create a voice root");
+        write_profile(root.path(), "selected-voice-v1", "granted");
+        write_profile(root.path(), "unrelated-voice-v1", "revoked");
+
+        let error = admit_voice_root(root.path(), VoiceUse::VoiceQualification)
+            .expect_err("a revoked profile anywhere in the root must refuse the run");
+
+        assert!(
+            matches!(error, BuildError::Voice(_)),
+            "the refusal must come from the rights gate: {error:?}"
+        );
+    }
+
+    #[test]
+    fn t1_e1_an_altered_profile_the_request_never_names_refuses_the_root() {
+        let root = TempDir::new().expect("create a voice root");
+        write_profile(root.path(), "selected-voice-v1", "granted");
+        write_profile(root.path(), "unrelated-voice-v1", "granted");
+        fs::write(
+            root.path()
+                .join("unrelated-voice-v1")
+                .join("conditionals.pt"),
+            b"conditioning nobody approved",
+        )
+        .expect("alter the conditioning artifact");
+
+        let error = admit_voice_root(root.path(), VoiceUse::VoiceQualification)
+            .expect_err("conditioning that is not the recorded bytes must refuse the run");
+
+        assert!(
+            matches!(
+                error,
+                BuildError::VoiceProfile(VoiceProfileError::VoiceChecksumMismatch { .. })
+            ),
+            "the refusal must name the checksum: {error:?}"
+        );
+    }
+
+    #[test]
+    fn t1_e1_the_gate_skips_exactly_what_the_worker_skips() {
+        // The other end of `_voice_conditioning`'s filter. Anything skipped
+        // here that the worker still loads is a profile that reached
+        // `torch.load` ungated, so these three cases pin the skip list rather
+        // than the refusals: a stray file, a directory that is not a profile,
+        // and a symlink the worker will not follow either.
+        let root = TempDir::new().expect("create a voice root");
+        write_profile(root.path(), "real-voice-v1", "granted");
+        fs::write(root.path().join("README.txt"), b"not a profile").expect("write a stray file");
+        fs::create_dir(root.path().join("scratch")).expect("create a non-profile directory");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            root.path().join("real-voice-v1"),
+            root.path().join("linked-voice-v1"),
+        )
+        .expect("link a profile directory");
+
+        admit_voice_root(root.path(), VoiceUse::VoiceQualification)
+            .expect("entries the worker never reads are skipped, not refused");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn t1_e1_a_profile_name_that_is_not_utf8_refuses_the_root() {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+
+        // Skipping this entry was the defect. The worker reads the same name
+        // through Python's `surrogateescape`, so `voice-\xff-v1` reaches it as
+        // a string holding a lone surrogate — and a `profile.json` whose
+        // `profile_id` carries that same surrogate compares equal to it, which
+        // is the only agreement `_voice_conditioning` asks for before
+        // `_load_backend` deserializes the artifact. The record is `{}` here
+        // precisely because the refusal must precede reading it.
+        let root = TempDir::new().expect("create a voice root");
+        write_profile(root.path(), "real-voice-v1", "granted");
+        let unnameable = root.path().join(OsStr::from_bytes(b"voice-\xff-v1"));
+        fs::create_dir(&unnameable).expect("create a profile directory this build cannot spell");
+        fs::write(unnameable.join("profile.json"), b"{}").expect("write a profile record");
+
+        let error = admit_voice_root(root.path(), VoiceUse::VoiceQualification)
+            .expect_err("a profile name this gate cannot read must refuse the root");
+
+        assert!(
+            matches!(
+                error,
+                BuildError::VoiceProfile(VoiceProfileError::VoiceProfileNameNotUtf8 { .. })
+            ),
+            "the refusal must name the profile directory this build cannot spell: {error:?}"
+        );
+    }
+
     #[test]
     fn t1_e1_one_voice_profile_is_loaded_once_however_many_speakers_name_it() {
         // `nadia` and `tom` both name `synthetic-test-voice-v1` over six

@@ -253,7 +253,7 @@ fn t4_e1_fake_worker_passes_shared_protocol_contract() {
             .expect("the fake answers initialization first"),
     )
     .expect("the initialized response is JSON");
-    empty_identities["identities"]["voice_profile_hashes"] = serde_json::json!({});
+    empty_identities["identities"]["voice_conditioning_hashes"] = serde_json::json!({});
     assert!(
         validate_against_schema(&schema, &empty_identities).is_err(),
         "the schema must refuse a successful initialization with no loaded voice profile"
@@ -765,6 +765,7 @@ fn fake_worker_configuration_tagged(behavior: &str, tag: &str) -> WorkerConfigur
         PathBuf::from("/unused/staging"),
         FAKE_SESSION_DEADLINE,
     )
+    .expect("an empty environment names no governed root")
 }
 
 /// A plan whose keys were derived from the executor actually under test.
@@ -913,7 +914,7 @@ fn t4_e1_a_request_outside_the_declared_envelope_is_refused_before_any_work() {
     // Both cases assert the gate *preceded* the work, not merely that it
     // exists: the fake writes a line per synthesis it is asked for, so an
     // executor that validated after sending would leave one behind.
-    for (case, spoil) in OUTSIDE_THE_ENVELOPE {
+    for (case, spoil, refused_by) in OUTSIDE_THE_ENVELOPE {
         let executor = WorkerTtsExecutor::start(&fake_worker_configuration("deterministic"))
             .expect("the protocol fake initializes");
         let (plan, lesson) = worker_plan(&executor);
@@ -929,11 +930,7 @@ fn t4_e1_a_request_outside_the_declared_envelope_is_refused_before_any_work() {
             panic!("`{case}` produced the wrong error: {error:?}");
         };
         assert!(
-            matches!(
-                source,
-                BackendValidationError::UndeclaredStyle { .. }
-                    | BackendValidationError::UndeclaredVoiceProfile { .. }
-            ),
+            refused_by(source),
             "`{case}` must be refused by its own invariant: {source:?}"
         );
         assert!(
@@ -949,20 +946,45 @@ fn t4_e1_a_request_outside_the_declared_envelope_is_refused_before_any_work() {
     }
 }
 
-/// One case name, and the edit that steps its request outside the envelope.
-type EnvelopeCase = (&'static str, fn(&mut SynthesisRequest));
+/// One case name, the edit that steps its request outside the envelope, and the
+/// invariant that must be the one to refuse it.
+type EnvelopeCase = (
+    &'static str,
+    fn(&mut SynthesisRequest),
+    fn(&BackendValidationError) -> bool,
+);
 
 /// A request field the worker never declared, and how to spoil it.
 ///
 /// Table-driven because the two cases differ only in which declared list the
 /// request steps outside of; the case name is in every assertion message.
+///
+/// Each case carries its own expected variant rather than sharing one
+/// either-or `matches!`. `crates/AGENTS.md` gives each violated invariant its
+/// own variant so a test can assert the exact failure, and an assertion that
+/// accepts either one asserts neither: it holds for an executor that refuses a
+/// spoiled style by naming the voice profile, and it stayed green through
+/// exactly that mutation until this table was split.
+///
+/// The order the two lists are checked in lives in `TtsExecutor::validate`,
+/// in `study-tts-runtime/src/worker_executor.rs`, whose comment names this
+/// table back.
 const OUTSIDE_THE_ENVELOPE: [EnvelopeCase; 2] = [
-    ("a style the worker did not declare", |request| {
-        request.style = "breathless_infomercial".to_owned();
-    }),
-    ("a voice profile the worker did not declare", |request| {
-        request.voice_profile = "a-voice-nobody-loaded".to_owned();
-    }),
+    (
+        "a style the worker did not declare",
+        |request| request.style = "breathless_infomercial".to_owned(),
+        |source| matches!(source, BackendValidationError::UndeclaredStyle { .. }),
+    ),
+    (
+        "a voice profile the worker did not declare",
+        |request| request.voice_profile = "a-voice-nobody-loaded".to_owned(),
+        |source| {
+            matches!(
+                source,
+                BackendValidationError::UndeclaredVoiceProfile { .. }
+            )
+        },
+    ),
 ];
 
 #[test]
@@ -1420,15 +1442,26 @@ fn t4_e1_the_launcher_thread_allowance_reaches_the_worker_process() {
     // child's own environment.
     let launcher =
         WorkerLauncher::read(&repository_root()).expect("the checked-in launcher is readable");
+    // Built through `child_environment`, so the caps under test are the ones a
+    // real launch would carry, then stripped of the two governed-root variables
+    // it publishes: `for_protocol_fake` refuses those by name, because a
+    // stand-in root and a real one are the same string to it and admitting
+    // either would leave the fake a way to start the real worker over a
+    // governed root nothing had gated. Nothing here reads them; the exact size
+    // of the declared set is pinned by
+    // `t1_e1_the_thread_allowance_reaches_every_native_pool`.
+    let mut environment =
+        launcher.child_environment(Path::new("/unused/models"), Path::new("/unused/voices"));
+    environment.remove(&launcher.model_root_environment_variable);
+    environment.remove(&launcher.voice_root_environment_variable);
     let configuration = WorkerConfiguration::for_protocol_fake(
         fake_worker(),
         vec!["deterministic".to_owned(), "untagged".to_owned()],
-        // Stand-in roots: this test is about the thread caps reaching the
-        // child, and the fake resolves neither root.
-        launcher.child_environment(Path::new("/unused/models"), Path::new("/unused/voices")),
+        environment,
         PathBuf::from("/unused/staging"),
         FAKE_SESSION_DEADLINE,
-    );
+    )
+    .expect("the stripped environment names no governed root");
 
     let executor = WorkerTtsExecutor::start(&configuration).expect("the protocol fake initializes");
     let diagnostics = executor.diagnostics();
@@ -1861,7 +1894,8 @@ fn t4_e1_a_worker_starts_with_only_the_environment_it_was_declared() {
         declared.clone(),
         PathBuf::from("/unused/staging"),
         FAKE_SESSION_DEADLINE,
-    );
+    )
+    .expect("the declared environment names no governed root");
     let executor = WorkerTtsExecutor::start(&configuration).expect("the protocol fake initializes");
 
     let diagnostics = executor.diagnostics();
@@ -1994,6 +2028,32 @@ fn t4_e1_a_gracefully_shut_down_worker_leaves_no_descendant_behind() {
     assert!(
         !parked_descendant_is_live(descendant),
         "shutdown must contain the worker's descendants, but {descendant} survived it"
+    );
+}
+
+// The window the test above cannot reach: a descendant that did not exist when
+// the supervisor enumerated the tree. Linux-gated for the same reason.
+#[cfg(target_os = "linux")]
+#[test]
+fn t4_e1_a_descendant_started_during_shutdown_is_contained() {
+    // Descendants are enumerated once, before the worker is asked to leave,
+    // because `/proc/<pid>/task/*/children` is gone the moment it exits. A
+    // worker that starts a helper *after* that look and then leaves gracefully
+    // was reached by nothing: it held no recorded pidfd, and the group was not
+    // signalled because the direct child had already been reaped.
+    //
+    // ADR-0001 §10.3 makes this build responsible for the whole tree, not for
+    // the part of it that existed when it last looked.
+    let configuration =
+        fake_worker_configuration_tagged("spawn-descendant-at-shutdown", "late-descendant");
+    let executor = WorkerTtsExecutor::start(&configuration).expect("the protocol fake initializes");
+
+    executor.shutdown().expect("the worker shuts down cleanly");
+
+    let descendant = descendant_pid(&executor.diagnostics());
+    assert!(
+        !parked_descendant_is_live(descendant),
+        "shutdown must contain a descendant started after enumeration, but {descendant} survived it"
     );
 }
 

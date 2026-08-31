@@ -42,6 +42,10 @@ is the other end of the mirror they name:
 | `REQUIRED_BUNDLE_INPUTS` | `worker/bundle-manifest.json`, `worker/launcher.json`, `worker/requirements.lock`, `schemas/worker-protocol-v2.schema.json`, and `worker/study_tts_worker/worker.py` appear in `inputs`. |
 | `REQUIRED_IMPORT_ROOT` | `worker/study_tts_worker` appears in `import_roots`. |
 
+That table is a mandatory floor, not the complete hash set. Every additional path declared in the
+manifest's `inputs` array also contributes its bytes; in the checked-in manifest that includes
+`worker/pyproject.toml`.
+
 Each is an input ADR-0001 §12.5 names one by one, so none of them is optional. Both failures they
 close were quiet ones. Dropping `worker/launcher.json` from `inputs` left a bundle that still
 hashed, under a key that no longer moved when inference-affecting configuration changed. Emptying
@@ -428,11 +432,12 @@ refusal prints its line: a wrongly written requirement is exactly where a
 [`../governance/RIGHTS-DATA-ARTIFACT-POLICY.md`](../governance/RIGHTS-DATA-ARTIFACT-POLICY.md)
 keeps that path out of logs.
 
-**This is a precondition, not an input.** ADR-0001 §12.5 names the hash's inputs exhaustively and
-this adds none; the digest is bit-for-bit what §12.5 specifies whether or not the check runs.
-`worker/pyproject.toml` is deliberately absent from `REQUIRED_BUNDLE_INPUTS` for the same reason —
-§12.5 names the *lockfile*, not this file — so the reconciliation runs when the manifest declares
-it, which the checked-in manifest does.
+**The reconciliation is a precondition; the file is a current input.** ADR-0001 §12.5 names the
+mandatory hash inputs exhaustively, and the check adds none. `worker/pyproject.toml` is deliberately
+absent from `REQUIRED_BUNDLE_INPUTS` because §12.5 does not require every manifest to declare it.
+The checked-in `worker/bundle-manifest.json` does declare it, however, so its bytes contribute to
+the current bundle hash and the reconciliation runs. `REQUIRED_BUNDLE_INPUTS` is the mandatory
+floor; the manifest's `inputs` array is the complete set hashed for this bundle.
 
 ### Reading the current identity
 

@@ -109,6 +109,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         &configuration.model_root,
         &configuration.voice_root,
         &configuration.workspace,
+        // Gates every profile the worker will deserialize, before the child
+        // exists — not only the one `governed_voice` selects below, which is
+        // why that call can no longer be the first governed read. Same scope:
+        // a run that qualifies a worker and never reaches a lesson.
+        VoiceUse::VoiceQualification,
     )?;
     let executor = WorkerTtsExecutor::start(&launch)?;
     let bundle = executor.descriptor().worker_bundle_hash.as_str().to_owned();
@@ -131,9 +136,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let key = configuration.listening_root.join("randomization-key.json");
     fs::write(
         &sheet,
-        render_review_sheet(&bundle, &voice.profile_id, &blinded),
+        render_review_sheet(&bundle, &voice.profile_id, &blinded)?,
     )?;
-    fs::write(&key, render_randomization_key(&blinded))?;
+    fs::write(&key, render_randomization_key(&blinded)?)?;
 
     println!("worker bundle identity: {bundle}");
     println!("voice profile: {}", voice.profile_id);
@@ -437,53 +442,59 @@ fn shuffle(order: &mut [usize]) -> Result<(), Box<dyn Error>> {
 ///
 /// Written pending, and that is the point: an instrument that recorded a
 /// verdict would be answering the one question it exists to ask a human.
-fn render_review_sheet(bundle: &str, voice_profile: &str, blinded: &[Blinded]) -> String {
-    let samples: Vec<String> = blinded
+fn render_review_sheet(
+    bundle: &str,
+    voice_profile: &str,
+    blinded: &[Blinded],
+) -> Result<String, serde_json::Error> {
+    let samples: Vec<serde_json::Value> = blinded
         .iter()
         .map(|sample| {
-            let findings: Vec<String> = REVIEW_CRITERIA
+            let findings: serde_json::Map<String, serde_json::Value> = REVIEW_CRITERIA
                 .iter()
-                .map(|criterion| format!("        \"{criterion}\": null"))
+                .map(|criterion| ((*criterion).to_owned(), serde_json::Value::Null))
                 .collect();
-            format!(
-                "    {{\n      \"blind_id\": \"{}\",\n      \"wav\": \"{}.wav\",\n      \
-                 \"sha256\": \"{}\",\n      \"findings\": {{\n{}\n      }},\n      \
-                 \"disposition\": null\n    }}",
-                sample.blind_id,
-                sample.blind_id,
-                sample.digest,
-                findings.join(",\n")
-            )
+            serde_json::json!({
+                "blind_id": sample.blind_id,
+                "wav": format!("{}.wav", sample.blind_id),
+                "sha256": sample.digest,
+                "findings": findings,
+                "disposition": serde_json::Value::Null,
+            })
         })
         .collect();
-    format!(
-        "{{\n  \"schema_version\": \"{REVIEW_SHEET_SCHEMA}\",\n  \"status\": \
-         \"pending_human_review\",\n  \"instructions\": \"Answer every criterion for every \
-         sample before opening randomization-key.json. Record `none` where nothing was heard, \
-         and a description otherwise. Set each disposition to `accept` or `reject`.\",\n  \
-         \"worker_bundle_hash\": \"{bundle}\",\n  \"voice_profile\": \"{voice_profile}\",\n  \
-         \"reviewer\": null,\n  \"playback_environment\": null,\n  \"reviewed_at\": null,\n  \
-         \"samples\": [\n{}\n  ],\n  \"overall_finding\": null\n}}\n",
-        samples.join(",\n")
-    )
+    serde_json::to_string_pretty(&serde_json::json!({
+        "schema_version": REVIEW_SHEET_SCHEMA,
+        "status": "pending_human_review",
+        "instructions": "Answer every criterion for every sample before opening \
+            randomization-key.json. Record `none` where nothing was heard, and a description \
+            otherwise. Set each disposition to `accept` or `reject`.",
+        "worker_bundle_hash": bundle,
+        "voice_profile": voice_profile,
+        "reviewer": serde_json::Value::Null,
+        "playback_environment": serde_json::Value::Null,
+        "reviewed_at": serde_json::Value::Null,
+        "samples": samples,
+        "overall_finding": serde_json::Value::Null,
+    }))
 }
 
 /// The mapping the sheet is blind to.
-fn render_randomization_key(blinded: &[Blinded]) -> String {
-    let mapping: Vec<String> = blinded
+fn render_randomization_key(blinded: &[Blinded]) -> Result<String, serde_json::Error> {
+    let mapping: Vec<serde_json::Value> = blinded
         .iter()
         .map(|sample| {
-            format!(
-                "    {{\"blind_id\": \"{}\", \"line_id\": \"{}\", \"sha256\": \"{}\"}}",
-                sample.blind_id, sample.line_id, sample.digest
-            )
+            serde_json::json!({
+                "blind_id": sample.blind_id,
+                "line_id": sample.line_id,
+                "sha256": sample.digest,
+            })
         })
         .collect();
-    format!(
-        "{{\n  \"schema_version\": \"{RANDOMIZATION_KEY_SCHEMA}\",\n  \"mapping\": \
-         [\n{}\n  ]\n}}\n",
-        mapping.join(",\n")
-    )
+    serde_json::to_string_pretty(&serde_json::json!({
+        "schema_version": RANDOMIZATION_KEY_SCHEMA,
+        "mapping": mapping,
+    }))
 }
 
 /// SHA-256 of a file, in the spelling this project writes every digest in.
@@ -591,21 +602,23 @@ mod tests {
 
     #[test]
     fn t1_e1_the_written_review_sheet_is_the_shape_its_checker_reads() {
-        // Both records are formatted by hand rather than serialized, so an
-        // unbalanced brace or a missing comma is a defect that would otherwise
-        // surface only on the reference machine, after a model load, against
-        // governed roots. `scripts/qualification/check_listening_review.py` is
-        // the other end of this shape.
-        let rendered =
-            render_review_sheet("c".repeat(64).as_str(), "owner-fallback-v1", &blinded());
+        // `scripts/qualification/check_listening_review.py` is the other end
+        // of this shape.
+        let mut samples = blinded();
+        samples[0].blind_id = "sample-\"\\01".to_owned();
+        let rendered = render_review_sheet("bundle-\"\\digest", "owner-\"\\voice", &samples)
+            .expect("serialize the review sheet");
         let sheet: serde_json::Value =
             serde_json::from_str(&rendered).expect("the review sheet is JSON");
 
         assert_eq!(sheet["schema_version"], REVIEW_SHEET_SCHEMA);
         assert_eq!(sheet["status"], "pending_human_review");
+        assert_eq!(sheet["worker_bundle_hash"], "bundle-\"\\digest");
+        assert_eq!(sheet["voice_profile"], "owner-\"\\voice");
         let samples = sheet["samples"].as_array().expect("samples is an array");
         assert_eq!(samples.len(), 2);
-        assert_eq!(samples[0]["wav"], "sample-01.wav");
+        assert_eq!(samples[0]["blind_id"], "sample-\"\\01");
+        assert_eq!(samples[0]["wav"], "sample-\"\\01.wav");
         assert_eq!(samples[0]["sha256"], "a".repeat(64));
         for criterion in REVIEW_CRITERIA {
             assert!(
@@ -618,7 +631,9 @@ mod tests {
 
     #[test]
     fn t1_e1_the_written_key_is_the_shape_its_checker_reads() {
-        let rendered = render_randomization_key(&blinded());
+        let mut samples = blinded();
+        samples[0].line_id = "line-\"\\03".to_owned();
+        let rendered = render_randomization_key(&samples).expect("serialize the key");
         let key: serde_json::Value =
             serde_json::from_str(&rendered).expect("the randomization key is JSON");
 
@@ -626,7 +641,7 @@ mod tests {
         let mapping = key["mapping"].as_array().expect("mapping is an array");
         assert_eq!(mapping.len(), 2);
         assert_eq!(mapping[0]["blind_id"], "sample-01");
-        assert_eq!(mapping[0]["line_id"], "line-03");
+        assert_eq!(mapping[0]["line_id"], "line-\"\\03");
     }
 
     #[test]
@@ -634,7 +649,8 @@ mod tests {
         // The blinding itself. A sheet that carried the line id would let a
         // reviewer infer the ordering without opening the key at all.
         let rendered =
-            render_review_sheet("c".repeat(64).as_str(), "owner-fallback-v1", &blinded());
+            render_review_sheet("c".repeat(64).as_str(), "owner-fallback-v1", &blinded())
+                .expect("serialize the review sheet");
 
         assert!(
             !rendered.contains("line-01") && !rendered.contains("line-03"),

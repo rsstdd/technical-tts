@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::process::{ProcessOwnership, configure_process_group, contain_descendants, terminate};
+use crate::process::{ProcessOwnership, configure_process_group, terminate};
 use crate::worker_protocol::{
     MAX_WORKER_FRAME_BYTES, MAX_WORKER_REQUEST_ID_BYTES, WORKER_PROTOCOL_VERSION,
     WorkerRequestFrame, WorkerResponseFrame, parse_worker_response,
@@ -79,7 +79,7 @@ pub(crate) struct WorkerClient {
     ownership: ProcessOwnership,
     /// `None` once shut down, which also closes the worker's standard input.
     stdin: Option<ChildStdin>,
-    responses: Receiver<ProtocolEvent>,
+    responses: Option<Receiver<ProtocolEvent>>,
     stderr: Arc<Mutex<Vec<u8>>>,
     readers: Vec<JoinHandle<()>>,
     /// Exchanges this worker has been asked for, so no two carry one identity.
@@ -181,7 +181,7 @@ impl WorkerClient {
             child: Some(child),
             ownership,
             stdin: Some(stdin),
-            responses,
+            responses: Some(responses),
             stderr: diagnostics,
             readers,
             exchanges: 0,
@@ -273,9 +273,15 @@ impl WorkerClient {
         // deadline would let a worker emitting progress forever never time out
         // — which is the hang the deadline exists to catch.
         let expiry = Instant::now() + deadline;
+        let responses = self.responses.as_ref().ok_or_else(|| {
+            protocol_failure(
+                request_id,
+                "the worker's protocol response stream is closed",
+            )
+        })?;
         loop {
             let remaining = expiry.saturating_duration_since(Instant::now());
-            let response = match self.responses.recv_timeout(remaining) {
+            let response = match responses.recv_timeout(remaining) {
                 Ok(ProtocolEvent::Frame(bytes)) => parse_worker_response(&bytes)
                     .map_err(|source| protocol_failure(request_id, &source.to_string()))?,
                 Ok(ProtocolEvent::Oversized) => {
@@ -406,6 +412,17 @@ impl WorkerClient {
     /// Asks the worker to leave, then kills the process group and proves it
     /// gone.
     ///
+    /// **What it reaches is the process group plus the descendants it
+    /// enumerated, which is not the full tree ADR-0001 §10.3 requires.** The
+    /// group kill reaches a descendant started after the enumeration below, and
+    /// the recorded pidfds reach one that left the group before it — but a
+    /// descendant that calls `setsid()` in between is in no group this build
+    /// owns and appears in no `/proc` entry the exit left behind, so nothing
+    /// can name it and `wait_for_containment` reports success without having
+    /// seen it. `ADR-0001-D008` under `docs/adr/deviations/` is the
+    /// owner-approved permission for that residual and names E5-S4 as where it
+    /// closes; do not read the success below as a contained tree.
+    ///
     /// Idempotent, so [`Drop`] after an explicit shutdown does nothing.
     ///
     /// # Errors
@@ -434,28 +451,29 @@ impl WorkerClient {
         // end of input and leaves on its own, so the kill below is a backstop
         // rather than the normal path.
         self.stdin = None;
-        let Some(mut child) = self.child.take() else {
+        let Some(child) = self.child.take() else {
             return Ok(());
         };
-        // A worker that took the invitation is gone and already reaped, so the
-        // group cannot be signalled by number — that PID is free, and the next
-        // process to get it would be a stranger. Its *descendants* are another
-        // matter: a backend helper does not leave because its parent did, and
-        // ADR-0001 §10.3 makes this build responsible for the whole tree.
-        let result = if wait_for_voluntary_exit(&mut child) {
-            let ownership = std::mem::take(&mut self.ownership);
-            contain_descendants(&self.invocation, &ownership)
-        } else {
-            let ownership = std::mem::take(&mut self.ownership);
-            terminate(child, &self.invocation, ownership).map(|_| ())
-        }
-        .map_err(|source| protocol_failure("shutdown", &source.to_string()));
+        // One path, whether the worker took the invitation or not, because the
+        // wait above observes the exit without reaping. The child is therefore
+        // still waitable here, its PID is still allocated, and that PID is the
+        // process group ID it was spawned as leader of — POSIX keeps a process
+        // group ID unusable while the group still has a member, so the group
+        // kill inside `terminate` cannot land on a stranger and does reach a
+        // descendant started after the enumeration above, which holds no pidfd
+        // and appears in no `/proc` entry the exit left behind.
+        wait_for_voluntary_exit(&child);
+        let ownership = std::mem::take(&mut self.ownership);
+        let result = terminate(child, &self.invocation, ownership)
+            .map(|_| ())
+            .map_err(|source| protocol_failure("shutdown", &source.to_string()));
         // Drained *before* the readers are joined, never after. The response
         // channel holds one frame, because ADR-0001 §10.3 is one response per
         // request — so a worker that wrote anything past its last frame leaves
         // the protocol reader blocked on a full channel, and joining it first
         // is a deadlock rather than a wait.
         let epilogue = self.epilogue_was_only_the_shutdown_response();
+        self.responses = None;
         // Joined after the pipes are closed by the child's exit, so neither
         // reader outlives the client and leaks a thread per worker.
         for reader in self.readers.drain(..) {
@@ -485,9 +503,15 @@ impl WorkerClient {
     /// [`BackendError::Protocol`] naming what was left, for the tool owner per
     /// `docs/governance/ROUTING-TABLES.md`.
     fn epilogue_was_only_the_shutdown_response(&self) -> Result<(), BackendError> {
+        let responses = self.responses.as_ref().ok_or_else(|| {
+            protocol_failure(
+                "shutdown",
+                "the worker's protocol response stream is closed",
+            )
+        })?;
         let mut answered = false;
         loop {
-            let event = match self.responses.recv_timeout(WORKER_SHUTDOWN_GRACE) {
+            let event = match responses.recv_timeout(WORKER_SHUTDOWN_GRACE) {
                 Ok(event) => event,
                 // The reader owns the only sender, so a disconnect is it having
                 // seen end of input: the stream is complete and this is the
@@ -557,29 +581,58 @@ const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 
 /// Waits out [`WORKER_SHUTDOWN_GRACE`] for a worker to exit on its own.
 ///
-/// Returns whether it did. Polls rather than blocking, so a worker that will
-/// not leave costs the grace period rather than the rest of the build; the
-/// interval mirrors [`crate::process`]'s, whose rule is that a wait never
-/// busy-spins.
-fn wait_for_voluntary_exit(child: &mut Child) -> bool {
+/// Reports nothing, because the caller contains the tree either way; all this
+/// buys is that a worker which leaves politely is not killed for being slow.
+/// Polls rather than blocking, so a worker that will not leave costs the grace
+/// period rather than the rest of the build; the interval mirrors
+/// [`crate::process`]'s, whose rule is that a wait never busy-spins.
+///
+/// **It must not reap.** `Child::try_wait` would, and a reaped child's PID is
+/// released — with it the process group ID that equals it, since the child was
+/// spawned as its own group leader. The group kill that follows would then be
+/// aimed at a number the kernel is free to have given to a stranger, which is
+/// why the containment used to fall back to recorded pidfds alone and miss any
+/// descendant started after the last enumeration. `WNOWAIT` observes the exit
+/// and leaves the child waitable, so the PID — and the group — stay reserved
+/// until [`crate::process::terminate`] has signalled and reaped them.
+#[cfg(unix)]
+fn wait_for_voluntary_exit(child: &Child) {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+
+    let Some(pid) = i32::try_from(child.id()).ok().and_then(Pid::from_raw) else {
+        return;
+    };
     let deadline = Instant::now() + WORKER_SHUTDOWN_GRACE;
     loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return true,
-            // Unobservable is not gone: fall through to the kill, which proves
-            // the tree's state rather than asking about it.
-            Err(_) => return false,
+        // Unobservable is not gone: an error stops the wait rather than the
+        // containment, which proves the tree's state instead of asking.
+        match waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+        ) {
+            Ok(Some(_)) | Err(_) => return,
             Ok(None) => {}
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return false;
+            return;
         }
         thread::sleep(SHUTDOWN_POLL_INTERVAL.min(remaining));
     }
 }
 
+/// Waits out the grace period without asking, where asking would reap.
+///
+/// There is no reap-free exit check off Unix, and no process group for
+/// [`crate::process::terminate`] to signal either, so the grace is simply spent
+/// and the kill does the rest.
+#[cfg(not(unix))]
+fn wait_for_voluntary_exit(_child: &Child) {
+    thread::sleep(WORKER_SHUTDOWN_GRACE);
+}
+
 /// How often [`wait_for_voluntary_exit`] asks, mirroring `process`'s interval.
+#[cfg(unix)]
 const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 impl Drop for WorkerClient {

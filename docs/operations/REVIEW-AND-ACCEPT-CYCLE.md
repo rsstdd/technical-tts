@@ -134,6 +134,14 @@ cargo run --package study-tts-testkit --example listening-render -- \
   `VoiceUse::VoiceQualification`: this material never reaches a lesson. **A governed `consent.json`
   whose `permitted_use` omits `voice_qualification` refuses the render**, and the consent record is
   what must change, not the request.
+- **Every profile in the governed voice root is gated, not only the one that renders.** The worker
+  deserializes all of them during `initialize`, so `WorkerConfiguration::for_bundle` runs
+  `voice_gate::admit_voice_root` before it can hand back a launchable configuration. A revoked or
+  altered profile left in the root refuses the run whether or not anything names it — move it out
+  of the governed root, which is what the rights policy's revocation path asks for. **A profile
+  directory whose name is not UTF-8 refuses the root too**, and is not skipped: the worker reads
+  that name through Python's `surrogateescape` and would load the profile, so an entry Rust cannot
+  spell is one it must refuse. Rename the directory.
 - Takes are shuffled into `sample-NN.wav`. The mapping goes to `randomization-key.json`.
 - `review-sheet.json` is written **pending**: five criteria and a disposition per sample, all
   `null`.
@@ -231,7 +239,7 @@ A prose mention suppresses nothing. Neither does a Proposed reconciliation.
 
 ## 5. The order
 
-```
+```text
 code gates ──► qualification ──► listening render ──► human review ──► checker
                     │                                                     │
                     └──────────────► transcribe both into the record ◄────┘

@@ -312,6 +312,7 @@ mod tests {
             | VoiceProfileError::MissingVoiceProfileDirectory { .. }
             | VoiceProfileError::VoiceProfileNotDirectory { .. }
             | VoiceProfileError::VoiceProfileIdMismatch { .. }
+            | VoiceProfileError::VoiceProfileNameNotUtf8 { .. }
             | VoiceProfileError::VoiceChecksumMismatch { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::ProjectOwner,
                 "supply or correct the voice profile record before use",
@@ -685,6 +686,44 @@ mod tests {
     /// [`BuildError`] now that every lesson error carries where it happened.
     fn lesson_diagnostic(error: LessonError) -> Box<LessonDiagnostic> {
         LessonDiagnostic::about("lesson.json", error)
+    }
+
+    #[test]
+    fn t1_e0_uncontained_stage_remedy_names_the_worker_owner() {
+        let error = BuildError::from(CacheError::UncontainedStagedFile {
+            segment_id: "segment-1".to_owned(),
+            unexpected: "scratch.bin".to_owned(),
+        });
+
+        assert_eq!(
+            error.remedy(),
+            Some(RemedyAdvice::new(
+                RemedyOwner::WorkerRuntime,
+                "read the quarantined attempt and correct the worker that staged an unexpected \
+                 file",
+                Some("Worker protocol or containment failure"),
+            ))
+        );
+    }
+
+    #[test]
+    fn t1_e0_conditioning_contradiction_remedy_names_the_worker_owner() {
+        let error = BuildError::from(AudioError::ConditioningIdentityContradiction(Box::new(
+            ConditioningContradiction {
+                segment_id: "segment-1".to_owned(),
+                reported: "a".repeat(64),
+                in_context: "b".repeat(64),
+            },
+        )));
+
+        assert_eq!(
+            error.remedy(),
+            Some(RemedyAdvice::new(
+                RemedyOwner::WorkerRuntime,
+                "correct the worker report before rerunning the build",
+                Some("Worker protocol or containment failure"),
+            ))
+        );
     }
 
     #[test]
