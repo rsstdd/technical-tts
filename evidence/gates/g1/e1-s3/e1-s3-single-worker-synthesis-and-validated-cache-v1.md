@@ -581,6 +581,77 @@ cache or a listening set changes. No provenance moves either — `cache.rs` and
 `e1-s3-worker-backend-provenance-reconciliation-v1`, whose suppression is by citing-record and path
 rather than by digest, and `crates/study-tts-runtime/src/error/audio.rs` is pinned by no record.
 
+### Conditioning recorded, and checked on reuse
+
+A further audit found ADR-0001's edge conditioning applied at publication and then forgotten, in
+two halves that had to be closed together.
+
+**Nothing was recorded.** ADR-0001 requires the padding and ramp sample counts twice — §11.1 and
+§13.4, "It records the padding and ramp sample counts". `condition_staged_audio` received the
+`EdgeConditioning` the conditioner returned and used it only to decide whether to rewrite the
+file; `CacheArtifact` had no field for it. `EdgeConditioning`'s own doc comment already stated the
+requirement — "recorded rather than merely applied, so a reviewer can tell audio that needed no
+work from audio that was rebuilt at both ends" — which made it a one-sided claim with nothing
+behind it, the same shape as the misattributed ramp comment above.
+
+**Nothing was checked on reuse.** §12.6 conditions *using* an entry on "duration, silence, edge,
+`max(abs(sample)) <= 1.0`, and finite-sample checks". `load_validated` ran `validate_wav`
+(duration, range, finite) and `check_exposed_endpoints` (two samples). The **silence** check did
+not exist, so an entry whose first and last samples happened to be zero was a cache hit however
+its edges were shaped. Reproduced before the fix: audio of a constant 0.25 with only its two
+endpoints zeroed, re-pinned so the record stayed self-consistent, came back from `load_validated`
+as a `ValidatedCachedArtifact`.
+
+`artifact.json` now carries a required `edge_conditioning` object: the four counts ADR-0001 names,
+plus the `calibration_source` they were produced under. The extra field is deliberate — the counts
+describe a silence threshold, and this build's is provisional under `ADR-0001-D007`, so without it
+an entry conditioned against the provisional value cannot be told from one conditioned against the
+value ADR-0003 will freeze. Recording the enum and not the RMS keeps a float out of a durable
+record.
+
+**What is verified and what is attested**, stated because the distinction is not recoverable from
+the code:
+
+| Property | On reuse |
+|---|---|
+| ≥10 ms edge silence | Re-measured through the same `measure_edge_silence` the conditioner pads from. Real force |
+| Exposed endpoints exactly zero | Checked before this work and still checked |
+| Raised-cosine ramp | **Attested, not verified.** A gain multiplied into arbitrary speech cannot be separated from it again. The only available check is that the declared count lies inside the ratified ≤5 ms bound |
+
+The silence is measured against the threshold rather than tested for exact zero: conditioning pads
+only until an edge *has* its 10 ms, so audio that already began quiet-but-nonzero is lawfully
+unpadded and an exact-zero test would refuse it.
+
+Three refusals were added and each was proven by reverting its own check alone, with the entry
+then returning as a cache hit: `AudioFault::InsufficientEdgeSilence`,
+`CacheEntryFault::ConditioningOutsideRatifiedGeometry`, and
+`CacheEntryFault::ConditionedUnderAnotherCalibration`. They are rows in the existing
+`t1_e0_every_rejection_names_the_entry_directory_and_the_remedy` table rather than tests of their
+own, so each is held to the same naming and remedy rules as the six before it.
+`t1_e1_a_published_entry_records_what_conditioning_did` drives real publication through `resolve`
+rather than the fixture helper — an earlier draft used the helper, passed immediately, and was
+testing the fixture rather than the code.
+
+**This moves the synthesis identity, against criterion 3 above.** A required field is a Breaking
+contract, so `CACHE_SCHEMA_VERSION` took a major increment to `2.0`; it is an ADR-0001 §12.5 key
+input, so every cache key and plan hash moved with it —
+`t1_e0_plan_is_stable_for_identical_inputs` re-pins the plan hash to `46bf2c57d31eb5cf…` and the
+two cache keys to `01ffb5593c2e0daa…` and `d4248913a9a39a2e…`. **The move is lawful under that
+criterion**: `cache_schema_version` is a declared key input, not an undeclared one. Nothing is
+stranded — the cache root holds no entries, and no fixture or evidence record carries a derived
+cache key. `docs/architecture/E1-S3-INTERFACE-CHANGE-002.md` records the move and is `Proposed`;
+`E1-S3-INTERFACE-CHANGE-001` is Accepted and was not edited, and 002 states that it supersedes the
+`abd889db…` plan hash 001 cites.
+
+Two smaller corrections travelled with it. `docs/INDEX.md` described
+`E1-S3-INTERFACE-CHANGE-001` as `Proposed` where that record declares itself Accepted and signed
+on 2026-08-30; the index is corrected. And `t2_e1_every_speech_affecting_field_changes_synthesis_key`
+does **not** cover `cache_schema_version` and cannot: it destructures `SynthesisContext`, and the
+constant is not a context field. The golden in `plan.rs` is what catches a move in it, and it did.
+
+No published audio byte changes. This records and checks; it conditions nothing differently, so
+the listening set re-rendered on 2026-08-31 is unaffected by it.
+
 ### What the remediation costs this record
 
 The worker bundle identity moves again, because `worker/study_tts_worker/` is a declared bundle
