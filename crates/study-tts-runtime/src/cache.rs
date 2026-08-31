@@ -1049,10 +1049,15 @@ fn check_exposed_endpoints(samples: &[f32]) -> Result<(), AudioFault> {
 /// ADR-0001 §13.4 requires at least 10 ms at each exposed edge and §12.6 makes
 /// the check a condition of using an entry. Measured through
 /// [`measure_edge_silence`] — the same measurement the conditioner pads from —
-/// rather than by testing the padding for exact zero: conditioning pads only
-/// until an edge *has* its silence, so audio that already began
-/// quiet-but-nonzero is lawfully unpadded and an exact-zero test would refuse
-/// it.
+/// rather than by counting exact zeros: §13.4 measures silence against the
+/// audio-profile threshold, so an edge that arrived quiet-but-nonzero holds
+/// its 10 ms lawfully and a zero-counting test would refuse it.
+///
+/// This is a different question from [`check_exposed_endpoints`], and both are
+/// ADR-0001 §13.4's: this one is about the *duration* of the edge silence, that
+/// one about the *value* at the endpoint. Reading them as one rule is what let
+/// `condition_edges` satisfy the duration and leave the endpoint at `4.3e-6`,
+/// which refused every real take until the conditioner padded for it.
 ///
 /// # Errors
 ///
