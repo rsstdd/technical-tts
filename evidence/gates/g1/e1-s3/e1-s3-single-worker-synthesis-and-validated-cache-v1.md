@@ -397,10 +397,11 @@ Added as the work landed, per §Scope and decision. The story half is accepted w
 |---|---|
 | 1 — eight defects closed red-before-green | Met. §Story findings |
 | 2 — no unrecorded contract version move | Met under the restated criterion. The worker protocol moved to `e1.worker.2.0`, the plan schema to v3, and the `TtsExecutor` contract to 3.0, all under `E1-S3-INTERFACE-CHANGE-001`; the audit remediation folded `staging_root` into the same unreleased 2.0 under `ADR-0001-D005`. The launcher record is unchanged. The schema-drift test passes against the moved shapes |
-| 3 — identity moves only for a declared input | Met under the restated criterion. `84baafe98bf861cb…` → `839baa220e90ab89…` during the story, then → `7b065eeb5319c6bc0d7b69f15f085fbe23e7ac70576dcf3ece570fe2a54884e3` under the audit remediation. Both moves follow a change to `worker/study_tts_worker/`, a declared bundle input. Nothing is stranded by either: the cache root holds no entries, and the shipped worker refused `synthesize` until this work |
-| 4 — four T5 criteria | Met. All five pass on the reference machine against real weights, and the instrument's output is hashed and cited as `e1-s3-qualification-result-v1.json`. §T5 qualification result |
+| 3 — identity moves only for a declared input | Met under the restated criterion. `84baafe98bf861cb…` → `839baa220e90ab89…` during the story, then → `7b065eeb5319c6bc…` under the first audit remediation, → `6a158816945dd7d6…` under the second, and → `d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af` under the third. Every move follows a change to `worker/study_tts_worker/`, a declared bundle input. Nothing is stranded by either: the cache root holds no entries, and the shipped worker refused `synthesize` until this work |
+| 4 — four T5 criteria | Met. All five pass on the reference machine against real weights, in a loopback-only network namespace, and the instrument's output is hashed and cited as `e1-s3-qualification-result-v1.json`. §T5 qualification result |
 | 5 — checks | Met for everything run |
 | 6 — what was not run | Met. §Verification run, and §Limits below |
+| 7 — the listening review | Met. Taken 2026-08-31 by Ross Todd on laptop built-in speakers against the set §Finding 11 made publishable, accepted 6 of 6 with no findings, and bound to those bytes by `check_listening_review.py`. §Review result; §What this review does not cover states its limits |
 
 ## Story findings
 
@@ -444,37 +445,50 @@ Discharged by `cargo run --package study-tts-testkit --example worker-qualificat
 is why: every `t5_` name in this project is an acceptance criterion answered by an operator-run
 instrument and a record, the shape E0-S3 used.
 
-Rerun on the reference machine on 2026-08-31, after the audit remediation, against the real
-model and the governed voice root. The pre-remediation run of 2026-08-30 is superseded entirely:
-the bundle identity moved, two criteria changed what they test, and a fifth was added.
+Rerun on the reference machine on 2026-08-31, **after the second audit remediation**, against the
+real model and the governed voice root, **inside a loopback-only network namespace**. Every
+earlier run is superseded: the bundle identity moved twice, three criteria changed what they test,
+and a fifth was added.
+
+**This run is the record's only T5 result.** Earlier revisions of this section described a run and
+then said elsewhere that the instrument still had to be re-run, which the second audit raised as
+its own finding: a reader could not tell which statement was current. There is now one statement,
+here, and nothing later contradicts it.
 
 **The instrument's output is hashed and cited, which it was not before.** It previously printed a
-result and wrote nothing, so there were no bytes to hash — the tenth audit finding. The raw result
-is filed beside this record:
+result and wrote nothing, so there were no bytes to hash — the tenth finding of the first audit.
+The raw result is filed beside this record:
 
 | Artifact | Value |
 |---|---|
-| `evidence/gates/g1/e1-s3/e1-s3-qualification-result-v1.json` | SHA-256 `9f6fe197b75afd76234b5ba6515a7aea65c0accfc334f3e3e0c074fa090542a0` |
-| Worker bundle identity | `7b065eeb5319c6bc0d7b69f15f085fbe23e7ac70576dcf3ece570fe2a54884e3` |
+| `evidence/gates/g1/e1-s3/e1-s3-qualification-result-v1.json` | SHA-256 `53fd6bf70d397f9b0419a7542d1cade5d08324a9834f44ff8db761adaf4d9ea2` |
+| Worker bundle identity | `d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af` |
 | Criteria | 5 of 5 pass |
+| Network namespace | interfaces `["lo"]`, 0 IP routes, `/proc/self/ns/net` inode 4026532310 |
+
+The namespace is not context: the instrument **refuses to start** without it, so a
+`qualification-result.json` existing at all is one whose egress was denied. The interfaces, the
+route count, and the namespace inode are recorded in the artifact, so this table can be checked
+against the bytes rather than believed.
 
 It carries no path and no governed location, which is why it can be committed: every `observed`
 string names counts, criteria, and digests only.
 
 | Criterion | Result | Observed |
 |---|---|---|
-| `t5_e1_worker_bundle_hash_matches_when_all_declared_bundle_inputs_match` | Pass, re-derived | Two derivations on the qualified interpreter agreed at `7b065eeb5319c6bc0d7b69f15f085fbe23e7ac70576dcf3ece570fe2a54884e3` after the audit remediation, superseding the pre-remediation `839baa220e90ab89…`. Derived with `cargo run --package study-tts-runtime --example worker-bundle-hash`, which needs the bundle root and the qualified interpreter but no governed root. Sensitivity to a moved input is pinned at T1 by `t1_e1_worker_bundle_hash_changes_on_owned_runtime_input` |
+| `t5_e1_worker_bundle_hash_matches_when_all_declared_bundle_inputs_match` | Pass, re-derived | Two derivations on the qualified interpreter agreed at `d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af` after the third remediation, superseding `6a158816945dd7d6…`, `7b065eeb5319c6bc…` and, before them, `839baa220e90ab89…`. Derived with `cargo run --package study-tts-runtime --example worker-bundle-hash`, which needs the bundle root and the qualified interpreter but no governed root. Sensitivity to a moved input is pinned at T1 by `t1_e1_worker_bundle_hash_changes_on_owned_runtime_input` |
 | `t5_e1_model_load_occurs_once_per_worker_lifetime` | Pass | 3 takes through one worker reported 1 model load |
-| `t5_e1_worker_protocol_stdout_remains_clean` | Pass | Every frame of a completed session parsed off standard output, while 8,034 bytes of backend diagnostics went to standard error |
+| `t5_e1_worker_protocol_stdout_remains_clean` | Pass | Every frame of a completed session parsed off standard output **and nothing followed the last one**, while 18,702 bytes of backend diagnostics went to standard error. The second clause is new and is the point: the criterion used to be recorded while the session was still open, and nothing read the response stream after the final request — so a worker could write anything past its last frame, an unterminated tail most of all, and still pass. `shutdown` now drains the stream and refuses anything but the shutdown response, and the criterion is recorded from that result |
 | `t5_e1_worker_output_cannot_escape_staging_root` | Pass | A contained take wrote only its assigned path; **five** shapes refused — a symlink planted at the assigned path, a path that walks upward, a path that already exists, **an absolute path outside the staging root**, and **a path whose parent is a symlink out of the root**; zero files outside the staging root. The last two are the shapes the pre-remediation worker could not refuse, because it was told a path and no root |
-| `t5_e1_worker_survives_restart_and_starts_offline` | Pass | Two worker lifetimes through one configuration reported identical synthesis identities, and both applied their offline settings. Not a `DELIVERY-PLAN.md` name: a helper criterion covering ADR-0001 §17.7's restart and offline requirements, driven by the same `run_worker_restart_contract_scenario` the T4 suite drives the protocol fake through |
+| `t5_e1_worker_survives_restart_and_starts_offline` | Pass | Two worker lifetimes through one configuration reported identical synthesis identities, both applied their offline settings, **and both ran inside a namespace holding only `lo` with no IP route**. The last clause is new and is what the criterion's name always claimed: it previously passed on the worker's own diagnostics alone, which prove it configured `huggingface_hub` and `transformers` and prove nothing about the backend, a transitive dependency, or a socket. Not a `DELIVERY-PLAN.md` name: a helper criterion covering ADR-0001 §17.7's restart and offline requirements, driven by the same `run_worker_restart_contract_scenario` the T4 suite drives the protocol fake through |
 
 ## Audit remediation
 
+### First audit — eleven findings
+
 An audit of this story's uncommitted work on 2026-08-31 raised eleven findings — ten Major and one
 Minor — against the tree the sections above describe. All eleven are addressed. Two of them were
-defects in this record rather than in the code, and they are the reason the T5 table above now
-carries **Owed** rows.
+defects in this record rather than in the code.
 
 | # | Finding | Disposition |
 |---|---|---|
@@ -652,20 +666,316 @@ constant is not a context field. The golden in `plan.rs` is what catches a move 
 No published audio byte changes. This records and checks; it conditions nothing differently, so
 the listening set re-rendered on 2026-08-31 is unaffected by it.
 
-### What the remediation costs this record
+### The listening instrument reviewed audio no build publishes
 
-The worker bundle identity moves again, because `worker/study_tts_worker/` is a declared bundle
-input and this remediation changed it. It is now
-`7b065eeb5319c6bc0d7b69f15f085fbe23e7ac70576dcf3ece570fe2a54884e3`, re-derived twice on the
-qualified interpreter; every other digest in the sections above that names `839baa220e90ab89…`
-describes the pre-remediation bundle and is superseded. The T5 instrument must still be rerun on
-the reference machine before this record is accepted at G1 — deriving the identity needs no
-governed root, but the other four criteria do — and the listening review retaken —
-`ADR-0001-D007`'s edge conditioning changes the published samples, so the audio reviewed on
-2026-08-31 is not the audio this build now produces.
+A further audit found that `crates/study-tts-testkit/examples/listening-render.rs` — the
+instrument this record names as the remedy for the superseded 2026-08-31 review — did not review
+what the cache publishes, and did not pass the gate a build passes. Both halves confirmed.
+
+**It reviewed unconditioned audio.** The instrument called the executor contract directly, wrote
+the worker's raw WAV, and blinded a copy of it. `condition_edges` runs only inside `cache::resolve`,
+reached through `CachePublisher`, which that path never invoked. So the retake this record offers
+as the answer to "the published samples differ from the ones reviewed" produced samples that were
+never conditioned either. **The 2026-08-31 set is stale twice over**, and the sentence above
+naming the instrument as the remedy was true only of the words, not of the audio.
+
+**It bypassed the rights gate.** `governed_voice` read `profile.json` with `serde_json::Value` and
+lifted `profile_id` and `conditionals_blake3` straight out: no consent status, no rights decision,
+no permitted-use scope, and neither `conditionals.pt` nor `reference.wav` hashed. Its own doc
+comment called the record "the same record `voice_gate::load_profile` verifies `conditionals.pt`
+against before any synthesis runs" — true of the production path and false of that one. It is the
+fourth comment in this audit series claiming a control the tree did not implement.
+
+**The same bypass was in `worker-qualification.rs`**, hand-rolled the same way with the same
+comment. The audit named only the listening instrument; the project owner directed both be fixed,
+so a known-identical bypass is not left standing in an instrument whose output this record cites.
+
+`resolve_voice_conditioning` is now public on `study-tts-runtime` — the existing private
+`load_conditioning`, unchanged — and both instruments call it. `resolve_speakers` stays
+crate-private: it takes a `ValidatedLesson`, and neither instrument has one. The listening render
+now composes what `pipeline.rs` composes for a real build — the backend's descriptor, the script's
+language, the gate's conditioning hash — derives each segment's cache key from it, and publishes
+through `FileSystemCachePublisher`, blinding the published entry. The cache's identity gate stays a
+real comparison: the planned key comes from a record read off disk, the reported one from what the
+worker says it loaded.
+
+**`VoiceUse::VoiceQualification` had never been requested anywhere in the tree.** The variant was
+written for exactly these instruments — "Model, hardware, or voice qualification runs that never
+reach a lesson" — and `grep` found no call site, because both instruments bypassed the gate that
+takes it. Both now request it.
+
+Three checks, each proven by reverting it alone:
+
+| Test | Failure against the unfixed instrument |
+|---|---|
+| `t1_e1_the_reviewed_audio_is_the_conditioned_audio_the_cache_publishes` | "carries 1 leading and 0 trailing zero samples", against the 240 each exposed edge requires |
+| `t1_e1_a_revoked_consent_refuses_the_render_before_any_synthesis` | rendered instead of refusing; `synthesis_count()` is asserted zero, so the gate's *ordering* is what is pinned |
+| `t1_e1_a_revoked_consent_refuses_the_governed_voice` and `t1_e1_a_voice_outside_the_qualification_scope_is_refused` | the qualification instrument resolved a revoked voice, and one outside its scope |
+
+They run offline against `FakeTtsExecutor`, a real `FileSystemCachePublisher`, and a synthetic
+rights-clean profile. `VoiceProfileFixtureSpec` gained a `permitted_use` field so a fixture declares
+the scope it admits; the default stays `private_synthesis`, so no existing test changes meaning.
+
+**One thing was owed here and has since been done**: the qualification instrument was re-run on
+the reference machine and its `qualification-result.json` digest cited. §T5 qualification result
+carries the result, and it is this record's only one.
+
+**One consequence stands.** If the governed `consent.json` does not list `voice_qualification` in
+`permitted_use`, both instruments now refuse. That refusal is the control working: it would mean
+this project has been rendering qualification and listening material under a consent scope that
+does not cover it, which is precisely what the bypass concealed. The consent record is what must
+change, and that is the voice owner's decision, not a code change. The 2026-08-31 runs recorded
+here passed the gate, so the governed record does carry the scope.
+
+**Measured, not inferred.** The 2026-08-31 set on disk was checked against the property the
+conditioner exists to produce. All six samples carry **zero** silent samples at each exposed edge,
+against the 240 ADR-0001 §13.4 requires, and their first and last samples are therefore not zero
+either:
+
+| Sample | Frames | Leading zero samples | Trailing zero samples |
+|---|---:|---:|---:|
+| `sample-01.wav` | 144 000 | 0 | 0 |
+| `sample-02.wav` | 133 440 | 0 | 0 |
+| `sample-03.wav` | 96 960 | 0 | 0 |
+| `sample-04.wav` | 104 640 | 0 | 0 |
+| `sample-05.wav` | 114 240 | 0 | 0 |
+| `sample-06.wav` | 145 920 | 0 | 0 |
+
+So the set is not merely unconditioned: as cache entries these files would be refused outright by
+`check_exposed_endpoints`. The sheet and `sample-01.wav` still hash to the digests §Listening
+material cites, so that table accurately describes what is on disk — it is the audio that is wrong,
+not the record of it. `check_listening_review.py` refuses the set for a second and independent
+reason: "the review sheet states no reviewer". **That review was never taken**, so nothing is lost
+by discarding the set.
+
+The worker bundle identity was unchanged at `7b065eeb5319c6bc…` after this remediation, re-derived
+by `cargo run --package study-tts-runtime --example worker-bundle-hash`: none of the four rounds
+described here touched a declared bundle input. It has since moved to
+`6a158816945dd7d66a5a32a33e5fce720a5b7f2c7ae87b06e9b79972fe2951d6` under the second audit, which
+did.
+
+The listening review was therefore owed against audio no instrument had yet produced, and
+§Listening material's sheet and sample digests were superseded again. Both were superseded once
+more by §Finding 11, and the review that was finally taken is recorded in §Review result — this
+paragraph describes the state at the time, not the state now.
+
+### What the first remediation cost this record
+
+The worker bundle identity moved, because `worker/study_tts_worker/` is a declared bundle input
+and that remediation changed it: to `7b065eeb5319c6bc…`, superseding `839baa220e90ab89…`. It has
+since moved once more under the second remediation below, and §T5 qualification result carries the
+current value. Every digest in the sections above naming either of the two earlier identities
+describes a bundle this build no longer produces.
+
+### Second audit — findings 5 to 10
+
+A second audit on 2026-08-31 raised six further findings against the remediated tree. Five are
+closed here. One — the model half of finding 6 — stays open as issue #66, which already carries a
+design and moves every cache key; folding it in would mix a remediation round with an interface
+change.
+
+Four of the five share one shape, and it is the shape §Finding 1 and §The ramp correction already
+describe in this record: **a check whose name is stronger than its predicate.** Each fix replaces
+an attestation with a measurement.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 5 | Offline qualification was self-attestation. The criterion passed when the worker's stderr contained `offline environment applied:`, which proves it configured `huggingface_hub` and `transformers` and proves nothing about the backend, a dependency, or a socket | The instrument now **refuses to start** outside a loopback-only network namespace, reading `/proc/net/dev` and `/proc/net/route` before it creates the output root — the same check `validate_network_isolation` has made for the E0-S3 harness since G0, now two-sided between the two files. Interfaces, route count, and namespace inode are recorded in the result. The diagnostics check stays: the namespace proves egress was denied, the diagnostics prove the worker configured itself, and neither implies the other |
+| 6 | Worker and model identities were not bound to the loaded artifacts. Rust sent the bundle identity it had verified and then believed whatever the worker answered with, and that answer reached every cache key | **Rust half closed**: the echo is compared against what was sent, before `capabilities`, refusing `BackendValidationError::BundleIdentityNotEchoed`. `t4_e1_a_worker_echoing_another_bundle_identity_is_refused_at_start` drives a new `drift-bundle-at-initialize` fake behavior — the existing `drift-bundle` spoils a *synthesis* frame and could not reach this. **Model half not done**: issue #66, sequenced before G1 and before E1-S4 so the synthesis key moves once. Note for whoever works it that `bundle-manifest.json` in the governed model root already carries a `model/artifacts` array with `sha256` and byte counts, so the issue's premise that no such array exists is partly stale |
+| 7 | Staging containment had a parent-directory race. The worker resolved and checked the destination's parent, released that pathname, generated audio, and later opened the resulting string. `O_NOFOLLOW` protects the final component only | `_contained_output` now returns an **open directory descriptor** and the file name, and the write goes through `dir_fd`, so no part of the path is walked twice. Containment is re-read off the descriptor via `/proc/self/fd`, which reports where the directory this process *holds* actually is, so an ancestor swapped during the open is caught rather than raced with. The pre-fix contract was reproduced first and demonstrably wrote outside the root; `test_an_ancestor_swapped_after_the_check_cannot_redirect_the_write` pins it. **Residual, recorded rather than closed**: a directory proven inside the root and then *moved* out keeps the descriptor pointing at it, because a descriptor follows the inode. Closing that needs the root held open and every component reopened relative to it, and whoever can move a directory out of the staging root can already write inside it |
+| 8 | Graceful shutdown did not prove the process tree was gone. If the child exited during the grace period, shutdown discarded its process ownership and returned without signalling or checking anything | Ownership is refreshed **before the worker is asked to leave**, which is the only moment its children are still nameable — `/proc/<pid>/task/*/children` disappears with the process. On the graceful path `contain_descendants` signals the recorded descendants by pidfd and proves them gone. Not by process group: the child has been reaped by then, its PID is free, and a group kill by number could reach a stranger. `t4_e1_a_gracefully_shut_down_worker_leaves_no_descendant_behind` starts a real descendant and asks the kernel |
+| 9 | The protocol-cleanliness test could miss trailing stdout contamination. On end of input the reader silently dropped a nonempty unterminated frame, and nothing read the channel after the last request | `ProtocolEvent::Unterminated` reports the tail rather than dropping it, and `shutdown` drains the stream and refuses anything but the shutdown response — which also closes the finding's second half, that the shutdown response was never validated. The T5 criterion is now recorded **from that result**, after shutdown, because the end of the stream is the part an open session cannot see. `t4_e1_trailing_bytes_past_the_last_frame_are_refused` pins it. The drain runs before the reader threads are joined: the response channel holds one frame, so a worker that wrote past its last frame leaves the reader blocked on a full channel and joining first is a deadlock rather than a wait |
+| 10 | This record contradicted itself about qualification completion — §T5 described a completed run while two later sections said the instrument must still be re-run, and §Audit remediation claimed the T5 table carried `Owed` rows it did not carry | One statement, in one place. §T5 qualification result carries the only T5 result this record claims, re-run after the remediation above and cited by digest; the sections that said otherwise are rewritten to describe what they actually cover. The two audits are now named apart, since "the audit remediation" meant different things in different paragraphs |
+
+### What the second remediation costs this record
+
+The worker bundle identity moved again — `worker/study_tts_worker/worker.py` is a declared bundle
+input and finding 7 changed it — to `6a158816945dd7d6…`, superseding `7b065eeb5319c6bc…`. It moved
+once more under the third remediation below, and §T5 qualification result carries the current
+value.
+
+### Verification run for the second remediation
+
+Taken on the reference machine, 2026-08-31. Every check below actually ran; what did not run is
+named after the table rather than omitted.
+
+| Check | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | Clean |
+| Rust conventions | `python3 scripts/check-rust-conventions.py` | Clean |
+| Lints | `cargo clippy --offline --workspace --all-targets --all-features --locked -- -D warnings` | Clean |
+| Tests | `cargo test --offline --workspace --all-targets --locked` | 376 passed, 0 failed |
+| Doctests | `cargo test --offline --workspace --doc --locked` | 8 passed, 0 failed |
+| Python worker | `python3 -m unittest discover --start-directory worker/tests` | 61 passed |
+| Qualification tooling | `(cd scripts/qualification && python3 -m unittest discover --start-directory tests)` | 33 passed |
+| Provenance checker's own tests | `python3 -m unittest discover -s scripts/tests -p 'test_check_evidence_provenance.py'` | 23 passed |
+| Evidence provenance | `python3 scripts/check-evidence-provenance.py` | One mismatch, pre-existing and not this work's — see below |
+| Whitespace | `git diff --check` | Clean |
+| Worker bundle identity | `cargo run -p study-tts-runtime --example worker-bundle-hash` | `6a158816945dd7d66a5a32a33e5fce720a5b7f2c7ae87b06e9b79972fe2951d6` |
+| T5 qualification | `unshare --user --map-root-user --net ./target/debug/examples/worker-qualification …` | 5 of 5 pass. §T5 qualification result |
+| Namespace refusal | The same binary without `unshare` | Refused before creating the output root, naming the 13 interfaces it found |
+| Listening render | `./target/debug/examples/listening-render …` | **Failed.** §Finding 11 |
+
+**Not run, and not claimed.** Hosted CI and the protected reference-machine qualification workflow
+were not run. `cargo deny check` was not run. The listening review was not taken, because
+§Finding 11 leaves nothing lawful to review.
+
+**The provenance mismatch is not this work's.** `e0-s3-g0-qualification-decision-v3.md:51` pins
+`DELIVERY-PLAN.md` at `add598619c5e…` while it hashes `2561bfe840a7…`. `DELIVERY-PLAN.md` is
+unmodified by this remediation, so the mismatch predates it and is recorded here rather than
+repaired, since repairing another gate's record is not this story's to do.
+
+**Two documents this remediation edited are cited by name and not by digest.**
+`docs/operations/REVIEW-AND-ACCEPT-CYCLE.md` and `scripts/qualification/README.md` both gained the
+`unshare` wrapper; `grep -rn` across `evidence/` shows neither is pinned by SHA-256 anywhere, so no
+citation moved.
+
+### Finding 11 — conditioned edges were not zero, and publication refused them
+
+Found by running the listening instrument as the last step of the second remediation, not by
+looking for it. The render refused every take:
+
+```text
+Audio(UnusableAudio { fault: ExposedEndpointNotZero { edge: "first", value: 4.312751e-6 } })
+```
+
+**Two committed gates disagreed, and the ADR sides with both.** ADR-0001 §13.4 states two edge
+rules in one sentence — "add zero samples until each edge has at least 10 ms of silence" *and*
+"require exposed endpoints to be zero" — and satisfying the first says nothing about the second.
+`condition_edges` padded by *quantity*: `required.saturating_sub(leading_silence)`. A take whose
+first 240 samples already sit below the silence threshold got **no padding at all**, and its first
+sample stayed at whatever quiet-but-nonzero value the model produced.
+`check_exposed_endpoints` then correctly refused it.
+
+Measured on the refused take: 104 640 frames, peak `0.119`, first 240 samples all at or below
+`1.1e-5`, first sample `4.3e-6`. Real model output is quiet at the edges rather than digitally
+silent, so **no real take could be published at all**.
+
+`MAX_TRANSITION_RAMP_MS`'s own comment stated the assumption that failed — "the silence side is
+exactly zero once padded" — which is not true when nothing was padded.
+
+**The same shape as §The ramp correction**: a conditioning step that satisfied the arithmetic of
+its rule without producing the property the rule exists for. It is also the shape that made this
+gate's own test agree with the defect — `t1_e2_exposed_endpoints_are_exactly_zero` used a fixture
+that is signal from the first sample, so the full padding always ran and the endpoint was zero for
+a reason a real take does not have.
+
+**Closed.** The project owner directed the padding fix on 2026-08-31: `condition_edges` still pads
+by silence duration, and additionally pads **one zero** at any edge whose sample is not exactly
+zero. That is the only mechanism ADR-0001 §13.4 names — "add zero samples" — it keeps the silence
+measurement's documented meaning, and it leaves a join reading `0.0` → `0.0`.
+`t1_e2_a_quiet_but_nonzero_edge_is_padded_to_an_exact_zero` fails against the old code with the
+exact value the real render refused.
+
+Measured after the fix, on the 2026-08-31 set §Listening material now cites: every sample carries
+exactly one leading and one trailing zero, first and last samples exactly `0.0`, and each is two
+frames longer than the take it replaces — which is the fix and nothing else.
+
+## Third remediation — the four issues the second audit left open
+
+The project owner directed on 2026-08-31 that everything still outstanding be closed in one pass.
+
+| # | Item | Disposition |
+|---|---|---|
+| 11 | Conditioned edges were not zero | Closed above |
+| 7 residual | A held descriptor could be carried out of the staging root | **Narrowed, and the rest recorded as unreachable from Python.** Containment no longer resolves a pathname at all: the staging root is opened once at `initialize` and held, and every component of an assigned path is opened relative to the one before it with `O_NOFOLLOW`. Containment stops being a check performed on a name and becomes a property of the walk. It is also stricter — a symlinked directory *inside* the root is now refused for being a symlink rather than admitted for pointing somewhere lawful, which the pre-fix contract did admit. The `/proc/self/fd` verification and the `resolve()` call are both deleted, so this is shorter than what it replaces. **What no descriptor can close**: a directory proven inside the root and then *moved* out carries the descriptor with it, because a descriptor follows the inode. That needs a filesystem sandbox, which the audit finding itself offered as the alternative, and whoever can move a directory out of the staging root can already write inside it |
+| 6 model half | Model weights were identified by strings, never by their bytes | **Closed by verification, deliberately not by keying.** `crates/study-tts-runtime/src/model_gate.rs` pins the qualified revision and the SHA-256 and byte count of all four artifacts, and `WorkerConfiguration::for_bundle` hashes them before it can return a launchable configuration. `WorkerTtsExecutor::start` then refuses a worker that reports a *different* revision, which is what stops it loading a directory the gate never read. Hashing 3.19 GB costs 2.1 s. See §Why verification and not a key term |
+| Coverage | A `NameError` shipped through `_render` because no test could reach it | `RenderPlumbingTests` drives `_render` with a stub model and the real numerical libraries. It is gated on those libraries being importable, so it skips under the system interpreter and runs under `worker/.venv/bin/python`; `docs/operations/REVIEW-AND-ACCEPT-CYCLE.md` §1 now runs the worker suite under both, and says that `OK (skipped=2)` is the signal the second one did not happen. Reintroducing the defect makes it fail with the original `NameError` |
+
+### Why verification and not a key term
+
+Issue #66 proposes both an artifact check and a `model_artifacts_hash` input to `SynthesisContext`.
+They are separable, and the project owner directed on 2026-08-31 that only the first be done.
+
+Verification closes the security property on its own. Changed weights are **refused** rather than
+admitted, so no audio is ever produced under weights the supervisor did not prove — and a
+*legitimate* weights change moves the pinned revision, which is already an ADR-0001 §12.5 key
+input, so the key moves anyway. The key term would buy the ability to hold audio from several
+weight-sets in one cache, which nothing in this project does.
+
+What it would have cost is the reason to defer it: every cache key moves, `schemas/plan-v3` moves,
+an interface-change record is owed, the bundle identity is re-derived and the listening review
+retaken. The owner also settled the question #66 flagged rather than decided: **adding a
+`SynthesisContext` input needs an ADR-0001 §12.5 amendment**, not an interface-change record alone,
+because §12.5 is ratified and enumerates its inputs. That decision is recorded here so it does not
+have to be retaken when the term is eventually added.
+
+**Two implementation choices differ from #66's stated design**, and both make the change smaller.
+
+The digests live in Git and the governed `bundle-manifest.json` is not parsed. #66 proposed two
+levels — an `artifacts` array in the model root, and a derived hash pinned in Git — but that array
+already exists and is complete, and #66's own argument for the second level is that the first is
+trust on first use. Once the authoritative list is in Git, parsing the record beside the weights
+adds nothing a reader could rely on; it only adds a second parser of a format
+`worker/study_tts_worker/worker.py` already reads. All four declared digests were checked against
+the bytes and match.
+
+No `RemedyAdvice` is attached. `docs/governance/ROUTING-TABLES.md` §Failure routing establishes no
+owner for a model-artifact mismatch, and `crates/study-tts-runtime/src/error/mod.rs` states the
+rule that governed advice is added only where that table does. Adding a row would have moved a
+document two **accepted** E0-S2 records pin, so the owner is named in each message instead, from
+§Decision routing's "Chatterbox/model revision" row. The same reasoning kept the operator half of
+the model-pin mirror out of `docs/operations/WORKER-ENVIRONMENT.md`, which many accepted records
+pin, and put it in `docs/operations/REVIEW-AND-ACCEPT-CYCLE.md`, which none do.
+
+### Verification run for the third remediation
+
+| Check | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | Clean |
+| Rust conventions | `python3 scripts/check-rust-conventions.py` | Clean |
+| Lints | `cargo clippy --offline --workspace --all-targets --all-features --locked -- -D warnings` | Clean |
+| Tests | `cargo test --offline --workspace --all-targets --locked` | 382 passed, 0 failed |
+| Doctests | `cargo test --offline --workspace --doc --locked` | 8 passed, 0 failed |
+| Python worker, system interpreter | `python3 -m unittest discover --start-directory worker/tests` | 64 passed, 2 skipped |
+| Python worker, restored environment | `worker/.venv/bin/python -m unittest discover --start-directory worker/tests` | 64 passed, 0 skipped |
+| Qualification tooling | `(cd scripts/qualification && python3 -m unittest discover --start-directory tests)` | 33 passed |
+| Evidence provenance | `python3 scripts/check-evidence-provenance.py` | Exit `0`, no unaccounted mismatches |
+| Whitespace | `git diff --check` | Clean |
+| Worker bundle identity | `cargo run -p study-tts-runtime --example worker-bundle-hash` | `d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af` |
+| Model artifact digests | Hashed against the governed acquisition record | 4 of 4 match, 3.19 GB in 2.1 s |
+| T5 qualification | `unshare --user --map-root-user --net ./target/debug/examples/worker-qualification …` | 5 of 5 pass. §T5 qualification result |
+| Listening render | `./target/debug/examples/listening-render …` | 6 takes published. §Listening material |
+
+**Not run, and not claimed.** Hosted CI and the protected reference-machine qualification workflow
+were not run. `cargo deny check` was not run. The listening review itself was not taken; it is the
+one thing here no instrument may supply.
+
+**The one provenance mismatch that stood through this work is now accounted.**
+`e0-s3-g0-qualification-decision-v3.md:51` pins `DELIVERY-PLAN.md` at a digest it no longer hashes
+to, and `e1-s3-delivery-plan-ramp-correction-reconciliation-v1.md` was written to account for
+exactly that pin — but `scripts/check-evidence-provenance.py:105` counts a reconciliation record
+only when its status reads `Accepted`, and it was `Proposed`. Both approval rows were decided on
+2026-08-31 and the record now reads `Accepted`, so the checker exits `0`. Nothing in the tree
+changed to achieve that; the mismatch was never a defect, only an unsigned accommodation.
+
+That record's own §Approvals now also carries the correction §Finding 11 records: the ramp
+correction it accounts for was necessary but did not by itself make a take publishable, so the
+listening set it superseded was replaced twice rather than once.
 
 ## Limits the story does not close
 
+- **The model's bytes are verified, not keyed.** `model_gate` refuses weights that are not the
+  pinned ones, so no audio is produced under unproven bytes — but ADR-0001 §12.5's key still names
+  the revision rather than the artifacts. §Why verification and not a key term records the decision
+  and the ADR amendment it would need. Issue #66 stays open for the key term alone; its
+  verification half is closed here, and its premise that the governed manifest carries no
+  `artifacts` array is stale.
+- **`code.commit` is still a string.** The model gate hashes the *weights*; the Chatterbox code
+  revision the worker reports as `tokenizer_revision` is still read from the acquisition record and
+  never hashed. It reaches every cache key. Closing it means declaring and hashing the code tree
+  the same way, and is not attempted here.
+- **Staging containment is a walk, not a sandbox.** §Third remediation records the residual: a
+  directory proven inside the staging root and then *moved* out of it carries the held descriptor
+  with it, because a descriptor follows the inode. No in-process change closes that; it needs a
+  filesystem sandbox, which the audit finding itself named as the alternative.
+- **The model gate cannot close its own window.** It hashes the artifacts, then the worker opens
+  them. An attacker who can rewrite the governed model root between those two moments could not be
+  caught by any amount of care on this side, and could equally rewrite it before the build.
+- **Egress denial is the operator's to supply.** The instrument refuses to run outside a
+  loopback-only namespace, which makes a filed result trustworthy, but nothing forces the operator
+  to run the instrument at all. `listening-render` is deliberately not gated the same way: it
+  asserts no offline property and produces audio for a human, not evidence about a network.
 - **`t5_e1_worker_output_cannot_escape_staging_root` now proves its name; it did not when this
   record was first written.** The worker was told one path and no root, so it could inspect only
   the spelling of the path it was handed, and this section recorded that as a gap on the reasoning
@@ -734,15 +1044,18 @@ governed root, but the other four criteria do — and the listening review retak
 
 ## Listening material
 
-Re-rendered 2026-08-31 after the audit remediation, by
-`cargo run --package study-tts-testkit --example listening-render`. The 2026-08-30 set it replaces
+Re-rendered 2026-08-31 after the third remediation, once §Finding 11 was closed and
+`listening-render` could publish a take at all. **This is the reviewed set**, and every earlier one
+is superseded: the 2026-08-30 set was reviewed against audio the build no longer produces, and
+neither 2026-08-31 set before this one was ever reviewed. Rendered by
+`cargo run --package study-tts-testkit --example listening-render`. The 2026-08-30 set it replaced
 was produced by piping a hand-built NDJSON session into the worker and could not be re-rendered.
 Governed output, so the location is named by root rather than reproduced here, per
 `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`.
 
 | Item | Value |
 |---|---|
-| Location | `listening-2026-08-31/listening/` beneath the governed qualification output root |
+| Location | `listening-2026-08-31-180808/listening/` beneath the governed qualification output root |
 | Samples | 6, `sample-01.wav` through `sample-06.wav`, blinded |
 | Script | `fixtures/listening/e1-s3-listening-script.json`, committed and registered |
 | Total duration | 30.8 s |
@@ -750,19 +1063,21 @@ Governed output, so the location is named by root rather than reproduced here, p
 | Voice profile | `owner-fallback-v1` |
 | Style | `calm_explanatory` |
 | Seed | 42, from `worker/launcher.json` |
-| Worker bundle identity | `7b065eeb5319c6bc0d7b69f15f085fbe23e7ac70576dcf3ece570fe2a54884e3` |
-| Pending review sheet | SHA-256 `d0f8c7863c805fea352895783863b5a80479c18e66be39b9d8d28587c18e1b52` |
+| Worker bundle identity | `d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af` |
+| Exposed endpoints | Every sample: first and last sample exactly `0.0`, one zero padded at each edge |
+| Completed review sheet | SHA-256 `d744eb70c45760c8587a42a6c2c23f42896f2931d0c5ef26a91336a82bd7f167` |
+| Pending sheet, as rendered | SHA-256 `7f8fe2df628cb36cf8becea7bcdbcab4012f210cadbeb5daf31f999281759a39` |
 
 Each sample's digest, which every judgment is recorded against:
 
 | Sample | SHA-256 |
 |---|---|
-| `sample-01.wav` | `174dc45c5ce4f9281977e2634e7ec7cbadd9751779284520bdbaae58881055fe` |
-| `sample-02.wav` | `82363a64ae49ec22912cf43afc6586d44168cfee985582f73fdfbf9d76c61af0` |
-| `sample-03.wav` | `deec7fe0610f02cc72e5b66e2d1d21fe9e19642fe1b3bcb3bee103209d47fca1` |
-| `sample-04.wav` | `ed55003e07e97123aaec2dfaebc1470b7bf8e1daea2faeaa8a7d6b22ef0e1d7b` |
-| `sample-05.wav` | `16a98ed4ca6471cf2d03f73122b9d89e9e9929f9bd09505bfff74f0e08bca92b` |
-| `sample-06.wav` | `0a9e393c0b547cd4300815c3c23e088a8a361ace5fa92b83f03aeef441a3b81a` |
+| `sample-01.wav` | `ffddccaef29e37d538158efe5ebfcd2df5f40efa04dbd02ef55e11f098070ded` |
+| `sample-02.wav` | `64c5709a0e87de425ab82f0557f334e4dfce45caa92c302ba149bf6d0733bede` |
+| `sample-03.wav` | `dfa2a9853a10597dab6ff2e88462e1e6c9ca5da64225a7136d495dff22847323` |
+| `sample-04.wav` | `774ac64441d96e1a6552dbaa57d02540b7ac4ef869c273e89c06628158ccf31e` |
+| `sample-05.wav` | `5454cc67f71f23c7c6c1ee805caaa38988afe5d1db2f8484ee9d997a010654c1` |
+| `sample-06.wav` | `6c0d4c69b346886dbf974c5cf562cdae8a5f453f8381dec6e7bacc1e07e445c5` |
 
 The order is randomized and the mapping withheld in `randomization-key.json`;
 `scripts/qualification/check_listening_review.py` reveals it only once the sheet is complete and
@@ -770,19 +1085,28 @@ still matches these bytes.
 
 ### Review result
 
-**Owed. The sheet for the 2026-08-31 re-render is pending human review**, which is the one thing in
-this record no instrument may supply. `docs/operations/REVIEW-AND-ACCEPT-CYCLE.md` carries the
-procedure.
+**Taken and accepted.** Reviewed 2026-08-31 by Ross Todd on laptop built-in speakers, against the
+six samples and digests §Listening material cites. It is the first listening review this story has
+completed against audio this build actually produces.
+
+`python3 scripts/qualification/check_listening_review.py` accepted the sheet and revealed the key,
+which is what binds a judgment to bytes rather than to a filename: it re-hashes every sample
+against the digest the sheet records before it will open `randomization-key.json`, so a sheet
+completed against a different render cannot be filed against this one.
 
 | Criterion | Result across all six samples |
 |---|---|
-| `omissions_or_additions` | Pending |
-| `pronunciation` | Pending |
-| `voice_consistency` | Pending |
-| `pacing` | Pending |
-| `noise_or_artifacts` | Pending |
+| `omissions_or_additions` | none |
+| `pronunciation` | none |
+| `voice_consistency` | none |
+| `pacing` | none |
+| `noise_or_artifacts` | none |
 
-**Overall finding: pending.**
+**Overall finding: accept 6 of 6, no findings on any criterion.**
+
+The revealed mapping, recorded so a retake can be compared line for line rather than sample for
+sample: `sample-01`→`line-03`, `sample-02`→`line-05`, `sample-03`→`line-06`, `sample-04`→`line-01`,
+`sample-05`→`line-02`, `sample-06`→`line-04`.
 
 The five criteria are E0-S3's. Its sixth, `audible_difference_from_other_runs`, is not applicable:
 it compared ten runs of one line for determinism, while these are six different lines.

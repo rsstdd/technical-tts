@@ -4,7 +4,7 @@
 - Candidate revision: working tree on `fix/issue-59-retired-grant`, after the edge-ramp correction
 - Accountable owner: Engineering owner
 - Approvers: Engineering owner and project owner
-- Status: Proposed
+- Status: Accepted
 - Supersedes: nothing
 
 ## Scope and decision
@@ -81,19 +81,25 @@ conditioner and are **stale before review**. They must be re-rendered and the re
 | Command | Result |
 |---|---|
 | `python3 scripts/check-evidence-provenance.py`, while this record is Proposed | Exit `1`, one unaccounted — the state this record is written to account for |
-| `python3 scripts/check-evidence-provenance.py`, from acceptance | Not yet run; this record is unsigned |
+| `python3 scripts/check-evidence-provenance.py`, from acceptance | Exit `0`, no unaccounted mismatches. Run 2026-08-31 after both rows below were decided |
 
 The remaining gate results are recorded in the E1-S3 story record's verification section, taken
 against this change.
 
 ## Approvals
 
-Unsigned. A Proposed reconciliation grants nothing
-(`scripts/check-evidence-provenance.py` `UNACCEPTED_DECISIONS`), so
-`check-evidence-provenance.py` exits `1` until both rows are decided and `- Status:` reads
-`Accepted`.
+Signed. `scripts/check-evidence-provenance.py:105` counts a reconciliation record only when its
+status reads `Accepted`, which is why the mismatch this record accounts for stood open while it was
+Proposed.
 
 | Role | Name | Decision | Date |
 |---|---|---|---|
-| Engineering owner | Ross Todd | Pending — would accept that the ramp now attenuates the first and last 5 ms of signal, that this is the only placement that can smooth a transition out of exact zero, and that `DELIVERY-PLAN.md` moved to match ADR-0001 rather than the reverse | |
-| Project owner | Ross Todd | Pending — would accept a corrected E1-S3 test contract name, that published audio changes again, and that the pending 2026-08-31 listening review is superseded before it was taken | |
+| Engineering owner | Ross Todd | Accepted — that the ramp now attenuates the first and last 5 ms of signal, that this is the only placement that can smooth a transition out of exact zero, and that `DELIVERY-PLAN.md` moved to match ADR-0001 rather than the reverse | 2026-08-31 |
+| Project owner | Ross Todd | Accepted — a corrected E1-S3 test contract name, that published audio changes again, and that the pending 2026-08-31 listening review is superseded before it was taken | 2026-08-31 |
+
+**A later correction, recorded here because it bears on the second row.** The ramp correction this
+record accounts for was necessary and is not withdrawn, but it did not by itself make a published
+take possible: `condition_edges` still padded only by silence *duration*, so a real take's exposed
+endpoint stayed quiet-but-nonzero and `check_exposed_endpoints` refused it. That is finding 11 of
+the E1-S3 story record, closed on 2026-08-31. The listening set superseded here was therefore
+replaced twice rather than once, and no listening review has been taken against any of them.

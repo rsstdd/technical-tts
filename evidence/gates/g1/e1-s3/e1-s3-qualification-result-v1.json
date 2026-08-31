@@ -1,10 +1,11 @@
 {
-  "worker_bundle_hash": "7b065eeb5319c6bc0d7b69f15f085fbe23e7ac70576dcf3ece570fe2a54884e3",
+  "worker_bundle_hash": "d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af",
+  "network_isolation": {"interfaces": ["lo"], "routes": 0, "namespace_inode": 4026532310},
   "criteria": [
-    {"criterion": "t5_e1_worker_bundle_hash_matches_when_all_declared_bundle_inputs_match", "result": "pass", "observed": "two derivations on the qualified interpreter agreed at 7b065eeb5319c6bc0d7b69f15f085fbe23e7ac70576dcf3ece570fe2a54884e3; sensitivity to a moved input is pinned at T1 by t1_e1_worker_bundle_hash_changes_on_owned_runtime_input"},
+    {"criterion": "t5_e1_worker_bundle_hash_matches_when_all_declared_bundle_inputs_match", "result": "pass", "observed": "two derivations on the qualified interpreter agreed at d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af; sensitivity to a moved input is pinned at T1 by t1_e1_worker_bundle_hash_changes_on_owned_runtime_input"},
     {"criterion": "t5_e1_model_load_occurs_once_per_worker_lifetime", "result": "pass", "observed": "3 takes through one worker reported 1 model load(s)"},
-    {"criterion": "t5_e1_worker_protocol_stdout_remains_clean", "result": "pass", "observed": "every frame of a completed session parsed off standard output, while 8034 bytes of backend diagnostics went to standard error"},
-    {"criterion": "t5_e1_worker_survives_restart_and_starts_offline", "result": "pass", "observed": "two lifetimes reported identical synthesis identities; offline settings applied in 2 of 2 lifetimes"},
-    {"criterion": "t5_e1_worker_output_cannot_escape_staging_root", "result": "pass", "observed": "a contained take wrote only its assigned path; 5 refused (a symlink planted at the assigned path; an assigned path that walks upward; an assigned path that already exists; an absolute path outside the staging root; an assigned path whose parent is a symlink out of the root); 0 file(s) outside the staging root"}
+    {"criterion": "t5_e1_worker_survives_restart_and_starts_offline", "result": "pass", "observed": "two lifetimes reported identical synthesis identities; offline settings applied in 2 of 2 lifetimes, inside a network namespace holding ['lo'] with no IP route"},
+    {"criterion": "t5_e1_worker_output_cannot_escape_staging_root", "result": "pass", "observed": "a contained take wrote only its assigned path; 5 refused (a symlink planted at the assigned path; an assigned path that walks upward; an assigned path that already exists; an absolute path outside the staging root; an assigned path whose parent is a symlink out of the root); 0 file(s) outside the staging root"},
+    {"criterion": "t5_e1_worker_protocol_stdout_remains_clean", "result": "pass", "observed": "every frame of a completed session parsed off standard output and nothing followed the last one, while 18702 bytes of backend diagnostics went to standard error"}
   ]
 }
