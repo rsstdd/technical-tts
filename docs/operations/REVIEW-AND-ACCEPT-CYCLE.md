@@ -65,10 +65,10 @@ unshare --user --map-root-user --net \
 ```
 
 The namespace is required: the instrument refuses to start unless `/proc/net/dev`
-holds only `lo` and `/proc/net/route` is empty, so a filed result is always one
-whose egress was denied rather than one whose worker said it had set some
-variables. Built outside the namespace and run inside it, because a build may
-legitimately reach a network and a qualification run may not.
+holds only `lo` and `/proc/net/route` contains no IPv4 route entries, so a filed
+result is always one whose IPv4 egress was denied rather than one whose worker
+said it had set some variables. Built outside the namespace and run inside it,
+because a build may legitimately reach a network and a qualification run may not.
 
 Writes `qualification-result.json` under the output root and prints its SHA-256. Copy it beside the
 story record and cite that digest.
@@ -145,6 +145,14 @@ cargo run --package study-tts-testkit --example listening-render -- \
 - Takes are shuffled into `sample-NN.wav`. The mapping goes to `randomization-key.json`.
 - `review-sheet.json` is written **pending**: five criteria and a disposition per sample, all
   `null`.
+- **`--output-root` must not already exist.** The instrument refuses one that does, so a retake
+  takes a new root and cannot overwrite the set an earlier review is still bound to.
+- **No network namespace here**, unlike §2. This instrument asserts no offline property and
+  produces audio for a person rather than evidence about a network, so wrapping it in `unshare`
+  proves nothing. It does need `worker/.venv` restored, because it drives the real worker.
+- **Render last.** Anything that changes conditioned bytes — `condition_edges`, the silence
+  threshold, the model revision, a voice profile — makes an already-rendered set historical the
+  moment it lands. A retake rendered before such a change is stale on arrival.
 
 ### Review
 
@@ -188,12 +196,47 @@ bytes it was made against**.
 
 Nothing stops someone opening the key early, and this project does not pretend otherwise — the
 blinding is a discipline. What *is* mechanical is the binding: every judgment is recorded under a
-take's SHA-256, so a retake that renders new audio into the same directory cannot inherit the
-previous review.
+take's SHA-256, so a review cannot be inherited by audio it was not made against. A retake cannot
+even be rendered over the old set — the instrument refuses an `--output-root` that exists — so the
+two sets sit side by side and the record says which one a verdict belongs to.
 
 **Retake the review whenever the audio changes, not only when the text does.** Edge conditioning,
 a model revision, a voice-profile change, or a threshold swap all produce different samples from
 the same script.
+
+### Retaking a review, and closing it out
+
+A retake is owed whenever the conditioned bytes move. It is **not** owed for a change that cannot
+reach audio, and the argument for that has to be written down and signed rather than assumed.
+
+**What a retake does not drag with it.** The listening review and the `t5_` qualification result
+answer different questions. If the worker bundle identity has not moved — check it, do not assume
+it — the filed qualification result still describes the code that ships and is not re-run:
+
+```bash
+cargo run --package study-tts-runtime --example worker-bundle-hash
+```
+
+A change confined to Rust that never touches a declared bundle input can therefore change published
+audio while leaving the identity, and the qualification result with it, exactly where they were.
+
+**After the checker exits `0`,** the review is complete but nothing has been recorded yet. The
+story record is `Proposed` until its gate, so this is an edit in place rather than a reconciliation:
+
+| Update | With |
+|---|---|
+| The listening-material section | The new output location, every sample's SHA-256, the completed sheet's digest, and **the bundle identity that rendered it** |
+| The review-result section | The dispositions and any findings, plus what the review does not cover |
+| The listening acceptance criterion | `Pending` → `Met` |
+| Any limitation saying a retake is owed | Closed, naming the set that closed it |
+| Any approval row deferring on audio | Now decidable |
+
+Then re-run `python3 scripts/check-evidence-provenance.py`, because a record that cites a document
+by digest has just been edited.
+
+**An accepted record that carried an earlier review forward is spent, not wrong.** Its argument
+stood for the change it was written about; a later change to the audio is outside it. Do not edit
+it — §4 is the rule, and a new record beside it or superseding it is the mechanism.
 
 ---
 

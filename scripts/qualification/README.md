@@ -93,15 +93,16 @@ unshare --user --map-root-user --net \
 
 **The namespace is required, not advised.** The instrument reads `/proc/net/dev`
 and `/proc/net/route` before it creates the output root and refuses unless the
-only interface is `lo` and no IP route exists, which is the same check
+only interface is `lo` and no IPv4 route exists, which is the same check
 `validate_network_isolation` makes for the E0-S3 harness above. ADR-0001 §17.7
 asks the worker to operate without network access, and until this existed the
 criterion read that off the worker's own diagnostics: `_apply_offline_environment`
 prints the variables it applied, which proves the worker configured
 `huggingface_hub` and `transformers` and proves nothing about the backend, a
 transitive dependency, or a socket. Flags are a request; a namespace with no
-route is a denial. The interfaces and the namespace inode are recorded in the
-result, so a record can read the isolation off the artifact.
+IPv4 route is an IPv4 denial. The interfaces, IPv4 route count, and namespace
+inode are recorded in the result, so a record can read the measured isolation
+off the artifact.
 
 Every root is a required argument with no default. The governed two are named
 here only as placeholders: `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`
@@ -176,12 +177,21 @@ That refuses an incomplete sheet, refuses one whose recorded digests no longer
 match the audio beside it, and only then prints the mapping. Publish the
 completed sheet under the governed evidence root and cite it by SHA-256.
 
+`--output-root` must not already exist: a retake takes a new root, so it cannot
+overwrite the set an earlier review is still bound to. Unlike the qualification
+instrument above, this one needs **no network namespace** — it asserts no
+offline property and produces audio for a person rather than evidence about a
+network. What to update once the checker passes is in
+`docs/operations/REVIEW-AND-ACCEPT-CYCLE.md` §3, under *Retaking a review, and
+closing it out*, rather than repeated here.
+
 **What the blinding does and does not enforce.** Nothing stops an operator
 reading `randomization-key.json` early, and the instrument does not pretend
 otherwise — the blinding is a discipline. What *is* mechanical is the binding
 between a judgment and the bytes it was made against: every finding is recorded
-under a take's SHA-256, so a retake that renders new audio into the same
-directory cannot inherit the previous review.
+under a take's SHA-256, so a review cannot be inherited by audio it was not made
+against — and a retake cannot be rendered over the old set at all, because the
+instrument refuses an `--output-root` that exists.
 
 **Retake the review whenever the audio changes**, not only when the text does.
 `ADR-0001-D007`'s edge conditioning pads and ramps every segment, so a build

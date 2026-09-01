@@ -172,8 +172,8 @@ impl Configuration {
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Before the output root is even created: a `qualification-result.json`
-    // that exists at all should be one from a run whose egress was denied, the
-    // same principle as the output root that must not already exist.
+    // that exists at all should be one from a run whose IPv4 egress was denied,
+    // the same principle as the output root that must not already exist.
     let isolation = NetworkIsolation::require()?;
     let configuration = Configuration::from_arguments()?;
     let mut outcomes = Vec::new();
@@ -371,9 +371,9 @@ fn protocol_stdout_stayed_clean(executor: &WorkerTtsExecutor, refusal: Option<&s
 ///
 /// Offline has two independent halves, and this criterion needs both.
 ///
-/// **Egress was denied**, which [`NetworkIsolation`] established before the run
-/// began: a loopback-only namespace with no IP route. That is the half the
-/// worker cannot attest to, and until it existed this criterion asserted
+/// **IPv4 egress was denied**, which [`NetworkIsolation`] established before
+/// the run began: a loopback-only namespace with no IPv4 route. That is the
+/// half the worker cannot attest to. Until it existed, this criterion asserted
 /// "operates without network access" while measuring nothing of the kind.
 ///
 /// **The worker configured itself**, read out of its own diagnostics rather
@@ -423,7 +423,7 @@ fn worker_restarts_and_stays_offline(
         offline.iter().all(|applied| *applied),
         format!(
             "two lifetimes reported identical synthesis identities; offline settings applied in \
-             {} of 2 lifetimes, inside a network namespace holding {:?} with no IP route",
+             {} of 2 lifetimes, inside a network namespace holding {:?} with no IPv4 route",
             offline.iter().filter(|applied| **applied).count(),
             isolation.interfaces
         ),
@@ -640,12 +640,12 @@ fn governed_voice(voice_root: &Path) -> Result<GovernedVoice, Box<dyn Error>> {
 struct NetworkIsolation {
     /// Interface names the namespace holds: `lo`, and nothing else.
     interfaces: Vec<String>,
-    /// IP routes the namespace carries, which is none.
+    /// IPv4 routes the namespace carries, which is none.
     ///
     /// Counted and carried rather than written into the result as a literal:
     /// a constant printed where a reader expects a measurement is the shape
     /// this whole finding was about.
-    routes: usize,
+    ipv4_routes: usize,
     /// The namespace itself, so two runs can be told apart or matched up.
     namespace_inode: u64,
 }
@@ -658,7 +658,8 @@ impl NetworkIsolation {
     /// `_apply_offline_environment` prints the variables it applied, which
     /// proves the worker configured `huggingface_hub` and `transformers` and
     /// proves nothing about the backend, a transitive dependency, or a socket.
-    /// Environment flags are a request; a namespace with no route is a denial.
+    /// Environment flags are a request; a namespace with no IPv4 route is a
+    /// denial.
     ///
     /// Refused rather than reported, so the run has to be wrapped:
     ///
@@ -669,7 +670,7 @@ impl NetworkIsolation {
     /// # Errors
     ///
     /// When `/proc/net/dev` or `/proc/net/route` cannot be read, when any
-    /// interface besides `lo` exists, or when the namespace carries an IP
+    /// interface besides `lo` exists, or when the namespace carries an IPv4
     /// route. Every one names the wrapper as the remedy, and the operator is
     /// the remedy owner per `docs/governance/ROUTING-TABLES.md`.
     fn require() -> Result<Self, Box<dyn Error>> {
@@ -688,21 +689,21 @@ impl NetworkIsolation {
             )
             .into());
         }
-        let routes = fs::read_to_string("/proc/net/route")?
+        let ipv4_routes = fs::read_to_string("/proc/net/route")?
             .lines()
             .skip(1)
             .filter(|line| !line.trim().is_empty())
             .count();
-        if routes > 0 {
+        if ipv4_routes > 0 {
             return Err(format!(
-                "this instrument's network namespace carries {routes} IP route(s), so egress is \
-                 reachable; wrap the command in `unshare --user --map-root-user --net`"
+                "this instrument's network namespace carries {ipv4_routes} IPv4 route(s), so \
+                 egress is reachable; wrap the command in `unshare --user --map-root-user --net`"
             )
             .into());
         }
         Ok(Self {
             interfaces,
-            routes,
+            ipv4_routes,
             namespace_inode: fs::metadata("/proc/self/ns/net")?.ino(),
         })
     }
@@ -728,7 +729,7 @@ fn render_result(
         "worker_bundle_hash": worker_bundle_hash,
         "network_isolation": {
             "interfaces": isolation.interfaces,
-            "routes": isolation.routes,
+            "ipv4_routes": isolation.ipv4_routes,
             "namespace_inode": isolation.namespace_inode,
         },
         "criteria": criteria,
@@ -802,7 +803,7 @@ mod tests {
     fn t1_e1_qualification_observations_are_json_escaped() {
         let isolation = NetworkIsolation {
             interfaces: vec!["lo".to_owned()],
-            routes: 0,
+            ipv4_routes: 0,
             namespace_inode: 1,
         };
         let outcomes = [Outcome::new(
@@ -820,5 +821,21 @@ mod tests {
             result["criteria"][0]["observed"],
             "quoted \"value\" with \\ and newline\n"
         );
+    }
+
+    #[test]
+    fn t1_e1_route_evidence_names_its_ipv4_scope() {
+        let isolation = NetworkIsolation {
+            interfaces: vec!["lo".to_owned()],
+            ipv4_routes: 2,
+            namespace_inode: 1,
+        };
+
+        let rendered = render_result("bundle", &isolation, &[])
+            .expect("serialize the route measurement as evidence");
+        let result: serde_json::Value =
+            serde_json::from_str(&rendered).expect("the qualification result is JSON");
+
+        assert_eq!(result["network_isolation"]["ipv4_routes"], 2);
     }
 }
