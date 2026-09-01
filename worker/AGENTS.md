@@ -49,10 +49,13 @@ the bundle hash. CI runs them with `python3 -m unittest discover --start-directo
   `JSONDecodeError` — into a `FrameError` the supervisor reads as a failure frame. A process that
   died on a hostile frame would take every queued request with it
   (`HostileFrameTests` in `tests/test_worker.py`).
-- **No model is loaded in this build.** Both `initialize` and `synthesize` refuse with
-  `initialization_failed` naming E1-S3. Do not add a placeholder identity or tone: the cache would
-  publish it under a key claiming a real model produced it. `AGENTS.md` forbids shipping a stub as
-  though it were implemented.
+- **The model is loaded once per worker lifetime.** `_load_backend` reads both governed roots,
+  imports Torch and Chatterbox, loads the weights the acquisition record names, and deserializes
+  every voice profile in the root; `synthesize` renders through that one resident model and writes
+  into the assigned staging root. Every success reports the model, tokenizer/codec, worker, and
+  voice-profile identities. Still binding, and the reason this bullet exists: **do not add a
+  placeholder identity or tone** — the cache would publish it under a key claiming a real model
+  produced it, and `AGENTS.md` forbids shipping a stub as though it were implemented.
 - **Offline is applied, not merely configured.** `worker.main` loads and validates `launcher.json`,
   then calls `worker._apply_offline_environment` before reserving the protocol descriptor. A
   backend must be imported *inside* `main`, after both operations — `huggingface_hub` and
