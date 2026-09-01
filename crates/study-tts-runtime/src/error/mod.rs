@@ -749,6 +749,10 @@ mod tests {
                 declared: "declared-voice-v1".to_owned(),
                 recorded: "recorded-voice-v1".to_owned(),
             },
+            VoiceProfileError::VoiceProfileNameNotUtf8 {
+                root: PathBuf::from("voices"),
+                name: "unspellable-voice-v1".to_owned(),
+            },
             VoiceProfileError::VoiceChecksumMismatch {
                 profile_dir: PathBuf::from("voice"),
                 path: PathBuf::from("voice/reference.wav"),
