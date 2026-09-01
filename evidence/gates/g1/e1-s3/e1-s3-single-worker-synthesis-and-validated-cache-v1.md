@@ -1118,8 +1118,16 @@ is a pin rather than a defect and passed on its first run, which is stated rathe
 
 **Not run, and not claimed.** Hosted CI and the protected reference-machine qualification workflow
 were not run. `cargo deny check` was not run. **`worker-qualification` and `listening-render` were
-deliberately not re-run**, because no declared bundle input moved and `worker-bundle-hash` proves
-it; at that point the filed T5 result and accepted listening review still described the code. No
+deliberately not re-run.** As first written this rested on the bundle identity not having moved,
+which is the wrong test and is corrected here: the identity hashes only `worker/bundle-manifest.json`'s
+eight declared inputs, no Rust among them, so an unmoved hash says nothing about the executor the
+criteria are mostly about. The argument that does hold is reachability. This round's Rust changes are
+`admit_voice_root`'s refusal and `model_gate`'s error handling, both inside
+`WorkerConfiguration::for_bundle` and both able only to *refuse a launch*, plus a refusal in
+`for_protocol_fake`, which the real-worker path never calls. None alters the behaviour of a session
+that started, and the filed run started and completed. A re-run would replace that judgment with a
+measurement for about fourteen minutes of reference-machine time, and is the better answer if the
+gate wants one. No
 test asserts the `setsid` escape is contained, because it is not — `ADR-0001-D008` is where that
 is decided rather than a gap left implicit.
 
@@ -1130,8 +1138,13 @@ inserting one zero sample. The output passed the exact-endpoint check, but its d
 though the measured silence already met the requirement. The conditioner now zeroes the measured
 quiet leading and trailing samples and adds no padding in that case.
 
-This is Rust-only and does not move the worker bundle identity, so the recorded five-of-five T5 run
-still supports the worker criteria and need not be repeated. It does change the conditioned WAV
+This is Rust-only. That it does not move the worker bundle identity is **not** the reason the
+recorded five-of-five T5 run still stands — the bundle identity hashes the eight declared inputs in
+`worker/bundle-manifest.json`, none of which is Rust, so it could not have moved and proves nothing
+about the runtime. The reason is reachability: `worker-qualification` drives a session with a
+placeholder cache key the executor never reads, so cache publication and `condition_edges` are not
+on the qualified path at all. The five criteria are statements about session behaviour, and this
+correction changes neither. It does change the conditioned WAV
 bytes and frame count. The 2026-08-31 listening review is therefore historical evidence for its
 recorded set, not acceptance evidence for the current candidate; a new listening render and human
 review are the one remaining qualification item.
@@ -1249,8 +1262,9 @@ the reason above; the listening review does not.
   or one whose digests no longer match the audio, and is the sanctioned way to reveal the mapping.
   `scripts/qualification/README.md` §E1-S3: the listening review carries the render and check
   procedure, and `docs/operations/REVIEW-AND-ACCEPT-CYCLE.md` §3 *Retaking a review, and closing it
-  out* carries what this record owes once the checker passes — including that the five-of-five T5
-  result is not re-run while the bundle identity stands at `58f1a098…`.
+  out* carries what this record owes once the checker passes — including why an unmoved
+  `worker-bundle-hash` is not on its own a reason to skip a re-qualification, since that hash covers
+  no Rust and four of the five criteria are about the executor.
 
   E1-S3 produces audio for the first time, and the other T5 criteria measure session behavior
   without listening to any of it. Six takes were rendered and reviewed on 2026-08-31; that accepted

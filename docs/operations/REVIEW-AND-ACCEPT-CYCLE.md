@@ -210,15 +210,43 @@ A retake is owed whenever the conditioned bytes move. It is **not** owed for a c
 reach audio, and the argument for that has to be written down and signed rather than assumed.
 
 **What a retake does not drag with it.** The listening review and the `t5_` qualification result
-answer different questions. If the worker bundle identity has not moved — check it, do not assume
-it — the filed qualification result still describes the code that ships and is not re-run:
+answer different questions, so a retake of one is not automatically a retake of the other. But
+deciding whether the qualification still holds is its own judgment, and there is one wrong way to
+make it.
+
+**The worker bundle identity is not a qualification identity.** It hashes the eight declared inputs
+in `worker/bundle-manifest.json` — the schema, the launcher, the lockfile, and the Python package.
+**No Rust source is among them**, and `qualification-result.json` records only that hash, the
+network isolation, and the criteria. Nothing in it covers the runtime that drove the session. So an
+unmoved `worker-bundle-hash` proves the *worker* is the one that was qualified and nothing at all
+about the executor:
 
 ```bash
 cargo run --package study-tts-runtime --example worker-bundle-hash
 ```
 
-A change confined to Rust that never touches a declared bundle input can therefore change published
-audio while leaving the identity, and the qualification result with it, exactly where they were.
+That matters because four of the five criteria are statements about the Rust side driving the
+worker, not about the worker alone — one model load per lifetime, restart and offline start, output
+contained in the staging root, and a clean protocol channel. `worker-qualification` drives them
+through `WorkerConfiguration::for_bundle` and `WorkerTtsExecutor`, so a change to the executor, the
+worker client, process supervision and containment, staging resolution, or protocol handling can
+change exactly what those criteria measure while the bundle hash sits still.
+
+Cache publication and edge conditioning are the useful counter-example: the instrument synthesizes
+against a **placeholder cache key the executor never reads**, so neither is on the qualified path,
+and a change to either is a listening-review question rather than a qualification one. That is the
+shape a reachability argument takes — a claim about what the instrument actually drives, checkable
+by reading it.
+
+**Re-qualify whenever a change is reachable from the qualified session path**, whichever language it
+is in, and say so in the record. The bundle hash answers criterion 1 and the question "is this the
+same worker"; it is not evidence for the other four. A change that cannot reach that path — a
+lesson-gate refusal, a CLI flag, documentation — needs no re-run, and the argument for that belongs
+in the record rather than in an unmoved hash.
+
+Closing this properly means the result recording a runtime identity of its own, so the comparison
+is mechanical rather than a judgment repeated each time. Until it does, the judgment is the
+operator's and has to be written down.
 
 **After the checker exits `0`,** the review is complete but nothing has been recorded yet. The
 story record is `Proposed` until its gate, so this is an edit in place rather than a reconciliation:
