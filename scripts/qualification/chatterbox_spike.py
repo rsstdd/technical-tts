@@ -336,7 +336,14 @@ def load_trusted_json(
 
 
 def validate_network_isolation() -> dict[str, Any]:
-    """Require the loopback-only namespace used by the offline qualification."""
+    """Require the loopback-only namespace used by the offline qualification.
+
+    `NetworkIsolation::require` in
+    `crates/study-tts-testkit/examples/worker-qualification.rs` is the same two
+    questions of the same two files, for the E1-S3 instrument. Both refuse
+    rather than report: ADR-0001 §14 renders offline, and a result filed from a
+    run that could have reached a network is evidence of nothing.
+    """
 
     interfaces = sorted(
         line.split(":", maxsplit=1)[0].strip()

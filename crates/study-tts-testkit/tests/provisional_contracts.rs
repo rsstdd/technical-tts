@@ -16,13 +16,14 @@ use study_tts_core::{
     ValidatedLesson, VoiceConditioningHash,
 };
 use study_tts_runtime::{
-    BackendDescriptor, BackendError, BackendValidationError, BuildError, CacheResolveRequest,
-    FileSystemCachePublisher, FileSystemJobRepository, FileSystemPackageWriter, JobRepository,
-    MAX_WORKER_FRAME_BYTES, MAX_WORKER_REQUEST_ID_BYTES, PackagePreflightRequest,
-    PackagePrepareRequest, PackageWriteRequest, PreviewServiceBundle, SynthesisReport,
-    SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, WorkerFrameError,
-    WorkerRequestFrame, WorkerResponseFrame, build_preview, build_preview_with_services,
-    parse_worker_request, parse_worker_response, validate_executor_request,
+    BackendDescriptor, BackendError, BackendValidationError, BuildError,
+    CACHE_PUBLICATION_CONTRACT_VERSION, CacheResolveRequest, FileSystemCachePublisher,
+    FileSystemJobRepository, FileSystemPackageWriter, JobRepository, MAX_WORKER_FRAME_BYTES,
+    MAX_WORKER_REQUEST_ID_BYTES, PackagePreflightRequest, PackagePrepareRequest,
+    PackageWriteRequest, PreviewServiceBundle, SynthesisReport, SynthesisRequest,
+    TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, WorkerFrameError, WorkerRequestFrame,
+    WorkerResponseFrame, build_preview, build_preview_with_services, parse_worker_request,
+    parse_worker_response, validate_executor_request,
 };
 use study_tts_testkit::{
     FIXTURE_VOICE_PROFILES, FakeCachePublisher, FakeJobCall, FakePackageCall, FakePackageWriter,
@@ -68,7 +69,9 @@ fn fixture_conditioning() -> BTreeMap<String, VoiceConditioningHash> {
         .map(|speaker| {
             (
                 speaker.clone(),
-                blake3::hash(b"seam-contract-conditioning").into(),
+                study_tts_testkit::deterministic_tone_conditioning(
+                    &lesson_fixture().speakers()[speaker].voice_profile,
+                ),
             )
         })
         .collect()
@@ -92,6 +95,7 @@ fn synthesis_request(plan: &RenderPlan) -> SynthesisRequest {
         segment_id: segment.id.clone(),
         spoken_text: segment.spoken_text.clone(),
         voice: segment.speaker.clone(),
+        voice_profile: segment.voice_profile.clone(),
         voice_conditioning_hash: fixture_conditioning()
             .remove(segment.speaker.as_str())
             .expect("the fixture declares every speaker it uses"),
@@ -237,6 +241,14 @@ fn t3_e0_contract_change_requires_version_or_explicit_compatible_extension() {
 }
 
 #[test]
+fn t3_e1_cache_publication_contract_names_the_current_acceptance_semantics() {
+    assert_eq!(
+        CACHE_PUBLICATION_CONTRACT_VERSION,
+        "e0.cache-publication.2.0"
+    );
+}
+
+#[test]
 fn t4_e0_every_provisional_seam_has_a_fake() {
     let workspace = TempDir::new().expect("create contract workspace");
     let executor = FakeTtsExecutor::default();
@@ -368,11 +380,15 @@ fn t4_e0_walking_skeleton_uses_only_published_seams() {
             .expect("parse selected manifest");
     assert_eq!(manifest["release_status"], "private_preview");
     assert_eq!(manifest["schema_version"], "0.2-skeleton");
+    // 9,600 frames of tone and generated silence, plus the edge conditioning
+    // each of the two segments now carries: ADR-0001 §13.4 requires 10 ms of
+    // zero padding at each exposed edge, which is 240 frames at the canonical
+    // rate, so 480 per segment.
     assert_eq!(
         hound::WavReader::open(&second.master_wav)
             .expect("open master WAV")
             .duration(),
-        9_600
+        9_600 + 2 * 480
     );
 
     let events = events.events();
@@ -432,7 +448,7 @@ fn t3_e0_worker_frame_ceiling_and_unknown_fields_fail_closed() {
     assert!(matches!(
         parse_worker_request(
             concat!(
-                r#"{"method":"shutdown","protocol_version":"e1.worker.1.0","#,
+                r#"{"method":"shutdown","protocol_version":"e1.worker.2.0","#,
                 r#""request_id":"id","extra":true}"#,
             )
             .as_bytes()
@@ -447,14 +463,14 @@ fn t3_e0_worker_frame_ceiling_and_unknown_fields_fail_closed() {
     ));
     assert!(matches!(
         parse_worker_response(
-            br#"{"event":"shutdown","protocol_version":"e1.worker.1.0","request_id":""}"#
+            br#"{"event":"shutdown","protocol_version":"e1.worker.2.0","request_id":""}"#
         ),
         Err(WorkerFrameError::EmptyRequestId)
     ));
     // Refused rather than shortened on the way back: an identity the supervisor
     // cannot match to what it sent reads as a different request's answer.
     let oversized_identity = format!(
-        r#"{{"event":"shutdown","protocol_version":"e1.worker.1.0","request_id":"{}"}}"#,
+        r#"{{"event":"shutdown","protocol_version":"e1.worker.2.0","request_id":"{}"}}"#,
         "r".repeat(MAX_WORKER_REQUEST_ID_BYTES + 1)
     );
     assert!(matches!(
@@ -464,7 +480,7 @@ fn t3_e0_worker_frame_ceiling_and_unknown_fields_fail_closed() {
     assert!(
         parse_worker_response(
             format!(
-                r#"{{"event":"shutdown","protocol_version":"e1.worker.1.0","request_id":"{}"}}"#,
+                r#"{{"event":"shutdown","protocol_version":"e1.worker.2.0","request_id":"{}"}}"#,
                 "r".repeat(MAX_WORKER_REQUEST_ID_BYTES)
             )
             .as_bytes()
@@ -474,7 +490,7 @@ fn t3_e0_worker_frame_ceiling_and_unknown_fields_fail_closed() {
     );
     assert!(matches!(
         parse_worker_response(
-            r#"{"event":"shutdown","protocol_version":"e1.worker.1.0","request_id":"réq"}"#
+            r#"{"event":"shutdown","protocol_version":"e1.worker.2.0","request_id":"réq"}"#
                 .as_bytes()
         ),
         Err(WorkerFrameError::NonAsciiRequestId)
@@ -482,7 +498,7 @@ fn t3_e0_worker_frame_ceiling_and_unknown_fields_fail_closed() {
     assert!(matches!(
         parse_worker_response(
             concat!(
-                r#"{"event":"progress","protocol_version":"e1.worker.1.0","#,
+                r#"{"event":"progress","protocol_version":"e1.worker.2.0","#,
                 r#""request_id":"id","progress":1.1}"#,
             )
             .as_bytes()
@@ -499,7 +515,14 @@ fn t4_e0_executable_fake_worker_exposes_deterministic_and_fault_behaviors() {
 
     let deterministic = run_fake_worker("deterministic", &request);
     assert!(deterministic.status.success());
-    assert!(deterministic.stderr.is_empty());
+    // Not byte-empty: every run reports the thread caps it was started with,
+    // as the real worker reports the offline variables it applied. What must
+    // stay absent is the *injected* fault line, which is what separates this
+    // behavior from `stderr` below.
+    assert!(
+        !String::from_utf8_lossy(&deterministic.stderr).contains("fake worker diagnostic"),
+        "the deterministic behavior must inject no fault diagnostic"
+    );
     assert!(matches!(
         parse_worker_response(trim_newline(&deterministic.stdout)),
         Ok(WorkerResponseFrame::SynthesisSucceeded { .. })

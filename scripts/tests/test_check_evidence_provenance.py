@@ -145,6 +145,38 @@ class EvidenceProvenanceTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("cited file `docs/missing.md` does not exist", found[0])
 
+    def test_a_reconciliation_accounts_for_a_cited_file_a_change_deleted(self):
+        # An accepted interface change may delete a published schema, and the
+        # immutable record that pinned it cannot be amended. Until this, the
+        # deleted path was reported before the accounting set was consulted, so
+        # a reconciliation could not account for it at all and the only way
+        # forward was to supersede a record whose conclusions were still sound.
+        pinned = hashlib.sha256(b"deleted").hexdigest()
+        self.accepted_record("baseline-v1", "schemas/gone-v1.json", pinned)
+        self.write(
+            "evidence/reconciliation-v1.md",
+            "# Reconciliation\n\n- Status: Accepted\n\n"
+            "## Accounted provenance mismatches\n\n"
+            "| Citing record | Cited repository path |\n"
+            "|---|---|\n"
+            "| `baseline-v1` | `schemas/gone-v1.json` |\n",
+        )
+
+        found = PROVENANCE.check(self.root, self.evidence)
+
+        self.assertEqual(found, [])
+
+    def test_an_unaccounted_deleted_citation_is_still_a_violation(self):
+        # The other half, so the change above cannot be read as making every
+        # missing file acceptable: without the accounting row it still fails.
+        pinned = hashlib.sha256(b"deleted").hexdigest()
+        self.accepted_record("baseline-v1", "schemas/gone-v1.json", pinned)
+
+        found = PROVENANCE.check(self.root, self.evidence)
+
+        self.assertEqual(len(found), 1)
+        self.assertIn("cited file `schemas/gone-v1.json` does not exist", found[0])
+
     def test_a_completed_legacy_review_is_accepted(self):
         accepted = self.write(
             "evidence/legacy.md",

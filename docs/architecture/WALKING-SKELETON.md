@@ -72,6 +72,20 @@ backend segmentation limits. They remain fixed until a configuration milestone
 owns them; this does not move or redefine the configurable worker supervision
 assigned to E5.
 
+The three worker rows are E1-S3's, and `crates/study-tts-runtime/src/worker_executor.rs`
+(`WORKER_INITIALIZE_DEADLINE`, `WORKER_REQUEST_DEADLINE`) and
+`crates/study-tts-runtime/src/worker_client.rs` (`MAX_WORKER_STDERR_BYTES`) name this
+section in return. The segment-audio row is E1-S3's too:
+`crates/study-tts-runtime/src/audio_edges.rs` (`MAX_SEGMENT_AUDIO_MS`) names this section, and
+it bounds both what one segment may hand the edge conditioner, whose samples are held in
+memory, and what conditioning may leave behind: conditioning adds up to 10 ms of zero padding
+at each exposed edge, so `crates/study-tts-runtime/src/cache.rs` (`max_segment_frames`,
+`check_segment_ceiling`) applies the ceiling to its own output as well as to the worker's,
+refusing rather than publishing an entry it would afterwards refuse to read. The two deadlines
+differ because a model load and one segment of
+speech are different waits: ADR-0001 §10.3 requires both to be bounded, not to be
+bounded alike.
+
 | Resource | Provisional ceiling |
 | --- | ---: |
 | Canonical lesson JSON | 16 MiB UTF-8 bytes |
@@ -89,6 +103,9 @@ assigned to E5.
 | Worker-environment integrity probe deadline | 2 minutes |
 | ffprobe deadline | 30 seconds |
 | FFmpeg encode deadline | 30 minutes |
+| Worker `initialize` deadline | 5 minutes |
+| Worker request deadline | 10 minutes |
+| Retained worker standard error | 1 MiB |
 | Captured stdout per tool execution | 1 MiB |
 | Captured stderr per tool execution | 1 MiB |
 | Canonical takes JSON | 8 MiB UTF-8 bytes |
@@ -97,6 +114,7 @@ assigned to E5.
 | One declared worker-bundle input | 8 MiB |
 | Worker frame JSON nesting | 32 levels |
 | One numeric literal in a worker frame | 32 characters |
+| One segment's audio | 10 minutes |
 
 The lesson values mirror the constants in
 `crates/study-tts-core/src/lesson.rs`. Neither `speakers` nor `editorial` adds a ceiling: only the
@@ -195,6 +213,24 @@ names:
   `t1_e1_tags_outside_the_accepted_grammar_are_refused`.
 - Declared worker-bundle input boundary:
   `t1_e1_a_declared_bundle_input_past_the_byte_ceiling_is_refused`.
+- Worker-bundle identity derived rather than accepted, before a process can be
+  launched under it:
+  `t1_e1_a_bundle_configuration_derives_its_identity_rather_than_being_told_one`.
+- Every identity a synthesis success frame restates, compared against what the
+  worker initialized with:
+  `t4_e1_synthesis_under_a_drifted_identity_is_refused`.
+- Request identity unique per worker lifetime, while the plan's stays
+  deterministic: `t4_e1_a_repeated_segment_never_reuses_a_worker_request_id`.
+- Process-tree termination when a synthesis exceeds its deadline, on a live
+  executor rather than only during startup:
+  `t4_e1_a_synthesis_that_times_out_kills_the_worker_tree`.
+- Staging-transaction containment, covering both a write outside the assigned
+  path and a file left beside it:
+  `t4_e1_worker_output_outside_the_assigned_path_is_refused` and
+  `t4_e1_a_file_the_worker_left_in_the_stage_is_never_published`.
+- The worker-declared envelope honored rather than read and discarded:
+  `t4_e1_a_request_outside_the_declared_envelope_is_refused_before_any_work` and
+  `t4_e1_a_worker_rendering_a_non_canonical_format_is_refused_at_start`.
 - Worker-frame nesting and numeric-literal boundaries, and that the process
   survives both to answer the next frame:
   `HostileFrameTests.test_the_worker_answers_the_frame_after_a_hostile_one` in

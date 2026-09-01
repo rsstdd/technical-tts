@@ -5,7 +5,7 @@ replaceable process behind a frame protocol, not a library Rust links against,
 so a public Python surface here would be a second boundary nobody governs.
 """
 
-WORKER_PROTOCOL_VERSION = "e1.worker.1.0"
+WORKER_PROTOCOL_VERSION = "e1.worker.2.0"
 """Baseline protocol version this worker speaks and answers in.
 
 Mirrors ``study_tts_runtime::WORKER_PROTOCOL_VERSION`` and the row for
@@ -14,7 +14,7 @@ which names this constant in return. Two spellings of a wire version are two
 versions.
 """
 
-WORKER_PROTOCOL_EXTENSION_VERSION = "e1.worker.1.1"
+WORKER_PROTOCOL_EXTENSION_VERSION = "e1.worker.2.1"
 """Version a frame must declare to carry the optional trace extension.
 
 Mirrors ``study_tts_runtime::WORKER_PROTOCOL_EXTENSION_VERSION``. Accepted on a

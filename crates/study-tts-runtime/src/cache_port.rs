@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Mirrors the cache version in the E0-S4 provisional contract baseline.
-pub const CACHE_PUBLICATION_CONTRACT_VERSION: &str = "e0.cache-publication.1.0";
+pub const CACHE_PUBLICATION_CONTRACT_VERSION: &str = "e0.cache-publication.2.0";
 
 /// Owned cache lookup and publication inputs for one planned segment.
 #[derive(Clone, Debug)]

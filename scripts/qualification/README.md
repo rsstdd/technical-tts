@@ -61,3 +61,138 @@ them.
 directory is disposable E0-S3 spike tooling rather than a product path. That
 makes the command above the only thing standing between these tests and rot, so
 run it whenever you change a script here.
+
+## E1-S3: qualifying the worker session
+
+The four `t5_e1_` names in `DELIVERY-PLAN.md` §E1-S3 are acceptance criteria,
+not `cargo test` functions — `grep 'fn t5_'` across `crates/` returns nothing,
+because every `t5_` name in this project is discharged by an operator-run
+instrument plus an evidence record citing its hashed output. E0-S3 used the same
+shape; `evidence/gates/g0/e0-s3/e0-s3-g0-qualification-report-v1.md` is what one
+looks like.
+
+The instrument is a Rust example rather than a script here, because three of the
+four criteria are about the *executor* driving a real worker. A Python harness
+would re-implement the protocol client and then qualify the re-implementation
+instead of the shipped path.
+
+Build it first, then run the binary through the required namespace. `cargo run`
+inside `unshare` would resolve and compile under it, and a build is the one part
+of this that legitimately reaches a network:
+
+```text
+cargo build --package study-tts-testkit --example worker-qualification
+
+unshare --user --map-root-user --net \
+  ./target/debug/examples/worker-qualification \
+    --bundle-root . \
+    --model-root <governed model root> \
+    --voice-root <governed voice root> \
+    --output-root <fresh directory>
+```
+
+**The namespace is required, not advised.** The instrument reads `/proc/net/dev`
+and `/proc/net/route` before it creates the output root and refuses unless the
+only interface is `lo` and no IPv4 route exists, which is the same check
+`validate_network_isolation` makes for the E0-S3 harness above. ADR-0001 §17.7
+asks the worker to operate without network access, and until this existed the
+criterion read that off the worker's own diagnostics: `_apply_offline_environment`
+prints the variables it applied, which proves the worker configured
+`huggingface_hub` and `transformers` and proves nothing about the backend, a
+transitive dependency, or a socket. Flags are a request; a namespace with no
+IPv4 route is an IPv4 denial. The interfaces, IPv4 route count, and namespace
+inode are recorded in the result, so a record can read the measured isolation
+off the artifact.
+
+Every root is a required argument with no default. The governed two are named
+here only as placeholders: `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`
+keeps their real locations out of Git, CI, and logs. The output root must not
+already exist, so a rerun cannot overwrite the artifacts a previous result was
+hashed from.
+
+It prints one JSON object naming the worker bundle identity and each
+criterion's verdict, exits non-zero if any failed, and **writes that object to
+`<output root>/qualification-result.json`, reporting its SHA-256 on the last
+line**. The file is the thing an evidence record cites: a result that existed
+only in a terminal could not be hashed or cited, which an audit of the first
+E1-S3 result recorded as a finding against it. Copy that file under
+`evidence/gates/g1/e1-s3/` and cite it with the reported digest per
+`evidence/README.md`; `scripts/check-evidence-provenance.py` verifies citations
+with SHA-256, which is why the instrument reports that digest and no other.
+
+A fifth criterion, `t5_e1_worker_survives_restart_and_starts_offline`, is not one
+of the four `DELIVERY-PLAN.md` names. It is a helper criterion covering ADR-0001
+§17.7's restart and offline requirements, which nothing shared between the fake
+and the real worker exercised: both suites started one worker, rendered once and
+dropped it. It runs the same
+`run_worker_restart_contract_scenario` the T4 suite drives the protocol fake
+through, so the two ends are exercised by one function.
+
+**This is not run by `qualification.yml`, deliberately** — the same reason that
+workflow gives for its own real-model steps: naming a governed root in a public
+workflow file would put it into Git, and a scheduled run would touch artifacts
+the rights policy keeps operator-controlled.
+
+**Listening is not covered by these criteria.** They measure session behavior —
+one model load per lifetime, protocol-only stdout, staging containment, a stable
+bundle identity — and none of them listens to the audio. E1-S3 produces speech
+for the first time, so the review below is owed separately before any gate that
+depends on it.
+
+## E1-S3: the listening review
+
+Rendered by a second example, for the same reason the qualification instrument
+is one: the takes must come through `WorkerTtsExecutor`, the path production
+uses.
+
+```text
+cargo run --package study-tts-testkit --example listening-render -- \
+    --bundle-root . \
+    --model-root <governed model root> \
+    --voice-root <governed voice root> \
+    --output-root <fresh directory>
+```
+
+The words are `fixtures/listening/e1-s3-listening-script.json`, committed and
+registered in `docs/testing/TEST-DATA-MANIFEST.md` so a retake reviews the same
+text and only the audio differs. The voice profile is read from the governed
+voice root rather than named here.
+
+It renders one take per line, copies them to shuffled `sample-NN.wav` under
+`<output root>/listening/`, and writes two records beside them:
+
+- `review-sheet.json`, **pending** — five criteria and a disposition per sample,
+  all `null`. The instrument records no verdict, because the verdict is the one
+  thing it exists to ask a human for.
+- `randomization-key.json` — which line produced which sample.
+
+Answer every criterion for every sample before opening the key. Write `none`
+where nothing was heard; a blank is not a finding. Then:
+
+```text
+python3 scripts/qualification/check_listening_review.py <output root>/listening
+```
+
+That refuses an incomplete sheet, refuses one whose recorded digests no longer
+match the audio beside it, and only then prints the mapping. Publish the
+completed sheet under the governed evidence root and cite it by SHA-256.
+
+`--output-root` must not already exist: a retake takes a new root, so it cannot
+overwrite the set an earlier review is still bound to. Unlike the qualification
+instrument above, this one needs **no network namespace** — it asserts no
+offline property and produces audio for a person rather than evidence about a
+network. What to update once the checker passes is in
+`docs/operations/REVIEW-AND-ACCEPT-CYCLE.md` §3, under *Retaking a review, and
+closing it out*, rather than repeated here.
+
+**What the blinding does and does not enforce.** Nothing stops an operator
+reading `randomization-key.json` early, and the instrument does not pretend
+otherwise — the blinding is a discipline. What *is* mechanical is the binding
+between a judgment and the bytes it was made against: every finding is recorded
+under a take's SHA-256, so a review cannot be inherited by audio it was not made
+against — and a retake cannot be rendered over the old set at all, because the
+instrument refuses an `--output-root` that exists.
+
+**Retake the review whenever the audio changes**, not only when the text does.
+`ADR-0001-D007`'s edge conditioning pads and ramps every segment, so a build
+that changes it produces different samples from the same script.

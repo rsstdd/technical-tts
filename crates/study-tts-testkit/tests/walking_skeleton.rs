@@ -296,8 +296,10 @@ fn t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest() {
     assert_eq!(spec.sample_format, hound::SampleFormat::Float);
     assert_eq!(
         reader.duration(),
-        9_600,
-        "Rust assembly must write two 2,400-frame tones plus exact 75 ms and 125 ms pauses"
+        9_600 + 2 * 480,
+        "Rust assembly must write two 2,400-frame tones plus exact 75 ms and 125 ms pauses, \
+         each tone carrying the 10 ms of zero padding ADR-0001 §13.4 requires at both of its \
+         exposed edges"
     );
 
     let manifest: Value =
@@ -1326,12 +1328,27 @@ fn t3_e0_registered_fixture_checksums_match_test_data_manifest() {
     let manifest =
         std::fs::read_to_string(repository_root.join("docs/testing/TEST-DATA-MANIFEST.md"))
             .expect("read test-data manifest");
-    let fixture_directories = ["fixtures/audio", "fixtures/lessons", "fixtures/contracts"];
+    // Every directory under `fixtures/` is discovered, not a hand-written list.
+    // A list is exempt by omission: `fixtures/listening` would have been
+    // unregistered and unnoticed the day it was added, which is the opposite of
+    // what the rule below says. Discovering the directories makes the rule true
+    // rather than approximately true.
+    let mut fixture_directories: Vec<String> = std::fs::read_dir(repository_root.join("fixtures"))
+        .expect("read the fixtures root")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| format!("fixtures/{}", entry.file_name().to_string_lossy()))
+        .collect();
+    fixture_directories.sort();
+    assert!(
+        !fixture_directories.is_empty(),
+        "the fixtures root holds no directories to check"
+    );
 
-    // Every committed lesson and contract fixture is discovered rather than
-    // listed, so a new fixture cannot be added without a manifest row.
+    // Every committed fixture is discovered rather than listed, so a new
+    // fixture cannot be added without a manifest row.
     let mut checked = 0_usize;
-    for directory in fixture_directories {
+    for directory in &fixture_directories {
         for entry in std::fs::read_dir(repository_root.join(directory))
             .expect("read registered fixture directory")
         {

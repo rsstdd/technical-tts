@@ -19,7 +19,7 @@ are enforced here because they cannot be enforced anywhere else in this process:
 * **Unknown fields are refused, at every depth.** This is a project-owned
   format, so a field this worker cannot honor is an error rather than something
   to ignore -- the requester would otherwise believe it had been applied. The
-  shapes below mirror ``schemas/worker-protocol-v1.schema.json``, which
+  shapes below mirror ``schemas/worker-protocol-v2.schema.json``, which
   describes each method's parameters and not only the frame that carries them.
 
 :class:`Object`, :func:`check_object`, and the field checks beside them carry no
@@ -114,7 +114,7 @@ UNSIGNED_32_MAXIMUM: Final[int] = 2**32 - 1
 width, so without this a frame carrying ``4294967296`` was answered here and
 dropped by ``serde_json`` there -- the sender seeing a response for a request
 its counterpart never accepted.
-``schemas/worker-protocol-v1.schema.json`` publishes the same ceilings from the
+``schemas/worker-protocol-v2.schema.json`` publishes the same ceilings from the
 Rust types, in ``study_tts_runtime::schemas::publish_integer_bounds``.
 """
 
@@ -320,6 +320,22 @@ def nested(shape: Object) -> Check:
     return lambda value, path: check_object(value, shape, path)
 
 
+def string_map(value: Any, path: str) -> None:
+    """Accepts an object of arbitrary keys whose values are all strings.
+
+    For a record whose *field names* are not this build's to fix --
+    ``generation_parameters`` is the one case -- so :class:`Object` cannot
+    describe it. The values are still checked, because they reach the synthesis
+    key as text: ADR-0001 §12.5 admits no floating point into an identity, so
+    the launcher records each parameter's exact spelling and this refuses a
+    launcher that wrote one as a number instead.
+    """
+    if not isinstance(value, dict):
+        raise FrameError(f"`{path}` is not a JSON object")
+    for name in sorted(value):
+        text(value[name], f"{path}.{name}")
+
+
 def nullable(shape: Object) -> Check:
     """Checks an optional-by-null object, which ``null`` satisfies."""
 
@@ -336,6 +352,10 @@ _INITIALIZE_PARAMETERS: Final[Object] = Object(
     required={
         "worker_bundle_hash": blake3_hex,
         "threads": positive(UNSIGNED_32_MAXIMUM),
+        # The one directory the worker may write inside. Required rather than
+        # optional: a worker that defaulted the boundary would confine writes to
+        # somewhere the supervisor never chose, which is not containment.
+        "staging_root": text,
     }
 )
 

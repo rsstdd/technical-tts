@@ -12,8 +12,9 @@ pub use json_schema::validate_against_schema;
 pub use contracts::{
     FakeCachePublisher, FakeJobCall, FakePackageCall, FakePackageWriter, InMemoryJobRepository,
     RecordingCachePublisher, RecordingJobRepository, RecordingPackageWriter, RecordingTtsExecutor,
-    SeamEventLog, run_cache_contract_scenario, run_job_repository_contract_scenario,
-    run_package_writer_contract_scenario, run_tts_executor_contract_scenario,
+    SeamEventLog, WorkerLifetimeOutcome, run_cache_contract_scenario,
+    run_job_repository_contract_scenario, run_package_writer_contract_scenario,
+    run_tts_executor_contract_scenario, run_worker_restart_contract_scenario,
 };
 
 use std::{
@@ -30,7 +31,7 @@ use std::{
 
 use study_tts_core::{
     CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_RATE, DeterminismClass,
-    LanguageTag,
+    LanguageTag, VoiceConditioningHash,
 };
 use study_tts_runtime::{
     BackendDescriptor, BackendError, SynthesisReport, SynthesisRequest,
@@ -42,8 +43,22 @@ use study_tts_runtime::{
 /// A fixed well-formed digest rather than a hash of anything: this executor has
 /// no Python bundle to hash, and a constant keeps its cache keys stable across
 /// runs while staying distinct from any real bundle's.
-pub const DETERMINISTIC_TONE_BUNDLE_HASH: &str =
-    "0000000000000000000000000000000000000000000000000000000000000001";
+pub const DETERMINISTIC_TONE_BUNDLE_HASH: &str = study_tts_runtime::PROTOCOL_FAKE_BUNDLE_HASH;
+
+/// The conditioning artifact a synthetic voice root holds for `profile_id`.
+///
+/// The protocol fake has no voice directory to read, so it content-addresses an
+/// imaginary one: this *is* its voice root, expressed as a function. That makes
+/// it a real resolver rather than an echo — it derives the digest from the
+/// profile identity it was asked for, exactly as the Chatterbox worker derives
+/// one from the profile record it opens — so the cache's identity gate can be
+/// exercised against it. A plan naming a profile the fake resolves differently
+/// derives a different key and is refused, which is the behavior
+/// `t4_e1_a_worker_resolving_another_voice_is_refused` reads.
+#[must_use]
+pub fn deterministic_tone_conditioning(profile_id: &str) -> VoiceConditioningHash {
+    blake3::hash(profile_id.as_bytes()).into()
+}
 
 /// Voice-profile identity the deterministic tone executor reports.
 ///
@@ -237,6 +252,19 @@ impl FakeTtsExecutor {
 
         let language = request.language.clone();
         let voice = request.voice.clone();
+        let profile = request.voice_profile.clone();
+        // The artifact the request names, which is what a worker reading the
+        // same governed voice root would compute: `write_voice_profile_root`
+        // hashes the conditioning file's bytes, and this executor has no voice
+        // root to read them from. Deriving one here instead — from the profile
+        // id, say — would report an artifact no voice root contains, and the
+        // cache's identity gate would refuse every publication.
+        //
+        // So the gate stays a tautology *for this double*, and that is a
+        // property of the double rather than of the gate. What discharges it is
+        // `WorkerTtsExecutor`, which reports the artifact the worker read from
+        // disk; `docs/architecture/E1-S2-INTERFACE-CHANGE-001.md` §Limits this
+        // change does not close records the debt, and E1-S3 pays it there.
         let conditioning = request.voice_conditioning_hash.clone();
         self.synthesized_texts
             .lock()
@@ -261,25 +289,17 @@ impl FakeTtsExecutor {
             // hash unrelated to its descriptor's — is exactly the drift the
             // cache's identity gate refuses, so a fake that did it could never
             // publish and would stop being a usable double.
-            // The conditioning artifact comes from the request rather than
-            // from anywhere this fake could invent one: a real worker reports
-            // the artifact it loaded, and echoing the requested one is the
-            // closest a fake that loads nothing can honestly get. A hash made
-            // up here would name a cache entry no voice produced, and the
-            // cache's identity gate would refuse it — which is the point.
-            //
-            // The echo is also why that gate proves nothing yet.
-            // `docs/architecture/E1-S2-INTERFACE-CHANGE-001.md` §Limits this
-            // change does not close records it as owed to `DELIVERY-PLAN.md`
-            // E1-S3: the Chatterbox worker must report the artifact it read
-            // from disk, never the value it was handed, or the comparison
-            // stays a tautology that this suite cannot catch.
+            // One artifact, reported in both places. The two halves of a
+            // report are cross-checked before publication, so a double naming
+            // one artifact here and another in `voice_conditioning_hash` would
+            // be producing a report no worker may send — which is what
+            // the cache test named for a report that contradicts itself
+            // refuses.
             context: self
                 .descriptor()
-                .synthesis_context(language, BTreeMap::from([(voice, conditioning)])),
-            voice_profile_hash: DETERMINISTIC_TONE_VOICE_PROFILE_HASH
-                .parse()
-                .expect("the fake voice profile hash is a well-formed digest"),
+                .synthesis_context(language, BTreeMap::from([(voice, conditioning.clone())])),
+            voice_conditioning_hash: conditioning,
+            voice_profile: profile,
         })
     }
 }
@@ -314,6 +334,15 @@ pub struct VoiceProfileFixtureSpec {
     pub consent_status: String,
     /// Value of `approval` in `profile.json`.
     pub approval: String,
+    /// Values of `permitted_use` in `consent.json`.
+    ///
+    /// A field rather than a fixed list because the scope is what decides
+    /// which [`study_tts_core::VoiceUse`] a fixture admits, and the two uses
+    /// belong to different callers: a build renders a lesson under
+    /// `private_synthesis`, while the committed instruments under `examples/`
+    /// render qualification material that never reaches one. A fixture that
+    /// permitted both by default would make the scope check unobservable.
+    pub permitted_use: Vec<String>,
     /// Whether `consent.json` is written at all.
     pub write_consent: bool,
 }
@@ -324,6 +353,7 @@ impl Default for VoiceProfileFixtureSpec {
             profile_id: "synthetic-test-voice-v1".to_owned(),
             consent_status: "granted".to_owned(),
             approval: "approved".to_owned(),
+            permitted_use: vec!["private_synthesis".to_owned()],
             write_consent: true,
         }
     }
@@ -388,7 +418,7 @@ pub fn write_voice_profile_fixture(dir: &Path, spec: &VoiceProfileFixtureSpec) -
         let consent = serde_json::json!({
             "schema_version": "0.1-voice",
             "declaration": "Synthetic test fixture; generated tone, no human voice.",
-            "permitted_use": ["private_synthesis"],
+            "permitted_use": spec.permitted_use,
             "reference_wav_blake3": reference_hash,
             "created": "2026-08-23",
             "consent_status": spec.consent_status,

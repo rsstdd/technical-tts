@@ -28,12 +28,12 @@ use serde::Deserialize;
 
 use crate::error::{
     EnvironmentMismatch, RuntimeIdentityMismatch, WorkerBundleError, WorkerLockfileErrorReason,
-    WorkerLockfileLocus,
+    WorkerLockfileLocus, WorkerRequirementFault,
 };
 use crate::process::{self, CommandRunError, WORKER_ENVIRONMENT_PROBE_POLICY};
 use crate::worker_bundle::{
     BUNDLE_MANIFEST_PATH, BundleManifest, PythonRuntimeIdentity, StartupModuleName,
-    WORKER_LOCKFILE_PATH, deserialize_optional_record_digest,
+    WORKER_LOCKFILE_PATH, WORKER_REQUIREMENTS_PATH, deserialize_optional_record_digest,
 };
 use crate::{BuildError, ToolInvocation, ToolOperation, tools};
 
@@ -292,7 +292,9 @@ struct LockedDistribution {
 /// # Errors
 ///
 /// [`WorkerBundleError::UnreadableWorkerLockfile`] when the lock is not UTF-8
-/// or does not parse, [`WorkerBundleError::UnreadableRuntimeIdentity`] when the
+/// or does not parse, [`WorkerBundleError::RequirementsDisagreeWithLock`] when
+/// a declared requirement is not what the lock resolved,
+/// [`WorkerBundleError::UnreadableRuntimeIdentity`] when the
 /// interpreter answers with something this build cannot read,
 /// [`WorkerBundleError::RuntimeIdentityMismatch`] when it disagrees with the
 /// manifest, and [`WorkerBundleError::EnvironmentDoesNotMatchLock`] when what
@@ -302,6 +304,7 @@ pub(crate) fn check(
     resolved: &Path,
     manifest: &BundleManifest,
     lockfile: &[u8],
+    requirements: Option<&[u8]>,
 ) -> Result<(), BuildError> {
     let lockfile = std::str::from_utf8(lockfile).map_err(|_| {
         unreadable_lockfile(
@@ -310,6 +313,13 @@ pub(crate) fn check(
         )
     })?;
     let pins = parse_lockfile(lockfile)?;
+    // Before the probe rather than after it: this compares two files already
+    // in hand, so a bundle whose own two declarations disagree is refused for
+    // free rather than after the seconds `check_recorded_files_are_intact`
+    // spends reading every locked distribution.
+    if let Some(requirements) = requirements {
+        check_requirements_match_lock(requirements, &pins)?;
+    }
     let names: Vec<&str> = pins.iter().map(|pin| pin.name.as_str()).collect();
     let probe = probe_runtime(interpreter, resolved, &names)?;
     check_runtime_matches_manifest(interpreter, manifest, &probe.runtime)?;
@@ -844,6 +854,159 @@ fn parse_lockfile(lockfile: &str) -> Result<Vec<LockedDistribution>, BuildError>
     Ok(pins)
 }
 
+/// Version operators a PEP 508 requirement may carry, longest first.
+///
+/// The order is load-bearing: matched shortest-first, `===` would be read as
+/// `==` and `>=` as `>`, so an inexact requirement would be reconciled as
+/// though it pinned one version.
+const REQUIREMENT_OPERATORS: [&str; 8] = ["===", "==", "~=", "!=", ">=", "<=", ">", "<"];
+
+/// The non-alphanumeric characters PEP 503 allows in a distribution name.
+const REQUIREMENT_NAME_CHARACTERS: [char; 3] = ['.', '_', '-'];
+
+/// Refuses a `worker/pyproject.toml` requirement `worker/requirements.lock`
+/// does not resolve.
+///
+/// The gap between two declared bundle inputs that nothing compared. The lock
+/// is what the environment is restored from and what the installed
+/// distributions are checked against; `worker/pyproject.toml` only *states*
+/// what should be resolved, and both reach the identity as bytes. So a
+/// dependency bot that raised the declaration and could not regenerate the
+/// lock moved every cache key in the project while the resolved set, the
+/// installed environment, and the audio all stayed where they were.
+/// Named in return by
+/// `docs/operations/WORKER-ENVIRONMENT.md`
+/// §The declaration is reconciled with the lock.
+///
+/// **Scanned over the whole file rather than the two tables that hold the
+/// requirements today.** A pin added under `[project.optional-dependencies]`
+/// would otherwise be declared and silently unchecked, and a check with a
+/// blind spot is worse than one whose scope is stated: every version-bearing
+/// requirement anywhere in the file must be the version the lock resolved.
+/// A quoted string carrying no version operator is not a requirement and is
+/// skipped — `packages = ["study_tts_worker"]` is one — so a bare name with no
+/// version at all is outside what this reconciles.
+///
+/// The comparison is one-directional. The lock resolves the transitive set and
+/// pins far more than the declaration names, so a pin no requirement mentions
+/// is correct rather than surplus.
+///
+/// # Errors
+///
+/// [`WorkerBundleError::RequirementsDisagreeWithLock`] carrying
+/// [`WorkerRequirementFault::Unreadable`] for a TOML string spelling this
+/// reader does not implement — a multi-line string, an escaped quote, a
+/// single-quoted literal, or an unterminated extras bracket —
+/// [`WorkerRequirementFault::NotAnExactPin`] for a range or direct reference,
+/// [`WorkerRequirementFault::NotLocked`] for a requirement no pin resolves, and
+/// [`WorkerRequirementFault::LockedAtAnotherVersion`] for one the lock
+/// resolves differently.
+fn check_requirements_match_lock(
+    requirements: &[u8],
+    pins: &[LockedDistribution],
+) -> Result<(), BuildError> {
+    let requirements = std::str::from_utf8(requirements)
+        .map_err(|_| requirement_fault(WorkerRequirementFault::Unreadable))?;
+    // Comments are prose, not TOML strings, and the guard below reads the
+    // whole file: an apostrophe in a sentence would otherwise refuse a bundle
+    // for describing itself. Whole-line comments only — a trailing one after a
+    // value is still scanned, which is the safe direction.
+    let requirements: String = requirements
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Every spelling this reader does not implement is refused rather than
+    // skipped, because a requirement this scan cannot see is one nothing
+    // reconciles while it still looks declared — the strongest way for a check
+    // to fail. The first two desynchronize the split below; a single-quoted
+    // TOML literal is simply never visited by it.
+    if requirements.contains("\"\"\"")
+        || requirements.contains("\\\"")
+        || requirements.contains('\'')
+    {
+        return Err(requirement_fault(WorkerRequirementFault::Unreadable));
+    }
+
+    // Odd elements of a split on the quote character are the string contents.
+    for requirement in requirements.split('"').skip(1).step_by(2) {
+        let name_length = requirement
+            .find(|character: char| {
+                !character.is_ascii_alphanumeric()
+                    && !REQUIREMENT_NAME_CHARACTERS.contains(&character)
+            })
+            .unwrap_or(requirement.len());
+        let (name, rest) = requirement.split_at(name_length);
+        let rest = rest.trim_start();
+        if name.is_empty() || rest.is_empty() {
+            continue;
+        }
+        let distribution = canonicalize_distribution_name(name);
+
+        // PEP 508 extras sit between the name and the operator. They select
+        // optional dependencies *of this same distribution*, so the pin that
+        // resolves it is unchanged and only the operator search needs to step
+        // over them — without this the search failed and the requirement was
+        // skipped, reconciled by nobody while still looking declared.
+        let rest = match rest.strip_prefix('[') {
+            Some(after) => match after.split_once(']') {
+                Some((_, after_extras)) => after_extras.trim_start(),
+                // An unterminated bracket is a spelling this reader does not
+                // implement, and skipping it would drop the requirement.
+                None => return Err(requirement_fault(WorkerRequirementFault::Unreadable)),
+            },
+            None => rest,
+        };
+
+        // A direct reference names a tree rather than a released version, so
+        // there is nothing for the lock to resolve it against.
+        if rest.starts_with('@') {
+            return Err(requirement_fault(WorkerRequirementFault::NotAnExactPin {
+                distribution,
+            }));
+        }
+        let Some(operator) = REQUIREMENT_OPERATORS
+            .iter()
+            .find(|operator| rest.starts_with(**operator))
+        else {
+            continue;
+        };
+        if *operator != "==" {
+            return Err(requirement_fault(WorkerRequirementFault::NotAnExactPin {
+                distribution,
+            }));
+        }
+
+        let declared = rest[operator.len()..].trim().to_owned();
+        let Some(pin) = pins.iter().find(|pin| pin.name == distribution) else {
+            return Err(requirement_fault(WorkerRequirementFault::NotLocked {
+                distribution,
+                declared,
+            }));
+        };
+        if pin.version != declared {
+            return Err(requirement_fault(
+                WorkerRequirementFault::LockedAtAnotherVersion {
+                    distribution,
+                    declared,
+                    locked: pin.version.clone(),
+                },
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Publishes a reconciliation fault as the refusal that names the file.
+fn requirement_fault(fault: WorkerRequirementFault) -> BuildError {
+    WorkerBundleError::RequirementsDisagreeWithLock {
+        path: PathBuf::from(WORKER_REQUIREMENTS_PATH),
+        fault: Box::new(fault),
+    }
+    .into()
+}
+
 /// Canonicalizes a distribution name the way PEP 503 defines it.
 ///
 /// `packaging.utils.canonicalize_name` on the probe's side, written out here
@@ -1070,11 +1233,11 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::WorkerBundle;
     use crate::worker_bundle::{
-        DeclaredDistributionRecord, DeclaredStartupModule,
+        DeclaredDistributionRecord, DeclaredStartupModule, WORKER_REQUIREMENTS_PATH,
         tests::{RuntimeMutation, bundle, bundle_copy, write_manifest},
     };
+    use crate::{WorkerBundle, WorkerRequirementFault};
     /// How long [`install_executable`] waits for a script it just wrote to
     /// become runnable.
     ///
@@ -2865,6 +3028,261 @@ mod tests {
                 BuildError::Tool(crate::ToolError::MissingTool { .. })
             ),
             "expected the interpreter to be missing, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn t1_e1_a_requirement_the_lock_does_not_resolve_is_refused() {
+        // The defect this closes actually happened: a dependency bot raised
+        // `torch` in `worker/pyproject.toml` and could not regenerate the
+        // lock, so two declared bundle inputs named different versions of one
+        // distribution. Nothing compared them, and the bundle identity moved
+        // for a change the worker never loads.
+        let pins = vec![
+            LockedDistribution {
+                name: "torch".to_owned(),
+                version: "2.6.0+cpu".to_owned(),
+                governed_commit: None,
+            },
+            LockedDistribution {
+                name: "setuptools".to_owned(),
+                version: "78.1.0".to_owned(),
+                governed_commit: None,
+            },
+        ];
+        let cases: [(&str, WorkerRequirementFault); 4] = [
+            (
+                r#"dependencies = ["torch==2.13.0"]"#,
+                WorkerRequirementFault::LockedAtAnotherVersion {
+                    distribution: "torch".to_owned(),
+                    declared: "2.13.0".to_owned(),
+                    locked: "2.6.0+cpu".to_owned(),
+                },
+            ),
+            (
+                r#"dependencies = ["numpy==2.5.2"]"#,
+                WorkerRequirementFault::NotLocked {
+                    distribution: "numpy".to_owned(),
+                    declared: "2.5.2".to_owned(),
+                },
+            ),
+            (
+                r#"dependencies = ["torch>=2.6.0"]"#,
+                WorkerRequirementFault::NotAnExactPin {
+                    distribution: "torch".to_owned(),
+                },
+            ),
+            (
+                r#"dependencies = ["torch @ file:///models/torch"]"#,
+                WorkerRequirementFault::NotAnExactPin {
+                    distribution: "torch".to_owned(),
+                },
+            ),
+        ];
+
+        for (requirements, expected) in cases {
+            let error = check_requirements_match_lock(requirements.as_bytes(), &pins)
+                .expect_err("a requirement the lock does not resolve must not hash");
+
+            let BuildError::WorkerBundle(WorkerBundleError::RequirementsDisagreeWithLock {
+                fault,
+                ..
+            }) = &error
+            else {
+                panic!("`{requirements}` produced the wrong error: {error:?}");
+            };
+            assert_eq!(fault.as_ref(), &expected, "case `{requirements}`");
+            // A wrongly written requirement is exactly where a direct
+            // reference to the governed model root appears, and
+            // `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` keeps that path
+            // out of logs.
+            assert!(
+                !error.to_string().contains("file:///"),
+                "a refusal must not print the requirement text: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e1_a_requirement_agreeing_with_the_lock_is_accepted() {
+        // The other half of the case above: the reconciliation must accept the
+        // spellings the checked-in files actually use — a `+cpu` local version,
+        // a name whose canonical form differs from its declared one, and the
+        // quoted strings in the file that are not requirements at all.
+        let pins = vec![
+            LockedDistribution {
+                name: "chatterbox-tts".to_owned(),
+                version: "0.1.2".to_owned(),
+                governed_commit: Some("0".repeat(40)),
+            },
+            LockedDistribution {
+                name: "torch".to_owned(),
+                version: "2.6.0+cpu".to_owned(),
+                governed_commit: None,
+            },
+        ];
+        let requirements = concat!(
+            "[project]\n",
+            "name = \"study-tts-worker\"\n",
+            "version = \"0.1.0\"\n",
+            "requires-python = \"==3.12.*\"\n",
+            "dependencies = [\n",
+            "  \"Chatterbox_TTS==0.1.2\",\n",
+            "  \"torch == 2.6.0+cpu  \",\n",
+            "]\n",
+            "[tool.setuptools]\n",
+            "packages = [\"study_tts_worker\"]\n",
+        );
+
+        check_requirements_match_lock(requirements.as_bytes(), &pins)
+            .expect("requirements agreeing with the lock are accepted");
+    }
+
+    #[test]
+    fn t1_e1_a_requirement_the_scan_cannot_see_is_refused_rather_than_skipped() {
+        // The reconciliation is only worth having if everything it does not
+        // understand is refused. A single-quoted TOML string is a valid
+        // requirement this scan never visits, so before this it passed by being
+        // invisible — the strongest way for a check to fail.
+        let unseen = concat!(
+            "[project]\n",
+            "dependencies = [\n",
+            "  'torch==9.9.9',\n",
+            "]\n",
+        );
+
+        let error = check_requirements_match_lock(unseen.as_bytes(), &[])
+            .expect_err("a requirement spelling this scan cannot see must not hash");
+
+        let BuildError::WorkerBundle(WorkerBundleError::RequirementsDisagreeWithLock {
+            fault, ..
+        }) = &error
+        else {
+            panic!("the wrong error was produced: {error:?}");
+        };
+        assert_eq!(fault.as_ref(), &WorkerRequirementFault::Unreadable);
+    }
+
+    #[test]
+    fn t1_e1_a_comment_is_not_mistaken_for_a_requirement_spelling() {
+        // The guard above reads the file, and prose is part of the file. A
+        // refusal triggered by an apostrophe in a comment would make the
+        // reconciliation impossible to document.
+        let pins = vec![LockedDistribution {
+            name: "torch".to_owned(),
+            version: "2.6.0+cpu".to_owned(),
+            governed_commit: None,
+        }];
+        let commented = concat!(
+            "# The worker's dependencies are pinned exactly, never by range.\n",
+            "[project]\n",
+            "dependencies = [\n",
+            "  \"torch==2.6.0+cpu\",\n",
+            "]\n",
+        );
+
+        check_requirements_match_lock(commented.as_bytes(), &pins)
+            .expect("an apostrophe in a comment is prose, not a string spelling");
+    }
+
+    #[test]
+    fn t1_e1_a_requirement_naming_extras_is_still_reconciled() {
+        // PEP 508 extras sit between the name and the operator, so the operator
+        // search failed and the requirement was skipped — reconciled by nobody
+        // while looking declared. The extras select optional dependencies of
+        // the same distribution, so the pin that resolves it is the same one.
+        let pins = vec![LockedDistribution {
+            name: "torch".to_owned(),
+            version: "2.6.0+cpu".to_owned(),
+            governed_commit: None,
+        }];
+        let with_extras = concat!(
+            "[project]\n",
+            "dependencies = [\n",
+            "  \"torch[opt]==9.9.9\",\n",
+            "]\n",
+        );
+
+        let error = check_requirements_match_lock(with_extras.as_bytes(), &pins)
+            .expect_err("a requirement naming extras must still be reconciled");
+
+        let BuildError::WorkerBundle(WorkerBundleError::RequirementsDisagreeWithLock {
+            fault, ..
+        }) = &error
+        else {
+            panic!("the wrong error was produced: {error:?}");
+        };
+        assert_eq!(
+            fault.as_ref(),
+            &WorkerRequirementFault::LockedAtAnotherVersion {
+                distribution: "torch".to_owned(),
+                declared: "9.9.9".to_owned(),
+                locked: "2.6.0+cpu".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn t1_e1_a_requirements_string_this_build_cannot_read_is_refused() {
+        // A refusal rather than a best effort: both spellings desynchronize the
+        // scan, and a desynchronized scan drops requirements out of the
+        // comparison without saying so.
+        for unreadable in [
+            "description = \"\"\"multi\nline\"\"\"\n",
+            "description = \"an \\\"escaped\\\" quote\"\n",
+        ] {
+            let error = check_requirements_match_lock(unreadable.as_bytes(), &[])
+                .expect_err("a string spelling this build does not read must not hash");
+
+            let BuildError::WorkerBundle(WorkerBundleError::RequirementsDisagreeWithLock {
+                fault,
+                ..
+            }) = &error
+            else {
+                panic!("`{unreadable}` produced the wrong error: {error:?}");
+            };
+            assert_eq!(fault.as_ref(), &WorkerRequirementFault::Unreadable);
+        }
+    }
+
+    #[test]
+    fn t4_e1_a_requirements_declaration_the_lock_contradicts_is_refused() {
+        // The wiring, which the unit cases above cannot see: the reconciliation
+        // runs inside `verified_hash`, over the file the manifest declares, and
+        // before the probe reads a single locked distribution.
+        let root = bundle_copy();
+        let bundle = bundle_declaring_records(&root);
+        install_interpreter(&root, &matching_answer(&root, &bundle));
+
+        let path = root.path().join(WORKER_REQUIREMENTS_PATH);
+        let original = fs::read_to_string(&path).expect("the copied declaration is readable");
+        assert!(
+            original.contains("\"torch==2.6.0+cpu\""),
+            "the checked-in declaration is expected to pin torch exactly"
+        );
+        fs::write(
+            &path,
+            original.replace("\"torch==2.6.0+cpu\"", "\"torch==2.13.0\""),
+        )
+        .expect("the declaration is writable");
+
+        let error = bundle
+            .verified_hash()
+            .expect_err("a declaration the lock contradicts must not hash");
+
+        let BuildError::WorkerBundle(WorkerBundleError::RequirementsDisagreeWithLock {
+            fault, ..
+        }) = &error
+        else {
+            panic!("the wrong error was produced: {error:?}");
+        };
+        assert_eq!(
+            fault.as_ref(),
+            &WorkerRequirementFault::LockedAtAnotherVersion {
+                distribution: "torch".to_owned(),
+                declared: "2.13.0".to_owned(),
+                locked: "2.6.0+cpu".to_owned(),
+            }
         );
     }
 }

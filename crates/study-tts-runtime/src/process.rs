@@ -226,7 +226,7 @@ struct SupervisedChild {
 
 #[cfg(target_os = "linux")]
 #[derive(Debug, Default)]
-struct ProcessOwnership {
+pub(crate) struct ProcessOwnership {
     root_pid: Option<i32>,
     descendants: Vec<OwnedProcess>,
 }
@@ -247,11 +247,19 @@ struct ProcessRecord {
     pid: i32,
     parent_pid: i32,
     start_time_ticks: u64,
+    /// Whether the process has exited and is only waiting to be reaped.
+    ///
+    /// Recorded because identity cannot answer it: a zombie keeps its `/proc`
+    /// entry and the start time it always had. It holds nothing containment is
+    /// about — no open file, no resident model, no staging directory — so
+    /// counting it live would spend `TERMINATION_OBSERVATION_GRACE` and then
+    /// report a containment failure that did not happen.
+    is_zombie: bool,
 }
 
 #[cfg(not(target_os = "linux"))]
 #[derive(Debug, Default)]
-struct ProcessOwnership;
+pub(crate) struct ProcessOwnership;
 
 /// Runs one command with concurrent bounded capture and process-tree cleanup.
 ///
@@ -799,7 +807,7 @@ fn configure_capture_pipe<T>(_pipe: &T) -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 impl ProcessOwnership {
-    fn for_child(child: &Child) -> io::Result<Self> {
+    pub(crate) fn for_child(child: &Child) -> io::Result<Self> {
         let root_pid =
             i32::try_from(child.id()).map_err(|_| io::Error::other("child PID overflow"))?;
         Ok(Self {
@@ -808,7 +816,7 @@ impl ProcessOwnership {
         })
     }
 
-    fn refresh(&mut self) -> io::Result<()> {
+    pub(crate) fn refresh(&mut self) -> io::Result<()> {
         use rustix::process::{Pid, PidfdFlags, pidfd_open};
 
         let Some(root_pid) = self.root_pid else {
@@ -922,8 +930,12 @@ fn read_process_record(pid: i32) -> Option<ProcessRecord> {
         .1
         .split_ascii_whitespace()
         .collect::<Vec<_>>();
+    // Indices are into the fields *after* the comm field, which is split off
+    // above because a process may name itself `) 1 2 3`: state is the first,
+    // then parent PID, and start time is the twentieth.
     Some(ProcessRecord {
         pid,
+        is_zombie: fields.first()? == &"Z",
         parent_pid: fields.get(1)?.parse().ok()?,
         start_time_ticks: fields.get(19)?.parse().ok()?,
     })
@@ -931,16 +943,17 @@ fn read_process_record(pid: i32) -> Option<ProcessRecord> {
 
 #[cfg(target_os = "linux")]
 fn process_identity_is_live(pid: i32, start_time_ticks: u64) -> bool {
-    read_process_record(pid).is_some_and(|process| process.start_time_ticks == start_time_ticks)
+    read_process_record(pid)
+        .is_some_and(|process| process.start_time_ticks == start_time_ticks && !process.is_zombie)
 }
 
 #[cfg(not(target_os = "linux"))]
 impl ProcessOwnership {
-    fn for_child(_child: &Child) -> io::Result<Self> {
+    pub(crate) fn for_child(_child: &Child) -> io::Result<Self> {
         Ok(Self)
     }
 
-    fn refresh(&mut self) -> io::Result<()> {
+    pub(crate) fn refresh(&mut self) -> io::Result<()> {
         Ok(())
     }
 }
@@ -964,14 +977,14 @@ fn child_has_exited(child: &mut Child) -> io::Result<bool> {
 }
 
 #[cfg(unix)]
-fn configure_process_group(command: &mut Command) {
+pub(crate) fn configure_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
 
     command.process_group(0);
 }
 
 #[cfg(not(unix))]
-fn configure_process_group(_command: &mut Command) {}
+pub(crate) fn configure_process_group(_command: &mut Command) {}
 
 #[cfg(unix)]
 fn child_pid(child: &Child) -> io::Result<rustix::process::Pid> {
@@ -981,7 +994,7 @@ fn child_pid(child: &Child) -> io::Result<rustix::process::Pid> {
     Pid::from_raw(raw_pid).ok_or_else(|| io::Error::other("child PID was zero"))
 }
 
-fn terminate(
+pub(crate) fn terminate(
     mut child: Child,
     invocation: &ToolInvocation,
     mut ownership: ProcessOwnership,
@@ -1371,6 +1384,52 @@ mod tests {
                 if matches!(*primary, ToolError::ToolTimedOut { timeout_ms: 20, .. })
                     && matches!(*cleanup, ToolError::ToolTerminationSignalFailed { .. })
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn t4_e0_a_descendant_waiting_to_be_reaped_is_not_counted_as_live() {
+        // A zombie keeps its `/proc` entry and the start time it always had, so
+        // process *identity* cannot tell it from a running process — and it
+        // holds none of what containment is about: no open file, no resident
+        // model, no staging directory. Counting it live makes
+        // `wait_for_containment` spend its whole grace and then report
+        // `ToolTerminationTimedOut`, a containment failure that did not happen.
+        // Since E1-S3 that reaches the caller as "the worker tree was not
+        // contained afterwards", so a false positive is now read by an operator
+        // rather than swallowed.
+        //
+        // `child_has_exited` is what leaves one behind: it observes with
+        // `WNOWAIT` precisely so the group stays signallable, which is the
+        // property `t4_e0_exit_observation_keeps_process_group_leader_waitable`
+        // below pins.
+        let directory = TempDir::new().expect("create stand-in directory");
+        let executable = stand_in(directory.path(), "immediate-exit", "exit 0");
+        let mut child = stand_in_command(executable)
+            .spawn()
+            .expect("start stand-in child");
+        let pid = i32::try_from(child.id()).expect("the child PID fits");
+        let record = super::read_process_record(pid).expect("a live child has a /proc entry");
+
+        let exited = (0..200).any(|_| {
+            if super::child_has_exited(&mut child).expect("observe child exit") {
+                true
+            } else {
+                thread::sleep(Duration::from_millis(10));
+                false
+            }
+        });
+        assert!(exited, "stand-in child did not exit");
+
+        // Read before the reap, and reaped before the assertion, so a failure
+        // does not leave the zombie behind for the rest of the suite.
+        let live = super::process_identity_is_live(pid, record.start_time_ticks);
+        child.wait().expect("reap the stand-in child");
+
+        assert!(
+            !live,
+            "a process waiting only to be reaped must not count as a live descendant"
+        );
     }
 
     #[cfg(unix)]

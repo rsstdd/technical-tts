@@ -21,9 +21,9 @@ record or the governing change-control document in return.
 
 | Contract ID / version | Owner and public representation | Consumers | Fake, fixtures, and unchanged shared suite | Identity effect | Stabilization story |
 |---|---|---|---|---|---|
-| `tts_executor` / `e1.tts-executor.2.0` | T-WORKER; `study_tts_runtime::TtsExecutor`, `BackendDescriptor`, `SynthesisRequest`, `SynthesisReport`, `BackendError` | Preview orchestration; E1-S3 worker pool | `study_tts_testkit::FakeTtsExecutor`; `run_tts_executor_contract_scenario`; descriptor fixtures under `fixtures/contracts/` | every `BackendDescriptor` field but `contract_version` and `max_text_bytes` affects every synthesis key, as does `SynthesisRequest::voice_conditioning_hash`; backend and worker identities in a report become artifact provenance | E1-S1/E1-S3; frozen at G1 only after the capacity-one Chatterbox adapter passes the suite |
-| `worker_frames` / baseline `e1.worker.1.0`; declared optional extension `e1.worker.1.1` | T-WORKER; strict `WorkerRequestFrame` and `WorkerResponseFrame` in `study-tts-runtime/src/worker_protocol.rs` | Future Rust worker client and executable worker | `fake-ndjson-worker`; valid, malformed, incompatible-version, and compatible-extension NDJSON fixtures; `fixtures/contracts/e1-s1-worker-protocol-cases.ndjson`, the committed decisions both the Rust and the Python end must make alike; `t3_e0_contract_change_requires_version_or_explicit_compatible_extension`, `t3_e1_both_protocol_ends_decide_the_committed_cases_alike`, and frame-boundary tests | Executable protocol interpretation is a worker-bundle input and therefore synthesis-affecting | E1-S1/E1-S3; security and real-worker protocol suites must pass before G1 |
-| `cache_publication` / `e0.cache-publication.1.0` | T-AUDIO; `CachePublisher`, `CacheResolveRequest`, `StagedAudioProducer`, and opaque `ValidatedCachedArtifact` with read-only accessors | Preview orchestration, PCM assembly, manifest writer | `FakeCachePublisher`; `run_cache_contract_scenario`; deterministic worker WAV | Cache-layout or acceptance changes affect reusable artifacts; speech-affecting acceptance changes require synthesis-identity review | E1-S3, E2-S1, E2-S2, and E4 cache/recovery/prune work; frozen after fake and filesystem adapters pass at G1 |
+| `tts_executor` / `e1.tts-executor.3.0` | T-WORKER; `study_tts_runtime::TtsExecutor`, `BackendDescriptor`, `SynthesisRequest`, `SynthesisReport`, `BackendError` | Preview orchestration; E1-S3 worker pool | `study_tts_testkit::FakeTtsExecutor`; `run_tts_executor_contract_scenario`; descriptor fixtures under `fixtures/contracts/` | every `BackendDescriptor` field but `contract_version` and `max_text_bytes` affects every synthesis key, as does `SynthesisRequest::voice_conditioning_hash`; backend and worker identities in a report become artifact provenance | E1-S1/E1-S3; frozen at G1 only after the capacity-one Chatterbox adapter passes the suite |
+| `worker_frames` / baseline `e1.worker.2.0`; declared optional extension `e1.worker.2.1` | T-WORKER; strict `WorkerRequestFrame` and `WorkerResponseFrame` in `study-tts-runtime/src/worker_protocol.rs` | Future Rust worker client and executable worker | `fake-ndjson-worker`; valid, malformed, incompatible-version, and compatible-extension NDJSON fixtures; `fixtures/contracts/e1-s1-worker-protocol-cases.ndjson`, the committed decisions both the Rust and the Python end must make alike; `t3_e0_contract_change_requires_version_or_explicit_compatible_extension`, `t3_e1_both_protocol_ends_decide_the_committed_cases_alike`, and frame-boundary tests | Executable protocol interpretation is a worker-bundle input and therefore synthesis-affecting | E1-S1/E1-S3; security and real-worker protocol suites must pass before G1 |
+| `cache_publication` / `e0.cache-publication.2.0` | T-AUDIO; `CachePublisher`, `CacheResolveRequest`, `StagedAudioProducer`, and opaque `ValidatedCachedArtifact` with read-only accessors | Preview orchestration, PCM assembly, manifest writer | `FakeCachePublisher`; `run_cache_contract_scenario`; deterministic worker WAV | Cache-layout or acceptance changes affect reusable artifacts; speech-affecting acceptance changes require synthesis-identity review | E1-S3, E2-S1, E2-S2, and E4 cache/recovery/prune work; frozen after fake and filesystem adapters pass at G1 |
 | `package_writer` / `e0.package-writer.1.0` | T-AUDIO; `PackageWriter::preflight`, `PackagePreflightRequest`, `PreparedPackageWriter`, prepare/write requests, and `PackagePublication` | Preview orchestration and provisional job state | `FakePackageWriter`; `run_package_writer_contract_scenario` without external tools; real FFmpeg walking-skeleton fixture | Package tool/profile or assembly changes affect package identity; they do not silently reuse a package selected under different tool identities | E1-S4 and E2-S3; real master-first package path must pass the shared suite before G1 |
 | `job_state` / `e0.job-state.0.1` | T-CORE/T-RUNTIME; `ProvisionalJobSnapshot` plus `JobRepository` and `JobOwnership` | Preview orchestration and later E2 recovery | `InMemoryJobRepository`; `run_job_repository_contract_scenario`; strict snapshot written as `job.json` | Selected package ID and manifest digest are durable state; this snapshot does not define synthesis or verification keys | E2-S1, E4-S4, and E5 recovery; complete state machine and resume semantics remain deferred |
 
@@ -35,7 +35,39 @@ E1 executor and does not require an API change.
 The cache port owns the staging destination and accepts only a
 `StagedAudioProducer`. Its filesystem adapter retains managed-path containment,
 WAV and report validation, checksums, key locking, no-replace publication,
-directory synchronization, and collision-free quarantine. Artifact fields are
+directory synchronization, and collision-free quarantine.
+
+E1-S3 moves the cache-publication contract to `2.0` without changing its Rust
+shapes: `resolve` now conditions staged audio before publication, and cache hits
+must satisfy the audio-derived conditioning checks recorded in
+[`E1-S3-INTERFACE-CHANGE-002.md`](E1-S3-INTERFACE-CHANGE-002.md). The same
+`run_cache_contract_scenario` continues to drive `FakeCachePublisher` and
+`FileSystemCachePublisher`; `t3_e1_cache_publication_contract_names_the_current_acceptance_semantics`
+pins the semantic version shared by those consumers.
+
+E1-S3 also adds a required `containment_failure` field to `BackendError::Timeout`
+and **retains** `e1.tts-executor.3.0`.
+[`E1-S3-INTERFACE-CHANGE-003.md`](E1-S3-INTERFACE-CHANGE-003.md) records why: a
+required field on a type this table names is a **Breaking contract**, and
+`ADR-0001-D005` reaches it because `3.0` is the version E1-S3 itself introduced,
+so no consumer ever saw the shape being corrected. That is the same test
+`E1-S3-INTERFACE-CHANGE-002` applied to `CACHE_SCHEMA_VERSION` and failed, which
+is why that constant took the major instead. The record also states that the
+classification happened after the field landed rather than before it, which
+D005's fifth condition requires.
+
+E1-S3 moved that quarantine to the layout ADR-0001 §12.6 names —
+`quarantine/<job-id>/<segment-id>/take-<take>/attempt-<attempt>-<request-id>-<nonce>/` — in
+`quarantine_transaction` in `crates/study-tts-runtime/src/cache.rs`, which names §12.6 in return.
+It keeps a nonce as a final path element, because an attempt number and a request identity are
+both derived from the plan and therefore repeat exactly when a job is resumed or re-run: without
+one, a second failure of the same segment and take would land on the first failure's evidence,
+which §12.6 forbids. The request identity itself is derived once, by
+`PlannedSegment::request_id` in `crates/study-tts-core/src/plan.rs`, and used by both the executor
+that puts it on the `synthesize` frame and the cache that puts it in this path — two spellings
+would be one rule until somebody edited one of them.
+
+Artifact fields are
 not publicly constructible or mutable, and the real package adapter rechecks
 plan order and cache containment before assembly. The package adapter owns tool
 inspection: preflight returns a prepared writer, while its fake performs no
@@ -110,9 +142,11 @@ bundle, and at least one voice profile. Its `identities` field is therefore the
 closed `WorkerInitializationIdentities` record, not an arbitrary map: all four
 categories are required, revisions and hashes use their checked value types,
 unknown fields are refused, and `voice_profile_hashes` cannot be empty. The
-E1-S1 product worker has loaded none of those inputs, so it refuses both
-`initialize` and `synthesize` with nonrecoverable `initialization_failed` until
-E1-S3. The executable fake instead owns a loaded synthetic backend, returns its
+E1-S1 product worker refused both `initialize` and `synthesize` with a
+nonrecoverable `initialization_failed`, because it had loaded none of those
+inputs. E1-S3 is where that stopped being true: the shipped worker loads
+Chatterbox once per lifetime, renders through it into the staging root it was
+assigned, and reports all four identity categories. The executable fake instead owns a loaded synthetic backend, returns its
 complete deterministic identities, and consistently reports `ready: true` and
 `model_loaded: true`. It refuses initialization when the requested worker-bundle
 hash differs from its fixed deterministic identity, and every successful

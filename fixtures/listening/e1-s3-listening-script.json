@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0-e1-s3-listening-script",
+  "language": "en",
+  "style": "calm_explanatory",
+  "notes": "Owner-authored study-guide prose for the E1-S3 listening review. Committed rather than composed per run so a retake reviews the same words and only the audio differs. Chosen to exercise what the five review criteria ask about: acronyms and initialisms for pronunciation, digits and units for normalization, a question and an em-dash for intonation and pacing, and a long clause for breath placement.",
+  "lines": [
+    {
+      "id": "line-01",
+      "text": "A vector database stores embeddings and retrieves them by similarity rather than by exact match."
+    },
+    {
+      "id": "line-02",
+      "text": "The HTTP API returns 404 when the record is absent and 409 when two writers disagree."
+    },
+    {
+      "id": "line-03",
+      "text": "What happens when the cache key changes but the audio behind it does not?"
+    },
+    {
+      "id": "line-04",
+      "text": "Write-ahead logging makes a crash recoverable: the log is flushed before the page it describes."
+    },
+    {
+      "id": "line-05",
+      "text": "SQL indexes speed up reads and slow down writes, so the right number of them is rarely zero and rarely ten."
+    },
+    {
+      "id": "line-06",
+      "text": "A checksum proves that bytes did not change; it proves nothing at all about whether they were ever correct."
+    }
+  ]
+}

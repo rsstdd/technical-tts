@@ -1,0 +1,37 @@
+{
+  "criteria": [
+    {
+      "criterion": "t5_e1_worker_bundle_hash_matches_when_all_declared_bundle_inputs_match",
+      "observed": "two derivations on the qualified interpreter agreed at 3e1f487cf259cd5b17bdeea16845c14426dbbded76f47732dd06b02198003747; sensitivity to a moved input is pinned at T1 by t1_e1_worker_bundle_hash_changes_on_owned_runtime_input",
+      "result": "pass"
+    },
+    {
+      "criterion": "t5_e1_model_load_occurs_once_per_worker_lifetime",
+      "observed": "3 takes through one worker reported 1 model load(s)",
+      "result": "pass"
+    },
+    {
+      "criterion": "t5_e1_worker_survives_restart_and_starts_offline",
+      "observed": "two lifetimes reported identical synthesis identities; offline settings applied in 2 of 2 lifetimes, inside a network namespace holding [\"lo\"] with no IPv4 route",
+      "result": "pass"
+    },
+    {
+      "criterion": "t5_e1_worker_output_cannot_escape_staging_root",
+      "observed": "a contained take wrote only its assigned path; 5 refused (a symlink planted at the assigned path; an assigned path that walks upward; an assigned path that already exists; an absolute path outside the staging root; an assigned path whose parent is a symlink out of the root); 0 file(s) outside the staging root",
+      "result": "pass"
+    },
+    {
+      "criterion": "t5_e1_worker_protocol_stdout_remains_clean",
+      "observed": "every frame of a completed session parsed off standard output and nothing followed the last one, while 25079 bytes of backend diagnostics went to standard error",
+      "result": "pass"
+    }
+  ],
+  "network_isolation": {
+    "interfaces": [
+      "lo"
+    ],
+    "ipv4_routes": 0,
+    "namespace_inode": 4026532310
+  },
+  "worker_bundle_hash": "3e1f487cf259cd5b17bdeea16845c14426dbbded76f47732dd06b02198003747"
+}

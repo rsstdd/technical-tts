@@ -35,6 +35,7 @@ mod audio;
 mod cache;
 mod io_error;
 mod managed_path;
+mod model_artifacts;
 mod publication;
 mod rights;
 mod state;
@@ -42,10 +43,11 @@ mod tool;
 mod voice_profile;
 mod worker_bundle;
 
-pub use audio::{AudioError, AudioFault};
+pub use audio::{AudioError, AudioFault, ConditioningContradiction};
 pub use cache::{CacheEntryFault, CacheError, PackageArtifactMismatch};
 pub use io_error::IoError;
 pub use managed_path::ManagedPathError;
+pub use model_artifacts::ModelArtifactError;
 pub use publication::PublicationError;
 pub use rights::RightsError;
 pub use state::DurableStateError;
@@ -53,7 +55,7 @@ pub use tool::{ToolError, ToolInvocation, ToolOperation, ToolOutputStream};
 pub use voice_profile::VoiceProfileError;
 pub use worker_bundle::{
     EnvironmentMismatch, RuntimeIdentityMismatch, WorkerBundleError, WorkerLockfileErrorReason,
-    WorkerLockfileLocus,
+    WorkerLockfileLocus, WorkerRequirementFault,
 };
 
 /// Why a build or publication was refused, grouped by its owning boundary.
@@ -113,13 +115,24 @@ pub enum BuildError {
     /// The executable worker bundle could not be identified.
     #[error(transparent)]
     WorkerBundle(#[from] WorkerBundleError),
+    /// The governed model root did not hold the bytes this build is pinned to.
+    #[error(transparent)]
+    ModelArtifacts(#[from] ModelArtifactError),
 }
 
 impl BuildError {
     /// Returns governed recovery advice when the routing table establishes it.
     pub fn remedy(&self) -> Option<RemedyAdvice> {
         match self {
-            Self::Io(_) | Self::Lesson(_) | Self::Plan(_) | Self::Synthesis(_) => None,
+            // `ModelArtifacts` carries no governed advice for the reason
+            // `error::model_artifacts` records: the Failure routing table
+            // establishes no owner for it, so the owner is named in the
+            // message instead of invented here.
+            Self::Io(_)
+            | Self::Lesson(_)
+            | Self::Plan(_)
+            | Self::Synthesis(_)
+            | Self::ModelArtifacts(_) => None,
             Self::Voice(error) => voice_remedy(error),
             Self::VoiceProfile(error) => error.remedy(),
             Self::Rights(error) => error.remedy(),
@@ -299,6 +312,7 @@ mod tests {
             | VoiceProfileError::MissingVoiceProfileDirectory { .. }
             | VoiceProfileError::VoiceProfileNotDirectory { .. }
             | VoiceProfileError::VoiceProfileIdMismatch { .. }
+            | VoiceProfileError::VoiceProfileNameNotUtf8 { .. }
             | VoiceProfileError::VoiceChecksumMismatch { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::ProjectOwner,
                 "supply or correct the voice profile record before use",
@@ -327,6 +341,12 @@ mod tests {
                 RemedyOwner::Runtime,
                 "preserve the unusable cache entry and run runtime reconciliation",
                 Some("State or checksum corruption"),
+            )),
+            CacheError::UncontainedStagedFile { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::WorkerRuntime,
+                "read the quarantined attempt and correct the worker that staged an unexpected \
+                 file",
+                Some("Worker protocol or containment failure"),
             )),
             CacheError::PackageArtifactCountMismatch { .. }
             | CacheError::PackageArtifactPlanMismatch { .. } => Some(RemedyAdvice::new(
@@ -381,6 +401,11 @@ mod tests {
                 Some("Invalid or over-range audio"),
             )),
             AudioError::SynthesizerReportMismatch { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::WorkerRuntime,
+                "correct the worker report before rerunning the build",
+                Some("Worker protocol or containment failure"),
+            )),
+            AudioError::ConditioningIdentityContradiction { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::WorkerRuntime,
                 "correct the worker report before rerunning the build",
                 Some("Worker protocol or containment failure"),
@@ -664,6 +689,44 @@ mod tests {
     }
 
     #[test]
+    fn t1_e0_uncontained_stage_remedy_names_the_worker_owner() {
+        let error = BuildError::from(CacheError::UncontainedStagedFile {
+            segment_id: "segment-1".to_owned(),
+            unexpected: "scratch.bin".to_owned(),
+        });
+
+        assert_eq!(
+            error.remedy(),
+            Some(RemedyAdvice::new(
+                RemedyOwner::WorkerRuntime,
+                "read the quarantined attempt and correct the worker that staged an unexpected \
+                 file",
+                Some("Worker protocol or containment failure"),
+            ))
+        );
+    }
+
+    #[test]
+    fn t1_e0_conditioning_contradiction_remedy_names_the_worker_owner() {
+        let error = BuildError::from(AudioError::ConditioningIdentityContradiction(Box::new(
+            ConditioningContradiction {
+                segment_id: "segment-1".to_owned(),
+                reported: "a".repeat(64),
+                in_context: "b".repeat(64),
+            },
+        )));
+
+        assert_eq!(
+            error.remedy(),
+            Some(RemedyAdvice::new(
+                RemedyOwner::WorkerRuntime,
+                "correct the worker report before rerunning the build",
+                Some("Worker protocol or containment failure"),
+            ))
+        );
+    }
+
+    #[test]
     fn t1_e0_governed_remedy_mappings_are_exhaustive() {
         for error in [
             VoiceProfileError::MissingVoiceRecord {
@@ -685,6 +748,10 @@ mod tests {
             VoiceProfileError::VoiceProfileIdMismatch {
                 declared: "declared-voice-v1".to_owned(),
                 recorded: "recorded-voice-v1".to_owned(),
+            },
+            VoiceProfileError::VoiceProfileNameNotUtf8 {
+                root: PathBuf::from("voices"),
+                name: "unspellable-voice-v1".to_owned(),
             },
             VoiceProfileError::VoiceChecksumMismatch {
                 profile_dir: PathBuf::from("voice"),

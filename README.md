@@ -23,15 +23,15 @@ The priority order is technical correctness, comfortable listening, retention va
 
 | Area | Status |
 |---|---|
-| Architecture | Accepted in [ADR-0001](docs/adr/ADR-0001-production-rust-study-guide-tts.md), as amended by [ADR-0001-D001](docs/adr/deviations/ADR-0001-D001-asr-release-condition.md), [ADR-0001-D002](docs/adr/deviations/ADR-0001-D002-constrained-development-performance-gate.md), [ADR-0001-D003](docs/adr/deviations/ADR-0001-D003-single-instructor-fallback.md), and [ADR-0001-D004](docs/adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md) |
+| Architecture | Accepted in [ADR-0001](docs/adr/ADR-0001-production-rust-study-guide-tts.md), as amended by [ADR-0001-D001](docs/adr/deviations/ADR-0001-D001-asr-release-condition.md), [ADR-0001-D002](docs/adr/deviations/ADR-0001-D002-constrained-development-performance-gate.md), [ADR-0001-D003](docs/adr/deviations/ADR-0001-D003-single-instructor-fallback.md), [ADR-0001-D006](docs/adr/deviations/ADR-0001-D006-worker-environment-lock-verification-cost.md), which supersedes historical [ADR-0001-D004](docs/adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md), and approved [ADR-0001-D007](docs/adr/deviations/ADR-0001-D007-provisional-edge-conditioning.md) |
 | Delivery backlog | Approved in [DELIVERY-PLAN.md](DELIVERY-PLAN.md) |
 | Rust workspace | Four-crate workspace with a tested end-to-end skeleton and the E1-S1 contract baseline |
 | Model and voice qualification | E0-S2 rights prerequisites and E0-S3 qualification complete; full-box performance qualification remains required before G3 |
-| Chatterbox worker | Not started. The locked Python environment, the worker protocol, and an executable protocol fake exist; the speech backend lands in E1-S3 |
+| Chatterbox worker | Single-worker synthesis lands in E1-S3: the shipped worker loads Chatterbox once per lifetime, renders offline into an assigned staging root, and reports its four identities. Five reference-machine criteria pass and a human listening review is recorded; the story record is `Proposed` until G1 |
 | ASR verifier | Not started |
 | CLI | Product commands not implemented |
 | Schemas and fixtures | Seven published versioned schemas under `schemas/`, generated from the Rust types and checked against the checked-in files; skeleton, contract, and deterministic-audio fixtures present |
-| Identities | Canonical serialization and the BLAKE3 synthesis and verification identities implemented; the worker-bundle identity is derived mechanically, with the environment precondition [ADR-0001-D004](docs/adr/deviations/ADR-0001-D004-worker-environment-lock-verification.md) authorizes |
+| Identities | Canonical serialization and the BLAKE3 synthesis and verification identities implemented; the worker-bundle identity is derived mechanically, with the environment precondition [ADR-0001-D006](docs/adr/deviations/ADR-0001-D006-worker-environment-lock-verification-cost.md) carries forward from D004 |
 | Continuous integration | Fast offline pull-request checks with tier-duration reporting, separated from a dispatch-only reference-machine qualification workflow |
 | Production qualification | Not started |
 
@@ -222,7 +222,9 @@ technical-tts/
 - `study-tts-testkit` will provide the fake worker, deterministic audio, fixtures, and fault injection.
 - `worker` contains the persistent NDJSON worker package, its locked Python environment, and the
   bundle manifest that declares which of its files are synthesis-key inputs. The Chatterbox backend
-  itself lands in E1-S3; this build refuses `synthesize` rather than returning placeholder audio.
+  landed in E1-S3: the worker loads the model once per lifetime and renders through it, behind the
+  bundle-identity, model-artifact, and voice-root gates `WorkerConfiguration::for_bundle` runs
+  before a child is spawned.
 - `schemas` contains the seven versioned JSON Schemas, generated from the Rust types that define
   each format by `cargo run --package study-tts-runtime --example generate-schemas`.
 - `data` will contain local runtime artifacts and will not be committed.

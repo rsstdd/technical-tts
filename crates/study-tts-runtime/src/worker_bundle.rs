@@ -99,6 +99,16 @@ pub const WORKER_LOCKFILE_PATH: &str = "worker/requirements.lock";
 /// Path of the launcher configuration, relative to the repository root.
 pub const WORKER_LAUNCHER_PATH: &str = "worker/launcher.json";
 
+/// Path of the worker's requirements declaration, relative to the repository
+/// root.
+///
+/// Deliberately absent from [`REQUIRED_BUNDLE_INPUTS`]: ADR-0001 §12.5 names
+/// the *lockfile* among the hash's inputs and not this file, so requiring it
+/// would widen the identity beyond what the ADR specifies. It is reconciled
+/// against the lock whenever the manifest declares it, which the checked-in
+/// manifest does.
+pub const WORKER_REQUIREMENTS_PATH: &str = "worker/pyproject.toml";
+
 /// Path of the published worker protocol schema, relative to the repository
 /// root.
 ///
@@ -106,13 +116,25 @@ pub const WORKER_LAUNCHER_PATH: &str = "worker/launcher.json";
 /// list below needs; `t1_e1_the_required_protocol_schema_is_the_published_file`
 /// pins it to the name [`crate::PUBLISHED_SCHEMAS`] generates, so publishing a
 /// new major cannot leave this naming a file that is no longer written.
-pub const WORKER_PROTOCOL_SCHEMA_PATH: &str = "schemas/worker-protocol-v1.schema.json";
+pub const WORKER_PROTOCOL_SCHEMA_PATH: &str = "schemas/worker-protocol-v2.schema.json";
 
 /// The project-owned Python package, relative to the repository root.
 pub const WORKER_PACKAGE_ROOT: &str = "worker/study_tts_worker";
 
 /// Module the worker process is started from, relative to the repository root.
 pub const WORKER_ENTRYPOINT_PATH: &str = "worker/study_tts_worker/worker.py";
+
+/// The module `python -m` is given to start the worker.
+///
+/// The module inside the package that actually runs, rather than the package
+/// itself: `python -m` on a package requires that package to ship a
+/// `__main__.py`, and this bundle deliberately does not — adding one would be a
+/// new declared input, and a new bundle identity, for a name. A module rather
+/// than a file path, so the interpreter resolves what the manifest declares and
+/// a caller cannot point the worker at a script somewhere else.
+/// `t1_e1_the_entry_module_names_the_shipped_entrypoint_file` pins it to
+/// [`WORKER_ENTRYPOINT_PATH`], which is the file it resolves to.
+pub const WORKER_ENTRY_MODULE: &str = "study_tts_worker.worker";
 
 /// Inputs the manifest must declare, whatever else it declares.
 ///
@@ -515,7 +537,9 @@ impl WorkerBundle {
     /// [`WorkerBundleError::UnreadableRuntimeIdentity`] when it answers with
     /// something this build cannot read,
     /// [`WorkerBundleError::UnreadableWorkerLockfile`] when the lock cannot be
-    /// parsed, [`WorkerBundleError::EnvironmentDoesNotMatchLock`] when the
+    /// parsed, [`WorkerBundleError::RequirementsDisagreeWithLock`] when
+    /// `worker/pyproject.toml` declares a requirement the lock does not
+    /// resolve, [`WorkerBundleError::EnvironmentDoesNotMatchLock`] when the
     /// installed environment disagrees with it, including when an installed
     /// `RECORD` differs from the declaration this manifest authenticates or a
     /// file differs from that authenticated `RECORD`,
@@ -534,7 +558,14 @@ impl WorkerBundle {
         // ceiling apply to it exactly as they do to every other one. What the
         // bytes *mean* is the environment module's.
         let lockfile = self.lockfile_bytes()?;
-        worker_environment::check(&interpreter, &resolved, &self.manifest, &lockfile)?;
+        let requirements = self.requirements_bytes()?;
+        worker_environment::check(
+            &interpreter,
+            &resolved,
+            &self.manifest,
+            &lockfile,
+            requirements.as_deref(),
+        )?;
         self.hash()
     }
 
@@ -547,6 +578,31 @@ impl WorkerBundle {
     fn lockfile_bytes(&self) -> Result<Vec<u8>, BuildError> {
         let resolved = self.resolve(WORKER_LOCKFILE_PATH)?;
         self.read_bounded(WORKER_LOCKFILE_PATH, &resolved)
+    }
+
+    /// Reads `worker/pyproject.toml` when the manifest declares it.
+    ///
+    /// `None` when it does not. The reconciliation exists to keep two declared
+    /// inputs from naming different versions of one distribution, and a
+    /// manifest that declares only the lock has one such input rather than
+    /// two — refusing there would require a file ADR-0001 §12.5 does not name.
+    ///
+    /// # Errors
+    ///
+    /// The containment and size errors [`WorkerBundle::hash`] documents for any
+    /// declared input.
+    fn requirements_bytes(&self) -> Result<Option<Vec<u8>>, BuildError> {
+        if !self
+            .manifest
+            .inputs
+            .iter()
+            .any(|input| input == WORKER_REQUIREMENTS_PATH)
+        {
+            return Ok(None);
+        }
+        let resolved = self.resolve(WORKER_REQUIREMENTS_PATH)?;
+        self.read_bounded(WORKER_REQUIREMENTS_PATH, &resolved)
+            .map(Some)
     }
 
     /// Derives the bundle's identity from what the manifest declares.
@@ -878,6 +934,30 @@ pub(crate) mod tests {
     /// effect.
     pub(crate) fn bundle(root: &TempDir) -> WorkerBundle {
         WorkerBundle::load(root.path()).expect("the copied manifest loads")
+    }
+
+    #[test]
+    fn t1_e1_the_entry_module_names_the_shipped_entrypoint_file() {
+        // `python -m` needs the module that *runs*, not the package that holds
+        // it: a package is only startable that way if it ships `__main__.py`,
+        // and this one does not. The two constants are one fact written twice,
+        // so this derives the module from the path rather than restating it —
+        // a hand-written expectation would agree with the wrong module as
+        // readily as the right one.
+        let derived = WORKER_ENTRYPOINT_PATH
+            .strip_prefix("worker/")
+            .and_then(|module| module.strip_suffix(".py"))
+            .expect("the entrypoint is a Python file beneath the worker directory")
+            .replace('/', ".");
+
+        assert_eq!(
+            WORKER_ENTRY_MODULE, derived,
+            "the module the worker is started as must name the file the bundle ships"
+        );
+        assert!(
+            repository_root().join(WORKER_ENTRYPOINT_PATH).is_file(),
+            "the entrypoint the module resolves to must exist in the bundle"
+        );
     }
 
     #[test]

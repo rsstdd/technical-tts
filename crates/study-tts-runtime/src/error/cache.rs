@@ -34,6 +34,24 @@ pub enum CacheError {
         fault: Box<CacheEntryFault>,
     },
 
+    /// A worker left a file in the staging transaction beside its audio.
+    ///
+    /// The stage *becomes* the published entry — ADR-0001 §12.6 renames it into
+    /// place — so anything left in it is published inside a cache entry that
+    /// claims to hold one segment's speech. Refused rather than swept, because
+    /// a file nobody expected is a worker doing something nobody described, and
+    /// deleting the evidence is the wrong half of that to automate.
+    #[error(
+        "the worker left `{unexpected}` in the staging transaction for segment `{segment_id}` \
+         beside the audio it was assigned; the attempt is quarantined for a person to read"
+    )]
+    UncontainedStagedFile {
+        /// The segment whose transaction was refused.
+        segment_id: String,
+        /// Name of the first unexpected entry found in the stage.
+        unexpected: String,
+    },
+
     /// A package request omitted or added validated cache artifacts.
     #[error(
         "package request supplied {found} cached artifacts for a plan with {required} segments; \
@@ -90,6 +108,12 @@ impl CacheError {
                 RemedyOwner::Runtime,
                 "preserve the unusable cache entry and run runtime reconciliation",
                 Some("State or checksum corruption"),
+            )),
+            Self::UncontainedStagedFile { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::WorkerRuntime,
+                "read the quarantined attempt and correct the worker that staged an unexpected \
+                 file",
+                Some("Worker protocol or containment failure"),
             )),
             Self::PackageArtifactCountMismatch { .. }
             | Self::PackageArtifactPlanMismatch { .. } => Some(RemedyAdvice::new(
@@ -201,6 +225,59 @@ pub enum CacheEntryFault {
         found: String,
         /// Digest the artifact records.
         declared: String,
+    },
+
+    /// The artifact declares conditioning ADR-0001 does not permit.
+    ///
+    /// This is the fixed ADR-0001 §13.4 ceiling. Audio-derived feasibility is
+    /// checked separately by [`Self::ConditioningInconsistentWithAudio`].
+    #[error(
+        "the artifact declares {field} of {declared} samples, beyond the {permitted} \
+         ({permitted_milliseconds} ms) ADR-0001 §13.4 permits"
+    )]
+    ConditioningOutsideRatifiedGeometry {
+        /// Which recorded count is out of range.
+        field: &'static str,
+        /// The value the artifact declares.
+        declared: u32,
+        /// The most ADR-0001 §13.4 permits there.
+        permitted: u32,
+        /// The same limit as the duration ADR-0001 §13.4 states.
+        permitted_milliseconds: u32,
+    },
+
+    /// The recorded ramp geometry cannot describe the cached audio.
+    #[error(
+        "the artifact declares {field} of {declared} samples, but the cached audio permits \
+         {minimum} through {maximum} samples"
+    )]
+    ConditioningInconsistentWithAudio {
+        /// Which recorded ramp contradicts the audio.
+        field: &'static str,
+        /// The value the artifact declares.
+        declared: u32,
+        /// The smallest ramp consistent with the audio.
+        minimum: u32,
+        /// The largest ramp consistent with the audio.
+        maximum: u32,
+    },
+
+    /// The entry was conditioned under a calibration this build does not apply.
+    ///
+    /// The recorded counts describe a silence threshold, and a threshold that
+    /// has moved describes different audio. Refusing here is what makes
+    /// `ADR-0001-D007` expire cleanly: every entry conditioned against the
+    /// provisional value is refused once an accepted ADR-0003 gives this build
+    /// a frozen one, rather than being reused under a reading nobody checked.
+    #[error(
+        "the artifact records conditioning calibrated as {recorded}, but this build conditions \
+         against a {required} threshold"
+    )]
+    ConditionedUnderAnotherCalibration {
+        /// The calibration the entry records.
+        recorded: &'static str,
+        /// The calibration this build applies.
+        required: &'static str,
     },
 
     /// The entry's audio failed canonical-audio validation.

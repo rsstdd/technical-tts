@@ -32,6 +32,25 @@ WORKER_ROOT = Path(__file__).resolve().parent.parent
 
 sys.path.insert(0, str(WORKER_ROOT))
 
+try:  # noqa: SIM105 - the failure is the signal, not an error to suppress
+    import soundfile
+    import torch
+
+    RESTORED_ENVIRONMENT = True
+except ImportError:
+    RESTORED_ENVIRONMENT = False
+"""Whether this interpreter is the restored worker environment.
+
+The suite is otherwise standard-library only, which `.github/workflows/ci.yml`
+relies on to run it with the system interpreter and no installation step. One
+class below needs the real numerical libraries and skips without them, so that
+property is unchanged: nothing here ever *fails* for a missing import.
+
+Run it where it can run, per `docs/operations/REVIEW-AND-ACCEPT-CYCLE.md` §1:
+
+    worker/.venv/bin/python -m unittest discover --start-directory worker/tests
+"""
+
 from study_tts_worker import WORKER_PROTOCOL_VERSION  # noqa: E402
 from study_tts_worker import worker as worker_module  # noqa: E402
 from study_tts_worker.protocol import (  # noqa: E402
@@ -79,14 +98,21 @@ def request(method: str, request_id: str, **extra: object) -> str:
     return json.dumps(frame)
 
 
-def run_worker(lines: list[str]) -> subprocess.CompletedProcess[str]:
-    """Serves `lines` to a real worker process and collects both channels."""
+def run_worker(
+    lines: list[str], environment: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Serves `lines` to a real worker process and collects both channels.
+
+    `environment` adds to this process's own rather than replacing it, so a case
+    sets only the variable it is about and inherits the interpreter's.
+    """
     return subprocess.run(
         [sys.executable, "-m", "study_tts_worker.worker"],
         input="\n".join(lines) + "\n",
         capture_output=True,
         text=True,
         cwd=WORKER_ROOT,
+        env={**os.environ, **(environment or {})},
         timeout=60,
         check=False,
     )
@@ -218,10 +244,8 @@ class RedactedRefusalTests(unittest.TestCase):
 class HealthTests(unittest.TestCase):
     """Health reports this build's actual readiness and model residency."""
 
-    def test_health_reports_that_the_e1_s1_worker_has_no_loaded_backend(self) -> None:
-        result = run_worker(
-            [request("health", "req-1"), request("shutdown", "req-2")]
-        )
+    def test_health_reports_no_loaded_backend_before_initialize(self) -> None:
+        result = run_worker([request("health", "req-1"), request("shutdown", "req-2")])
 
         self.assertEqual(result.returncode, 0, result.stderr)
         frames = [json.loads(line) for line in result.stdout.splitlines()]
@@ -237,29 +261,136 @@ class HealthTests(unittest.TestCase):
         )
 
 
-class InitializationTests(unittest.TestCase):
-    """Initialization fails closed until the Chatterbox backend exists."""
+class BackendRefusalTests(unittest.TestCase):
+    """Every refusal the worker can make without importing a backend.
 
-    def test_initialize_fails_nonrecoverably_and_health_stays_unready(self) -> None:
-        result = run_worker(
-            [
-                request(
-                    "initialize",
-                    "req-1",
-                    parameters={"worker_bundle_hash": "a" * 64, "threads": 1},
+    These are the cases a hosted runner can prove: the configuration checks all
+    precede the Torch and Chatterbox imports, so they hold where neither is
+    installed. Loading a real model is a T5 qualification criterion on the
+    reference machine, not a test here.
+    """
+
+    def launcher(self) -> dict[str, object]:
+        return json.loads((WORKER_ROOT / "launcher.json").read_text(encoding="utf-8"))
+
+    def test_initialize_without_a_governed_root_refuses_by_naming_the_variable(self) -> None:
+        launcher = self.launcher()
+        variable = launcher["model_root_environment_variable"]
+
+        with tempfile.TemporaryDirectory() as staging:
+            result = run_worker(
+                [
+                    request(
+                        "initialize",
+                        "req-1",
+                        parameters={
+                            "worker_bundle_hash": "a" * 64,
+                            "threads": 1,
+                            "staging_root": staging,
+                        },
+                    ),
+                    request("shutdown", "req-2"),
+                ],
+                environment={variable: "", launcher["voice_root_environment_variable"]: ""},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            frames = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual(frames[0]["event"], "failure")
+            self.assertEqual(frames[0]["code"], "initialization_failed")
+            self.assertFalse(frames[0]["recoverable"])
+            # The operator has to be told which variable to set. A refusal that
+            # only said "no model" would send them to the model rather than the
+            # launch.
+            self.assertIn(variable, frames[0]["message"])
+
+    def test_initialize_refuses_a_model_root_holding_another_repository(self) -> None:
+        # The likelier misconfiguration than a missing root: a real, readable
+        # governed root for a different model. Its audio would otherwise be
+        # published under a key naming the repository this bundle was built for.
+        launcher = self.launcher()
+        with tempfile.TemporaryDirectory() as directory:
+            model_root = Path(directory) / "models"
+            model_root.mkdir()
+            (model_root / "bundle-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "model": {"repository": "someone-else/other-model", "revision": "abc"},
+                        "code": {"commit": "def"},
+                    }
                 ),
-                request("health", "req-2"),
-                request("shutdown", "req-3"),
-            ]
-        )
+                encoding="utf-8",
+            )
+            voice_root = Path(directory) / "voices"
+            voice_root.mkdir()
+            staging = Path(directory) / "staging"
+            staging.mkdir()
+
+            result = run_worker(
+                [
+                    request(
+                        "initialize",
+                        "req-1",
+                        parameters={
+                            "worker_bundle_hash": "a" * 64,
+                            "threads": 1,
+                            "staging_root": str(staging),
+                        },
+                    ),
+                    request("shutdown", "req-2"),
+                ],
+                environment={
+                    launcher["model_root_environment_variable"]: str(model_root),
+                    launcher["voice_root_environment_variable"]: str(voice_root),
+                },
+            )
 
         self.assertEqual(result.returncode, 0, result.stderr)
         frames = [json.loads(line) for line in result.stdout.splitlines()]
-        self.assertEqual([frame["event"] for frame in frames], ["failure", "health", "shutdown"])
         self.assertEqual(frames[0]["code"], "initialization_failed")
-        self.assertFalse(frames[0]["recoverable"])
-        self.assertFalse(frames[1]["ready"])
-        self.assertFalse(frames[1]["model_loaded"])
+        self.assertIn(str(launcher["model_repository"]), frames[0]["message"])
+
+    def test_synthesize_before_initialize_publishes_no_audio(self) -> None:
+        # The refusal that matters most: a success frame here would have the
+        # cache publish whatever is at the assigned path under a key claiming a
+        # model produced it.
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "take.wav"
+            result = run_worker(
+                [
+                    request(
+                        "synthesize",
+                        "req-1",
+                        parameters={
+                            "text": "one",
+                            "voice": "owner-fallback-v1",
+                            "style": "calm_explanatory",
+                            "seed": 42,
+                            "take": 0,
+                            "output": str(output),
+                        },
+                    ),
+                    request("shutdown", "req-2"),
+                ],
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            frames = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual(frames[0]["event"], "failure")
+            self.assertEqual(frames[0]["code"], "initialization_failed")
+            self.assertFalse(output.exists(), "nothing may be written without a loaded model")
+
+    def test_capabilities_declares_no_voice_until_one_is_loaded(self) -> None:
+        # ADR-0001 §12.1 makes an unresolved voice a refusal rather than a
+        # default, so a voice declared before it is loaded would be a claim that
+        # survives into a cache key.
+        result = run_worker([request("capabilities", "req-1"), request("shutdown", "req-2")])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        frames = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(frames[0]["capabilities"]["voices"], [])
+        self.assertEqual(frames[0]["capabilities"]["styles"], [])
+        self.assertFalse(frames[0]["capabilities"]["deterministic_seed"])
 
 
 class OfflineEnvironmentTests(unittest.TestCase):
@@ -320,12 +451,16 @@ class LauncherShapeTests(unittest.TestCase):
             "schema_version": LAUNCHER_SCHEMA_VERSION,
             "device": "cpu",
             "threads": 4,
+            "seed": 42,
+            "model_repository": "ResembleAI/chatterbox",
+            "generation_parameters": {"cfg_weight": "0.5"},
             "offline_environment": {
                 name: "1"
                 for name in (*REQUIRED_OFFLINE_ENVIRONMENT, *OPTIONAL_OFFLINE_ENVIRONMENT)
             },
             "local_files_only": True,
             "model_root_environment_variable": "STUDY_TTS_MODEL_ROOT",
+            "voice_root_environment_variable": "STUDY_TTS_VOICE_ROOT",
         }
         launcher.update(overrides)
         return launcher
@@ -349,6 +484,27 @@ class LauncherShapeTests(unittest.TestCase):
         # than at a qualification run.
         self.assertEqual(
             worker_module._load_launcher()["schema_version"], LAUNCHER_SCHEMA_VERSION
+        )
+
+    def test_a_generation_parameter_written_as_a_number_is_refused(self) -> None:
+        # ADR-0001 §12.5 admits no floating point into an identity, so the Rust
+        # end keys these as the text the launcher records. A launcher that wrote
+        # `0.5` as a number would be keyed by one end as a string it never saw
+        # and used by this one as a float, which is two builds disagreeing about
+        # what produced the audio a key names.
+        for spoiled in ({"cfg_weight": 0.5}, {"cfg_weight": None}, {"cfg_weight": ["0.5"]}):
+            with self.subTest(spoiled=spoiled):
+                with self.assertRaises(SystemExit) as refused:
+                    self.load(self.launcher(generation_parameters=spoiled))
+                self.assertIn("generation_parameters.cfg_weight", str(refused.exception))
+
+        # The shape admits any parameter name, because which parameters a
+        # backend takes is not this build's to fix.
+        self.assertEqual(
+            self.load(self.launcher(generation_parameters={"a": "1", "b": "2"}))[
+                "generation_parameters"
+            ],
+            {"a": "1", "b": "2"},
         )
 
     def test_a_launcher_field_this_build_does_not_describe_is_refused(self) -> None:
@@ -422,3 +578,309 @@ class LauncherShapeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AssignedOutputContainmentTests(unittest.TestCase):
+    """The worker writes inside the staging root it was given, or refuses.
+
+    `t5_e1_worker_output_cannot_escape_staging_root` names this property. While
+    the worker was told one path and no root it could recognise only a literal
+    `..` in the path it was handed, so the criterion asserted more than the code
+    could prove. `initialize` now carries the root, and containment is decided
+    against the resolved parent rather than the spelling: a lexical check passes
+    a path whose parent is a symlink out of the root, which is the shape an
+    attacker reaches for first.
+    """
+
+    def setUp(self) -> None:
+        self._workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(self._workspace.cleanup)
+        self.root = Path(self._workspace.name, "staging").resolve()
+        self.root.mkdir()
+        self.outside = Path(self._workspace.name, "outside").resolve()
+        self.outside.mkdir()
+        self.staging = worker_module._staging_root(str(self.root))
+        self.addCleanup(os.close, self.staging.descriptor)
+
+    def contained(self, assigned: Path) -> tuple[int, str]:
+        """The containment decision, with the descriptor closed for the test."""
+        directory, name = worker_module._contained_output(self.staging, str(assigned))
+        self.addCleanup(os.close, directory)
+        return directory, name
+
+    def test_a_symlinked_parent_inside_the_root_is_refused(self) -> None:
+        # Containment used to resolve the parent and then ask where it had
+        # landed, so a symlink was admitted as long as it pointed somewhere
+        # lawful -- which made the answer depend on what the pathname resolved
+        # to at that instant. The walk now starts at the staging root's own
+        # descriptor and opens each component with `O_NOFOLLOW`, so a symlink
+        # is refused for being one rather than for where it points, and there
+        # is no longer a moment at which the answer could change.
+        shard = self.root / "shard"
+        shard.mkdir()
+        bridge = self.root / "bridge"
+        bridge.symlink_to(shard, target_is_directory=True)
+
+        with self.assertRaises(worker_module.BackendUnavailable):
+            worker_module._contained_output(self.staging, str(bridge / "take.wav"))
+
+    def test_a_path_inside_the_root_is_accepted(self) -> None:
+        shard = self.root / "shard"
+        shard.mkdir()
+
+        directory, name = self.contained(shard / "take.wav")
+
+        self.assertEqual(name, "take.wav")
+        self.assertEqual(Path(os.readlink(f"/proc/self/fd/{directory}")), shard)
+
+    def test_an_ancestor_swapped_after_the_check_cannot_redirect_the_write(self) -> None:
+        # `O_NOFOLLOW` covers the final component only. While containment
+        # returned a pathname for the caller to open later, replacing a
+        # directory *above* it with a symlink between the two sent the write
+        # wherever the symlink pointed -- with every refusal above having
+        # passed on the way through. The check and the write now name one
+        # directory descriptor, so there is no pathname left to swap.
+        shard = self.root / "shard"
+        shard.mkdir()
+        directory, name = self.contained(shard / "take.wav")
+
+        shard.rename(self.root / "moved")
+        shard.symlink_to(self.outside, target_is_directory=True)
+        os.close(worker_module._create_contained_file(directory, name))
+
+        self.assertFalse(
+            (self.outside / "take.wav").exists(),
+            "the write must not follow a directory swapped in after the check",
+        )
+        self.assertTrue(
+            (self.root / "moved" / "take.wav").is_file(),
+            "the write must land in the directory containment was decided about",
+        )
+
+    def test_an_absolute_path_outside_the_root_is_refused(self) -> None:
+        with self.assertRaises(worker_module.BackendUnavailable) as refused:
+            worker_module._contained_output(self.staging, str(self.outside / "take.wav"))
+
+        self.assertIn("staging root", str(refused.exception))
+
+    def test_a_path_that_climbs_out_of_the_root_is_refused(self) -> None:
+        with self.assertRaises(worker_module.BackendUnavailable):
+            worker_module._contained_output(
+                self.staging, str(self.root / os.pardir / "outside" / "take.wav")
+            )
+
+    def test_a_symlinked_parent_leaving_the_root_is_refused(self) -> None:
+        # The case a lexical check cannot see: every component of the assigned
+        # path is inside the root by spelling, and the parent resolves out.
+        bridge = self.root / "bridge"
+        bridge.symlink_to(self.outside, target_is_directory=True)
+
+        with self.assertRaises(worker_module.BackendUnavailable):
+            worker_module._contained_output(self.staging, str(bridge / "take.wav"))
+
+    def test_a_parent_that_does_not_exist_is_refused(self) -> None:
+        # The worker creates exactly the file it was assigned and never a
+        # directory, so an absent parent is the parent's mistake, not a path to
+        # be built.
+        with self.assertRaises(worker_module.BackendUnavailable):
+            worker_module._contained_output(self.staging, str(self.root / "absent" / "take.wav"))
+
+    def test_the_root_itself_is_not_an_assignable_output(self) -> None:
+        with self.assertRaises(worker_module.BackendUnavailable):
+            worker_module._contained_output(self.staging, str(self.root / os.curdir))
+
+
+class VoiceProfileResolutionTests(unittest.TestCase):
+    """A profile's identity may not choose which directory the worker reads.
+
+    `profile_id` is read out of `profile.json`, and the conditioning artifact
+    used to be loaded from `voice_root / profile_id`. That is a path component
+    taken from a file's contents: a record stating `../../elsewhere` selects an
+    artifact outside the governed voice root, and the existence check ran
+    against the directory the record was *found* in rather than the one it
+    named, so the two could differ. Requiring the identity to be its own
+    directory's name makes containment hold by construction and makes the check
+    and the load agree.
+    """
+
+    def setUp(self) -> None:
+        self._workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(self._workspace.cleanup)
+        self.voice_root = Path(self._workspace.name, "voices")
+        self.voice_root.mkdir()
+
+    def profile(self, directory: str, profile_id: str) -> None:
+        """Writes one voice profile whose record states `profile_id`."""
+        home = self.voice_root / directory
+        home.mkdir()
+        (home / "conditionals.pt").write_bytes(b"synthetic conditioning")
+        (home / "profile.json").write_text(
+            json.dumps({"profile_id": profile_id, "conditionals_blake3": "a" * 64}),
+            encoding="utf-8",
+        )
+
+    def test_a_profile_whose_identity_is_its_directory_is_read(self) -> None:
+        self.profile("nadia-v1", "nadia-v1")
+
+        self.assertEqual(
+            worker_module._voice_conditioning(self.voice_root),
+            {"nadia-v1": "a" * 64},
+        )
+
+    def test_a_profile_naming_another_directory_is_refused(self) -> None:
+        self.profile("nadia-v1", "someone-else-v1")
+
+        with self.assertRaises(worker_module.BackendUnavailable) as refused:
+            worker_module._voice_conditioning(self.voice_root)
+
+        self.assertIn("nadia-v1", str(refused.exception))
+
+    def test_a_profile_identity_that_walks_out_of_the_root_is_refused(self) -> None:
+        # The shape the containment argument is about: a record that selects a
+        # conditioning artifact outside the governed voice root entirely.
+        self.profile("nadia-v1", "../../elsewhere")
+
+        with self.assertRaises(worker_module.BackendUnavailable):
+            worker_module._voice_conditioning(self.voice_root)
+
+
+class RefusalRedactionTests(unittest.TestCase):
+    """A backend fault's own text never reaches the protocol channel.
+
+    ADR-0001 §16 keeps source text and voice paths off that channel, and
+    `protocol.failure` states it cannot check the message it is handed. Raw
+    exception strings are exactly what carries both: an `OSError` renders the
+    filename it failed on, and a generation fault can echo the text it was
+    asked to speak. What an operator needs is which operation failed and why in
+    the kernel's words, neither of which is data.
+    """
+
+    def test_an_os_error_is_reported_without_the_path_it_names(self) -> None:
+        error = FileNotFoundError(2, "No such file or directory")
+        error.filename = "/governed/voices/nadia-v1/conditionals.pt"
+
+        detail = worker_module._redacted_detail(error)
+
+        self.assertIn("No such file or directory", detail)
+        self.assertNotIn("/governed", detail)
+        self.assertNotIn("nadia-v1", detail)
+
+    def test_an_arbitrary_backend_fault_is_reported_by_type_alone(self) -> None:
+        # A generation fault can quote the text it was asked to speak, so the
+        # message is dropped entirely and only the type survives.
+        error = RuntimeError("failed while speaking 'the reviewed lesson text'")
+
+        detail = worker_module._redacted_detail(error)
+
+        self.assertIn("RuntimeError", detail)
+        self.assertNotIn("reviewed lesson text", detail)
+
+    def test_a_refused_output_path_is_not_quoted_back(self) -> None:
+        with tempfile.TemporaryDirectory() as workspace:
+            root = Path(workspace, "staging")
+            root.mkdir()
+            staging = worker_module._staging_root(str(root))
+            self.addCleanup(os.close, staging.descriptor)
+
+            with self.assertRaises(worker_module.BackendUnavailable) as refused:
+                worker_module._contained_output(staging, str(root / "absent" / "take.wav"))
+
+            self.assertNotIn(str(root), str(refused.exception))
+
+
+@unittest.skipUnless(
+    RESTORED_ENVIRONMENT, "needs the restored worker environment's numerical libraries"
+)
+class RenderPlumbingTests(unittest.TestCase):
+    """`_render` is driven end to end, with a stub model and no weights.
+
+    Every other test here reaches the worker's *refusals*, which the standard
+    library can express. This one reaches the path that actually renders, and
+    nothing did: it imports `numpy`, `soundfile`, and `torch` unconditionally,
+    so no test running on the system interpreter could enter it, and the whole
+    of it was covered only by `t5_` on the reference machine.
+
+    That gap shipped a defect. Splitting a helper out of `_render` left `voice`
+    behind in the caller, and all sixty-one tests here passed because none of
+    them could execute the line that used it; the real worker died on the first
+    synthesis. A stub model costs nothing and closes the class.
+
+    Stub *model*, real libraries. Faking `numpy` and `torch` well enough to
+    satisfy this function would mean writing a second copy of what it does, and
+    a test that re-derives its subject agrees with any implementation including
+    a wrong one. The model is the only expensive part, and it is the only part
+    replaced.
+    """
+
+    class _StubModel:
+        """Answers `generate` with silence, and records what it was conditioned on."""
+
+        def __init__(self, frames: int) -> None:
+            self.frames = frames
+            self.conds: object | None = None
+            self.calls: list[str] = []
+
+        def generate(self, text: str, **parameters: float) -> object:
+            self.calls.append(text)
+            return torch.zeros(1, self.frames)
+
+    def setUp(self) -> None:
+        self._workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(self._workspace.cleanup)
+        self.root = Path(self._workspace.name, "staging").resolve()
+        self.root.mkdir()
+        self.staging = worker_module._staging_root(str(self.root))
+        self.addCleanup(os.close, self.staging.descriptor)
+
+        self.launcher = worker_module._load_launcher()
+        self.model = self._StubModel(frames=1_000)
+        self.backend = worker_module._Backend(
+            model=self.model,
+            model_revision="v1",
+            codec_revision="none",
+            conditioning={"owner-fallback-v1": "a" * 64},
+            conditionals={"owner-fallback-v1": object()},
+            sample_rate=worker_module.CANONICAL_SAMPLE_RATE_HZ,
+        )
+
+    def parameters(self, output: Path) -> dict[str, object]:
+        return {
+            "text": "One. Two. Three.",
+            "voice": "owner-fallback-v1",
+            "style": worker_module.CALM_EXPLANATORY_STYLE,
+            "seed": 42,
+            "take": 0,
+            "output": str(output),
+        }
+
+    def test_a_render_writes_the_assigned_file_inside_the_staging_root(self) -> None:
+        shard = self.root / "shard"
+        shard.mkdir()
+        assigned = shard / "take.wav"
+
+        frames = worker_module._render(
+            self.backend, self.launcher, self.parameters(assigned), self.staging
+        )
+
+        self.assertEqual(frames, 1_000)
+        self.assertTrue(assigned.is_file(), "the take must land at its assigned path")
+        self.assertEqual(self.model.calls, ["One. Two. Three."])
+        # Set per request rather than once at load, so a take is never rendered
+        # under the voice the previous request happened to leave behind.
+        self.assertIs(self.model.conds, self.backend.conditionals["owner-fallback-v1"])
+
+    def test_a_render_refused_for_containment_leaves_no_file_and_no_descriptor(self) -> None:
+        # The gate runs before generation, so a refused path costs no render --
+        # and the descriptor the walk opened is closed on the way out, which a
+        # long-running worker depends on for not exhausting its own limit.
+        outside = Path(self._workspace.name, "outside")
+        outside.mkdir()
+        before = len(os.listdir("/proc/self/fd"))
+
+        with self.assertRaises(worker_module.BackendUnavailable):
+            worker_module._render(
+                self.backend, self.launcher, self.parameters(outside / "take.wav"), self.staging
+            )
+
+        self.assertEqual(self.model.calls, [], "no audio may be generated for a refused path")
+        self.assertEqual(len(os.listdir("/proc/self/fd")), before, "no descriptor may leak")

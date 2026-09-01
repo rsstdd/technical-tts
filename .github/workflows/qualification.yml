@@ -177,13 +177,24 @@ jobs:
         # checked against the lock explains and routes.
         #
         # Timed because the check is not free: it reads every file each locked
-        # distribution's `RECORD` lists. ADR-0001-D004 records what that cost
+        # distribution's `RECORD` lists. ADR-0001-D006 records what that cost
         # on the reference environment, and a run that has drifted far from it
         # is the signal that the number needs retaking.
+        #
+        # CPU time, not wall time, is what witnesses the check. This runner is
+        # WSL2, whose wall clock intermittently loses seconds mid-run: roughly
+        # one run in eight returns the correct identity in 0.8 s of wall time
+        # having spent the usual 3.1 s of CPU, which is not a workload that
+        # skipped 1,263 MiB of reads. A wall time alone therefore cannot tell a
+        # fast run from a skipped precondition, which is the question
+        # ADR-0001-D004 left open and issue #60 tracked. `%U` and `%S` are
+        # unaffected by that clock, so they are what D006 bands and what is
+        # recorded here.
         run: |
           cargo build --offline --locked --package study-tts-runtime \
             --example worker-bundle-hash
-          time ./target/debug/examples/worker-bundle-hash
+          /usr/bin/time -f 'bundle-hash wall=%es user=%Us sys=%Ss' \
+            ./target/debug/examples/worker-bundle-hash
 
       - name: Point at the operator-run measurement steps
         if: always()

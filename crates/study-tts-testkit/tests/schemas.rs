@@ -915,12 +915,12 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 40] = [
     ),
     ("manifest 0.2", "/$defs/StoredTools", &["ffmpeg", "ffprobe"]),
     (
-        "plan 2.0",
+        "plan 3.0",
         "/",
         &["lesson_id", "plan_hash", "schema_version", "segments"],
     ),
     (
-        "plan 2.0",
+        "plan 3.0",
         "/$defs/PlannedSegment",
         &[
             "cache_key",
@@ -931,6 +931,7 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 40] = [
             "spoken_text",
             "style",
             "take",
+            "voice_profile",
         ],
     ),
     (
@@ -990,13 +991,13 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 40] = [
         &["audio_blake3", "spoken_text"],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/InitializeParameters",
-        &["threads", "worker_bundle_hash"],
+        &["staging_root", "threads", "worker_bundle_hash"],
     ),
-    ("worker-protocol 1.0", "/$defs/TraceContext", &["trace_id"]),
+    ("worker-protocol 2.0", "/$defs/TraceContext", &["trace_id"]),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerCapabilities",
         &[
             "channels",
@@ -1011,37 +1012,37 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 40] = [
         ],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerInitializationIdentities",
         &[
             "model_revision",
             "tokenizer_revision",
-            "voice_profile_hashes",
+            "voice_conditioning_hashes",
             "worker_bundle_hash",
         ],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerRequestFrame/oneOf/0",
         &["method", "parameters", "protocol_version", "request_id"],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerRequestFrame/oneOf/1",
         &["method", "protocol_version", "request_id"],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerRequestFrame/oneOf/2",
         &["method", "protocol_version", "request_id"],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerRequestFrame/oneOf/3",
         &["method", "parameters", "protocol_version", "request_id"],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerRequestFrame/oneOf/4",
         &[
             "active_request_id",
@@ -1051,22 +1052,22 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 40] = [
         ],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerRequestFrame/oneOf/5",
         &["method", "protocol_version", "request_id"],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerResponseFrame/oneOf/0",
         &["event", "identities", "protocol_version", "request_id"],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerResponseFrame/oneOf/1",
         &["capabilities", "event", "protocol_version", "request_id"],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerResponseFrame/oneOf/2",
         &[
             "event",
@@ -1077,12 +1078,12 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 40] = [
         ],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerResponseFrame/oneOf/3",
         &["event", "progress", "protocol_version", "request_id"],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerResponseFrame/oneOf/4",
         &[
             "channels",
@@ -1093,12 +1094,13 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 40] = [
             "protocol_version",
             "request_id",
             "sample_rate",
-            "voice_profile_hash",
+            "voice_conditioning_hash",
+            "voice_profile",
             "worker_bundle_hash",
         ],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerResponseFrame/oneOf/5",
         &[
             "active_request_id",
@@ -1108,12 +1110,12 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 40] = [
         ],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerResponseFrame/oneOf/6",
         &["event", "protocol_version", "request_id"],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerResponseFrame/oneOf/7",
         &[
             "code",
@@ -1125,7 +1127,7 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 40] = [
         ],
     ),
     (
-        "worker-protocol 1.0",
+        "worker-protocol 2.0",
         "/$defs/WorkerSynthesisParameters",
         &["output", "seed", "style", "take", "text", "voice"],
     ),

@@ -27,6 +27,8 @@ pub enum ToolOperation {
     M4aEncode,
     /// Validate an encoded M4A artifact.
     M4aValidation,
+    /// Run one persistent speech worker for a lifetime of requests.
+    WorkerSession,
 }
 
 impl fmt::Display for ToolOperation {
@@ -35,6 +37,7 @@ impl fmt::Display for ToolOperation {
             Self::VersionProbe => formatter.write_str("version probe"),
             Self::M4aEncode => formatter.write_str("M4A encode"),
             Self::M4aValidation => formatter.write_str("M4A validation"),
+            Self::WorkerSession => formatter.write_str("worker session"),
         }
     }
 }
