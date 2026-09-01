@@ -3,8 +3,8 @@
 - Date/time and timezone: 2026-08-30, Europe/Berlin
 - Candidate revision: opened on the working tree of `fix/issue-59-retired-grant` at the E1-S3
   governance preflight; the candidate it now describes is `story/e1-s3-single-worker-cache` at
-  worker bundle identity `58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750`, after
-  five rounds of audit remediation
+  worker bundle identity `3e1f487cf259cd5b17bdeea16845c14426dbbded76f47732dd06b02198003747`, after
+  six rounds of audit remediation
 - Accountable owner: Engineering owner
 - Approvers: Engineering owner and project owner
 - Status: Proposed
@@ -373,13 +373,21 @@ quoted in §Finding 1 was taken on a binary that predated the freshly built one,
 
 ## Story acceptance criteria
 
-Added as the work landed, per §Scope and decision. The story half is accepted when all seven
+Added as the work landed, per §Scope and decision. The story half is accepted when all eight
 hold. **Restated 2026-08-31.** As first written this said six, while §Story result had answered
 seven since the listening review was taken: criterion 7 below is that seventh, written down rather
 than left implied by the row that answers it. The fifth audit's fourth finding is this.
+**Restated 2026-09-01.** Eight now, not seven, for the reason criterion 8 gives.
 
-1. Every one of the eight defects raised against the in-progress work is closed by a check that
-   fails against the defect before it passes against the fix.
+1. Every one of the **eight defects in §Story findings** — the story's own, raised against the
+   in-progress work before the audit series began — is closed by a check that fails against the
+   defect before it passes against the fix. **Restated 2026-09-01.** As first written this said
+   "the eight defects raised against the in-progress work" and named no section, while the seven
+   audit rounds raised their findings against in-progress work too: eleven, then six, then four,
+   four, four, and five, none of them among the eight. The wording claimed a set wider than the
+   count measured, so §Story result could answer it from §Story findings alone and nothing in this
+   list spoke for the audit findings at all. The count is now scoped to the set it always measured,
+   and criterion 8 carries the rest. Raised by review of this record on 2026-09-01.
 2. No published contract version moves *without an accepted interface-change record*: the
    worker protocol, the plan schema, the `TtsExecutor` contract, and the launcher record each
    move only under one. **Restated 2026-08-31.** As first written this said no version moves at
@@ -407,18 +415,27 @@ than left implied by the row that answers it. The fifth audit's fourth finding i
    and its limits stated. **Added 2026-08-31**, for the reason the preamble gives: ADR-0001 §17.5
    makes it a gate condition and §Story result has answered it since it was taken, so the criteria
    list was the half that was missing.
+8. Every finding raised by the seven audit rounds is dispositioned in that round's own table, and
+   none is left implied. A finding that is a code defect is closed by a check that fails against
+   the defect first, named in its row; a finding against this record, its documentation, or its
+   binding guidance says in its row what was corrected; a finding not closed says so in its row and
+   names what carries it. **Added 2026-09-01.** Criterion 1 measured the story's eight defects while
+   its wording claimed every defect raised against the in-progress work, and the audits raised more
+   findings than the story did — so this criterion is what the wider claim now costs, and criterion
+   1 no longer makes it. Counted by round rather than by one total, because a total is what this
+   list has already had to restate three times.
 
 ## Story result
 
 | Criterion | Result |
 |---|---|
-| 1 — eight defects closed red-before-green | Met. §Story findings |
-| 2 — no unrecorded contract version move | Met under the restated criterion. The worker protocol moved to `e1.worker.2.0`, the plan schema to v3, and the `TtsExecutor` contract to 3.0, all under `E1-S3-INTERFACE-CHANGE-001`; the audit remediation folded `staging_root` into the same unreleased 2.0 under `ADR-0001-D005`. The launcher record is unchanged. The schema-drift test passes against the moved shapes |
-| 3 — identity moves only for a declared input | Met under the restated criterion. `84baafe98bf861cb…` → `839baa220e90ab89…` during the story, then → `7b065eeb5319c6bc…` under the first audit remediation, → `6a158816945dd7d6…` under the second, → `d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af` under the third, and → `58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750` under the fourth. Every move follows a change to `worker/study_tts_worker/`, a declared bundle input — the fourth one to a docstring in it, which is the case `e1-s3-protocol-docstring-identity-reconciliation-v1` reconciles. Nothing is stranded by either: the cache root holds no entries, and the shipped worker refused `synthesize` until this work |
+| 1 — the story's eight defects closed red-before-green | Met. §Story findings names the failing test for each. It answers the story's own eight only; the audit findings are criterion 8's |
+| 2 — no unrecorded contract version move | Met under the restated criterion. The worker protocol moved to `e1.worker.2.0`, the plan schema to v3, and the `TtsExecutor` contract to 3.0, all under `E1-S3-INTERFACE-CHANGE-001`; the audit remediation folded `staging_root` into the same unreleased 2.0 under `ADR-0001-D005`. `E1-S3-INTERFACE-CHANGE-003` records the seventh round's own required field on `BackendError::Timeout`, retaining `e1.tts-executor.3.0` under the same deviation. The launcher record is unchanged. The schema-drift test passes against the moved shapes |
+| 3 — identity moves only for a declared input | Met under the restated criterion. `84baafe98bf861cb…` → `839baa220e90ab89…` during the story, then → `7b065eeb5319c6bc…` under the first audit remediation, → `6a158816945dd7d6…` under the second, → `d66e84e4512e2249976523f2ce6a0acaecb7fa6a6494d2aba19b2e4081de37af` under the third, and → `58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750` under the fourth, then → `3e1f487cf259cd5b17bdeea16845c14426dbbded76f47732dd06b02198003747` under the sixth, which chained an exception in `worker.py`. Every move follows a change to `worker/study_tts_worker/`, a declared bundle input — the fourth one to a docstring in it, which is the case `e1-s3-protocol-docstring-identity-reconciliation-v1` reconciles. Nothing is stranded by either: the cache root holds no entries, and the shipped worker refused `synthesize` until this work |
 | 4 — five reference-machine criteria | Met. All five pass on the reference machine against real weights, in a loopback-only network namespace, and the instrument's output is hashed and cited as `e1-s3-qualification-result-v1.json`. §T5 qualification result |
 | 5 — checks | Met for everything run |
 | 6 — what was not run | Met. §Verification run, and §Limits below |
-| 7 — the listening review | **Pending.** The 2026-08-31 review remains valid for its recorded bytes, but those bytes contain one inserted zero at each quiet edge. The current conditioner instead zeroes the measured quiet edge without adding frames, so a new render and review are required. §Historical review result |
+| 7 — the listening review | **Met.** Taken 2026-09-01 by Ross Todd on laptop speakers, against the set rendered at the current identity `3e1f487c…`: six samples reviewed blind, `none` on all five criteria, all six `accept`, overall "Clear, natural sounding audio". `check_listening_review.py` exits `0` and binds the judgment to the audio's digests. §Review result records it and its four stated limits; §Historical review result carries the superseded 2026-08-31 one |
 
 ## Story findings
 
@@ -462,10 +479,21 @@ Discharged by `cargo run --package study-tts-testkit --example worker-qualificat
 is why: every `t5_` name in this project is an acceptance criterion answered by an operator-run
 instrument and a record, the shape E0-S3 used.
 
-Rerun on the reference machine on 2026-08-31, **after the fourth audit remediation**, against the
-real model and the governed voice root, **inside a loopback-only network namespace**. Every earlier
-run is superseded: the bundle identity moved four times across the remediation rounds, three
-criteria changed what they test, and a fifth was added.
+Rerun on the reference machine on **2026-09-01, after the sixth audit remediation moved the worker
+bundle identity**, against the real model and the governed voice root, **inside a loopback-only
+network namespace**. This supersedes the run taken earlier the same day at `58f1a098…`: the sixth
+audit's P3 finding chained an exception in `worker/study_tts_worker/worker.py`, a declared bundle
+input, so the identity moved and the earlier result stopped describing the code that ships. Every earlier run is superseded: the bundle identity moved four
+times across the remediation rounds, three criteria changed what they test, and a fifth was added.
+
+**Why it was rerun rather than reasoned about.** The previous revision of this section carried a
+run from 2026-08-31 and argued that later Rust changes could not have disturbed it, because they sat
+inside `WorkerConfiguration::for_bundle` and could only refuse a launch. That argument was sound but
+it was still an argument. `docs/operations/REVIEW-AND-ACCEPT-CYCLE.md` §3 now says plainly that the
+worker bundle identity is **not** a qualification identity — it hashes eight declared inputs, no
+Rust among them, while four of the five criteria are statements about the executor — so an unmoved
+`worker-bundle-hash` is not evidence for them. Fourteen minutes of reference-machine time replaces
+the judgment with a measurement, which is the cheaper thing to defend at a gate.
 
 **This run is the record's only T5 result.** Earlier revisions of this section described a run and
 then said elsewhere that the instrument still had to be re-run, which the second audit raised as
@@ -478,10 +506,13 @@ The raw result is filed beside this record:
 
 | Artifact | Value |
 |---|---|
-| `evidence/gates/g1/e1-s3/e1-s3-qualification-result-v1.json` | SHA-256 `03588f082735ee3e2ab706fd1dd7a8e5410510b1b79549e47964611709214ee1` |
-| Worker bundle identity | `58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750` |
+| `evidence/gates/g1/e1-s3/e1-s3-qualification-result-v1.json` | SHA-256 `d35588fe1ce69b741ab62ae0b7b2d4b924799aa6b945d5d6f9c759c9a3c3f528`, superseding `cb220c0691…` and, before it, `03588f0827…` |
+| Worker bundle identity | `3e1f487cf259cd5b17bdeea16845c14426dbbded76f47732dd06b02198003747` |
 | Criteria | 5 of 5 pass |
-| Network namespace | interfaces `["lo"]`, 0 IP routes, `/proc/self/ns/net` inode 4026532310 |
+| Network namespace | interfaces `["lo"]`, 0 IPv4 routes, `/proc/self/ns/net` inode 4026532310 |
+
+The artifact's route field is now `ipv4_routes` rather than `routes`, which is what the instrument
+writes; the value and its meaning are unchanged.
 
 The namespace is not context: the instrument **refuses to start** without it, so a
 `qualification-result.json` existing at all is one whose egress was denied. The interfaces, the
@@ -493,9 +524,9 @@ string names counts, criteria, and digests only.
 
 | Criterion | Result | Observed |
 |---|---|---|
-| `t5_e1_worker_bundle_hash_matches_when_all_declared_bundle_inputs_match` | Pass, re-derived | Two derivations on the qualified interpreter agreed at `58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750` after the fourth remediation, superseding `d66e84e4512e2249…`, `6a158816945dd7d6…`, `7b065eeb5319c6bc…` and, before them, `839baa220e90ab89…`. Derived with `cargo run --package study-tts-runtime --example worker-bundle-hash`, which needs the bundle root and the qualified interpreter but no governed root. Sensitivity to a moved input is pinned at T1 by `t1_e1_worker_bundle_hash_changes_on_owned_runtime_input` |
+| `t5_e1_worker_bundle_hash_matches_when_all_declared_bundle_inputs_match` | Pass, re-derived | Two derivations on the qualified interpreter agreed at `3e1f487cf259cd5b17bdeea16845c14426dbbded76f47732dd06b02198003747` after the sixth remediation, superseding `58f1a098b7f36ded…`, `d66e84e4512e2249…`, `6a158816945dd7d6…`, `7b065eeb5319c6bc…` and, before them, `839baa220e90ab89…`. **Corrected 2026-09-01.** As first written this row carried a 63-character string that was no digest at all: a find-and-replace had spliced the current identity's prefix onto the superseded one's tail, and its chain stopped at the fourth remediation. §Story result criterion 3 carried the correct chain throughout. Derived with `cargo run --package study-tts-runtime --example worker-bundle-hash`, which needs the bundle root and the qualified interpreter but no governed root. Sensitivity to a moved input is pinned at T1 by `t1_e1_worker_bundle_hash_changes_on_owned_runtime_input` |
 | `t5_e1_model_load_occurs_once_per_worker_lifetime` | Pass | 3 takes through one worker reported 1 model load |
-| `t5_e1_worker_protocol_stdout_remains_clean` | Pass | Every frame of a completed session parsed off standard output **and nothing followed the last one**, while 30,618 bytes of backend diagnostics went to standard error. The second clause is new and is the point: the criterion used to be recorded while the session was still open, and nothing read the response stream after the final request — so a worker could write anything past its last frame, an unterminated tail most of all, and still pass. `shutdown` now drains the stream and refuses anything but the shutdown response, and the criterion is recorded from that result |
+| `t5_e1_worker_protocol_stdout_remains_clean` | Pass | Every frame of a completed session parsed off standard output **and nothing followed the last one**, while 25,079 bytes of backend diagnostics went to standard error. The second clause is new and is the point: the criterion used to be recorded while the session was still open, and nothing read the response stream after the final request — so a worker could write anything past its last frame, an unterminated tail most of all, and still pass. `shutdown` now drains the stream and refuses anything but the shutdown response, and the criterion is recorded from that result |
 | `t5_e1_worker_output_cannot_escape_staging_root` | Pass | A contained take wrote only its assigned path; **five** shapes refused — a symlink planted at the assigned path, a path that walks upward, a path that already exists, **an absolute path outside the staging root**, and **a path whose parent is a symlink out of the root**; zero files outside the staging root. The last two are the shapes the pre-remediation worker could not refuse, because it was told a path and no root |
 | `t5_e1_worker_survives_restart_and_starts_offline` | Pass | Two worker lifetimes through one configuration reported identical synthesis identities, both applied their offline settings, **and both ran inside a namespace holding only `lo` with no IP route**. The last clause is new and is what the criterion's name always claimed: it previously passed on the worker's own diagnostics alone, which prove it configured `huggingface_hub` and `transformers` and prove nothing about the backend, a transitive dependency, or a socket. Not a `DELIVERY-PLAN.md` name: a helper criterion covering ADR-0001 §17.7's restart and offline requirements, driven by the same `run_worker_restart_contract_scenario` the T4 suite drives the protocol fake through |
 
@@ -1118,16 +1149,15 @@ is a pin rather than a defect and passed on its first run, which is stated rathe
 
 **Not run, and not claimed.** Hosted CI and the protected reference-machine qualification workflow
 were not run. `cargo deny check` was not run. **`worker-qualification` and `listening-render` were
-deliberately not re-run.** As first written this rested on the bundle identity not having moved,
-which is the wrong test and is corrected here: the identity hashes only `worker/bundle-manifest.json`'s
-eight declared inputs, no Rust among them, so an unmoved hash says nothing about the executor the
-criteria are mostly about. The argument that does hold is reachability. This round's Rust changes are
-`admit_voice_root`'s refusal and `model_gate`'s error handling, both inside
-`WorkerConfiguration::for_bundle` and both able only to *refuse a launch*, plus a refusal in
-`for_protocol_fake`, which the real-worker path never calls. None alters the behaviour of a session
-that started, and the filed run started and completed. A re-run would replace that judgment with a
-measurement for about fourteen minutes of reference-machine time, and is the better answer if the
-gate wants one. No
+not re-run at this round, and both have since been.** As first written this section rested on the
+bundle identity not having moved, which is the wrong test: the identity hashes only
+`worker/bundle-manifest.json`'s eight declared inputs, no Rust among them, so an unmoved hash says
+nothing about the executor four of the five criteria are about. The replacement argument was
+reachability — this round's Rust changes are `admit_voice_root`'s refusal and `model_gate`'s error
+handling, both inside `WorkerConfiguration::for_bundle` and both able only to *refuse a launch*,
+plus a refusal in `for_protocol_fake` that the real-worker path never calls. That argument held, but
+it was an argument. Both instruments were rerun on 2026-09-01 rather than argued about; §T5
+qualification result carries the measurement that replaced it. No
 test asserts the `setsid` escape is contained, because it is not — `ADR-0001-D008` is where that
 is decided rather than a gap left implicit.
 
@@ -1138,13 +1168,14 @@ inserting one zero sample. The output passed the exact-endpoint check, but its d
 though the measured silence already met the requirement. The conditioner now zeroes the measured
 quiet leading and trailing samples and adds no padding in that case.
 
-This is Rust-only. That it does not move the worker bundle identity is **not** the reason the
-recorded five-of-five T5 run still stands — the bundle identity hashes the eight declared inputs in
+This is Rust-only. That it does not move the worker bundle identity was **never** a reason to trust
+the earlier T5 run — the bundle identity hashes the eight declared inputs in
 `worker/bundle-manifest.json`, none of which is Rust, so it could not have moved and proves nothing
-about the runtime. The reason is reachability: `worker-qualification` drives a session with a
-placeholder cache key the executor never reads, so cache publication and `condition_edges` are not
-on the qualified path at all. The five criteria are statements about session behaviour, and this
-correction changes neither. It does change the conditioned WAV
+about the runtime. Reachability was the better argument: `worker-qualification` drives a session
+with a placeholder cache key the executor never reads, so cache publication and `condition_edges`
+are not on the qualified path at all. The question is now settled by measurement rather than by
+either argument — the instrument was rerun on 2026-09-01 after this correction and passed five of
+five. The listening review is the half that genuinely could not be carried, and it is pending. It does change the conditioned WAV
 bytes and frame count. The 2026-08-31 listening review is therefore historical evidence for its
 recorded set, not acceptance evidence for the current candidate; a new listening render and human
 review are the one remaining qualification item.
@@ -1155,7 +1186,7 @@ Verification after this correction:
 |---|---|
 | `cargo fmt --all -- --check` | Clean |
 | `cargo clippy --offline --workspace --all-targets --all-features --locked -- -D warnings` | Clean |
-| `cargo test --offline --workspace --all-targets --locked` | 396 passed, 0 failed |
+| `cargo test --offline --workspace --all-targets --locked` | 399 passed, 0 failed |
 | `cargo test --offline --workspace --doc --locked` | 8 passed, 0 failed |
 | `python3 -m unittest discover --start-directory worker/tests` | 64 passed, 2 skipped on the system interpreter |
 | `(cd scripts/qualification && python3 -m unittest discover --start-directory tests)` | 36 passed |
@@ -1163,9 +1194,137 @@ Verification after this correction:
 | `python3 scripts/check-evidence-provenance.py` | Exit `0` |
 | `git diff --check` | Clean |
 
-**Not run, and not claimed:** the protected reference-machine workflow, a new real-worker T5 run,
-and a post-correction listening render and review. The existing T5 artifact remains applicable for
-the reason above; the listening review does not.
+**Not run, and not claimed:** the protected reference-machine workflow, and **the human listening
+review**. **Corrected 2026-09-01.** As first written this also listed a new real-worker T5 run and a
+post-correction listening render as not run, which was true when the sentence was written and false
+within the day: both were run on 2026-09-01, and again after the sixth remediation moved the bundle
+identity. §T5 qualification result and §Listening material carry them. What has never been taken is
+the review itself, which is criterion 7 and is a person's to answer.
+
+## Sixth remediation — the audit of 2026-09-01 (P1 to P3)
+
+### Sixth audit — four findings
+
+| # | Finding | Disposition |
+|---|---|---|
+| P1 | A timeout could hide a failed process-tree containment. `WorkerClient::request` discarded `shutdown()`'s result on the deadline path (`let _ = self.shutdown();`), and `shutdown` takes the child and the ownership state with it — so a termination, reaping, or containment-inspection failure was both unrecoverable and unreportable, and the caller saw a bare `Timeout`. A worker tree that survived termination is the ADR-0001 §10.3 property that path exists to enforce | `BackendError::Timeout` gains `containment_failure: Option<String>`, rendered into the message only when present, and `request` captures the refusal instead of dropping it. The timeout still leads because it is what the exchange failed for and what the caller acts on; the containment failure follows because a surviving tree is the more serious half. `t1_e1_a_timeout_reports_a_containment_failure_beside_it` pins both renderings and failed first — the field was carried but dropped from the message. One construction site, and the two destructuring sites already used `..` |
+| P2a | This record contradicted its own 2026-09-01 runs: a verification table recording 396 tests against a 399-test suite, a "not run, and not claimed" paragraph listing a T5 run and a listening render that had both happened that day, and §Historical listening material still saying no post-correction set existed | All three corrected in place, under the "**Corrected 2026-09-01**" convention. These were misses of mine: when the instruments landed I updated three places and left the verification block and the historical intro behind. What remains genuinely not taken is the human review, and the corrected text says exactly that |
+| P2b | `worker/AGENTS.md` still instructed that no model is loaded and that both operations refuse. It is a **nested** `AGENTS.md`, so it is binding guidance for future work under `worker/` and could license a regression toward the removed stub | Rewritten against the shipped worker. The prohibition inside the bullet — do not add a placeholder identity or tone — is kept verbatim, because it is the reason the bullet exists and is as binding now as against the stub. The file is pinned by an accepted E1-S1 record, so `e1-s3-worker-binding-guidance-reconciliation-v1` accounts for the moved digest |
+| P3 | `_load_backend`'s conditioning-load refusal raised `BackendUnavailable` without `from error`, unlike every sibling refusal at `:380`, `:504`, `:515`, and `:759`, so the original deserialization fault was not retained as the cause | Chained. One token, and it moved the worker bundle identity, which is what §What the sixth remediation costs this record is about |
+
+### What the sixth remediation costs this record
+
+`worker/study_tts_worker/worker.py` is a declared bundle input, so chaining one exception moved the
+worker bundle identity to
+`3e1f487cf259cd5b17bdeea16845c14426dbbded76f47732dd06b02198003747`, superseding
+`58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750`.
+
+Both instruments were rerun rather than reasoned about: T5 at the new identity, five of five, and a
+fresh listening render. **The listening review had not been taken when P3 landed**, and that is the
+whole reason this round is cheap. Fixing P3 after the review would have left a completed human
+judgment bound to audio rendered under a superseded identity — the carry-forward situation
+`e1-s3-protocol-docstring-identity-reconciliation-v1` had to be written for once already. Doing it
+while the sheet was unanswered cost machine time and nothing else, and **no reconciliation record
+exists or is needed for this identity move**, because nothing was carried across it.
+
+The earlier `listening-2026-09-01-110350` set was therefore superseded before anyone listened to
+it. §Listening material records that plainly rather than quietly replacing it.
+
+### Verification run for the sixth remediation
+
+Taken on the reference machine, 2026-09-01. Every check below actually ran; what did not run is
+named after the table rather than omitted.
+
+| Check | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | Clean |
+| Rust conventions | `python3 scripts/check-rust-conventions.py` | Clean |
+| Lints | `cargo clippy --offline --workspace --all-targets --all-features --locked -- -D warnings` | Clean |
+| Tests | `cargo test --offline --workspace --all-targets --locked` | 399 passed, 0 failed |
+| Doctests | `cargo test --offline --workspace --doc --locked` | 8 passed, 0 failed |
+| Python worker, system interpreter | `python3 -m unittest discover --start-directory worker/tests` | 64 passed, 2 skipped |
+| Python worker, restored environment | `worker/.venv/bin/python -m unittest discover --start-directory worker/tests` | 64 passed, 0 skipped — the only run that exercises the render path P3 touches |
+| Qualification tooling | `(cd scripts/qualification && python3 -m unittest discover --start-directory tests)` | 36 passed |
+| Provenance checker's own tests | `python3 -m unittest discover -s scripts/tests -p 'test_check_evidence_provenance.py'` | 23 passed |
+| Evidence provenance | `python3 scripts/check-evidence-provenance.py` | Exit `0`, no unaccounted mismatches |
+| Whitespace | `git diff --check` | Clean |
+| Worker bundle identity | `cargo run -p study-tts-runtime --example worker-bundle-hash` | `3e1f487cf259cd5b17bdeea16845c14426dbbded76f47732dd06b02198003747` |
+| T5 qualification | `unshare --user --map-root-user --net ./target/debug/examples/worker-qualification …` | 5 of 5 pass. §T5 qualification result |
+| Listening render | `./target/debug/examples/listening-render …` | 6 takes published at the new identity. §Listening material |
+| Listening review checker, against the pending sheet | `python3 scripts/qualification/check_listening_review.py …/listening` | Exit `1` — `the review sheet states no reviewer`, which is the correct refusal of an unanswered sheet |
+
+**Not run, and not claimed.** Hosted CI, the protected reference-machine workflow, and
+`cargo deny check` were not run. **No end-to-end test proves a containment failure reaches the
+caller**, so P1's coverage is the T1 rendering test and the reasoning above, not an injected
+failure. **Corrected 2026-09-01.** As first written this sentence also claimed no such test was
+possible, because the workspace has no process-supervision fault seam. That was wrong, and the
+seventh audit said so: the seam is the fake worker, and §Seventh remediation builds the test on it.
+The statement above stands only for the state of the tree on 2026-09-01 before that round.
+**The human listening review has not been taken** — criterion 7 stays `Pending`.
+
+## Seventh remediation — the audit of 2026-09-01 (P1 to P3)
+
+### Seventh audit — five findings
+
+Every one of them lands on the sixth remediation rather than on the story's original work, and two
+contradict statements this record itself made.
+
+| # | Finding | Disposition |
+|---|---|---|
+| P1 | The sixth round's required field on `BackendError::Timeout` was a **Breaking contract** with no interface-change record. `BackendError` is named in `PROVISIONAL-CONTRACT-BASELINE.md` §Baseline inventory as part of the `tts_executor` contract's public representation, and `E1-S3-INTERFACE-CHANGE-002` had applied exactly that classification to its own required field | `E1-S3-INTERFACE-CHANGE-003`, `Accepted` 2026-09-01, records the classification and **retains** `e1.tts-executor.3.0` under `ADR-0001-D005`. Condition 2 decides it: `3.0` is the version E1-S3 itself introduced, so no consumer ever saw the shape being corrected — the same test `E1-S3-INTERFACE-CHANGE-002` applied to `CACHE_SCHEMA_VERSION` and failed, because that constant moved in E1-S1. The record states that condition 5 was met only after the field landed, rather than arguing it away |
+| P2a | The timeout path labelled **every** `shutdown()` error a containment failure. `shutdown` fails from three places, and one of them — the epilogue drain — is about bytes on standard output. A worker that answered `shutdown` with the wrong frame was reported as a worker tree that survived termination | A `pub(crate) ShutdownFailure` separates ADR-0001 §10.3's subject from §17.7's, and the timeout path carries only the first. Classified by what a failure **means**, not by which check produced it: a standard output still open after the worker is gone is held by something the worker started, so that arm is `Containment` even though the epilogue drain is what noticed. `t4_e1_a_timeout_does_not_report_a_protocol_tail_as_an_escaped_tree` failed first, on the real defect |
+| P2b | `t1_e1_a_timeout_reports_a_containment_failure_beside_it` asserted message formatting only. It passed whether or not `request` consulted `shutdown()`'s result, so it did not defend the fix — and this record claimed no such test was possible | `t4_e1_a_timeout_whose_tree_escaped_containment_says_so` drives it end to end. **The claim was wrong and is corrected above**: the seam is the fake worker. A new behavior starts a descendant through `setsid -f`, which reparents it to init before the supervisor enumerates, so neither the group kill nor a recorded pidfd reaches it — the residual `ADR-0001-D008` records, in its silent shape. It keeps the worker's standard output open, which is the one thing that makes such an escape observable. Verified to bite: with `request` reverted to `let _ = self.shutdown();` the test fails on `containment_failure: None` |
+| P2c | The §T5 acceptance table recorded a 63-character string as the bundle digest — a find-and-replace had spliced the current identity's prefix onto the superseded one's tail — and its supersession chain stopped at the fourth remediation | Both corrected in place under the "**Corrected 2026-09-01**" convention. §Story result criterion 3 carried the correct chain throughout, which is what made the row a transcription error rather than a disagreement about the identity |
+| P3 | `TtsExecutor::synthesize`'s `# Errors` omitted `BackendError::IdentityDrift`, a refusal the shipped worker path really returns | Documented, and then mechanized: `error_documentation.rs` gains a third contract row for `fn synthesize<'a>(`. It is a trait method rather than an inherent one, which is why nothing caught this through six rounds — `-D warnings` checks that a rustdoc link resolves, never that a variant was mentioned. Verified to bite by removing the sentence again |
+
+### What the seventh remediation costs this record
+
+**Nothing under `worker/` is touched, so no identity moves.** The worker bundle identity stays
+`3e1f487cf259cd5b17bdeea16845c14426dbbded76f47732dd06b02198003747`; the T5 qualification result
+`d35588fe1c…` stands; the pending listening set `listening-2026-09-01-121010` stands and is still
+the right one to review. `contract_version` reaches no synthesis key, so no cache entry or plan hash
+moves either. **No reconciliation record is needed**: `PROVISIONAL-CONTRACT-BASELINE.md` and
+`docs/INDEX.md` are both already accounted pairs, which the checker confirmed rather than this
+record assuming.
+
+**One correction beyond the audit's five.** `PROVISIONAL-CONTRACT-BASELINE.md` still stated that the
+product worker refuses `initialize` and `synthesize` until E1-S3 — the same stale claim the sixth
+remediation corrected in `worker/AGENTS.md`, in a document that was being edited anyway. Leaving one
+half of a contradiction standing after correcting the other is worse than not having noticed, so it
+was corrected here and is named rather than folded in silently.
+
+### Verification run for the seventh remediation
+
+Taken on the reference machine, 2026-09-01. Every check below actually ran; what did not run is
+named after the table rather than omitted.
+
+| Check | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | Clean |
+| Rust conventions | `python3 scripts/check-rust-conventions.py` | Clean |
+| Lints | `cargo clippy --offline --workspace --all-targets --all-features --locked -- -D warnings` | Clean |
+| Tests | `cargo test --offline --workspace --all-targets --locked` | 401 passed, 0 failed — two more than the sixth round, both added here |
+| Doctests | `cargo test --offline --workspace --doc --locked` | 8 passed, 0 failed |
+| Python worker, system interpreter | `python3 -m unittest discover --start-directory worker/tests` | 64 passed, 2 skipped |
+| Python worker, restored environment | `worker/.venv/bin/python -m unittest discover --start-directory worker/tests` | 64 passed, 0 skipped |
+| Qualification tooling | `(cd scripts/qualification && python3 -m unittest discover --start-directory tests)` | 36 passed |
+| Provenance checker's own tests | `python3 -m unittest discover -s scripts/tests -p 'test_check_evidence_provenance.py'` | 23 passed |
+| Evidence provenance | `python3 scripts/check-evidence-provenance.py` | Exit `0`, no unaccounted mismatches |
+| Whitespace | `git diff --check` | Clean |
+| No leaked escapee | `pgrep -af 'descendant-park\|escapee-holding'` | Nothing — the new test's `Drop` guard collects what it starts, and `ESCAPEE_STDOUT_HOLD` bounds it regardless |
+
+**Not run, and not claimed.** Hosted CI, the protected reference-machine workflow, and
+`cargo deny check` were not run. The two reference-machine instruments were **not rerun and did not
+need to be**: no declared bundle input changed, so the identity they were taken at is still this
+build's. **The human listening review has not been taken** — criterion 7 stays `Pending`.
+
+**What the new test does not prove.** It asserts that a containment failure reaches the caller, not
+that the tree is contained. An escapee that holds nothing is still silent, which is exactly the
+residual `ADR-0001-D008` permits until E5-S4's
+`t4_e5_a_descendant_that_leaves_its_process_group_is_still_contained`. `shutdown` also joins its
+reader threads after draining the epilogue, so a process holding the protocol pipe delays the caller
+for as long as it holds it; the test bounds its own escapee for that reason, and bounding it in the
+supervisor is not attempted here.
 
 ## Limits the story does not close
 
@@ -1192,6 +1351,12 @@ the reason above; the listening review does not.
   revisit it before any worker pool above size one, since a pool multiplies the escapees. The fifth
   audit's third finding was that a §Limits bullet in a `Proposed` record accepts nothing, which was
   correct.
+
+  The seventh remediation gives the residual a live witness rather than closing it.
+  `t4_e1_a_timeout_whose_tree_escaped_containment_says_so` starts a descendant through `setsid -f`,
+  which is exactly this shape, and the refusal names it — but only because that escapee holds the
+  worker's standard output open. One that holds nothing is still silent, so the deviation is
+  unchanged and its expiry is unmoved.
 - **No configuration this crate builds can reach a governed root ungated, but the argument is a
   denylist now.** `for_bundle` gates the model artifacts and every voice profile, and
   `for_protocol_fake` refuses the two variable names in `GOVERNED_ROOT_ENVIRONMENT` so it cannot be
@@ -1250,7 +1415,8 @@ the reason above; the listening review does not.
   changed, so the published samples no longer matched the ones reviewed. That retake was taken on
   2026-08-31 and remains recorded below as history. Quiet-edge normalization then changed those
   published bytes again by replacing one-sample padding with zeroing of the already-measured silent
-  region. No post-correction listening set or completed review is recorded yet.
+  region. A post-correction set **has** now been rendered — §Listening material carries its digests
+  — but no completed review is recorded against it.
 
   **The retake has an instrument; the original did not.** The 2026-08-31 takes were produced by
   piping a hand-built NDJSON session into the worker, which left the material unreproducible — that
@@ -1279,13 +1445,93 @@ the reason above; the listening review does not.
   `check_requirements_match_lock` a no-op. The reconciliation must be decoupled from manifest
   membership before the file can leave.
 
+## Listening material
+
+Rendered 2026-09-01 by `cargo run --package study-tts-testkit --example listening-render`, at the
+worker bundle identity the sixth remediation produced. Every take is published **through the cache**
+before it is blinded, so what a reviewer hears is the conditioned audio a build assembles rather
+than the worker's raw output. Governed output, so the location is named by root rather than
+reproduced here, per `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`.
+
+| Item | Value |
+|---|---|
+| Location | `listening-2026-09-01-121010/listening/` beneath the governed qualification output root |
+| Samples | 6, `sample-01.wav` through `sample-06.wav`, blinded |
+| Script | `fixtures/listening/e1-s3-listening-script.json`, committed and registered |
+| Total duration | 30.8 s |
+| Format | 24 000 Hz, one channel, IEEE float |
+| Voice profile | `owner-fallback-v1`, resolved at `VoiceUse::VoiceQualification` through the same rights gate a build passes |
+| Worker bundle identity that rendered it | `3e1f487cf259cd5b17bdeea16845c14426dbbded76f47732dd06b02198003747` |
+| Completed review sheet | SHA-256 `44558813f8658c7d670cc7f6cafc063e6cc3720689ad10fec66535f71474186b`, superseding the pending sheet `5bf7b9484d…` the instrument wrote |
+
+| Sample | SHA-256 |
+|---|---|
+| `sample-01.wav` | `6083aaa26c4d5bfba33ebda4cd70bfcbf84921c3d18d2d3018ba5b5ac962e7df` |
+| `sample-02.wav` | `4cb0d61c947ab2e78d7f677ab99511b264711aa7c3e1f19609ed454feaa500fe` |
+| `sample-03.wav` | `615f61e954352d2f8072ea250e8cdb7d84ae48e08fbeef611e999c367cc6ead5` |
+| `sample-04.wav` | `bc148ba3bd5d4f7c2fc78c5c9caa909faf6e3c0e01e0f62365f39d68a074b697` |
+| `sample-05.wav` | `04ac9e4018a08507738e80e1fe31e5c7d28757e9b67ace945a21189d86ad92aa` |
+| `sample-06.wav` | `5ef8e8fe5ced8b30c3486267fa8b95822923fae1a1be87d1815eb16ffc254001` |
+
+**An earlier set the same day was superseded before anyone listened to it.** The
+`listening-2026-09-01-110350` set was rendered at `58f1a098…` and its digests were recorded here.
+The sixth audit's P3 finding then chained an exception inside `worker.py`, a declared bundle input,
+which moved the identity — so that set no longer described the code that ships and was replaced
+rather than carried. **This is why it was sequenced that way:** the review had not been taken, so
+the cost was machine time rather than a second listening session and a carry-forward reconciliation
+record. Nothing is carried forward and no such record exists for this move.
+
+**This set carries the corrected conditioning, and the difference is measurable rather than
+asserted.** In §Historical listening material every sample has a zero run of exactly **one** frame
+at each edge — the old behaviour, which satisfied the exposed-endpoint rule by inserting a single
+zero and left the rest of the quiet region at roughly `1e-6`. Here the leading runs are 5 281,
+5 641, 1 921, 5 641, 5 281, and 5 761 frames, because the conditioner normalizes the whole
+*measured* silent region to zero and adds no frames.
+
+### Review result
+
+**Taken 2026-09-01 by Ross Todd, on laptop speakers.** All six samples reviewed blind against the
+five criteria before the key was opened; `check_listening_review.py` then accepted the sheet and
+revealed the mapping — `listening review complete and bound to the audio beside it`, exit `0`.
+
+Overall finding: **"Clear, natural sounding audio."** Every sample: `none` on all five criteria,
+disposition `accept`.
+
+| Blind ID | Line | Text | Disposition |
+|---|---|---|---|
+| `sample-01` | `line-02` | The HTTP API returns 404 when the record is absent and 409 when two writers disagree. | `accept` |
+| `sample-02` | `line-06` | A checksum proves that bytes did not change; it proves nothing at all about whether they were ever correct. | `accept` |
+| `sample-03` | `line-04` | Write-ahead logging makes a crash recoverable: the log is flushed before the page it describes. | `accept` |
+| `sample-04` | `line-01` | A vector database stores embeddings and retrieves them by similarity rather than by exact match. | `accept` |
+| `sample-05` | `line-03` | What happens when the cache key changes but the audio behind it does not? | `accept` |
+| `sample-06` | `line-05` | SQL indexes speed up reads and slow down writes, so the right number of them is rarely zero and rarely ten. | `accept` |
+
+The reviewer's words are transcribed, not summarized: the four fields the reviewer supplied are
+`reviewer`, `playback_environment`, the uniform per-sample answer, and the overall finding. The
+sheet on disk is what the checker read, and its digest is cited above so a later reader can
+recompute it.
+
+**What this review does not cover.**
+
+- **Laptop speakers mask what laptop speakers mask.** Low-level noise and the ends of the band are
+  not surfaced by this environment, so a finding it cannot reach is not excluded by an `accept`.
+  The 2026-08-31 review recorded the same limit and it has not changed.
+- **One reviewer.** No second listener, and no inter-rater agreement to report.
+- **Six takes, one voice profile, one style.** `owner-fallback-v1` at `calm_explanatory`. Nothing
+  here covers another profile, another style, or long-form continuity across a whole lesson.
+- **The blinding is a discipline, not a control.** `check_listening_review.py` says so itself:
+  nothing stops an operator reading `randomization-key.json` early. What is mechanical is the half
+  that matters at acceptance — a judgment recorded against a digest that no longer matches its file
+  is refused, which is what binds this result to these bytes rather than to these filenames.
+
 ## Historical listening material
 
 Re-rendered 2026-08-31 after the third remediation, once §Finding 11 was closed and
 `listening-render` could publish a take at all. This set was reviewed and accepted, but quiet-edge
 normalization has now superseded it: these files contain one inserted zero at each edge, while the
-current conditioner zeroes the measured quiet region without adding frames. No current
-post-correction set has been rendered or reviewed. Rendered by
+current conditioner zeroes the measured quiet region without adding frames. A post-correction set
+has since been rendered — twice, as §Listening material records — but no completed review exists
+against either. Rendered by
 `cargo run --package study-tts-testkit --example listening-render`. The 2026-08-30 set it replaced
 was produced by piping a hand-built NDJSON session into the worker and could not be re-rendered.
 Governed output, so the location is named by root rather than reproduced here, per
@@ -1388,11 +1634,13 @@ that opened this record — issue #60, the reverted declaration, and the identit
 here would have a reader approve the story on the strength of a settled preflight rather than on
 the candidate this record now describes, which is what the fourth audit's Minor finding was about.
 The rows are therefore the decisions **this candidate** needs, restated again after the fifth
-audit: two of them asked approval for reasoning that audit showed was wrong.
+audit — two of them asked approval for reasoning that audit showed was wrong — and again after the
+seventh, which corrected the containment claim the worker owner's row carried. Every row is now
+decidable: criterion 7 was the last thing outstanding and §Review result records it.
 
 | Role | Name | Decision sought | Date |
 |---|---|---|---|
-| Project owner | Ross Todd | Pending the post-correction listening review; criterion 7 is not yet met | |
+| Project owner | Ross Todd | Accept the candidate as a whole. **All seven acceptance criteria are now met** — criterion 7 was the last, taken 2026-09-01 against the set rendered at this identity, with `check_listening_review.py` exiting `0`. The decision this row still asks for is whether to accept the record itself, which §Status does not yet do: `evidence/README.md` and `REVIEW-AND-ACCEPT-CYCLE.md` §4 accept a story record **at its gate**, and G1 also requires the private-preview package path of E1-S4, which is not built | |
 | Engineering owner | Ross Todd | Accept the three gates that now precede a worker — the derived bundle identity, `model_gate`'s four SHA-256-pinned artifacts, and `admit_voice_root` over every profile in the governed root — all inside `WorkerConfiguration::for_bundle`; and accept that the property relied on is **not** that `for_bundle` is the sole constructor — the fifth audit showed it is not, since `for_protocol_fake` takes a caller-chosen program and environment — but that `for_bundle` is the only constructor *given* a governed root and `for_protocol_fake` is *refused* one, which together leave no configuration this crate builds that reaches a governed root ungated. The second half is a denylist mirrored to `worker/launcher.json` and pinned by a test, which §Limits states as the smaller claim it is | |
-| Worker owner | Ross Todd for T-WORKER | Accept that `shutdown` now observes a voluntary exit without reaping it so the process group is still signallable, and that the tree is proven gone by group *and* recorded pidfd on both paths; and accept `ADR-0001-D008` as the owner-approved permission for the residual that a descendant calling `setsid()` between the last enumeration and its parent's exit is reachable by neither, expiring at E5-S4 and to be revisited before any worker pool above size one | |
-| Contract owner (T-AUDIO) | Ross Todd for T-AUDIO | Accept the five-of-five T5 qualification result; defer candidate audio acceptance until the quiet-edge-normalized listening set is rendered and reviewed | |
+| Worker owner | Ross Todd for T-WORKER | Accept that `shutdown` now observes a voluntary exit without reaping it so the process group is still signallable, and that the tree is proven gone by group *and* recorded pidfd on both paths; accept that a containment failure on the timeout path is now reported beside the deadline rather than discarded, that only the containment boundary reaches that field, and that `t4_e1_a_timeout_whose_tree_escaped_containment_says_so` proves it end to end against a real escapee — the seventh audit corrected the claim, stated in this row until 2026-09-01, that no such seam existed; accept `E1-S3-INTERFACE-CHANGE-003`, which classifies the field as a **Breaking contract** retaining `e1.tts-executor.3.0` under `ADR-0001-D005` and records that the classification came after the code rather than before it; and accept `ADR-0001-D008` as the owner-approved permission for the residual that a descendant calling `setsid()` between the last enumeration and its parent's exit is reachable by neither — the new test **demonstrates** that residual rather than narrowing it, and it expires at E5-S4, to be revisited before any worker pool above size one | |
+| Contract owner (T-AUDIO) | Ross Todd for T-AUDIO | Accept the five-of-five T5 qualification result at `3e1f487c…`, digest `d35588fe1c…`; defer candidate audio acceptance until the set rendered at that identity on 2026-09-01 has been listened to and `check_listening_review.py` exits `0` | |
