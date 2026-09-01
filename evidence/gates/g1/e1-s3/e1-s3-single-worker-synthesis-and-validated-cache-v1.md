@@ -1064,9 +1064,13 @@ and the first was reproduced against the real Python before it was believed.
 **Nothing that a person had to redo at this round.** No declared bundle input changed: the fix for finding 1 is
 Rust-only, and `worker/study_tts_worker/` is untouched. `worker-bundle-hash` was re-derived to
 prove it, and still answers
-`58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750`. The T5 qualification result
-and the 2026-08-31 listening review therefore both still describe the code that ships, and neither
-was retaken.
+`58f1a098b7f36ded6dd2c84a6dfdaf72e30d4f76fe217fa262ce3bb9162db750`. Neither the T5 qualification
+result nor the 2026-08-31 listening review was retaken, and at this round both still described the
+code that ships. The T5 result still does. **The listening review no longer does**, for a reason
+that arrived after this section was written and is recorded in §Quiet-edge normalization correction
+below: `condition_edges` changed, so the reviewed bytes are historical evidence for their own set
+rather than acceptance evidence for this candidate. §Story result criterion 7 reads `Pending`
+accordingly.
 
 The Python half of finding 1 was considered and declined. Adding the same refusal to
 `_voice_conditioning` would be defence in depth, but `worker.py` is a declared input, so it would
@@ -1243,7 +1247,10 @@ the reason above; the listening review does not.
   `fixtures/listening/e1-s3-listening-script.json`, blinds the takes, and writes a pending sheet
   plus a separate key. `scripts/qualification/check_listening_review.py` refuses an incomplete sheet
   or one whose digests no longer match the audio, and is the sanctioned way to reveal the mapping.
-  `scripts/qualification/README.md` §E1-S3: the listening review carries the procedure.
+  `scripts/qualification/README.md` §E1-S3: the listening review carries the render and check
+  procedure, and `docs/operations/REVIEW-AND-ACCEPT-CYCLE.md` §3 *Retaking a review, and closing it
+  out* carries what this record owes once the checker passes — including that the five-of-five T5
+  result is not re-run while the bundle identity stands at `58f1a098…`.
 
   E1-S3 produces audio for the first time, and the other T5 criteria measure session behavior
   without listening to any of it. Six takes were rendered and reviewed on 2026-08-31; that accepted
