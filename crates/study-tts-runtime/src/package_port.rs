@@ -5,7 +5,11 @@
 //! `docs/architecture/PROVISIONAL-CONTRACT-BASELINE.md` records its consumers,
 //! fake, identity effects, and G1 real-path parity requirement.
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    io::Write as _,
+    path::{Path, PathBuf},
+};
 
 use study_tts_core::{ManifestDigest, RenderPlan, SelectedPackageIdentity};
 
@@ -13,30 +17,66 @@ use crate::{
     BuildError, CacheError, ManagedPathError, PackageArtifactMismatch, assembly,
     cache::{self, ValidatedCachedArtifact},
     durable::OsDurableFileSystem,
-    export::{self, ExportProfiles},
-    io_error, managed, manifest, preview,
+    export::{self, EncodedFormat, ExportProfiles, PackagedAudio},
+    io_error, managed,
+    manifest::{self, RecordedExecution, RecordedTool},
+    preview, timeline,
     tools::{self, ToolIdentity},
 };
 
+/// Mode every file inside a published package carries.
+///
+/// Not a policy this project invented: `tempfile` creates the master, both
+/// exports, and the manifest `0600`, and this is that value written down so the
+/// three documents `timeline` renders match rather than inheriting a umask.
+/// `t4_e1_every_package_file_is_owner_only` holds all seven to it.
+#[cfg(unix)]
+const PACKAGE_FILE_MODE: u32 = 0o600;
+
 /// Mirrors the package version in the E0-S4 provisional contract baseline.
-pub const PACKAGE_WRITER_CONTRACT_VERSION: &str = "e0.package-writer.1.0";
+pub const PACKAGE_WRITER_CONTRACT_VERSION: &str = "e0.package-writer.2.0";
 
 #[derive(Clone, Debug)]
 struct PackageToolchain {
     ffmpeg: ToolIdentity,
     ffprobe: ToolIdentity,
     profiles: ExportProfiles,
+    /// The encoder inventory this build ran, kept so the manifest can record
+    /// it.
+    ///
+    /// Preflight is a real FFmpeg execution and it is what decided the build
+    /// could proceed, so a manifest that omitted it would describe a package
+    /// produced by a toolchain nobody had checked. It also keeps the recorded
+    /// argument profiles complete, which is what `manifest::tools_match`
+    /// compares a rebuild against.
+    encoder_preflight: export::ToolExecution,
 }
 
 impl PackageToolchain {
-    fn inspect(
-        ffmpeg_executable: &std::path::Path,
-        ffprobe_executable: &std::path::Path,
-    ) -> Result<Self, BuildError> {
+    /// Resolves both binaries and proves FFmpeg can encode every format.
+    ///
+    /// The encoder inventory is checked here, inside preflight, and not at the
+    /// point of use: `tools::inspect` reports only the first line of
+    /// `-version`, which says nothing about which encoders were compiled in, so
+    /// without this an FFmpeg lacking `libmp3lame` would be discovered after
+    /// the whole lesson had been synthesized.
+    fn inspect(ffmpeg_executable: &Path, ffprobe_executable: &Path) -> Result<Self, BuildError> {
+        // Both binaries are resolved before either is *run*: `tools::inspect`
+        // spawns `-version`, so resolving inside it would have started FFmpeg
+        // before discovering that ffprobe is absent. Resolution touches the
+        // filesystem only.
+        let ffmpeg_path = tools::resolve("FFmpeg", ffmpeg_executable)?;
+        let ffprobe_path = tools::resolve("ffprobe", ffprobe_executable)?;
+        let ffmpeg = tools::identify("FFmpeg", ffmpeg_path)?;
+        let ffprobe = tools::identify("ffprobe", ffprobe_path)?;
+        let profiles = export::export_profiles();
+        let encoder_preflight =
+            export::preflight_encoder(&ffmpeg, &profiles.ffmpeg_encoders, export::MP3_ENCODER)?;
         Ok(Self {
-            ffmpeg: tools::inspect("FFmpeg", ffmpeg_executable)?,
-            ffprobe: tools::inspect("ffprobe", ffprobe_executable)?,
-            profiles: export::export_profiles(),
+            ffmpeg,
+            ffprobe,
+            profiles,
+            encoder_preflight,
         })
     }
 }
@@ -45,16 +85,16 @@ impl PackageToolchain {
 #[derive(Clone, Copy, Debug)]
 pub struct PackagePreflightRequest<'a> {
     /// FFmpeg executable selected by validated configuration.
-    pub ffmpeg_executable: &'a std::path::Path,
+    pub ffmpeg_executable: &'a Path,
     /// ffprobe executable selected by validated configuration.
-    pub ffprobe_executable: &'a std::path::Path,
+    pub ffprobe_executable: &'a Path,
 }
 
 /// Inputs needed to reconcile package state before synthesis begins.
 #[derive(Debug)]
 pub struct PackagePrepareRequest<'a> {
     /// Canonical managed workspace root.
-    pub workspace: &'a std::path::Path,
+    pub workspace: &'a Path,
     /// Validated lesson and provisional job identity.
     pub job_id: &'a str,
     /// Deterministic plan whose package may already be selected.
@@ -65,7 +105,7 @@ pub struct PackagePrepareRequest<'a> {
 #[derive(Debug)]
 pub struct PackageWriteRequest<'a> {
     /// Canonical managed workspace root.
-    pub workspace: &'a std::path::Path,
+    pub workspace: &'a Path,
     /// Validated lesson and provisional job identity.
     pub job_id: &'a str,
     /// Deterministic render plan.
@@ -85,6 +125,14 @@ pub struct PackagePublication {
     pub master_wav: PathBuf,
     /// M4A derived independently from the master WAV.
     pub m4a: PathBuf,
+    /// MP3 derived independently from the master WAV.
+    pub mp3: PathBuf,
+    /// Readable speaker-labelled transcript.
+    pub transcript: PathBuf,
+    /// Segment-level WebVTT captions.
+    pub captions: PathBuf,
+    /// FFMETADATA chapter source.
+    pub chapters: PathBuf,
     /// Manifest recording artifacts and tool provenance.
     pub manifest: PathBuf,
     /// Content identities retained in provisional job state.
@@ -184,21 +232,85 @@ impl PreparedPackageWriter for PreparedFileSystemPackageWriter {
             &self.toolchain.ffprobe,
             &self.toolchain.profiles,
         )?;
-        let master_wav = managed::leaf(&transaction.stage_dir, manifest::MASTER_WAV_NAME)?;
-        assembly::assemble(request.cached_artifacts, &master_wav)?;
-        let m4a = managed::leaf(&transaction.stage_dir, manifest::M4A_NAME)?;
-        let ffmpeg_execution = export::export_m4a(
-            &self.toolchain.ffmpeg,
-            &self.toolchain.profiles.ffmpeg,
-            &master_wav,
-            &m4a,
-        )?;
-        let ffprobe_execution = export::probe_m4a(
-            &self.toolchain.ffprobe,
-            &self.toolchain.profiles.ffprobe,
-            &m4a,
-        )?;
-        let manifest_path = managed::leaf(&transaction.stage_dir, manifest::MANIFEST_NAME)?;
+        let stage = &transaction.stage_dir;
+        let master_wav = managed::leaf(stage, manifest::MASTER_WAV_NAME)?;
+        let assembled = assembly::assemble(request.cached_artifacts, &master_wav)?;
+
+        // Written before the encodes, so a package that reaches the encoder has
+        // its whole text surface already staged. All three are ordinary files
+        // inside the staged directory: the transaction is the atomicity unit,
+        // and nothing here becomes authoritative until
+        // `preview::publish_transaction` synchronizes and renames it.
+        let plan_segments = &request.plan.segments;
+        for (name, document) in [
+            (
+                manifest::TRANSCRIPT_NAME,
+                timeline::transcript(plan_segments),
+            ),
+            (
+                manifest::CAPTIONS_NAME,
+                timeline::captions(plan_segments, &assembled),
+            ),
+            (
+                manifest::CHAPTERS_NAME,
+                timeline::chapters(plan_segments, &assembled),
+            ),
+        ] {
+            let path = managed::leaf(stage, name)?;
+            write_package_document(&path, &document)?;
+        }
+
+        // Both exports are derived from `master_wav` and never from each other,
+        // which is ADR-0001 §13.5's rule that a lossy output is never the
+        // source of another export.
+        let mut performed = Vec::with_capacity(6);
+        performed.push((
+            RecordedTool::Ffmpeg,
+            self.toolchain.encoder_preflight.clone(),
+        ));
+        performed.push((
+            RecordedTool::Ffprobe,
+            export::probe(
+                &self.toolchain.ffprobe,
+                &self.toolchain.profiles.ffprobe,
+                PackagedAudio::MasterWav,
+                &master_wav,
+            )?,
+        ));
+        for (format, name) in [
+            (EncodedFormat::M4a, manifest::M4A_NAME),
+            (EncodedFormat::Mp3, manifest::MP3_NAME),
+        ] {
+            let destination = managed::leaf(stage, name)?;
+            performed.push((
+                RecordedTool::Ffmpeg,
+                export::encode(
+                    &self.toolchain.ffmpeg,
+                    &self.toolchain.profiles,
+                    format,
+                    &master_wav,
+                    &destination,
+                )?,
+            ));
+            performed.push((
+                RecordedTool::Ffprobe,
+                export::probe(
+                    &self.toolchain.ffprobe,
+                    &self.toolchain.profiles.ffprobe,
+                    format.packaged(),
+                    &destination,
+                )?,
+            ));
+        }
+        let executions: Vec<RecordedExecution<'_>> = performed
+            .iter()
+            .map(|(tool, execution)| RecordedExecution {
+                tool: *tool,
+                execution,
+            })
+            .collect();
+
+        let manifest_path = managed::leaf(stage, manifest::MANIFEST_NAME)?;
         manifest::write(
             &filesystem,
             &manifest_path,
@@ -206,13 +318,12 @@ impl PreparedPackageWriter for PreparedFileSystemPackageWriter {
                 lesson_id: request.job_id,
                 plan_hash: &request.plan.plan_hash,
                 segments: request.cached_artifacts,
-                master_wav: &master_wav,
-                m4a: &m4a,
+                timeline: &assembled,
+                package_dir: stage,
                 tools: manifest::ToolRecords {
                     ffmpeg: &self.toolchain.ffmpeg,
-                    ffmpeg_execution: &ffmpeg_execution,
                     ffprobe: &self.toolchain.ffprobe,
-                    ffprobe_execution: &ffprobe_execution,
+                    executions: &executions,
                 },
             },
         )?;
@@ -291,6 +402,43 @@ fn validate_cached_artifacts(request: &PackageWriteRequest<'_>) -> Result<(), Bu
     Ok(())
 }
 
+/// Writes one text document into a package at the mode every other package
+/// file already carries.
+///
+/// `fs::write` would create it `0666 & ~umask`, which is 644 under the common
+/// default: the transcript and the captions carry the whole authored lesson in
+/// plaintext, and they would be the only world-readable files in a package
+/// whose `release_status` is `private_preview`. It would also make the mode
+/// vary with the operator's umask, in a package whose other four files are
+/// created `0600` by `tempfile` on every machine.
+///
+/// # Errors
+///
+/// [`crate::IoError::FileSystem`] when the document cannot be created or
+/// written.
+#[cfg(unix)]
+fn write_package_document(path: &Path, document: &str) -> Result<(), BuildError> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    // `create_new`, not `create`: a mode is applied only when the file is made,
+    // so reusing an existing file would silently keep whatever mode it had.
+    // `preview::start_transaction` quarantines any stage that already exists
+    // and creates a fresh directory, so nothing here should ever be present.
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(PACKAGE_FILE_MODE)
+        .open(path)
+        .map_err(|error| io_error(path, error))?;
+    file.write_all(document.as_bytes())
+        .map_err(|error| io_error(path, error))
+}
+
+#[cfg(not(unix))]
+fn write_package_document(path: &Path, document: &str) -> Result<(), BuildError> {
+    fs::write(path, document).map_err(|error| io_error(path, error))
+}
+
 fn publication(package: preview::PublishedPackage) -> Result<PackagePublication, BuildError> {
     // `hash_file` returns what `blake3::Hash::to_hex` produced, which is what
     // `ManifestDigest` accepts, so this parse cannot fail from any package.
@@ -305,6 +453,10 @@ fn publication(package: preview::PublishedPackage) -> Result<PackagePublication,
         publication_record: package.publication_record,
         master_wav: package.master_wav,
         m4a: package.m4a,
+        mp3: package.mp3,
+        transcript: package.transcript,
+        captions: package.captions,
+        chapters: package.chapters,
         manifest: package.manifest,
         identity: SelectedPackageIdentity {
             package_id: manifest_blake3.clone(),

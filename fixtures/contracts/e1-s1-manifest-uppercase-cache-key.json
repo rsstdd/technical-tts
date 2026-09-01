@@ -1,39 +1,71 @@
 {
-  "schema_version": "0.2-skeleton",
+  "schema_version": "1.0-skeleton",
   "release_status": "private_preview",
   "lesson_id": "e0-s0-walking-skeleton",
   "plan_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+  "text_renderer_version": "1.0-skeleton-text-renderer",
+  "total_frames": 33600,
   "segments": [
     {
       "segment_id": "seg-0001",
       "cache_key": "2222222222222222222222222222222222222222222222222222222222222AAA",
       "audio_blake3": "3333333333333333333333333333333333333333333333333333333333333333",
       "frames": 24000,
-      "pause_after_ms": 400
+      "pause_after_ms": 400,
+      "start_frame": 0,
+      "pause_frames": 9600
     }
   ],
   "artifacts": {
     "master_wav": {
-      "path": "master.wav",
+      "path": "lesson.wav",
       "blake3": "4444444444444444444444444444444444444444444444444444444444444444"
     },
     "m4a": {
       "path": "lesson.m4a",
       "blake3": "5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    "mp3": {
+      "path": "lesson.mp3",
+      "blake3": "8888888888888888888888888888888888888888888888888888888888888888"
+    },
+    "transcript": {
+      "path": "transcript.txt",
+      "blake3": "9999999999999999999999999999999999999999999999999999999999999999"
+    },
+    "captions": {
+      "path": "transcript.vtt",
+      "blake3": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "chapters": {
+      "path": "chapters.ffmetadata",
+      "blake3": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     }
   },
   "tools": {
     "ffmpeg": {
       "resolved_executable": "/usr/bin/ffmpeg",
-      "version": "6.1.1",
-      "arguments": ["-hide_banner"],
-      "argument_profile_blake3": "6666666666666666666666666666666666666666666666666666666666666666"
+      "version": "6.1.1"
     },
     "ffprobe": {
       "resolved_executable": "/usr/bin/ffprobe",
-      "version": "6.1.1",
-      "arguments": ["-hide_banner"],
-      "argument_profile_blake3": "7777777777777777777777777777777777777777777777777777777777777777"
-    }
+      "version": "6.1.1"
+    },
+    "executions": [
+      {
+        "tool": "ffmpeg",
+        "arguments": [
+          "-hide_banner"
+        ],
+        "argument_profile_blake3": "6666666666666666666666666666666666666666666666666666666666666666"
+      },
+      {
+        "tool": "ffprobe",
+        "arguments": [
+          "-hide_banner"
+        ],
+        "argument_profile_blake3": "7777777777777777777777777777777777777777777777777777777777777777"
+      }
+    ]
   }
 }

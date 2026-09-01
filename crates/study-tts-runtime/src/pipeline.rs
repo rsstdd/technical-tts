@@ -69,8 +69,16 @@ pub struct BuildResult {
     pub publication_record: PathBuf,
     /// The assembled canonical-format master.
     pub master_wav: PathBuf,
-    /// The encoded distribution copy.
+    /// The default listening file, encoded from the master.
     pub m4a: PathBuf,
+    /// The compatibility output, encoded independently from the master.
+    pub mp3: PathBuf,
+    /// The readable speaker-labelled transcript.
+    pub transcript: PathBuf,
+    /// The segment-level WebVTT captions.
+    pub captions: PathBuf,
+    /// The FFMETADATA chapter source.
+    pub chapters: PathBuf,
     /// The manifest recording segments, checksums, and the tools used.
     pub manifest: PathBuf,
 }
@@ -190,6 +198,8 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 ///
 /// Tool work returns [`crate::ToolError::MissingTool`],
 /// [`crate::ToolError::InspectTool`], [`crate::ToolError::ToolProbeFailed`],
+/// [`crate::ToolError::MissingEncoder`] when the resolved FFmpeg cannot encode
+/// a format the package requires,
 /// [`crate::ToolError::StartFfmpeg`], [`crate::ToolError::Ffmpeg`],
 /// [`crate::ToolError::Ffprobe`], [`crate::ToolError::ToolTimedOut`],
 /// [`crate::ToolError::ToolOutputOverflow`],
@@ -265,6 +275,8 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`crate::DurableStateError::PackageLessonMismatch`],
 /// [`crate::DurableStateError::EmptyPackageSegmentId`],
 /// [`crate::DurableStateError::EmptyPackageSegmentAudio`],
+/// [`crate::DurableStateError::IncoherentPackageTimeline`] when a recorded
+/// timeline's boundaries, pauses, and master length do not agree,
 /// [`crate::DurableStateError::UnexpectedPackageArtifactPath`],
 /// [`crate::DurableStateError::PackageArtifactChecksumMismatch`],
 /// [`crate::DurableStateError::MissingPackageToolArguments`],
@@ -389,6 +401,10 @@ pub fn build_preview_with_services(
         publication_record: package.publication_record,
         master_wav: package.master_wav,
         m4a: package.m4a,
+        mp3: package.mp3,
+        transcript: package.transcript,
+        captions: package.captions,
+        chapters: package.chapters,
         manifest: package.manifest,
     })
 }
@@ -619,13 +635,15 @@ fn lesson_too_large(path: &Path) -> BuildError {
 /// parsed, and [`crate::ToolError::UnexpectedEncodedStreamCount`] or
 /// [`crate::ToolError::UnexpectedEncodedStream`] when the artifact is not a
 /// single mono AAC stream.
-pub fn validate_encoded_output(
-    ffprobe_executable: &Path,
-    encoded: &Path,
-) -> Result<(), BuildError> {
+///
+/// Named for the M4A rather than for encoded output generally, because it
+/// accepts only that one: the package now holds a second encoded artifact, and
+/// handing this the MP3 would refuse a correct file for carrying the codec it
+/// is supposed to carry.
+pub fn validate_m4a_output(ffprobe_executable: &Path, m4a: &Path) -> Result<(), BuildError> {
     let ffprobe = tools::inspect("ffprobe", ffprobe_executable)?;
     let profiles = export::export_profiles();
-    export::probe_m4a(&ffprobe, &profiles.ffprobe, encoded).map(|_| ())
+    export::probe(&ffprobe, &profiles.ffprobe, export::PackagedAudio::M4a, m4a).map(|_| ())
 }
 
 /// Refuses publication for the E0-S0 skeleton.

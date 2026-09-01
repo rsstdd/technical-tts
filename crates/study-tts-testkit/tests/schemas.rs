@@ -545,8 +545,8 @@ const INVALID_EXAMPLES: [InvalidExample; 10] = [
             "/segments/0/audio_blake3",
             "/artifacts/master_wav/blake3",
             "/artifacts/m4a/blake3",
-            "/tools/ffmpeg/argument_profile_blake3",
-            "/tools/ffprobe/argument_profile_blake3",
+            "/tools/executions/0/argument_profile_blake3",
+            "/tools/executions/1/argument_profile_blake3",
         ],
     ),
     (
@@ -829,7 +829,7 @@ fn t3_e1_every_published_schema_claims_the_uri_its_documents_name() {
 /// agree with any schema it was handed, including one that grew a required
 /// field nobody meant to add — which is the change this table exists to make
 /// impossible to land quietly.
-const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 40] = [
+const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 41] = [
     (
         "job 0.1",
         "/",
@@ -874,7 +874,7 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 40] = [
         ],
     ),
     (
-        "manifest 0.2",
+        "manifest 1.0",
         "/",
         &[
             "artifacts",
@@ -883,37 +883,52 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 40] = [
             "release_status",
             "schema_version",
             "segments",
+            "text_renderer_version",
             "tools",
+            "total_frames",
         ],
     ),
+    ("manifest 1.0", "/$defs/StoredArtifact", &["blake3", "path"]),
     (
-        "manifest 0.2",
-        "/$defs/CurrentStoredToolUse",
-        &[
-            "argument_profile_blake3",
-            "arguments",
-            "resolved_executable",
-            "version",
-        ],
-    ),
-    ("manifest 0.2", "/$defs/StoredArtifact", &["blake3", "path"]),
-    (
-        "manifest 0.2",
+        "manifest 1.0",
         "/$defs/StoredArtifacts",
-        &["m4a", "master_wav"],
+        &[
+            "captions",
+            "chapters",
+            "m4a",
+            "master_wav",
+            "mp3",
+            "transcript",
+        ],
     ),
     (
-        "manifest 0.2",
+        "manifest 1.0",
+        "/$defs/StoredExecution",
+        &["argument_profile_blake3", "arguments", "tool"],
+    ),
+    (
+        "manifest 1.0",
         "/$defs/StoredManifestSegment",
         &[
             "audio_blake3",
             "cache_key",
             "frames",
             "pause_after_ms",
+            "pause_frames",
             "segment_id",
+            "start_frame",
         ],
     ),
-    ("manifest 0.2", "/$defs/StoredTools", &["ffmpeg", "ffprobe"]),
+    (
+        "manifest 1.0",
+        "/$defs/StoredToolIdentity",
+        &["resolved_executable", "version"],
+    ),
+    (
+        "manifest 1.0",
+        "/$defs/StoredTools",
+        &["executions", "ffmpeg", "ffprobe"],
+    ),
     (
         "plan 3.0",
         "/",

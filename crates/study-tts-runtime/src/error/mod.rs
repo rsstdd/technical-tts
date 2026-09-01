@@ -430,6 +430,7 @@ mod tests {
         match error {
             ToolError::UnreadableProbeResponse { .. }
             | ToolError::UnexpectedEncodedStreamCount { .. }
+            | ToolError::MissingEncoder { .. }
             | ToolError::UnexpectedEncodedStream { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::AudioRuntime,
                 "reconcile the encode settings with output verification",
@@ -510,6 +511,7 @@ mod tests {
             | DurableStateError::PackageLessonMismatch { .. }
             | DurableStateError::EmptyPackageSegmentId { .. }
             | DurableStateError::EmptyPackageSegmentAudio { .. }
+            | DurableStateError::IncoherentPackageTimeline { .. }
             | DurableStateError::UnexpectedPackageArtifactPath { .. }
             | DurableStateError::PackageArtifactChecksumMismatch { .. }
             | DurableStateError::MissingPackageToolArguments { .. }
@@ -545,11 +547,30 @@ mod tests {
 
     #[test]
     fn t1_e0_tool_invocation_preserves_typed_operation_context() {
-        for (operation, expected_label) in [
-            (ToolOperation::VersionProbe, "version probe"),
-            (ToolOperation::M4aEncode, "M4A encode"),
-            (ToolOperation::M4aValidation, "M4A validation"),
+        // Exhaustive rather than a chosen few: a new operation added without
+        // a spelling here is a compile error, not an unlabelled variant that
+        // reaches an operator's diagnostics unnoticed.
+        for operation in [
+            ToolOperation::VersionProbe,
+            ToolOperation::EncoderProbe,
+            ToolOperation::M4aEncode,
+            ToolOperation::M4aValidation,
+            ToolOperation::Mp3Encode,
+            ToolOperation::Mp3Validation,
+            ToolOperation::MasterWavValidation,
+            ToolOperation::WorkerSession,
         ] {
+            let expected_label = match operation {
+                ToolOperation::VersionProbe => "version probe",
+                ToolOperation::EncoderProbe => "encoder probe",
+                ToolOperation::M4aEncode => "M4A encode",
+                ToolOperation::M4aValidation => "M4A validation",
+                ToolOperation::Mp3Encode => "MP3 encode",
+                ToolOperation::Mp3Validation => "MP3 validation",
+                ToolOperation::MasterWavValidation => "master WAV validation",
+                ToolOperation::WorkerSession => "worker session",
+            };
+
             let invocation = ToolInvocation::new("tool", operation, Path::new("subject"));
 
             assert_eq!(invocation.tool(), "tool");

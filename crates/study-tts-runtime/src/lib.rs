@@ -24,6 +24,7 @@ mod preview;
 mod process;
 mod schemas;
 mod synthesis;
+mod timeline;
 mod tools;
 mod voice_gate;
 mod worker_bundle;
@@ -64,7 +65,7 @@ pub use package_port::{
 };
 pub use pipeline::{
     BuildRequest, BuildResult, PreviewServiceBundle, build_preview, build_preview_with_services,
-    publish, validate_encoded_output, validate_production_manifest,
+    publish, validate_m4a_output, validate_production_manifest,
 };
 pub use schemas::{
     JOB_SCHEMA_VERSION, MANIFEST_SCHEMA_VERSION, PUBLISHED_SCHEMAS, PublishedSchema,

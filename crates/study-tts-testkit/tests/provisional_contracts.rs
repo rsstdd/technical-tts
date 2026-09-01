@@ -89,9 +89,14 @@ fn validated_plan(executor: &FakeTtsExecutor) -> RenderPlan {
 }
 
 fn synthesis_request(plan: &RenderPlan) -> SynthesisRequest {
-    let segment = &plan.segments[0];
+    request_for(plan, 0)
+}
+
+/// The synthesis request for one segment of a plan.
+fn request_for(plan: &RenderPlan, index: usize) -> SynthesisRequest {
+    let segment = &plan.segments[index];
     SynthesisRequest {
-        request_id: "contract-request-1".to_owned(),
+        request_id: format!("contract-request-{}", index + 1),
         segment_id: segment.id.clone(),
         spoken_text: segment.spoken_text.clone(),
         voice: segment.speaker.clone(),
@@ -351,6 +356,91 @@ fn t4_e0_every_provisional_seam_has_a_fake() {
     );
 }
 
+/// The real package writer answers the same contract the fake does.
+///
+/// `docs/architecture/PROVISIONAL-CONTRACT-BASELINE.md` records that the "real
+/// master-first package path must pass the shared suite before G1", and until
+/// now only `FakePackageWriter` had. A fake that satisfies a contract its real
+/// counterpart does not is a contract that proves nothing, and the property
+/// that matters most here is the second one the scenario asserts: writing twice
+/// selects the same immutable package rather than producing a second one.
+///
+/// T4 rather than T3: this runs real FFmpeg and ffprobe.
+#[test]
+fn t4_e1_the_real_package_writer_passes_the_shared_contract() {
+    let workspace = TempDir::new().expect("create real-writer contract workspace");
+    let executor = FakeTtsExecutor::default();
+    let plan = validated_plan(&executor);
+    let cache = FileSystemCachePublisher;
+    // Every segment the plan names: the package writer refuses a artifact list
+    // that does not match its plan, which is the check that would otherwise
+    // hide a partially cached lesson.
+    let cached: Vec<_> = plan
+        .segments
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| {
+            let mut pending = Some(request_for(&plan, index));
+            let mut producer = |destination: &Path| {
+                run_tts_executor_contract_scenario(
+                    &executor,
+                    pending.take().expect("cache miss produces once"),
+                    destination,
+                )
+            };
+            run_cache_contract_scenario(
+                &cache,
+                &CacheResolveRequest {
+                    workspace: workspace.path().to_path_buf(),
+                    job_id: "contract-job".to_owned(),
+                    segment: segment.clone(),
+                },
+                &mut producer,
+            )
+            .expect("publish one validated cache entry")
+            .into_iter()
+            .next()
+            .expect("the cache scenario returns the published entry")
+        })
+        .collect();
+
+    let publications = run_package_writer_contract_scenario(
+        &FileSystemPackageWriter,
+        &PackagePreflightRequest {
+            ffmpeg_executable: Path::new("ffmpeg"),
+            ffprobe_executable: Path::new("ffprobe"),
+        },
+        &PackagePrepareRequest {
+            workspace: workspace.path(),
+            job_id: "contract-job",
+            plan: &plan,
+        },
+        &PackageWriteRequest {
+            workspace: workspace.path(),
+            job_id: "contract-job",
+            plan: &plan,
+            cached_artifacts: &cached,
+        },
+    )
+    .expect("the real package writer must pass the shared package contract");
+
+    assert_eq!(
+        publications[0], publications[1],
+        "a second write must select the package the first one published"
+    );
+    for artifact in [
+        &publications[0].master_wav,
+        &publications[0].m4a,
+        &publications[0].mp3,
+        &publications[0].transcript,
+        &publications[0].captions,
+        &publications[0].chapters,
+        &publications[0].manifest,
+    ] {
+        assert!(artifact.is_file(), "`{}` must exist", artifact.display());
+    }
+}
+
 #[test]
 fn t4_e0_walking_skeleton_uses_only_published_seams() {
     let workspace = TempDir::new().expect("create seam workspace");
@@ -379,7 +469,7 @@ fn t4_e0_walking_skeleton_uses_only_published_seams() {
         serde_json::from_slice(&std::fs::read(&second.manifest).expect("read selected manifest"))
             .expect("parse selected manifest");
     assert_eq!(manifest["release_status"], "private_preview");
-    assert_eq!(manifest["schema_version"], "0.2-skeleton");
+    assert_eq!(manifest["schema_version"], "1.0-skeleton");
     // 9,600 frames of tone and generated silence, plus the edge conditioning
     // each of the two segments now carries: ADR-0001 §13.4 requires 10 ms of
     // zero padding at each exposed edge, which is 240 frames at the canonical

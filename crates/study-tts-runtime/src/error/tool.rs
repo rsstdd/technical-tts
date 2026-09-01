@@ -23,10 +23,18 @@ pub enum ToolOutputStream {
 pub enum ToolOperation {
     /// Discover and record an executable version.
     VersionProbe,
+    /// Discover which encoders an FFmpeg build offers.
+    EncoderProbe,
     /// Encode the canonical master as M4A.
     M4aEncode,
     /// Validate an encoded M4A artifact.
     M4aValidation,
+    /// Encode the canonical master as MP3.
+    Mp3Encode,
+    /// Validate an encoded MP3 artifact.
+    Mp3Validation,
+    /// Validate the canonical master WAV.
+    MasterWavValidation,
     /// Run one persistent speech worker for a lifetime of requests.
     WorkerSession,
 }
@@ -35,8 +43,12 @@ impl fmt::Display for ToolOperation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::VersionProbe => formatter.write_str("version probe"),
+            Self::EncoderProbe => formatter.write_str("encoder probe"),
             Self::M4aEncode => formatter.write_str("M4A encode"),
             Self::M4aValidation => formatter.write_str("M4A validation"),
+            Self::Mp3Encode => formatter.write_str("MP3 encode"),
+            Self::Mp3Validation => formatter.write_str("MP3 validation"),
+            Self::MasterWavValidation => formatter.write_str("master WAV validation"),
             Self::WorkerSession => formatter.write_str("worker session"),
         }
     }
@@ -300,6 +312,18 @@ pub enum ToolError {
         source: io::Error,
     },
 
+    /// The resolved FFmpeg cannot encode a format this build must produce.
+    #[error(
+        "FFmpeg `{executable}` offers no `{encoder}` encoder; install an FFmpeg built with it \
+         before rendering, because the package requires that output"
+    )]
+    MissingEncoder {
+        /// The FFmpeg that was inspected.
+        executable: PathBuf,
+        /// The encoder this build requires and did not find.
+        encoder: &'static str,
+    },
+
     /// Preflight could not resolve a required external tool.
     #[error("required tool {tool} was not found or is not executable at `{requested}`")]
     MissingTool {
@@ -393,6 +417,13 @@ impl ToolError {
     /// Returns governed recovery advice for routed tool and lifecycle failures.
     pub(super) fn remedy(&self) -> Option<RemedyAdvice> {
         match self {
+            // `MissingEncoder` is deliberately not routed here, and not
+            // routed at all. `docs/governance/ROUTING-TABLES.md` answers
+            // "Invalid or over-range audio" with "quarantine unique attempt;
+            // bounded retry", and neither applies: there is no audio to
+            // quarantine and no retry can add an encoder to an FFmpeg build.
+            // It is an environment failure, like `MissingTool` beside it, and
+            // its own message already names the remedy.
             Self::UnreadableProbeResponse { .. }
             | Self::UnexpectedEncodedStreamCount { .. }
             | Self::UnexpectedEncodedStream { .. } => Some(RemedyAdvice::new(
@@ -426,6 +457,7 @@ impl ToolError {
             | Self::ToolCaptureIncomplete { .. }
             | Self::StartFfmpeg { .. }
             | Self::MissingTool { .. }
+            | Self::MissingEncoder { .. }
             | Self::InspectTool { .. }
             | Self::ToolProbeFailed { .. }
             | Self::Ffprobe { .. } => None,

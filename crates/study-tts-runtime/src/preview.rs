@@ -11,7 +11,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use study_tts_core::{PlanHash, is_blake3_hex};
+use study_tts_core::{PlanHash, ToolProfileHash, is_blake3_hex};
 use tempfile::Builder;
 
 use crate::{
@@ -22,12 +22,30 @@ use crate::{
         write_json_atomically,
     },
     export::ExportProfiles,
-    io_error, managed, manifest,
+    io_error, managed, manifest, timeline,
     tools::ToolIdentity,
 };
 
 const CURRENT_SCHEMA_VERSION: &str = "0.1-skeleton-current";
 const JOURNAL_SCHEMA_VERSION: &str = "0.1-skeleton-publication";
+
+/// Version of the transaction-identity document, which is hashed rather than
+/// stored.
+///
+/// Its own constant, and deliberately not [`JOURNAL_SCHEMA_VERSION`]. The two
+/// were the same string until E1-S4 added the MP3 profile to the identity: the
+/// journal record on disk did not change at all, so bumping the identity
+/// through the journal's constant would have made `validate_record_version`
+/// refuse every `publication.json` an earlier build wrote. One document changed
+/// and one did not, so they now version separately.
+///
+/// `0.3` is what E1-S4 made it: every argument profile rather than the M4A one,
+/// taken from [`ExportProfiles::identities`], plus
+/// [`timeline::TEXT_RENDERER_VERSION`], because two builds that would write
+/// different captions for one plan must not share a staging directory. Reuse is
+/// decided by `manifest::validate_package`, not here — this constant only
+/// separates concurrent work.
+const TRANSACTION_IDENTITY_VERSION: &str = "0.3-skeleton-transaction";
 const CURRENT_RECORD_NAME: &str = "current.json";
 const JOURNAL_RECORD_NAME: &str = "publication.json";
 const PACKAGES_DIRECTORY: &str = "packages";
@@ -49,6 +67,10 @@ pub(crate) struct PublishedPackage {
     pub package_dir: PathBuf,
     pub master_wav: PathBuf,
     pub m4a: PathBuf,
+    pub mp3: PathBuf,
+    pub transcript: PathBuf,
+    pub captions: PathBuf,
+    pub chapters: PathBuf,
     pub manifest: PathBuf,
     pub publication_record: PathBuf,
 }
@@ -93,6 +115,18 @@ enum PublicationState {
     Abandoned,
 }
 
+/// What makes two builds the same package generation.
+///
+/// Every argument profile is included, not only the M4A one: an MP3 profile
+/// change produces different bytes in the package, so a generation keyed
+/// without it would let a rebuild reuse a package that no longer matches how
+/// this build encodes. `t4_e0_encoding_profile_change_starts_a_new_generation`
+/// is what holds that.
+///
+/// [`ExportProfiles::identities`] supplies the whole set rather than this
+/// struct naming each profile: a second hand-written list here could omit a
+/// profile that reuse already compares, and the two would disagree about what
+/// a generation is.
 #[derive(Serialize)]
 struct TransactionIdentity<'a> {
     identity_version: &'static str,
@@ -100,10 +134,10 @@ struct TransactionIdentity<'a> {
     plan_hash: &'a str,
     ffmpeg_executable: String,
     ffmpeg_version: &'a str,
-    ffmpeg_profile_blake3: &'a str,
     ffprobe_executable: String,
     ffprobe_version: &'a str,
-    ffprobe_profile_blake3: &'a str,
+    argument_profile_blake3: Vec<&'a str>,
+    text_renderer_version: &'a str,
 }
 
 /// Creates and contains the managed roots for one provisional lesson job.
@@ -245,11 +279,11 @@ pub(crate) fn current_for_build(
         &package.package_dir,
         lesson_id,
         Some(plan_hash.as_str()),
-        Some(manifest::ToolExpectations {
+        Some(manifest::ReuseExpectations {
             ffmpeg,
-            ffmpeg_profile: &profiles.ffmpeg,
             ffprobe,
-            ffprobe_profile: &profiles.ffprobe,
+            profiles,
+            text_renderer_version: timeline::TEXT_RENDERER_VERSION,
         }),
     )? {
         return Ok(Some(package));
@@ -272,7 +306,14 @@ pub(crate) fn start_transaction(
     ffprobe: &ToolIdentity,
     profiles: &ExportProfiles,
 ) -> Result<PackageTransaction, BuildError> {
-    let transaction_id = transaction_identity(lesson_id, plan_hash, ffmpeg, ffprobe, profiles);
+    let transaction_id = transaction_identity(
+        lesson_id,
+        plan_hash,
+        ffmpeg,
+        ffprobe,
+        profiles,
+        timeline::TEXT_RENDERER_VERSION,
+    );
     let stage_dir = transaction_stage(roots, &transaction_id)?;
     if stage_dir.exists() {
         quarantine_package_stage(filesystem, roots, &stage_dir)?;
@@ -317,13 +358,17 @@ pub(crate) fn publish_transaction(
     require_transaction_plan(&transaction.stage_dir, plan_matches)?;
     let manifest_path = transaction.stage_dir.join(manifest::MANIFEST_NAME);
     let manifest_blake3 = hash_file(&manifest_path)?;
-    let master_wav = transaction.stage_dir.join(manifest::MASTER_WAV_NAME);
-    let m4a = transaction.stage_dir.join(manifest::M4A_NAME);
-    sync_directory_transaction(
-        filesystem,
-        &transaction.stage_dir,
-        &[&master_wav, &m4a, &manifest_path],
-    )?;
+    // Every artifact plus the manifest: seven files, from the one list
+    // `manifest` owns, so a format added there cannot be published unflushed
+    // here. `validate_package` above has already confirmed all six exist and
+    // hash to what the manifest records.
+    let artifacts: Vec<PathBuf> = manifest::PACKAGE_ARTIFACT_NAMES
+        .iter()
+        .map(|name| transaction.stage_dir.join(name))
+        .chain(std::iter::once(manifest_path.clone()))
+        .collect();
+    let synchronized: Vec<&Path> = artifacts.iter().map(PathBuf::as_path).collect();
+    sync_directory_transaction(filesystem, &transaction.stage_dir, &synchronized)?;
     let mut journal = PublicationJournal {
         schema_version: JOURNAL_SCHEMA_VERSION.to_owned(),
         lesson_id: transaction.lesson_id.clone(),
@@ -616,17 +661,22 @@ fn transaction_identity(
     ffmpeg: &ToolIdentity,
     ffprobe: &ToolIdentity,
     profiles: &ExportProfiles,
+    text_renderer_version: &str,
 ) -> String {
     let identity = TransactionIdentity {
-        identity_version: JOURNAL_SCHEMA_VERSION,
+        identity_version: TRANSACTION_IDENTITY_VERSION,
         lesson_id,
         plan_hash: plan_hash.as_str(),
         ffmpeg_executable: ffmpeg.resolved_executable.display().to_string(),
         ffmpeg_version: &ffmpeg.version,
-        ffmpeg_profile_blake3: profiles.ffmpeg.identity().as_str(),
         ffprobe_executable: ffprobe.resolved_executable.display().to_string(),
         ffprobe_version: &ffprobe.version,
-        ffprobe_profile_blake3: profiles.ffprobe.identity().as_str(),
+        argument_profile_blake3: profiles
+            .identities()
+            .into_iter()
+            .map(ToolProfileHash::as_str)
+            .collect(),
+        text_renderer_version,
     };
     let bytes = serde_json::to_vec(&identity)
         .expect("transaction identity contains only infallibly serializable values");
@@ -669,6 +719,10 @@ fn published_paths(package_dir: PathBuf, publication_record: PathBuf) -> Publish
     PublishedPackage {
         master_wav: package_dir.join(manifest::MASTER_WAV_NAME),
         m4a: package_dir.join(manifest::M4A_NAME),
+        mp3: package_dir.join(manifest::MP3_NAME),
+        transcript: package_dir.join(manifest::TRANSCRIPT_NAME),
+        captions: package_dir.join(manifest::CAPTIONS_NAME),
+        chapters: package_dir.join(manifest::CHAPTERS_NAME),
         manifest: package_dir.join(manifest::MANIFEST_NAME),
         package_dir,
         publication_record,
@@ -710,11 +764,15 @@ mod tests {
             &profiles,
         )
         .expect("start package transaction");
-        let master = transaction.stage_dir.join(manifest::MASTER_WAV_NAME);
-        let m4a = transaction.stage_dir.join(manifest::M4A_NAME);
         let manifest_path = transaction.stage_dir.join(manifest::MANIFEST_NAME);
-        fs::write(&master, b"master").expect("write master");
-        fs::write(&m4a, b"encoded").expect("write encoded output");
+        let artifacts: Vec<PathBuf> = manifest::PACKAGE_ARTIFACT_NAMES
+            .iter()
+            .map(|name| {
+                let path = transaction.stage_dir.join(name);
+                fs::write(&path, name.as_bytes()).expect("write package artifact");
+                path
+            })
+            .collect();
         let segment = ValidatedCachedArtifact {
             segment_id: "segment".to_owned(),
             cache_key: "a"
@@ -727,14 +785,26 @@ mod tests {
             frames: 1,
             pause_after_ms: 0,
         };
-        let ffmpeg_execution = ToolExecution {
-            arguments: vec!["encode".to_owned()],
-            argument_profile_blake3: profiles.ffmpeg.identity().to_owned(),
-        };
-        let ffprobe_execution = ToolExecution {
-            arguments: vec!["probe".to_owned()],
-            argument_profile_blake3: profiles.ffprobe.identity().to_owned(),
-        };
+        let executions: Vec<(manifest::RecordedTool, ToolExecution)> = profiles
+            .identities()
+            .into_iter()
+            .map(|identity| {
+                (
+                    manifest::RecordedTool::Ffmpeg,
+                    ToolExecution {
+                        arguments: vec!["ran".to_owned()],
+                        argument_profile_blake3: identity.to_owned(),
+                    },
+                )
+            })
+            .collect();
+        let recorded: Vec<manifest::RecordedExecution<'_>> = executions
+            .iter()
+            .map(|(tool, execution)| manifest::RecordedExecution {
+                tool: *tool,
+                execution,
+            })
+            .collect();
         manifest::write(
             &OsDurableFileSystem,
             &manifest_path,
@@ -742,13 +812,19 @@ mod tests {
                 lesson_id: "lesson",
                 plan_hash: &plan_hash,
                 segments: std::slice::from_ref(&segment),
-                master_wav: &master,
-                m4a: &m4a,
+                timeline: &timeline::Timeline {
+                    segments: vec![timeline::WrittenSegment {
+                        start_frame: 0,
+                        audio_frames: 1,
+                        pause_frames: 0,
+                    }],
+                    total_frames: 1,
+                },
+                package_dir: &transaction.stage_dir,
                 tools: manifest::ToolRecords {
                     ffmpeg: &ffmpeg,
-                    ffmpeg_execution: &ffmpeg_execution,
                     ffprobe: &ffprobe,
-                    ffprobe_execution: &ffprobe_execution,
+                    executions: &recorded,
                 },
             },
         )
@@ -762,12 +838,18 @@ mod tests {
             .iter()
             .position(|event| event.starts_with("rename:"))
             .expect("package rename event");
-        for required in [
-            format!("file:{}", master.display()),
-            format!("file:{}", m4a.display()),
-            format!("file:{}", manifest_path.display()),
-            format!("directory:{}", transaction.stage_dir.display()),
-        ] {
+        // All seven files, not the three E0 published: an artifact renamed into
+        // place without its own flush is exactly the loss this ordering exists
+        // to prevent, and a test naming only some of them would not see it.
+        for required in artifacts
+            .iter()
+            .chain(std::iter::once(&manifest_path))
+            .map(|path| format!("file:{}", path.display()))
+            .chain(std::iter::once(format!(
+                "directory:{}",
+                transaction.stage_dir.display()
+            )))
+        {
             let sync_index = events
                 .iter()
                 .position(|event| event == &required)
@@ -777,6 +859,39 @@ mod tests {
                 "`{required}` followed package rename"
             );
         }
+    }
+
+    /// A different text renderer is a different generation for staging too.
+    ///
+    /// Reuse is gated by `manifest::validate_package`, which
+    /// `t4_e1_text_renderer_change_names_a_new_package_generation` covers. This
+    /// is the other half: two builds that would write different captions for
+    /// one plan and one toolchain must not stage into the same directory, and
+    /// without this nothing would notice the field leaving the hashed document.
+    #[test]
+    fn t4_e1_text_renderer_change_starts_a_new_generation() {
+        // No workspace: the identity is a pure function of what it is handed,
+        // and staging separation follows from the digest differing.
+        let plan_hash = PlanHash::from(blake3::hash(b"same plan"));
+        let ffmpeg = ToolIdentity {
+            resolved_executable: PathBuf::from("/tools/ffmpeg"),
+            version: "ffmpeg version 1".to_owned(),
+        };
+        let ffprobe = ToolIdentity {
+            resolved_executable: PathBuf::from("/tools/ffprobe"),
+            version: "ffprobe version 1".to_owned(),
+        };
+        let profiles = crate::export::export_profiles();
+
+        let identity = |renderer: &str| {
+            transaction_identity("lesson", &plan_hash, &ffmpeg, &ffprobe, &profiles, renderer)
+        };
+
+        assert_ne!(
+            identity(timeline::TEXT_RENDERER_VERSION),
+            identity("0.9-skeleton-text-renderer"),
+            "a changed text renderer must name a new generation"
+        );
     }
 
     #[test]
@@ -793,12 +908,15 @@ mod tests {
             version: "ffprobe version 1".to_owned(),
         };
         let first_profiles = crate::export::export_profiles();
+        // The MP3 profile, specifically: it is the one E1-S4 added, and a
+        // generation keyed only on the M4A profile would have reused a package
+        // whose MP3 no longer matched how this build encodes.
         let changed_profiles = ExportProfiles {
-            ffmpeg: ToolProfile::new(
+            ffmpeg_mp3: ToolProfile::new(
                 "ffmpeg",
                 &["-i", "{input_path}", "-c:a", "libopus", "{output_path}"],
             ),
-            ffprobe: first_profiles.ffprobe.clone(),
+            ..first_profiles.clone()
         };
 
         let first = start_transaction(

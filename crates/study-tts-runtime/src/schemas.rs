@@ -170,10 +170,19 @@ pub const JOB_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(0, 1);
 
 /// Version of the published manifest schema.
 ///
-/// `0.2` because `manifest.json` already exists on disk under the
-/// `0.2-skeleton` label that `crate::manifest` writes, and a published schema
-/// that renumbered it would describe a document nothing produces.
-pub const MANIFEST_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(0, 2);
+/// `1.0`, following the `1.0-skeleton` label `crate::manifest` writes: a
+/// published schema that renumbered the document would describe something
+/// nothing produces. E1-S4 made the timeline, both exports, the text documents,
+/// the renderer that wrote them, and every tool execution required, which
+/// §Change classes calls a **Breaking contract** and answers with a major
+/// increment.
+///
+/// The document keeps its `-skeleton` suffix for the reason
+/// [`JOB_SCHEMA_VERSION`] gives about its own: E2-S3 and E2-S4 will break this
+/// manifest again, so the label must not claim a stability they are going to
+/// take away. The major says the change was breaking; the suffix says the
+/// layout is still provisional.
+pub const MANIFEST_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(1, 0);
 
 /// Version of the published worker-protocol schema.
 ///

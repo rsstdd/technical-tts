@@ -961,9 +961,13 @@ Default pause ranges:
 | Recall question | 1.5–4 seconds |
 | Section boundary | 1–2 seconds |
 
+Only the recall-question row is enforced, because §8.2 makes a recall prompt's response interval an invariant rather than a default: `MIN_RECALL_RESPONSE_MS` and `MAX_RECALL_RESPONSE_MS` in `crates/study-tts-core/src/lesson.rs` carry its 1,500 ms and 4,000 ms bounds, refuse any segment whose role is `SegmentRole::RecallPrompt` and whose pause falls outside them, and are pinned to this row by `t3_e1_recall_response_interval_matches_adr`. Those two constants and this row must agree, and changing either requires an ADR amendment rather than an edit. The other five rows are defaults that no code enforces; a segment may declare any pause up to the separate provisional ceiling that module owns, which this section does not set.
+
 Production builds use explicit selected values, not runtime randomness.
 
 Rust assembles canonical segments and generated silence directly into the master WAV. It verifies each checksum before reading, performs checked sample-count arithmetic, applies the edit-decision list without path-string manifests, and derives every segment boundary from the exact written sample count.
+
+The assembly requirements in the paragraph above are enforced by `crates/study-tts-runtime/src/assembly.rs`, which names this section in return: `assembly::verify_recorded_audio` re-hashes each cache entry against its recorded digest before a sample of it is read, `assembly::pause_frames` and `assembly::expected_frames` perform the checked sample-count arithmetic, and `assembly::assemble` reports each boundary as the frame count its write loop actually wrote rather than as a duration recomputed from the declared pause. The two must agree, and changing either requires an ADR amendment rather than an edit. Verifying before reading is satisfied and atomicity between the two is not claimed: the entry is hashed and then reopened to decode, and holding one handle across both needs the directory-relative operations E5-S4 owns.
 
 ### 13.3 FFmpeg responsibilities
 

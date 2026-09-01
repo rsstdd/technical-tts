@@ -1,5 +1,11 @@
 //! Concatenation of validated cache entries into one canonical master WAV.
 //!
+//! ADR-0001 §13.2 states what this module owes: verify each checksum before
+//! reading, perform checked sample-count arithmetic, and derive every segment
+//! boundary from the exact written sample count. That section names this file
+//! and the four functions below in return; this comment is the other end of
+//! that mirror.
+//!
 //! The expected frame total is derived from cache metadata before the write
 //! loop runs, so a master that came out the wrong length is caught against
 //! what the plan said rather than against whatever was produced. Frame
@@ -15,6 +21,7 @@ use crate::{
     AudioError, BuildError, CacheEntryFault, ManagedPathError, audio_error,
     cache::{ValidatedCachedArtifact, hash_file, rejected},
     io_error,
+    timeline::{Timeline, WrittenSegment},
 };
 
 /// Milliseconds in one second, for turning a declared pause into frames.
@@ -45,19 +52,17 @@ fn pause_frames(segment: &ValidatedCachedArtifact) -> Result<u64, BuildError> {
 /// Total frames the master must contain, derived from validated cache metadata
 /// rather than from what the write loop happens to produce.
 ///
-/// No plan reaches the overflow. With every field at its `u32` maximum a
-/// segment contributes 107,374,182,375 frames, so a `u64` holds 171,798,691 of
-/// them; under the ten-second pause cap `study_tts_core` enforces the figure
-/// rises to 4,294,727,310. Neither is a segment count a machine could hold in
-/// memory.
+/// No plan reaches the overflow: with every field at its `u32` maximum one
+/// segment contributes 107,374,182,375 frames, eight orders of magnitude
+/// below the `u64` ceiling this total accumulates into.
 ///
-/// The check is kept because those are properties of the current field widths
+/// The check is kept because that is a property of the current field widths
 /// rather than of the lesson format: the total is a `u64` fed by counts that
 /// could be widened, and this crate's arithmetic should not rest on a bound
 /// another crate enforces.
-/// `t1_e0_the_widest_plan_the_types_allow_leaves_frame_headroom` pins both
-/// figures, so widening a field fails a test rather than eroding the margin
-/// quietly.
+/// `t1_e0_the_widest_plan_the_types_allow_leaves_frame_headroom` pins the sum
+/// two such segments reach, so widening a field fails a test rather than
+/// eroding the margin quietly.
 fn expected_frames(segments: &[ValidatedCachedArtifact]) -> Result<u64, BuildError> {
     let mut expected = 0_u64;
     for segment in segments {
@@ -73,6 +78,7 @@ fn expected_frames(segments: &[ValidatedCachedArtifact]) -> Result<u64, BuildErr
 /// Confirms a segment's audio still hashes to what its cache entry recorded.
 ///
 /// ADR-0001 §13.2 requires it: "It verifies each checksum before reading."
+/// That section names this function as where the rule is enforced.
 /// `cache` hashes an entry when it validates or publishes it, but assembly
 /// consumes the file afterwards, and every other check here would pass on a
 /// file whose bytes changed while its frame count did not — leaving altered
@@ -97,8 +103,13 @@ fn verify_recorded_audio(segment: &ValidatedCachedArtifact) -> Result<(), BuildE
     Ok(())
 }
 
-/// Concatenates validated cache entries into the master WAV, returning the
-/// frames written.
+/// Concatenates validated cache entries into the master WAV, returning where
+/// each one landed.
+///
+/// The returned [`Timeline`] is the only record of the written boundaries, and
+/// it is built by the write loop rather than recomputed afterwards: every
+/// caption, chapter, and manifest position downstream is therefore the position
+/// a sample was actually written at.
 ///
 /// Each entry's audio is re-hashed against its recorded digest before a sample
 /// of it is read, so a tampered entry is refused rather than assembled. The
@@ -118,7 +129,7 @@ fn verify_recorded_audio(segment: &ValidatedCachedArtifact) -> Result<(), BuildE
 pub(crate) fn assemble(
     segments: &[ValidatedCachedArtifact],
     destination: &Path,
-) -> Result<u64, BuildError> {
+) -> Result<Timeline, BuildError> {
     let parent = destination
         .parent()
         .ok_or_else(|| ManagedPathError::UnrootedDestination {
@@ -140,9 +151,11 @@ pub(crate) fn assemble(
     let mut writer = hound::WavWriter::new(staged.as_file_mut(), spec)
         .map_err(|error| audio_error(destination, error))?;
     let mut total_frames = 0_u64;
+    let mut written = Vec::with_capacity(segments.len());
 
     for segment in segments {
         verify_recorded_audio(segment)?;
+        let start_frame = total_frames;
         let mut reader = hound::WavReader::open(&segment.audio_path)
             .map_err(|error| audio_error(&segment.audio_path, error))?;
         let mut segment_frames = 0_u64;
@@ -199,6 +212,11 @@ pub(crate) fn assemble(
             .ok_or_else(|| AudioError::AssembledLengthOverflow {
                 destination: destination.to_path_buf(),
             })?;
+        written.push(WrittenSegment {
+            start_frame,
+            audio_frames: segment_frames,
+            pause_frames: pause,
+        });
     }
 
     // The aggregate check is redundant while every per-segment check passes,
@@ -219,7 +237,10 @@ pub(crate) fn assemble(
     staged
         .persist(destination)
         .map_err(|error| io_error(destination, error.error))?;
-    Ok(total_frames)
+    Ok(Timeline {
+        segments: written,
+        total_frames,
+    })
 }
 
 #[cfg(test)]
@@ -243,8 +264,9 @@ mod tests {
         writer.finalize().expect("finalize test WAV");
     }
 
-    fn segment(
+    fn artifact(
         audio_path: PathBuf,
+        audio_blake3: String,
         declared_frames: u32,
         pause_after_ms: u32,
     ) -> ValidatedCachedArtifact {
@@ -257,14 +279,35 @@ mod tests {
             cache_key: format!("{:0<width$}", "cafebabe", width = CacheKey::LENGTH)
                 .parse()
                 .expect("test label pads to a well-formed key"),
-            audio_blake3: hash_file(&audio_path)
-                // The missing-audio test names a file that was never written,
-                // so there is nothing to hash; that case fails on the read.
-                .unwrap_or_else(|_| String::new()),
+            audio_blake3,
             audio_path,
             frames: declared_frames,
             pause_after_ms,
         }
+    }
+
+    /// An entry whose audio is on disk, recording the digest that file really
+    /// hashes to. A hash failure here is a broken fixture, not a case under
+    /// test, so it fails the test rather than becoming an empty digest that
+    /// `verify_recorded_audio` would later report as tampering.
+    fn segment(
+        audio_path: PathBuf,
+        declared_frames: u32,
+        pause_after_ms: u32,
+    ) -> ValidatedCachedArtifact {
+        let audio_blake3 = hash_file(&audio_path).expect("test audio must hash");
+        artifact(audio_path, audio_blake3, declared_frames, pause_after_ms)
+    }
+
+    /// An entry naming audio that was never written, for the tests that need
+    /// one. Its digest is unreachable: the frame arithmetic never opens the
+    /// file, and the test that does asserts the failed read.
+    fn segment_without_audio(
+        audio_path: PathBuf,
+        declared_frames: u32,
+        pause_after_ms: u32,
+    ) -> ValidatedCachedArtifact {
+        artifact(audio_path, String::new(), declared_frames, pause_after_ms)
     }
 
     /// The pause arithmetic has room at the widest value the field can hold,
@@ -278,9 +321,7 @@ mod tests {
     #[test]
     fn t1_e0_the_widest_pause_a_segment_can_declare_does_not_overflow() {
         let workspace = TempDir::new().expect("create assembly workspace");
-        // The frame arithmetic reads the declared counts and never the audio,
-        // so these segments deliberately name a file that was never written.
-        let widest = segment(workspace.path().join("absent.wav"), 0, u32::MAX);
+        let widest = segment_without_audio(workspace.path().join("absent.wav"), 0, u32::MAX);
 
         let frames = pause_frames(&widest).expect("the widest declarable pause must not overflow");
 
@@ -290,8 +331,8 @@ mod tests {
     /// A plan whose every field sits at its maximum still sums without
     /// overflowing, so `PlannedLengthOverflow` guards the field widths rather
     /// than refusing any lesson a person could write. Pins the figure
-    /// `expected_frames` argues from: one such segment contributes
-    /// 107,374,182,375 frames, of which a `u64` holds 171,798,691.
+    /// `expected_frames` argues from: two such segments contribute
+    /// 107,374,182,375 frames each.
     ///
     /// Not a `DELIVERY-PLAN.md` §E0 name: it pins the headroom behind a check
     /// no input reaches, rather than a planned behavior.
@@ -300,8 +341,8 @@ mod tests {
         let workspace = TempDir::new().expect("create assembly workspace");
         let absent = workspace.path().join("absent.wav");
         let segments = vec![
-            segment(absent.clone(), u32::MAX, u32::MAX),
-            segment(absent, u32::MAX, u32::MAX),
+            segment_without_audio(absent.clone(), u32::MAX, u32::MAX),
+            segment_without_audio(absent, u32::MAX, u32::MAX),
         ];
 
         let total =
@@ -323,11 +364,49 @@ mod tests {
         ];
         let master = workspace.path().join("lesson.wav");
 
-        let total = assemble(&segments, &master).expect("assembly should succeed");
+        let timeline = assemble(&segments, &master).expect("assembly should succeed");
 
-        assert_eq!(total, 9_600);
+        assert_eq!(timeline.total_frames, 9_600);
         let reader = hound::WavReader::open(&master).expect("open assembled master");
         assert_eq!(reader.duration(), 9_600);
+    }
+
+    /// The written positions the package's captions and chapters are derived
+    /// from, read against the fixture rather than recomputed from it.
+    ///
+    /// 2,400 frames of speech is 100 ms at 24 kHz, a 75 ms pause is 1,800
+    /// frames, and a 125 ms pause is 3,000. The second segment therefore starts
+    /// at 4,200 and the master ends at 9,600 — the same total the test above
+    /// reads off the finished file.
+    #[test]
+    fn t1_e1_written_segment_positions_follow_speech_and_silence() {
+        let workspace = TempDir::new().expect("create assembly workspace");
+        let first_audio = workspace.path().join("first.wav");
+        let second_audio = workspace.path().join("second.wav");
+        write_tone(&first_audio, 2_400);
+        write_tone(&second_audio, 2_400);
+        let segments = vec![
+            segment(first_audio, 2_400, 75),
+            segment(second_audio, 2_400, 125),
+        ];
+        let master = workspace.path().join("lesson.wav");
+
+        let timeline = assemble(&segments, &master).expect("assembly should succeed");
+
+        const EXPECTED: [(u64, u64, u64); 2] = [(0, 2_400, 1_800), (4_200, 2_400, 3_000)];
+        assert_eq!(timeline.segments.len(), EXPECTED.len());
+        for (index, (start, audio, pause)) in EXPECTED.into_iter().enumerate() {
+            let written = timeline.segments[index];
+            assert_eq!(
+                (
+                    written.start_frame,
+                    written.audio_frames,
+                    written.pause_frames
+                ),
+                (start, audio, pause),
+                "segment {index}"
+            );
+        }
     }
 
     #[test]
@@ -414,7 +493,7 @@ mod tests {
     fn t1_e0_missing_segment_audio_names_the_file() {
         let workspace = TempDir::new().expect("create assembly workspace");
         let missing = workspace.path().join("does-not-exist.wav");
-        let segments = vec![segment(missing.clone(), 2_400, 75)];
+        let segments = vec![segment_without_audio(missing.clone(), 2_400, 75)];
         let master = workspace.path().join("lesson.wav");
 
         let error = assemble(&segments, &master).expect_err("missing segment audio must fail");
