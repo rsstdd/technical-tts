@@ -247,7 +247,9 @@ move *within the same story*, and `e0.cache-publication.1.0` is E0-S4's. Instead
 derived where both callers can reach it — `PlannedSegment::request_id` in
 `crates/study-tts-core/src/plan.rs` — which is additive, removes a hand-written spelling from
 `pipeline.rs` rather than adding one, and leaves `CACHE_PUBLICATION_CONTRACT_VERSION` untouched at
-`e0.cache-publication.1.0`.
+`e0.cache-publication.1.0` for that path-only correction. The later publication and reuse semantic
+changes recorded under §Conditioning recorded, and checked on reuse supersede that version with
+`e0.cache-publication.2.0`; the Rust seam's shapes remain unchanged.
 
 Segment identities are capped at 64 characters by `schemas/lesson-v3.schema.json`, so the longest
 attempt directory name this can produce is about 149 bytes — inside the 255-byte limit, checked
@@ -638,28 +640,34 @@ an entry conditioned against the provisional value cannot be told from one condi
 value ADR-0003 will freeze. Recording the enum and not the RMS keeps a float out of a durable
 record.
 
-**What is verified and what is attested**, stated because the distinction is not recoverable from
-the code:
+**What is verified and what cannot be reconstructed**, stated because those are different claims:
 
 | Property | On reuse |
 |---|---|
 | ≥10 ms edge silence | Re-measured through the same `measure_edge_silence` the conditioner pads from. Real force |
 | Exposed endpoints exactly zero | Checked before this work and still checked |
-| Raised-cosine ramp | **Attested, not verified.** A gain multiplied into arbitrary speech cannot be separated from it again. The only available check is that the declared count lies inside the ratified ≤5 ms bound |
+| Raised-cosine ramp metadata | Checked against the ratified ≤5 ms bound, symmetry, and minimum and maximum counts derived from the decoded audio's frame count and nonzero span. The arbitrary pre-ramp waveform itself cannot be reconstructed after multiplication by the gain |
 
 The silence is measured against the threshold rather than tested for exact zero: conditioning pads
 only until an edge *has* its 10 ms, so audio that already began quiet-but-nonzero is lawfully
 unpadded and an exact-zero test would refuse it.
 
-Three refusals were added and each was proven by reverting its own check alone, with the entry
+Four refusals were added and each was proven by reverting its own check alone, with the entry
 then returning as a cache hit: `AudioFault::InsufficientEdgeSilence`,
 `CacheEntryFault::ConditioningOutsideRatifiedGeometry`, and
-`CacheEntryFault::ConditionedUnderAnotherCalibration`. They are rows in the existing
-`t1_e0_every_rejection_names_the_entry_directory_and_the_remedy` table rather than tests of their
-own, so each is held to the same naming and remedy rules as the six before it.
+`CacheEntryFault::ConditionedUnderAnotherCalibration`, plus
+`CacheEntryFault::ConditioningInconsistentWithAudio`. The first three are rows in the existing
+`t1_e0_every_rejection_names_the_entry_directory_and_the_remedy` table. The fourth is pinned by
+`t4_e1_conditioning_metadata_detached_from_audio_is_refused`, which edits only the recorded ramp
+and proves that metadata no longer survives as a detached declaration.
 `t1_e1_a_published_entry_records_what_conditioning_did` drives real publication through `resolve`
 rather than the fixture helper — an earlier draft used the helper, passed immediately, and was
 testing the fixture rather than the code.
+
+`validate_wav` now returns the decoded samples it already validated. `load_validated` derives the
+frame count from that buffer and reuses it for endpoint, silence, and conditioning checks instead
+of reopening and decoding the WAV. `condition_staged_audio` consumes the same validated samples on
+the publication path, so neither flow has a second sample-decoding implementation.
 
 **This moves the synthesis identity, against criterion 3 above.** A required field is a Breaking
 contract, so `CACHE_SCHEMA_VERSION` took a major increment to `2.0`; it is an ADR-0001 §12.5 key
@@ -668,7 +676,7 @@ input, so every cache key and plan hash moved with it —
 two cache keys to `01ffb5593c2e0daa…` and `d4248913a9a39a2e…`. **The move is lawful under that
 criterion**: `cache_schema_version` is a declared key input, not an undeclared one. Nothing is
 stranded — the cache root holds no entries, and no fixture or evidence record carries a derived
-cache key. `docs/architecture/E1-S3-INTERFACE-CHANGE-002.md` records the move and is `Proposed`;
+cache key. `docs/architecture/E1-S3-INTERFACE-CHANGE-002.md` records the move and is `Accepted`;
 `E1-S3-INTERFACE-CHANGE-001` is Accepted and was not edited, and 002 states that it supersedes the
 `abd889db…` plan hash 001 cites.
 
@@ -678,8 +686,9 @@ on 2026-08-30; the index is corrected. And `t2_e1_every_speech_affecting_field_c
 does **not** cover `cache_schema_version` and cannot: it destructures `SynthesisContext`, and the
 constant is not a context field. The golden in `plan.rs` is what catches a move in it, and it did.
 
-No published audio byte changes. This records and checks; it conditions nothing differently, so
-the listening set re-rendered on 2026-08-31 is unaffected by it.
+The metadata checks themselves do not alter published audio. The later quiet-edge normalization
+correction does alter conditioned bytes and supersedes the 2026-08-31 listening set, as recorded
+below.
 
 ### The listening instrument reviewed audio no build publishes
 
@@ -981,7 +990,7 @@ left. All four are closed here.
 |---|---|---|
 | 1 | Voice profiles were loaded before the consent and integrity gates ran. The worker deserializes **every** `conditionals.pt` beneath the governed root during `initialize`, and both instruments started the executor before calling the Rust gate — so a revoked, unpermitted, or checksum-invalid profile went through `torch.load` before anything could refuse it, including one unrelated to the selected voice | `voice_gate::admit_voice_root` runs the consent, rights, scope, and checksum gate over every profile the worker would load, and it is called from `WorkerConfiguration::for_bundle` beside `verify_model_artifacts` — not from the instruments. `for_bundle` is the only constructor of a launchable configuration, so no caller reaches a worker around it, which is the same structural argument `model_gate` records for the weights. **Corrected 2026-08-31 by the fifth audit:** that sentence was false. `WorkerConfiguration::for_protocol_fake` is also public and takes a caller-chosen program and environment, so it could be pointed at the bundle interpreter over a governed root; the claim is made true in §Fifth remediation, finding 2, and the gate's skip list is corrected there too — it *skipped* a directory name that is not UTF-8, which the worker still loads. The skip list is two-sided with `_voice_conditioning` in `worker/study_tts_worker/worker.py` and must skip *at most* what that skips, since anything skipped here and loaded there reaches `torch.load` ungated; `t1_e1_the_gate_skips_exactly_what_the_worker_skips` pins the three cases, and two further T1 tests refuse a revoked and an altered profile **the request never names** |
 | 2 | Graceful shutdown had a process-tree escape race. Descendants are enumerated once, before the worker is asked to leave, and the voluntary path signalled only those recorded pidfds — so a worker that started a child *after* enumeration and then exited left it running. The existing test spawns at startup and could not see it | The two shutdown paths are collapsed into one. `wait_for_voluntary_exit` now observes the exit with `waitid(…, WNOWAIT)` instead of `try_wait`, so the child is **not reaped**: its PID stays allocated, and with it the process group ID that equals it, because POSIX keeps a process group ID unusable while the group still has a member. `terminate` then runs on both paths — group kill, reap, and the existing proof that the group is empty *and* every recorded descendant is gone. `contain_descendants` and the branch that called it are deleted; the fix is a net deletion. `t4_e1_a_descendant_started_during_shutdown_is_contained` drives a new `spawn-descendant-at-shutdown` fake behavior that starts its child in answer to the `shutdown` frame, and failed before the change for exactly the stated reason |
-| 3 | A breaking cache contract was implemented without acceptance. The code publishes `CACHE_SCHEMA_VERSION` `2.0` while `docs/architecture/E1-S3-INTERFACE-CHANGE-002.md` was `Proposed` with all three approvals `Pending`, and a Proposed record authorizes nothing | That record is now `Accepted`, signed 2026-08-31, with all three rows decided: the project owner's major increment to `2.0`, T-CORE's three golden identities superseding the plan hash `E1-S3-INTERFACE-CHANGE-001` cites, and T-AUDIO's `edge_conditioning` record with its three narrowed acceptance rules and the stated limit that the ramp count is attested rather than verified. Nothing in the tree changed to close this finding; the implementation was correct and unauthorized, and what was missing was a decision |
+| 3 | A breaking cache contract was implemented without acceptance. The code publishes `CACHE_SCHEMA_VERSION` `2.0` while `docs/architecture/E1-S3-INTERFACE-CHANGE-002.md` was `Proposed` with all three approvals `Pending`, and a Proposed record authorizes nothing | That record is now `Accepted`, signed 2026-08-31, with all three rows decided. Its later amendment also moves `CACHE_PUBLICATION_CONTRACT_VERSION` to `e0.cache-publication.2.0` and binds ramp metadata to audio-derived feasible bounds. The historical authorization finding was closed by the recorded decisions; the later semantic correction is covered by the amended T-AUDIO decision |
 | 4 | Source and record still described superseded behavior — `AGENTS.md` §State said the product worker refuses `initialize` and `synthesize`; a TODO in `worker_executor.rs` said the model artifacts were unverified, immediately above the check that verifies them; `protocol.py` named the deleted `schemas/worker-protocol-v1.schema.json` twice; and this record's §Review asked approval for issue #60 and a superseded bundle hash rather than for the E1-S3 candidate | All four corrected, and two more of the same class found while doing it: §Limits still said the listening review "must be retaken before G1" after it had been retaken and accepted, and carried a bullet saying the model's bytes are never hashed beside one saying `model_gate` hashes them. §Review now asks for the decisions this candidate needs and says why the preflight rows were replaced. The `protocol.py` correction moved the bundle identity, which is what §What the fourth remediation costs this record is about |
 
 ### What the fourth remediation costs this record
@@ -1129,7 +1138,7 @@ Verification after this correction:
 |---|---|
 | `cargo fmt --all -- --check` | Clean |
 | `cargo clippy --offline --workspace --all-targets --all-features --locked -- -D warnings` | Clean |
-| `cargo test --offline --workspace --all-targets --locked` | 393 passed, 0 failed |
+| `cargo test --offline --workspace --all-targets --locked` | 396 passed, 0 failed |
 | `cargo test --offline --workspace --doc --locked` | 8 passed, 0 failed |
 | `python3 -m unittest discover --start-directory worker/tests` | 64 passed, 2 skipped on the system interpreter |
 | `(cd scripts/qualification && python3 -m unittest discover --start-directory tests)` | 36 passed |
