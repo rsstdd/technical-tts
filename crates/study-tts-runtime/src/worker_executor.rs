@@ -33,7 +33,7 @@ use crate::synthesis::{
 };
 use crate::voice_gate::admit_voice_root;
 use crate::worker_bundle::{WORKER_ENTRY_MODULE, WORKER_PACKAGE_ROOT, WorkerBundle};
-use crate::worker_client::WorkerClient;
+use crate::worker_client::{ShutdownFailure, WorkerClient};
 use crate::worker_environment::WORKER_INTERPRETER_PATH;
 use crate::worker_launcher::{GOVERNED_ROOT_ENVIRONMENT, WorkerLauncher};
 use crate::worker_protocol::{
@@ -573,10 +573,15 @@ impl WorkerTtsExecutor {
     ///
     /// # Errors
     ///
-    /// [`BackendError::Protocol`] carrying what the containment boundary
-    /// reported.
+    /// [`BackendError::Protocol`] carrying what the containment boundary or
+    /// the protocol epilogue reported. Which of the two is deliberately not
+    /// distinguished here: a caller shutting a worker down acts on the failure,
+    /// not on its boundary, and only the timeout path inside
+    /// [`crate::worker_client`] needs to tell them apart.
     pub fn shutdown(&self) -> Result<(), BackendError> {
-        self.locked_client().shutdown()
+        self.locked_client()
+            .shutdown()
+            .map_err(ShutdownFailure::into_backend_error)
     }
 
     /// The worker, recovering rather than panicking on a poisoned mutex.

@@ -1319,6 +1319,112 @@ fn t4_e1_a_synthesis_that_times_out_kills_the_worker_tree() {
     );
 }
 
+/// Kills whatever still carries `tag`, however the test ended.
+///
+/// `Drop` rather than a trailing statement, because an assertion failure skips
+/// the statement — and what this guards is by construction outside every
+/// containment this build has, so nothing else will collect it.
+struct TaggedSurvivors(&'static str);
+
+impl Drop for TaggedSurvivors {
+    fn drop(&mut self) {
+        let _ = Command::new("pkill").args(["-9", "-f", self.0]).status();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn t4_e1_a_timeout_whose_tree_escaped_containment_says_so() {
+    // The timeout path calls `shutdown`, and `shutdown` takes the child and the
+    // ownership state with it: a tree it could not prove gone is a tree nothing
+    // downstream can name. Discarding that result — which this path did until
+    // the sixth remediation — hands the caller a bare deadline for an event
+    // ADR-0001 §10.3 exists to refuse.
+    //
+    // The escape is the residual `ADR-0001-D008` records, in deliberately its
+    // silent shape: `setsid -f` reparents the process to init before the
+    // supervisor enumerates, so no group kill and no recorded pidfd reaches it
+    // and `wait_for_containment` reports success without having seen it. What
+    // remains observable is the worker's standard output, which it still holds
+    // after the worker is gone — so that is what the refusal has to carry.
+    const TAG: &str = "e1s3-escaped-containment-probe";
+
+    let _survivors = TaggedSurvivors(TAG);
+    let executor = WorkerTtsExecutor::start(&fake_worker_configuration_tagged(
+        "hang-on-synthesis-escaping-containment",
+        TAG,
+    ))
+    .expect("the fake answers initialize and capabilities before it hangs");
+    let (plan, lesson) = worker_plan(&executor);
+    let staging = TempDir::new().expect("create a staging root");
+
+    let error = run_tts_executor_contract_scenario(
+        &executor,
+        worker_request(&plan, &lesson, 0),
+        &staging.path().join("segment-0.wav"),
+    )
+    .expect_err("a synthesis that never answers must be refused at its deadline");
+
+    let BackendError::Timeout {
+        containment_failure,
+        ..
+    } = &error
+    else {
+        panic!("a hang must be a timeout, not {error:?}");
+    };
+    let detail = containment_failure.as_deref().unwrap_or_else(|| {
+        panic!("a timeout that could not prove the tree gone must say so, got {error:?}")
+    });
+    assert!(
+        detail.contains("standard output"),
+        "the containment failure must name what outlived the worker, got {detail:?}"
+    );
+    assert!(
+        error.to_string().contains("was not contained"),
+        "both halves must reach one message, got {error}"
+    );
+}
+
+#[test]
+fn t4_e1_a_timeout_does_not_report_a_protocol_tail_as_an_escaped_tree() {
+    // `shutdown` runs two checks with different subjects, and until this test
+    // the timeout path reported both as the same event. An unterminated tail is
+    // an ADR-0001 §17.7 fault about bytes on standard output; a worker tree
+    // that survived termination is an ADR-0001 §10.3 fault about processes.
+    // Naming the first as the second sends an operator looking for a resident
+    // model that was never there, and makes the message useless as evidence
+    // when a tree really does survive.
+    const TAG: &str = "e1s3-timeout-tail-probe";
+
+    let executor = WorkerTtsExecutor::start(&fake_worker_configuration_tagged(
+        "hang-on-synthesis-leaving-bytes",
+        TAG,
+    ))
+    .expect("the fake answers initialize and capabilities before it hangs");
+    let (plan, lesson) = worker_plan(&executor);
+    let staging = TempDir::new().expect("create a staging root");
+
+    let error = run_tts_executor_contract_scenario(
+        &executor,
+        worker_request(&plan, &lesson, 0),
+        &staging.path().join("segment-0.wav"),
+    )
+    .expect_err("a synthesis that never answers must be refused at its deadline");
+
+    let BackendError::Timeout {
+        containment_failure,
+        ..
+    } = &error
+    else {
+        panic!("a hang must be a timeout, not {error:?}");
+    };
+    assert!(
+        containment_failure.is_none(),
+        "an unterminated tail is not a tree that survived termination, but the \
+         refusal reported {containment_failure:?}"
+    );
+}
+
 #[test]
 fn t4_e1_worker_output_outside_the_assigned_path_is_refused() {
     // ADR-0001 §10.3 confines worker writes to the assigned staging root, and

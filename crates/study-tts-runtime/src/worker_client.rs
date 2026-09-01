@@ -235,6 +235,14 @@ impl WorkerClient {
     /// when the worker cannot be written to, answers with something this build
     /// cannot read, answers a different request, or has already left the stream
     /// in an unknown position.
+    ///
+    /// A timeout carries `containment_failure` when the tree it then terminated
+    /// could not be proven gone: that cleanup consumes the child, so nothing
+    /// downstream could report it afterwards. Only the containment boundary
+    /// reaches the field. A [`ShutdownFailure::Epilogue`] on the same path is
+    /// about bytes rather than processes, and says nothing the
+    /// [`BackendError::Protocol`] every later request on this client returns
+    /// does not already say.
     pub(crate) fn request(
         &mut self,
         request_id: &str,
@@ -313,14 +321,22 @@ impl WorkerClient {
                     // client stays poisoned either way, so the caller is told
                     // to restart rather than handed a corpse that looks usable.
                     //
-                    // Best effort by necessity — the timeout is what this
-                    // exchange failed for, and a containment error on top of it
-                    // would replace the diagnostic the caller needs with one
-                    // about cleaning up after it.
-                    let _ = self.shutdown();
+                    // Both halves are reported, and the containment one has no
+                    // second chance: `shutdown` takes the child and the
+                    // ownership state, so a tree it could not prove gone is a
+                    // tree nothing downstream can name. The timeout still leads
+                    // the message because it is what this exchange failed for
+                    // and what the caller acts on; the containment failure
+                    // follows it because a worker that survived termination is
+                    // the more serious of the two.
+                    let containment_failure = self
+                        .shutdown()
+                        .err()
+                        .and_then(ShutdownFailure::into_containment_detail);
                     return Err(BackendError::Timeout {
                         request_id: request_id.to_owned(),
                         timeout_ms: u64::try_from(deadline.as_millis()).unwrap_or(u64::MAX),
+                        containment_failure,
                     });
                 }
                 Err(RecvTimeoutError::Disconnected) => {
@@ -427,9 +443,12 @@ impl WorkerClient {
     ///
     /// # Errors
     ///
-    /// [`BackendError::Protocol`] carrying what the containment boundary
-    /// reported, when the tree cannot be signalled, reaped, or observed gone.
-    pub(crate) fn shutdown(&mut self) -> Result<(), BackendError> {
+    /// [`ShutdownFailure::Containment`] when the tree cannot be signalled,
+    /// reaped, or observed gone, and [`ShutdownFailure::Epilogue`] when the
+    /// worker left something other than its shutdown response behind. The two
+    /// render alike through [`ShutdownFailure::into_backend_error`]; they are
+    /// separated because the timeout path reports only the first.
+    pub(crate) fn shutdown(&mut self) -> Result<(), ShutdownFailure> {
         // Asked before it is killed. The protocol has carried a `shutdown`
         // frame since E1-S1 and nothing sent it: closing standard input and
         // going straight to terminating the group is `SIGKILL` on Unix, which
@@ -466,7 +485,7 @@ impl WorkerClient {
         let ownership = std::mem::take(&mut self.ownership);
         let result = terminate(child, &self.invocation, ownership)
             .map(|_| ())
-            .map_err(|source| protocol_failure("shutdown", &source.to_string()));
+            .map_err(|source| ShutdownFailure::Containment(source.to_string()));
         // Drained *before* the readers are joined, never after. The response
         // channel holds one frame, because ADR-0001 §10.3 is one response per
         // request — so a worker that wrote anything past its last frame leaves
@@ -483,7 +502,7 @@ impl WorkerClient {
         // failure of the two, and the epilogue is only about bytes.
         result?;
         if let Some(source) = inspection {
-            return Err(protocol_failure("shutdown", &source.to_string()));
+            return Err(ShutdownFailure::Containment(source.to_string()));
         }
         epilogue
     }
@@ -500,14 +519,13 @@ impl WorkerClient {
     ///
     /// # Errors
     ///
-    /// [`BackendError::Protocol`] naming what was left, for the tool owner per
-    /// `docs/governance/ROUTING-TABLES.md`.
-    fn epilogue_was_only_the_shutdown_response(&self) -> Result<(), BackendError> {
+    /// [`ShutdownFailure::Epilogue`] naming what was left, for the tool owner
+    /// per `docs/governance/ROUTING-TABLES.md` — except a standard output that
+    /// is still open, which is [`ShutdownFailure::Containment`]: nothing else
+    /// can hold that pipe but a process the worker started and left behind.
+    fn epilogue_was_only_the_shutdown_response(&self) -> Result<(), ShutdownFailure> {
         let responses = self.responses.as_ref().ok_or_else(|| {
-            protocol_failure(
-                "shutdown",
-                "the worker's protocol response stream is closed",
-            )
+            ShutdownFailure::Epilogue("the worker's protocol response stream is closed".to_owned())
         })?;
         let mut answered = false;
         loop {
@@ -521,50 +539,44 @@ impl WorkerClient {
                 // output is still open only because something it started
                 // inherited the pipe and outlived the containment above.
                 Err(RecvTimeoutError::Timeout) => {
-                    return Err(protocol_failure(
-                        "shutdown",
-                        "the worker's standard output stayed open after the worker was gone",
+                    return Err(ShutdownFailure::Containment(
+                        "the worker's standard output stayed open after the worker was gone"
+                            .to_owned(),
                     ));
                 }
             };
             match event {
                 ProtocolEvent::Frame(bytes) if !answered => {
                     let frame = parse_worker_response(&bytes)
-                        .map_err(|source| protocol_failure("shutdown", &source.to_string()))?;
+                        .map_err(|source| ShutdownFailure::Epilogue(source.to_string()))?;
                     let WorkerResponseFrame::Shutdown { .. } = frame else {
-                        return Err(protocol_failure(
-                            "shutdown",
-                            &format!(
-                                "the worker answered the shutdown request with `{}`",
-                                frame.event_name()
-                            ),
-                        ));
+                        return Err(ShutdownFailure::Epilogue(format!(
+                            "the worker answered the shutdown request with `{}`",
+                            frame.event_name()
+                        )));
                     };
                     answered = true;
                 }
                 ProtocolEvent::Frame(_) => {
-                    return Err(protocol_failure(
-                        "shutdown",
-                        "the worker wrote a further frame after answering the shutdown request",
+                    return Err(ShutdownFailure::Epilogue(
+                        "the worker wrote a further frame after answering the shutdown request"
+                            .to_owned(),
                     ));
                 }
                 ProtocolEvent::Oversized => {
-                    return Err(protocol_failure(
-                        "shutdown",
-                        "the worker wrote a line past the protocol ceiling after its last frame",
+                    return Err(ShutdownFailure::Epilogue(
+                        "the worker wrote a line past the protocol ceiling after its last frame"
+                            .to_owned(),
                     ));
                 }
                 ProtocolEvent::Unterminated(bytes) => {
-                    return Err(protocol_failure(
-                        "shutdown",
-                        &format!(
-                            "the worker left {bytes} bytes of unterminated output on standard \
-                             output after its last frame"
-                        ),
-                    ));
+                    return Err(ShutdownFailure::Epilogue(format!(
+                        "the worker left {bytes} bytes of unterminated output on \
+                         standard output after its last frame"
+                    )));
                 }
                 ProtocolEvent::Unreadable(message) => {
-                    return Err(protocol_failure("shutdown", &message));
+                    return Err(ShutdownFailure::Epilogue(message));
                 }
             }
         }
@@ -719,6 +731,43 @@ fn startup_failure(source: &std::io::Error) -> BackendError {
 /// The refusal for a spawned child that did not expose a standard pipe.
 fn missing_pipe(pipe: &str) -> BackendError {
     protocol_failure("startup", &format!("the worker's {pipe} was not captured"))
+}
+
+/// Which boundary a shutdown failure belongs to.
+///
+/// [`WorkerClient::shutdown`] runs two checks with different subjects: the
+/// process tree, which ADR-0001 §10.3 requires proven gone, and the bytes the
+/// worker left on standard output, which §17.7 requires to be protocol
+/// messages and nothing else. Both reach a caller as the same
+/// [`BackendError::Protocol`], so nothing downstream can tell them apart — and
+/// the timeout path has to, because it reports one of them to the caller as a
+/// worker tree that survived termination.
+///
+/// Classified by what the failure *means*, not by which check produced it: a
+/// standard output still open after the worker is gone is held open by
+/// something the worker started, which is a containment failure reported
+/// through the epilogue drain.
+pub(crate) enum ShutdownFailure {
+    /// The tree could not be signalled, reaped, or observed gone.
+    Containment(String),
+    /// The worker's last bytes were not the shutdown response alone.
+    Epilogue(String),
+}
+
+impl ShutdownFailure {
+    /// The refusal for a caller that acts on one error and not on which.
+    pub(crate) fn into_backend_error(self) -> BackendError {
+        let (Self::Containment(detail) | Self::Epilogue(detail)) = self;
+        protocol_failure("shutdown", &detail)
+    }
+
+    /// What the containment boundary reported, when it is what failed.
+    fn into_containment_detail(self) -> Option<String> {
+        match self {
+            Self::Containment(detail) => Some(detail),
+            Self::Epilogue(_) => None,
+        }
+    }
 }
 
 /// Builds the protocol refusal for `request_id`.

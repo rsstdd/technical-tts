@@ -417,12 +417,26 @@ pub enum BackendError {
         message: String,
     },
     /// Backend work exceeded its bounded deadline.
-    #[error("executor timed out request `{request_id}` after {timeout_ms} ms")]
+    ///
+    /// Carries the containment failure beside the deadline when the worker tree
+    /// could not be proven gone afterwards. The two are one event: the timeout
+    /// is why cleanup ran, and a tree that survived it is the more severe half.
+    /// Reporting only the timeout would drop the ADR-0001 §10.3 property this
+    /// path exists to enforce, and the cleanup consumes the child, so there is
+    /// no later chance to notice.
+    #[error(
+        "executor timed out request `{request_id}` after {timeout_ms} ms{}",
+        .containment_failure.as_deref()
+            .map(|detail| format!("; and the worker tree was not contained afterwards: {detail}"))
+            .unwrap_or_default()
+    )]
     Timeout {
         /// Request the timeout belongs to.
         request_id: String,
         /// Enforced deadline in milliseconds.
         timeout_ms: u64,
+        /// What the containment boundary reported, when it failed.
+        containment_failure: Option<String>,
     },
     /// Executor or orchestration protocol invariants failed.
     #[error("executor protocol failed request `{request_id}`: {message}")]
@@ -507,8 +521,10 @@ pub trait TtsExecutor: Send + Sync {
     /// [`BackendError::InvalidRequest`] when validation fails,
     /// [`BackendError::Destination`] for a destination write failure,
     /// [`BackendError::Execution`] for backend inference failure,
-    /// [`BackendError::Timeout`] for a bounded deadline, or
-    /// [`BackendError::Protocol`] when protocol interaction cannot be trusted.
+    /// [`BackendError::Timeout`] for a bounded deadline,
+    /// [`BackendError::Protocol`] when protocol interaction cannot be trusted,
+    /// or [`BackendError::IdentityDrift`] when a success frame restates an
+    /// identity the executor did not initialize with.
     fn synthesize<'a>(
         &'a self,
         request: SynthesisRequest,
@@ -587,4 +603,39 @@ fn render_languages(languages: &BTreeSet<LanguageTag>) -> String {
         .map(LanguageTag::as_str)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BackendError;
+
+    #[test]
+    fn t1_e1_a_timeout_reports_a_containment_failure_beside_it() {
+        // Both halves have to survive into one message. `request` calls
+        // `shutdown` on the deadline, and `shutdown` takes the child and the
+        // ownership state with it — so a containment failure that is not
+        // reported here is one nothing can report later.
+        let contained = BackendError::Timeout {
+            request_id: "segment-1".to_owned(),
+            timeout_ms: 5_000,
+            containment_failure: None,
+        };
+        assert_eq!(
+            contained.to_string(),
+            "executor timed out request `segment-1` after 5000 ms",
+            "a contained timeout must read exactly as it did before the field existed"
+        );
+
+        let escaped = BackendError::Timeout {
+            request_id: "segment-1".to_owned(),
+            timeout_ms: 5_000,
+            containment_failure: Some("2 descendants still live".to_owned()),
+        };
+        assert_eq!(
+            escaped.to_string(),
+            "executor timed out request `segment-1` after 5000 ms; and the worker tree was not \
+             contained afterwards: 2 descendants still live",
+            "an uncontained timeout must name the tree as well as the deadline"
+        );
+    }
 }

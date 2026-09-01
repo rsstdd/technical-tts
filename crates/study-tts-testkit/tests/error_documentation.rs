@@ -42,7 +42,7 @@ struct Contract {
     errors: &'static [(&'static str, &'static str)],
 }
 
-const CONTRACTS: [Contract; 2] = [
+const CONTRACTS: [Contract; 3] = [
     Contract {
         module: "crates/study-tts-runtime/src/pipeline.rs",
         item: "pub fn build_preview(",
@@ -75,6 +75,16 @@ const CONTRACTS: [Contract; 2] = [
         module: LESSON,
         item: "pub fn validate(",
         errors: &[("LessonError", LESSON)],
+    },
+    // The executor boundary, added after `BackendError::IdentityDrift` — a
+    // refusal the shipped worker path really returns — went undocumented
+    // through six rounds of audit. It is a trait method rather than an
+    // inherent one, which is exactly why nothing else noticed: `-D warnings`
+    // checks that a rustdoc link resolves, never that a variant was mentioned.
+    Contract {
+        module: "crates/study-tts-runtime/src/synthesis.rs",
+        item: "fn synthesize<'a>(",
+        errors: &[("BackendError", "crates/study-tts-runtime/src/synthesis.rs")],
     },
 ];
 

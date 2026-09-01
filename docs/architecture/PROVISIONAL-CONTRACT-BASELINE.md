@@ -45,6 +45,17 @@ must satisfy the audio-derived conditioning checks recorded in
 `FileSystemCachePublisher`; `t3_e1_cache_publication_contract_names_the_current_acceptance_semantics`
 pins the semantic version shared by those consumers.
 
+E1-S3 also adds a required `containment_failure` field to `BackendError::Timeout`
+and **retains** `e1.tts-executor.3.0`.
+[`E1-S3-INTERFACE-CHANGE-003.md`](E1-S3-INTERFACE-CHANGE-003.md) records why: a
+required field on a type this table names is a **Breaking contract**, and
+`ADR-0001-D005` reaches it because `3.0` is the version E1-S3 itself introduced,
+so no consumer ever saw the shape being corrected. That is the same test
+`E1-S3-INTERFACE-CHANGE-002` applied to `CACHE_SCHEMA_VERSION` and failed, which
+is why that constant took the major instead. The record also states that the
+classification happened after the field landed rather than before it, which
+D005's fifth condition requires.
+
 E1-S3 moved that quarantine to the layout ADR-0001 §12.6 names —
 `quarantine/<job-id>/<segment-id>/take-<take>/attempt-<attempt>-<request-id>-<nonce>/` — in
 `quarantine_transaction` in `crates/study-tts-runtime/src/cache.rs`, which names §12.6 in return.
@@ -131,9 +142,11 @@ bundle, and at least one voice profile. Its `identities` field is therefore the
 closed `WorkerInitializationIdentities` record, not an arbitrary map: all four
 categories are required, revisions and hashes use their checked value types,
 unknown fields are refused, and `voice_profile_hashes` cannot be empty. The
-E1-S1 product worker has loaded none of those inputs, so it refuses both
-`initialize` and `synthesize` with nonrecoverable `initialization_failed` until
-E1-S3. The executable fake instead owns a loaded synthetic backend, returns its
+E1-S1 product worker refused both `initialize` and `synthesize` with a
+nonrecoverable `initialization_failed`, because it had loaded none of those
+inputs. E1-S3 is where that stopped being true: the shipped worker loads
+Chatterbox once per lifetime, renders through it into the staging root it was
+assigned, and reports all four identity categories. The executable fake instead owns a loaded synthetic backend, returns its
 complete deterministic identities, and consistently reports `ready: true` and
 `model_loaded: true`. It refuses initialization when the requested worker-bundle
 hash differs from its fixed deterministic identity, and every successful

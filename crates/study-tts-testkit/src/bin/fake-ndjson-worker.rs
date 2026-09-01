@@ -43,6 +43,32 @@ enum Behavior {
     /// the client is dropped on the way out. This one reaches a *live*
     /// executor, which is where the timeout path has to reap the tree itself.
     HangOnSynthesis,
+    /// Leaves an unterminated tail on standard output, then hangs the same way.
+    ///
+    /// The bytes are written before the park, so nothing completes a line and
+    /// the reader forwards nothing until the kill closes the stream. What
+    /// `shutdown` then finds is an ADR-0001 §17.7 fault about bytes, not an
+    /// ADR-0001 §10.3 fault about a process tree, which is the distinction
+    /// `ShutdownFailure` in `crates/study-tts-runtime/src/worker_client.rs`
+    /// exists to keep.
+    HangOnSynthesisLeavingBytes,
+    /// Starts a descendant nothing can reach, then hangs the same way.
+    ///
+    /// The residual `ADR-0001-D008` records, made observable. `setsid -f`
+    /// forks, so the parked process is reparented to init before the
+    /// supervisor ever enumerates: it is in no process group this build owns
+    /// and is a child of no process it walks, so neither the group kill nor a
+    /// recorded pidfd reaches it. It keeps the worker's standard output open
+    /// after the worker is gone, which is the one way an escape of this shape
+    /// is observable at all.
+    HangOnSynthesisEscapingContainment,
+    /// Holds an inherited standard output open, writing nothing to it.
+    ///
+    /// What [`Behavior::HangOnSynthesisEscapingContainment`] starts. Bounded
+    /// by [`ESCAPEE_STDOUT_HOLD`] rather than endless, because the supervisor
+    /// joins its reader threads after refusing, and a pipe held forever would
+    /// hang the caller rather than fail it.
+    EscapeeHoldingStdout,
     MalformedFrame,
     TruncatedAudio,
     Stderr,
@@ -131,8 +157,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::thread::sleep(DESCENDANT_LIFETIME);
         return Ok(());
     }
+    // Holds the standard output it inherited and writes nothing to it: the
+    // observable is the pipe staying open after the worker is gone, never
+    // anything that arrives on it.
+    if behavior == Behavior::EscapeeHoldingStdout {
+        std::thread::sleep(ESCAPEE_STDOUT_HOLD);
+        return Ok(());
+    }
     if behavior == Behavior::SpawnDescendant {
         spawn_descendant()?;
+    }
+    if behavior == Behavior::HangOnSynthesisEscapingContainment {
+        spawn_escapee(std::env::args().nth(2).as_deref().unwrap_or("untagged"))?;
     }
     if behavior == Behavior::Stderr {
         eprintln!("fake worker diagnostic on stderr");
@@ -169,10 +205,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     for line in stdin.lock().lines() {
         let line = line?;
         let frame = parse_worker_request(line.as_bytes())?;
+        let hangs_on_synthesis = matches!(
+            behavior,
+            Behavior::HangOnSynthesis
+                | Behavior::HangOnSynthesisLeavingBytes
+                | Behavior::HangOnSynthesisEscapingContainment
+        );
         if behavior == Behavior::Hang
-            || (behavior == Behavior::HangOnSynthesis
-                && matches!(frame, WorkerRequestFrame::Synthesize { .. }))
+            || (hangs_on_synthesis && matches!(frame, WorkerRequestFrame::Synthesize { .. }))
         {
+            // Written before the park, so the bytes are on the stream when the
+            // kill closes it and no newline ever completes them.
+            if behavior == Behavior::HangOnSynthesisLeavingBytes {
+                stdout.write_all(b"an unterminated tail left before the hang")?;
+                stdout.flush()?;
+            }
             loop {
                 std::thread::park();
             }
@@ -255,6 +302,40 @@ fn spawn_descendant() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Starts a parked process in a session of its own, beyond every reach.
+///
+/// `setsid -f` is the double fork. It forks, execs in the child, and exits —
+/// so waiting for it here is what guarantees the parked process has already
+/// been reparented to init by the time this returns. It is then in no process
+/// group the supervisor owns and a child of nothing the supervisor walks, so
+/// neither the group kill nor a recorded pidfd can reach it. `setsid(1)` is a
+/// tool assumption of this suite, alongside the `pgrep` its tests already ask
+/// the kernel with.
+///
+/// Standard output is inherited and is the only stream that is: an escape
+/// nothing can name is observable only through what it still holds.
+fn spawn_escapee(tag: &str) -> Result<(), Box<dyn Error>> {
+    Command::new("setsid")
+        .arg("-f")
+        .arg(std::env::current_exe()?)
+        .arg("escapee-holding-stdout")
+        .arg(tag)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    Ok(())
+}
+
+/// How long the escapee holds the worker's standard output open.
+///
+/// Long enough to outlast the supervisor's own arithmetic: the request
+/// deadline this suite uses, plus the grace a worker gets to leave on its own,
+/// plus the grace the epilogue drain waits out — about three seconds, so this
+/// carries roughly double that. Short enough that the reader join which
+/// follows the refusal is a bounded wait rather than a hang, which is why it
+/// is bounded at all.
+const ESCAPEE_STDOUT_HOLD: Duration = Duration::from_secs(6);
+
 /// How long [`Behavior::DescendantPark`] outlives the worker that started it.
 ///
 /// Long enough that containment is what ends it rather than the clock, short
@@ -281,6 +362,11 @@ fn parse_behavior(value: Option<&str>) -> Result<Behavior, Box<dyn Error>> {
         "failure" => Ok(Behavior::Failure),
         "hang" => Ok(Behavior::Hang),
         "hang-on-synthesis" => Ok(Behavior::HangOnSynthesis),
+        "hang-on-synthesis-leaving-bytes" => Ok(Behavior::HangOnSynthesisLeavingBytes),
+        "hang-on-synthesis-escaping-containment" => {
+            Ok(Behavior::HangOnSynthesisEscapingContainment)
+        }
+        "escapee-holding-stdout" => Ok(Behavior::EscapeeHoldingStdout),
         "malformed-frame" => Ok(Behavior::MalformedFrame),
         "truncated-audio" => Ok(Behavior::TruncatedAudio),
         "escape-staging" => Ok(Behavior::EscapeStaging),
