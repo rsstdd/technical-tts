@@ -16,13 +16,14 @@ use study_tts_core::{
     ValidatedLesson, VoiceConditioningHash,
 };
 use study_tts_runtime::{
-    BackendDescriptor, BackendError, BackendValidationError, BuildError, CacheResolveRequest,
-    FileSystemCachePublisher, FileSystemJobRepository, FileSystemPackageWriter, JobRepository,
-    MAX_WORKER_FRAME_BYTES, MAX_WORKER_REQUEST_ID_BYTES, PackagePreflightRequest,
-    PackagePrepareRequest, PackageWriteRequest, PreviewServiceBundle, SynthesisReport,
-    SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, WorkerFrameError,
-    WorkerRequestFrame, WorkerResponseFrame, build_preview, build_preview_with_services,
-    parse_worker_request, parse_worker_response, validate_executor_request,
+    BackendDescriptor, BackendError, BackendValidationError, BuildError,
+    CACHE_PUBLICATION_CONTRACT_VERSION, CacheResolveRequest, FileSystemCachePublisher,
+    FileSystemJobRepository, FileSystemPackageWriter, JobRepository, MAX_WORKER_FRAME_BYTES,
+    MAX_WORKER_REQUEST_ID_BYTES, PackagePreflightRequest, PackagePrepareRequest,
+    PackageWriteRequest, PreviewServiceBundle, SynthesisReport, SynthesisRequest,
+    TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, WorkerFrameError, WorkerRequestFrame,
+    WorkerResponseFrame, build_preview, build_preview_with_services, parse_worker_request,
+    parse_worker_response, validate_executor_request,
 };
 use study_tts_testkit::{
     FIXTURE_VOICE_PROFILES, FakeCachePublisher, FakeJobCall, FakePackageCall, FakePackageWriter,
@@ -237,6 +238,14 @@ fn t3_e0_contract_change_requires_version_or_explicit_compatible_extension() {
         parse_worker_request(trim_newline(&read_fixture("e0-s4-worker-malformed.json"))),
         Err(WorkerFrameError::Malformed(_))
     ));
+}
+
+#[test]
+fn t3_e1_cache_publication_contract_names_the_current_acceptance_semantics() {
+    assert_eq!(
+        CACHE_PUBLICATION_CONTRACT_VERSION,
+        "e0.cache-publication.2.0"
+    );
 }
 
 #[test]

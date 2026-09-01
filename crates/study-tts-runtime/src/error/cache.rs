@@ -229,11 +229,8 @@ pub enum CacheEntryFault {
 
     /// The artifact declares conditioning ADR-0001 does not permit.
     ///
-    /// The ramp cannot be re-derived from the audio — a raised-cosine gain
-    /// multiplied into speech cannot be separated from it again — so the
-    /// recorded count is attested rather than verified. What *can* be checked
-    /// is that it lies inside the geometry ADR-0001 §13.4 fixes, which is what
-    /// refuses a record claiming conditioning this project never performs.
+    /// This is the fixed ADR-0001 §13.4 ceiling. Audio-derived feasibility is
+    /// checked separately by [`Self::ConditioningInconsistentWithAudio`].
     #[error(
         "the artifact declares {field} of {declared} samples, beyond the {permitted} \
          ({permitted_milliseconds} ms) ADR-0001 §13.4 permits"
@@ -247,6 +244,22 @@ pub enum CacheEntryFault {
         permitted: u32,
         /// The same limit as the duration ADR-0001 §13.4 states.
         permitted_milliseconds: u32,
+    },
+
+    /// The recorded ramp geometry cannot describe the cached audio.
+    #[error(
+        "the artifact declares {field} of {declared} samples, but the cached audio permits \
+         {minimum} through {maximum} samples"
+    )]
+    ConditioningInconsistentWithAudio {
+        /// Which recorded ramp contradicts the audio.
+        field: &'static str,
+        /// The value the artifact declares.
+        declared: u32,
+        /// The smallest ramp consistent with the audio.
+        minimum: u32,
+        /// The largest ramp consistent with the audio.
+        maximum: u32,
     },
 
     /// The entry was conditioned under a calibration this build does not apply.

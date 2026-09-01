@@ -479,7 +479,7 @@ fn synthesize_transaction(
     };
     if report.sample_rate != CANONICAL_SAMPLE_RATE
         || report.channels != CANONICAL_CHANNELS
-        || report.frames != validated.frames
+        || report.frames != validated_frames(&validated)
     {
         let error = AudioError::SynthesizerReportMismatch {
             segment_id: segment.id.clone(),
@@ -488,7 +488,7 @@ fn synthesize_transaction(
             reported_frames: report.frames,
             written_sample_rate: CANONICAL_SAMPLE_RATE,
             written_channels: CANONICAL_CHANNELS,
-            written_frames: validated.frames,
+            written_frames: validated_frames(&validated),
         };
         return Err(quarantine_failed_attempt(
             filesystem,
@@ -563,7 +563,7 @@ fn synthesize_transaction(
     // which must cover the bytes that are actually published. `frames` is
     // replaced because conditioning adds zero padding, so the count recorded in
     // the artifact is the conditioned one.
-    let staged = match condition_staged_audio(&audio_path) {
+    let staged = match condition_staged_audio(&audio_path, validated) {
         Ok(staged) => staged,
         Err(fault) => {
             let error = AudioError::UnusableAudio {
@@ -893,37 +893,28 @@ fn load_validated(
         ));
     }
 
-    // Path 6: the record declares conditioning ADR-0001 §13.4 does not permit.
-    //
-    // Record-only, and before the audio is read, for the reason path 5 gives: a
-    // dishonest record is refused without reading a megabyte of WAV. It is also
-    // the *only* place the ramp can be checked. A raised-cosine gain multiplied
-    // into speech cannot be separated from it again, so the recorded ramp is
-    // attested rather than verified, and what remains checkable is that it lies
-    // inside the geometry ADR-0001 fixes.
-    check_declared_conditioning(&artifact.edge_conditioning)
-        .map_err(|fault| rejected(entry_dir, &segment.id, fault))?;
-
-    // Path 7: the audio itself is unreadable, non-canonical, or does not match
+    // Path 6: the audio itself is unreadable, non-canonical, or does not match
     // the artifact.
-    let validated =
+    let samples =
         validate_wav(audio_path).map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?;
     // ADR-0001 §12.6 lists the silence and edge checks among the conditions for
     // *using* an entry, not only for writing one: an entry published by a build
     // that conditioned differently is refused rather than concatenated into a
-    // master with a step at its join. Endpoint values come from the first pass;
-    // the bounded second pass reads only the edge windows needed for silence.
-    check_exposed_endpoints(validated.first_sample, validated.last_sample)
+    // master with a step at its join. The validation pass retains the decoded
+    // samples so all audio checks use the bytes it already read.
+    check_exposed_endpoints(samples[0], samples[samples.len() - 1])
         .map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?;
-    check_edge_silence_in_file(audio_path, validated.frames)
-        .map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?;
+    check_edge_silence(&samples).map_err(|fault| rejected(entry_dir, &segment.id, fault.into()))?;
+    check_declared_conditioning(&artifact.edge_conditioning, &samples)
+        .map_err(|fault| rejected(entry_dir, &segment.id, fault))?;
     let checksum = hash_file(audio_path)?;
-    if validated.frames != artifact.frames {
+    let frames = validated_frames(&samples);
+    if frames != artifact.frames {
         return Err(rejected(
             entry_dir,
             &segment.id,
             CacheEntryFault::FrameCountMismatch {
-                found: u64::from(validated.frames),
+                found: u64::from(frames),
                 declared: artifact.frames,
             },
         ));
@@ -945,7 +936,7 @@ fn load_validated(
         entry_dir: entry_dir.to_path_buf(),
         audio_path: audio_path.to_path_buf(),
         audio_blake3: checksum,
-        frames: validated.frames,
+        frames,
         pause_after_ms: segment.pause_after_ms,
     })
 }
@@ -988,19 +979,6 @@ fn hash_stream(source: &mut impl Read) -> io::Result<String> {
     }
 
     Ok(hasher.finalize().to_hex().to_string())
-}
-
-/// Reads a canonical WAV's samples.
-///
-/// Separate from [`validate_wav`] because conditioning needs the samples
-/// themselves, and validation is run first on files this will never be asked
-/// for.
-fn read_canonical_samples(path: &Path) -> Result<Vec<f32>, AudioFault> {
-    let mut reader = hound::WavReader::open(path)?;
-    reader
-        .samples::<f32>()
-        .collect::<Result<Vec<f32>, _>>()
-        .map_err(AudioFault::from)
 }
 
 /// Writes conditioned samples back over the staged file.
@@ -1065,39 +1043,6 @@ fn check_edge_silence(samples: &[f32]) -> Result<(), AudioFault> {
     check_edge_silence_counts(leading, trailing)
 }
 
-/// Checks only the bounded edge windows needed to accept a published entry.
-fn check_edge_silence_in_file(path: &Path, frames: u32) -> Result<(), AudioFault> {
-    let required = samples_for(REQUIRED_EDGE_SILENCE_MS, CANONICAL_SAMPLE_RATE);
-    let mut reader = hound::WavReader::open(path)?;
-    let leading_samples = reader
-        .samples::<f32>()
-        .take(required)
-        .collect::<Result<Vec<_>, _>>()?;
-    let leading = measure_edge_silence(
-        &leading_samples,
-        CANONICAL_SAMPLE_RATE,
-        SilenceThreshold::provisional(),
-    )
-    .0;
-
-    let required_frames = u32::try_from(required).unwrap_or(u32::MAX);
-    reader
-        .seek(frames.saturating_sub(required_frames))
-        .map_err(hound::Error::IoError)?;
-    let trailing_samples = reader
-        .samples::<f32>()
-        .take(required)
-        .collect::<Result<Vec<_>, _>>()?;
-    let trailing = measure_edge_silence(
-        &trailing_samples,
-        CANONICAL_SAMPLE_RATE,
-        SilenceThreshold::provisional(),
-    )
-    .1;
-
-    check_edge_silence_counts(leading, trailing)
-}
-
 fn check_edge_silence_counts(leading: usize, trailing: usize) -> Result<(), AudioFault> {
     let required = samples_for(REQUIRED_EDGE_SILENCE_MS, CANONICAL_SAMPLE_RATE);
 
@@ -1120,9 +1065,14 @@ fn check_edge_silence_counts(leading: usize, trailing: usize) -> Result<(), Audi
 ///
 /// [`CacheEntryFault::ConditioningOutsideRatifiedGeometry`] naming the first
 /// count out of range, and
+/// [`CacheEntryFault::ConditioningInconsistentWithAudio`] when the recorded
+/// ramps cannot describe the decoded samples, and
 /// [`CacheEntryFault::ConditionedUnderAnotherCalibration`] when the entry was
 /// conditioned against a threshold this build no longer applies.
-fn check_declared_conditioning(recorded: &RecordedConditioning) -> Result<(), CacheEntryFault> {
+fn check_declared_conditioning(
+    recorded: &RecordedConditioning,
+    samples: &[f32],
+) -> Result<(), CacheEntryFault> {
     let ramp = ratified_samples(MAX_TRANSITION_RAMP_MS);
     let padding = ratified_samples(REQUIRED_EDGE_SILENCE_MS);
 
@@ -1172,6 +1122,46 @@ fn check_declared_conditioning(recorded: &RecordedConditioning) -> Result<(), Ca
             required: applied.name(),
         });
     }
+
+    // Every non-silent conditioned segment retains at least the required edge
+    // silence. Removing those two regions therefore gives an upper bound on
+    // signal length. A nonzero span wider than one sample requires a ramp to
+    // contribute one exact-zero sample at each end, so that span plus two gives
+    // the corresponding lower bound. The original sample values remain
+    // unrecoverable, but a declared ramp outside these bounds cannot have
+    // produced this audio.
+    let required = samples_for(REQUIRED_EDGE_SILENCE_MS, CANONICAL_SAMPLE_RATE);
+    let maximum = samples_for(MAX_TRANSITION_RAMP_MS, CANONICAL_SAMPLE_RATE)
+        .min(samples.len().saturating_sub(required.saturating_mul(2)) / 2);
+    let first_nonzero = samples.iter().position(|sample| *sample != 0.0);
+    let last_nonzero = samples.iter().rposition(|sample| *sample != 0.0);
+    let minimum = match (first_nonzero, last_nonzero) {
+        (Some(first), Some(last)) if first < last => maximum.min((last - first + 3) / 2),
+        _ => 0,
+    };
+    let minimum = u32::try_from(minimum).unwrap_or(u32::MAX);
+    let maximum = u32::try_from(maximum).unwrap_or(u32::MAX);
+    for (field, declared) in [
+        ("leading_ramp", recorded.leading_ramp),
+        ("trailing_ramp", recorded.trailing_ramp),
+    ] {
+        if !(minimum..=maximum).contains(&declared) {
+            return Err(CacheEntryFault::ConditioningInconsistentWithAudio {
+                field,
+                declared,
+                minimum,
+                maximum,
+            });
+        }
+    }
+    if recorded.leading_ramp != recorded.trailing_ramp {
+        return Err(CacheEntryFault::ConditioningInconsistentWithAudio {
+            field: "trailing_ramp",
+            declared: recorded.trailing_ramp,
+            minimum: recorded.leading_ramp,
+            maximum: recorded.leading_ramp,
+        });
+    }
     Ok(())
 }
 
@@ -1207,8 +1197,10 @@ fn ratified_samples(milliseconds: u32) -> u32 {
 /// The silence threshold is provisional while ADR-0003 is Proposed; see
 /// [`crate::SilenceThreshold`] and
 /// `docs/adr/deviations/ADR-0001-D007-provisional-edge-conditioning.md`.
-fn condition_staged_audio(path: &Path) -> Result<ConditionedStage, AudioFault> {
-    let mut samples = read_canonical_samples(path)?;
+fn condition_staged_audio(
+    path: &Path,
+    mut samples: Vec<f32>,
+) -> Result<ConditionedStage, AudioFault> {
     let frames = u32::try_from(samples.len()).map_err(|_| AudioFault::FrameCountOverflow)?;
     let conditioning = condition_edges(
         &mut samples,
@@ -1219,9 +1211,7 @@ fn condition_staged_audio(path: &Path) -> Result<ConditionedStage, AudioFault> {
     // in the stage. Refusals below the write retain this build's conditioned
     // bytes in quarantine instead.
     let conditioned = check_segment_ceiling(frames, samples.len())?;
-    if conditioning != EdgeConditioning::default() {
-        write_canonical_samples(path, &samples)?;
-    }
+    write_canonical_samples(path, &samples)?;
     check_exposed_endpoints(samples[0], samples[samples.len() - 1])?;
     // The same check reuse applies. Conditioning satisfies it by construction,
     // and asserting that here is what stops a later change to the conditioner
@@ -1277,7 +1267,7 @@ fn check_segment_ceiling(frames: u32, conditioned: usize) -> Result<u32, AudioFa
 /// Validates one WAV, reporting *which* property failed and leaving the path
 /// and the remedy to the caller, which is the only one that knows whether the
 /// file is published or staged.
-fn validate_wav(path: &Path) -> Result<ValidatedWav, AudioFault> {
+fn validate_wav(path: &Path) -> Result<Vec<f32>, AudioFault> {
     let mut reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
     if spec.channels != CANONICAL_CHANNELS
@@ -1299,51 +1289,38 @@ fn validate_wav(path: &Path) -> Result<ValidatedWav, AudioFault> {
         });
     }
 
-    // `frames` is the `u32` the artifact record and the manifest carry, so it
-    // is counted at that width rather than counted wide and narrowed. No file
-    // reaches the ceiling: 4.29e9 f32 frames is about 17 GB of sample data,
-    // four times what a WAV data chunk can declare in its 32-bit length. The
-    // check is what makes that a refusal rather than a wrap should the
-    // canonical format ever move to a container without the cap.
-    let mut frames = 0_u32;
-    let mut first_sample = None;
-    let mut last_sample = 0.0;
+    // The artifact and manifest carry a `u32` frame count, so each sample's
+    // index is narrowed before use. The segment ceiling is checked before the
+    // sample enters the retained buffer, keeping validation memory bounded by
+    // the same limit the cache publishes.
+    let mut samples = Vec::new();
+    let max_frames = max_segment_frames();
     for sample in reader.samples::<f32>() {
         let sample = sample?;
+        let index = u32::try_from(samples.len()).map_err(|_| AudioFault::FrameCountOverflow)?;
         if !sample.is_finite() || sample.abs() > 1.0 {
             return Err(AudioFault::OutOfRangeSample {
-                index: frames,
+                index,
                 value: sample,
             });
         }
-        frames = frames
-            .checked_add(1)
-            .ok_or(AudioFault::FrameCountOverflow)?;
-        first_sample.get_or_insert(sample);
-        last_sample = sample;
+        if index >= max_frames {
+            return Err(AudioFault::TooLong {
+                frames: index.saturating_add(1),
+                max_frames,
+                max_milliseconds: MAX_SEGMENT_AUDIO_MS,
+            });
+        }
+        samples.push(sample);
     }
-    let first_sample = first_sample.ok_or(AudioFault::Empty)?;
-    let max_frames = max_segment_frames();
-    if frames > max_frames {
-        return Err(AudioFault::TooLong {
-            frames,
-            max_frames,
-            max_milliseconds: MAX_SEGMENT_AUDIO_MS,
-        });
+    if samples.is_empty() {
+        return Err(AudioFault::Empty);
     }
-    Ok(ValidatedWav {
-        frames,
-        first_sample,
-        last_sample,
-    })
+    Ok(samples)
 }
 
-/// Canonical properties retained from the validation pass for cache reuse.
-#[derive(Debug)]
-struct ValidatedWav {
-    frames: u32,
-    first_sample: f32,
-    last_sample: f32,
+fn validated_frames(samples: &[f32]) -> u32 {
+    u32::try_from(samples.len()).unwrap_or(u32::MAX)
 }
 
 /// The most frames one segment's canonical audio may carry.
@@ -1521,7 +1498,9 @@ mod tests {
         // conditioned audio by definition, so a fixture that skipped this would
         // be a file the cache could never have written — and the edge check on
         // reuse would refuse it.
-        let staged = condition_staged_audio(&audio).expect("condition the fixture's edges");
+        let samples = validate_wav(&audio).expect("validate the fixture's audio");
+        let staged =
+            condition_staged_audio(&audio, samples).expect("condition the fixture's edges");
         let record = CacheArtifact {
             schema_version: CACHE_SCHEMA_VERSION.to_owned(),
             cache_key: segment.cache_key.clone(),
@@ -2167,7 +2146,8 @@ mod tests {
         // Conditioned like any published audio, so what differs from the record
         // is the frame *count* alone. An unconditioned tone would be refused
         // for its edges first, and this path is about the count.
-        condition_staged_audio(&audio4).expect("condition the replacement's edges");
+        let samples = validate_wav(&audio4).expect("validate the replacement's audio");
+        condition_staged_audio(&audio4, samples).expect("condition the replacement's edges");
         let audio_mismatch = load_validated(&synthesized_segment(), &dir4, &audio4, &artifact4)
             .expect_err("frame mismatch must be rejected");
 
@@ -2534,6 +2514,54 @@ mod tests {
         assert_eq!(conditioning["calibration_source"], "provisional");
     }
 
+    #[test]
+    fn t4_e1_conditioning_metadata_detached_from_audio_is_refused() {
+        let workspace = TempDir::new().expect("create cache workspace");
+        let (dir, audio, artifact) = published_entry(workspace.path(), "detached-conditioning");
+        overwrite_conditioning(&artifact, "leading_ramp", json!(0));
+
+        let error = load_validated(&synthesized_segment(), &dir, &audio, &artifact)
+            .expect_err("a ramp count detached from the audio must be rejected");
+
+        let BuildError::Cache(CacheError::UnusableCacheEntry { fault, .. }) = error else {
+            panic!("detached conditioning produced the wrong error: {error}");
+        };
+        assert!(
+            matches!(
+                *fault,
+                CacheEntryFault::ConditioningInconsistentWithAudio {
+                    field: "leading_ramp",
+                    declared: 0,
+                    minimum: 120,
+                    maximum: 120,
+                }
+            ),
+            "detached conditioning reported the wrong fault: {fault}"
+        );
+    }
+
+    #[test]
+    fn t4_e1_quiet_nonzero_edges_are_conditioned_into_acceptable_audio() {
+        const QUIET: f32 = 4.312_751e-6;
+        let workspace = TempDir::new().expect("create cache workspace");
+        let audio = workspace.path().join("quiet-edges.wav");
+        let mut samples = vec![QUIET; 480];
+        samples.push(0.25);
+        samples.extend(std::iter::repeat_n(QUIET, 480));
+        write_canonical_samples(&audio, &samples).expect("write quiet-edge fixture");
+
+        let decoded = validate_wav(&audio).expect("validate quiet nonzero edges");
+        let staged =
+            condition_staged_audio(&audio, decoded).expect("condition quiet nonzero edges");
+        let samples = validate_wav(&audio).expect("accept conditioned quiet edges");
+
+        assert_eq!(staged.frames, samples.len() as u32);
+        assert_eq!(staged.conditioning, EdgeConditioning::default());
+        assert_eq!(samples.first(), Some(&0.0));
+        assert_eq!(samples.last(), Some(&0.0));
+        check_edge_silence(&samples).expect("conditioned quiet edges meet the silence requirement");
+    }
+
     /// The ceiling refuses what conditioning pushed past it, with both counts.
     ///
     /// `docs/architecture/WALKING-SKELETON.md` §Provisional resource ceilings
@@ -2604,7 +2632,8 @@ mod tests {
         // 10 ms of padding, 240 frames apiece.
         write_tone(&staged, 14_400_000, CANONICAL_SAMPLE_RATE);
 
-        let fault = condition_staged_audio(&staged)
+        let samples = validate_wav(&staged).expect("validate the at-limit audio");
+        let fault = condition_staged_audio(&staged, samples)
             .expect_err("conditioning past the ceiling must be refused");
 
         assert!(
@@ -2624,9 +2653,9 @@ mod tests {
         // person measures, and why the fault does not blame the worker for a
         // count only this build would have written.
         assert_eq!(
-            validate_wav(&staged)
-                .expect("the worker's own file is within the ceiling")
-                .frames,
+            validated_frames(
+                &validate_wav(&staged).expect("the worker's own file is within the ceiling")
+            ),
             14_400_000,
             "conditioning rewrote a file it had already refused"
         );

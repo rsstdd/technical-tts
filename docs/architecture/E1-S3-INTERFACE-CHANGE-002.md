@@ -57,31 +57,39 @@ A required field is **Breaking contract** under
 requires the version being retained to have been introduced by an unreleased breaking move *within
 the same story*, and `CACHE_SCHEMA_VERSION` moved to `1.0` in E1-S1.
 
-### The `cache_publication` seam does not move
+### `cache_publication` `1.0` → `2.0`
 
-`CACHE_PUBLICATION_CONTRACT_VERSION` stays `e0.cache-publication.1.0`. That version covers the
-Rust seam `docs/architecture/PROVISIONAL-CONTRACT-BASELINE.md` records — `CachePublisher`,
-`CacheResolveRequest`, `StagedAudioProducer`, and the opaque `ValidatedCachedArtifact` — and none
-of them changes shape. No accessor for the conditioning counts is added, because nothing consumes
-them yet; adding one for a future reader would move the seam for no caller.
-`CACHE_SCHEMA_VERSION` is precisely the version of the record on disk, and it is what moves.
+`CACHE_PUBLICATION_CONTRACT_VERSION` moves from `e0.cache-publication.1.0` to
+`e0.cache-publication.2.0`. The Rust shapes remain `CachePublisher`, `CacheResolveRequest`,
+`StagedAudioProducer`, and the opaque `ValidatedCachedArtifact`, but their semantics do not:
+`CachePublisher::resolve` conditions staged audio before publication, and `load_validated` now
+refuses cached conditioning metadata that cannot describe the decoded audio. The change-control
+table classifies a semantic change as a Breaking contract, so an unchanged Rust signature does not
+retain the old major.
+
+`FakeCachePublisher` and `FileSystemCachePublisher` continue through the same
+`run_cache_contract_scenario`; the shared suite pins the new contract constant in
+`t3_e1_cache_publication_contract_names_the_current_acceptance_semantics`. No accessor for the
+conditioning counts is added because no caller consumes them. `CACHE_SCHEMA_VERSION` remains
+`2.0`: the `artifact.json` shape introduced above is unchanged.
 
 ### Acceptance is narrower than it was
 
-Three refusals are added to `load_validated`, and each refuses an entry this build previously
+Four refusals are added to `load_validated`, and each refuses an entry this build previously
 accepted. That is a semantic change to cache acceptance, carried by the same major increment:
 
 | New refusal | What it establishes |
 |---|---|
 | `AudioFault::InsufficientEdgeSilence` | ADR-0001 §12.6's *silence* check, re-measured from the audio through the same `measure_edge_silence` the conditioner pads from |
 | `CacheEntryFault::ConditioningOutsideRatifiedGeometry` | The declared counts lie inside the geometry §13.4 fixes |
+| `CacheEntryFault::ConditioningInconsistentWithAudio` | The two ramps are symmetric and lie within bounds derived from the decoded audio's frame count and nonzero span |
 | `CacheEntryFault::ConditionedUnderAnotherCalibration` | The entry was conditioned under the calibration this build applies |
 
-**What is verified and what is attested.** The silence is re-measured and has real force. The ramp
-is **not recoverable**: a raised-cosine gain multiplied into arbitrary speech cannot be separated
-from it afterwards, so the recorded ramp count is attested by whoever wrote the entry, and the
-only available check is that it lies within the ratified bound. This record states that limit
-rather than leaving a reader to infer a verification that does not exist.
+**What is verified and what is not reconstructable.** Silence is re-measured. Ramp metadata is
+bound to the decoded audio by symmetric, audio-derived minimum and maximum counts in addition to
+the ratified 5 ms ceiling. The exact pre-ramp samples are not recoverable after a raised-cosine gain
+has been multiplied into arbitrary speech, so reuse does not claim to reconstruct and compare that
+original waveform.
 
 The silence is measured against the threshold, not against exact zero. Conditioning pads only
 until an edge *has* its 10 ms, so audio that already began quiet-but-nonzero is lawfully unpadded;
@@ -103,8 +111,10 @@ the measured silent region is normalized to zero so the exposed-endpoint check s
   `schemas/` is unchanged.
 - **Rights and privacy.** No change. The recorded counts are sample counts and an enum; nothing
   governed enters the record.
-- **Audio.** No published byte changes. This records and checks; it conditions nothing
-  differently, so the listening set rendered on 2026-08-31 is unaffected.
+- **Audio.** E1-S3 conditions edges before cache publication. Quiet nonzero samples in a measured
+  silent edge are now normalized to exact zero without adding unnecessary frames. That changes the
+  published bytes and frame count from the 2026-08-31 listening set, making that set historical and
+  leaving a post-correction human listening review outstanding.
 
 ## Delivery and recovery
 
@@ -118,9 +128,9 @@ shape: revert the constant and the record together, and the goldens recompute.
 
 ## Limits this change does not close
 
-- **The ramp is attested, not verified**, as §Version and compatibility states. Closing it would
-  need the conditioner to record something recoverable from the audio, and no such quantity
-  exists for a gain multiplied into speech.
+- **The exact pre-ramp waveform is not reconstructed**, as §Version and compatibility states.
+  Reuse verifies every ramp constraint that remains derivable from the cached audio, but it cannot
+  recover arbitrary samples from before their gain was applied.
 - **Join discontinuity is still not checked.** ADR-0001 §13.4 requires joins verified against the
   ADR-0003 discontinuity threshold; that threshold is `Pending` and the check belongs to assembly,
   not to one entry. `ADR-0001-D007` §What this does not permit already records it.
@@ -146,7 +156,8 @@ This acceptance covers the contract this record describes. It does **not** accep
 |---|---|---|
 | Project owner | Accept `CACHE_SCHEMA_VERSION` taking a major increment to `2.0`, invalidating every cache key and plan hash, on the reasoning that a required field is a Breaking contract and `ADR-0001-D005` does not reach a version another story introduced | Accepted — Ross Todd, 2026-08-31 |
 | Contract owner (T-CORE) | Accept the three golden identities moving to `46bf2c57d31eb5cf…`, `01ffb5593c2e0daa…`, and `d4248913a9a39a2e…`, superseding the plan hash `E1-S3-INTERFACE-CHANGE-001` cites, and that no artifact is stranded because the cache root holds none | Accepted — Ross Todd, 2026-08-31 |
-| Contract owner (T-AUDIO) | Accept the `edge_conditioning` record including `calibration_source`, the three narrowed acceptance rules, and the stated limit that the ramp count is attested rather than verified | Accepted — Ross Todd, 2026-08-31 |
+| Contract owner (T-AUDIO) | Accept `e0.cache-publication.2.0`, the `edge_conditioning` record including `calibration_source`, the four narrowed acceptance rules, and the stated limit that the pre-ramp waveform cannot be reconstructed | Accepted — Ross Todd, 2026-08-31 |
 
-- Effective version and date: **2026-08-31.** `CACHE_SCHEMA_VERSION` `2.0`; `SYNTHESIS_IDENTITY_VERSION`
-  `e1-s2-v1` unchanged; `e1.tts-executor.3.0` and `e1.worker.2.0` unchanged.
+- Effective version and date: **2026-08-31.** `CACHE_SCHEMA_VERSION` `2.0`;
+  `CACHE_PUBLICATION_CONTRACT_VERSION` `e0.cache-publication.2.0`;
+  `SYNTHESIS_IDENTITY_VERSION` `e1-s2-v1`, `e1.tts-executor.3.0`, and `e1.worker.2.0` unchanged.
