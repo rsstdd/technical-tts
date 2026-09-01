@@ -680,10 +680,6 @@ mod tests {
         }
     }
 
-    /// A fake executor, a real publisher, and a synthetic governed voice root.
-    ///
-    /// Returns the workspace guard alongside, because dropping it removes the
-    /// published entry the caller is about to read.
     /// The scope this instrument's material is rendered under.
     ///
     /// `voice_qualification`, because the listening set never reaches a lesson.
@@ -697,6 +693,10 @@ mod tests {
         }
     }
 
+    /// A fake executor, a real publisher, and a synthetic governed voice root.
+    ///
+    /// Returns the workspace guard alongside, because dropping it removes the
+    /// published entry the caller is about to read.
     fn rendered_offline(
         spec: &VoiceProfileFixtureSpec,
     ) -> (TempDir, FakeTtsExecutor, Result<Vec<Take>, Box<dyn Error>>) {

@@ -27,7 +27,7 @@ The priority order is technical correctness, comfortable listening, retention va
 | Delivery backlog | Approved in [DELIVERY-PLAN.md](DELIVERY-PLAN.md) |
 | Rust workspace | Four-crate workspace with a tested end-to-end skeleton and the E1-S1 contract baseline |
 | Model and voice qualification | E0-S2 rights prerequisites and E0-S3 qualification complete; full-box performance qualification remains required before G3 |
-| Chatterbox worker | Not started. The locked Python environment, the worker protocol, and an executable protocol fake exist; the speech backend lands in E1-S3 |
+| Chatterbox worker | Single-worker synthesis lands in E1-S3: the shipped worker loads Chatterbox once per lifetime, renders offline into an assigned staging root, and reports its four identities. Five reference-machine criteria pass and a human listening review is recorded; the story record is `Proposed` until G1 |
 | ASR verifier | Not started |
 | CLI | Product commands not implemented |
 | Schemas and fixtures | Seven published versioned schemas under `schemas/`, generated from the Rust types and checked against the checked-in files; skeleton, contract, and deterministic-audio fixtures present |
