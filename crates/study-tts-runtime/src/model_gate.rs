@@ -41,6 +41,7 @@
 //! attacker who can rewrite it during a build can rewrite it before one.
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
@@ -135,9 +136,10 @@ pub const DECLARED_MODEL_ARTIFACTS: [DeclaredArtifact; 4] = [
 /// [`ModelArtifactError::ModelArtifactNotRegularFile`] when its name holds
 /// something else, [`ModelArtifactError::ModelArtifactSizeMismatch`] and
 /// [`ModelArtifactError::ModelArtifactChecksumMismatch`] when the bytes are not
-/// the pinned ones. Each routes to the engineering and project owners, who
-/// decide a model revision per `docs/governance/ROUTING-TABLES.md` §Decision
-/// routing.
+/// the pinned ones, or [`crate::IoError::FileSystem`] when artifact metadata
+/// cannot be read for another reason. Each routes to the engineering and
+/// project owners, who decide a model revision per
+/// `docs/governance/ROUTING-TABLES.md` §Decision routing.
 pub fn verify_model_artifacts(model_root: &Path) -> Result<Revision, BuildError> {
     let revision_root = model_root.join(format!("model-{PINNED_MODEL_REVISION}"));
     for artifact in &DECLARED_MODEL_ARTIFACTS {
@@ -151,11 +153,17 @@ pub fn verify_model_artifacts(model_root: &Path) -> Result<Revision, BuildError>
 /// Proves one declared artifact, cheapest check first.
 fn verify_artifact(revision_root: &Path, artifact: &DeclaredArtifact) -> Result<(), BuildError> {
     let path = revision_root.join(artifact.name);
-    let metadata =
-        fs::symlink_metadata(&path).map_err(|_| ModelArtifactError::MissingModelArtifact {
-            root: revision_root.to_path_buf(),
-            artifact: artifact.name,
-        })?;
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Err(ModelArtifactError::MissingModelArtifact {
+                root: revision_root.to_path_buf(),
+                artifact: artifact.name,
+            }
+            .into());
+        }
+        Err(error) => return Err(crate::io_error(&path, error)),
+    };
     // A link would supply both sides of the comparison from one file outside
     // the root, exactly as `voice_gate::read_record` refuses it to: the gate
     // would then agree with itself about bytes the acquisition never approved.
@@ -266,6 +274,26 @@ mod tests {
             ),
             "the refusal must name the missing artifact: {error:?}"
         );
+    }
+
+    #[test]
+    fn t4_e1_a_non_missing_metadata_failure_preserves_the_filesystem_error() {
+        let root = TempDir::new().expect("create a model root");
+        let revision_file = root.path().join("revision-is-a-file");
+        fs::write(&revision_file, b"not a directory").expect("write the revision file");
+        let artifact = &DECLARED_MODEL_ARTIFACTS[0];
+        let artifact_path = revision_file.join(artifact.name);
+
+        let error = verify_artifact(&revision_file, artifact)
+            .expect_err("a non-missing metadata failure must remain an IO error");
+
+        match error {
+            BuildError::Io(crate::IoError::FileSystem { path, source }) => {
+                assert_eq!(path, artifact_path);
+                assert_eq!(source.kind(), ErrorKind::NotADirectory);
+            }
+            other => panic!("the filesystem error must be preserved: {other:?}"),
+        }
     }
 
     #[test]
