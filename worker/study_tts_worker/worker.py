@@ -530,7 +530,9 @@ def _load_backend(launcher: dict[str, Any], threads: int) -> _Backend:
                 str(voice_root / identity / "conditionals.pt"), map_location="cpu"
             ).to("cpu")
     except Exception as error:  # noqa: BLE001 - any backend fault is one refusal
-        raise BackendUnavailable(f"a voice conditioning artifact could not be loaded: {_redacted_detail(error)}")
+        raise BackendUnavailable(
+            f"a voice conditioning artifact could not be loaded: {_redacted_detail(error)}"
+        ) from error
 
     return _Backend(
         model, model_revision, codec_revision, conditioning, conditionals, sample_rate
