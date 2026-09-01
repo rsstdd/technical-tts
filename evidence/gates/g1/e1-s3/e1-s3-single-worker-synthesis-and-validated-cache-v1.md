@@ -1303,7 +1303,7 @@ named after the table rather than omitted.
 | Formatting | `cargo fmt --all -- --check` | Clean |
 | Rust conventions | `python3 scripts/check-rust-conventions.py` | Clean |
 | Lints | `cargo clippy --offline --workspace --all-targets --all-features --locked -- -D warnings` | Clean |
-| Tests | `cargo test --offline --workspace --all-targets --locked` | 401 passed, 0 failed — two more than the sixth round, both added here |
+| Tests | `cargo test --offline --workspace --all-targets --locked` | 402 passed, 0 failed — three more than the sixth round: two for the timeout path, one for the zombie-liveness defect §CodeRabbit review records |
 | Doctests | `cargo test --offline --workspace --doc --locked` | 8 passed, 0 failed |
 | Python worker, system interpreter | `python3 -m unittest discover --start-directory worker/tests` | 64 passed, 2 skipped |
 | Python worker, restored environment | `worker/.venv/bin/python -m unittest discover --start-directory worker/tests` | 64 passed, 0 skipped |
@@ -1325,6 +1325,39 @@ residual `ADR-0001-D008` permits until E5-S4's
 reader threads after draining the epilogue, so a process holding the protocol pipe delays the caller
 for as long as it holds it; the test bounds its own escapee for that reason, and bounding it in the
 supervisor is not attempted here.
+
+### CodeRabbit review on PR #67
+
+Thirty-seven inline comments across five automated reviews, 2026-08-31 to 2026-09-01. Every one was
+re-checked against the working tree rather than against the commit it was written on, because most
+predate the fourth through seventh remediations. **Two were still valid, and checking them surfaced
+a third the review had not raised.**
+
+| Comment | Disposition |
+|---|---|
+| `process.rs` — a reparented zombie is counted as a live descendant | **Valid, fixed.** `read_process_record` parsed the parent PID and the start time and never the state field, and `process_identity_is_live` compared identity alone — so a process waiting only to be reaped kept `wait_for_containment` polling until `TERMINATION_OBSERVATION_GRACE` expired and then reported `ToolTerminationTimedOut`. That is a containment failure that did not happen, and the seventh remediation had just made it visible to an operator as "the worker tree was not contained afterwards". `ProcessRecord` gains `is_zombie`; `t4_e0_a_descendant_waiting_to_be_reaped_is_not_counted_as_live` failed first |
+| `listening-render.rs` — a doc comment on the wrong item | **Valid, fixed.** Three lines describing a fake executor, a real publisher, and a returned workspace guard sat above `qualification_spec`, which returns a fixture spec and creates none of them. Moved to `rendered_offline`, which had none |
+| **Not raised by the review.** `README.md` §Current status still said the Chatterbox worker was "Not started" and that "the speech backend lands in E1-S3" | **Fixed.** The third instance of the same stale claim, after `worker/AGENTS.md` in the sixth remediation and `PROVISIONAL-CONTRACT-BASELINE.md` in the seventh. Found while checking the review's own README comment, which was about a different row and was already addressed |
+
+**Six could not be acted on, and are recorded rather than silently skipped.** Three target
+`docs/architecture/E1-S3-INTERFACE-CHANGE-002.md` and three target
+`e1-s3-protocol-docstring-identity-reconciliation-v1.md`. Both are **Accepted**, and
+`docs/operations/REVIEW-AND-ACCEPT-CYCLE.md` §4 forbids editing an accepted record. Three of the six
+are also already satisfied in substance: `CACHE_PUBLICATION_CONTRACT_VERSION` **is**
+`e0.cache-publication.2.0`, and that record's §Impact does state that the published bytes and frame
+count changed.
+
+**Two were skipped on their merits.** Both report `MD040`, an untagged Markdown code fence. This
+repository configures no `markdownlint` — there is no `.markdownlint*` file and no workflow step
+that runs it — so that is the reviewer's own default rather than a standard this project holds.
+`scripts/check-rust-conventions.py` is what governs formatting here, and it passes.
+
+**The remaining twenty-six were already addressed** by the fourth through seventh remediations, and
+were confirmed one at a time against the current code rather than assumed from their age: among
+them the `from error` chaining in `worker.py`, the `ipv4_routes` field name, the `.trim()` on a
+declared version, the `NotFound`-only mapping in `model_gate`, the quiet-edge normalization, the
+epilogue drained before the readers are joined, and the containment and duplicate-ID checks in
+`check_listening_review.py`.
 
 ## Limits the story does not close
 
