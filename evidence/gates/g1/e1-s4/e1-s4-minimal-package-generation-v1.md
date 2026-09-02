@@ -1,18 +1,18 @@
 # E1-S4 — Minimal package generation
 
-- Status: Proposed
+- Status: Accepted
 - Governing story/gate: `DELIVERY-PLAN.md` E1-S4; gate G1
 - Hypothesis or decision: the complete ADR-0001 §13.5 package — master, both lossy exports, transcript, captions, chapters, and a manifest checksumming all six — is produced from one Rust-assembled timeline, published as one atomic directory transaction, and refused before any work when it cannot be produced correctly
 - Owner: Engineering owner
 - Date/time and timezone: 2026-09-01, local (UTC+00:00 as recorded by the reference environment)
 - Environment ID: `docs/operations/REFERENCE-ENVIRONMENT.md`
 
-Opened at the story's implementation and accumulating findings until G1, per
-`evidence/README.md` §Accepting a record at its gate. It stays `Proposed`: the story's own
-acceptance is a G1 decision, and one of its preconditions is not met here — a human listening
-record for the MP3. The other, a real-Chatterbox three-segment package, was met on 2026-09-01 and
+Opened at the story's implementation and accumulated findings until G1, per
+`evidence/README.md` §Accepting a record at its gate. Both preconditions of the story's own
+acceptance are now met. The real-Chatterbox three-segment package was rendered on 2026-09-01 and
 is documented in §Listening material with its lesson, bundle identity, package identity, and
-per-artifact digests.
+per-artifact digests; the human listening record against it was taken on 2026-09-02 and is
+recorded in §Review result, `accept` on all five criteria, bound to `lesson.mp3` at `bde064f7…`.
 
 ## Provenance
 
@@ -21,9 +21,9 @@ per-artifact digests.
 | Lesson fixture | `fixtures/lessons/e0-s0-two-segment.json`, two segments | Repository | SHA-256 `02d3e4e5f777520af7578e182b684eeaebd00f5ea647d7e3a72849b254913dbd` as `docs/testing/TEST-DATA-MANIFEST.md` records |
 | Synthesizer | `DeterministicToneWorker`, not Chatterbox | Repository | Deterministic 2,400-frame tone per segment |
 | FFmpeg/ffprobe | Ubuntu `6.1.1-3ubuntu5`, built with `libmp3lame` | Reference environment | Identities recorded in `docs/operations/REFERENCE-ENVIRONMENT.md` |
-| Interface change | `docs/architecture/E1-S4-INTERFACE-CHANGE-001.md` | Repository | `Accepted`, signed 2026-09-01 |
+| Interface change | `docs/architecture/E1-S4-INTERFACE-CHANGE-001.md` | Repository | `Accepted`, signed 2026-09-01; its reopened `text_renderer_version` row signed 2026-09-02 |
 | Deviations approved | `docs/adr/deviations/ADR-0001-D009-provisional-mp3-profile.md` and `ADR-0001-D010-webvtt-millisecond-caption-projection.md` | Repository | Both `Approved`, signed 2026-09-01 |
-| Package reuse inputs | `plan_hash`, the recorded tool and argument-profile set, and `text_renderer_version` | Repository | The third was added by review; `E1-S4-INTERFACE-CHANGE-001` §Impact records the gap and its approval row is `Pending` |
+| Package reuse inputs | `plan_hash`, the recorded tool and argument-profile set, and `text_renderer_version` | Repository | The third was added by review; `E1-S4-INTERFACE-CHANGE-001` §Impact records the gap and its approval row was signed 2026-09-02 |
 | ADR mirrors closed | `docs/adr/ADR-0001-production-rust-study-guide-tts.md` §13.2 | Repository | Amended to name `crates/study-tts-runtime/src/assembly.rs` and `assembly::verify_recorded_audio` as the enforcement path for its assembly paragraph, and `MIN_RECALL_RESPONSE_MS`/`MAX_RECALL_RESPONSE_MS` in `crates/study-tts-core/src/lesson.rs` as the enforcement path for the one pause-table row code enforces, in the shape §13.1 and §15.3 already use. No decision changed; no in-force record pins this document's digest, and `lesson.rs` has an accounted mismatch against `e1-s1-provisional-contract-baseline-v15` already |
 
 ## Acceptance criteria
@@ -194,36 +194,36 @@ Governed output, so the location is named by root rather than reproduced here, p
 
 ## Review result
 
-**Not yet taken.** The criteria below are fixed before listening, for the reason
+**Taken 2026-09-02.** The criteria below were fixed before listening, for the reason
 `e0-s3-g0-qualification-report-v1.md` states about its own: criteria chosen after hearing the audio
-are criteria chosen to fit it. No disposition is recorded here, and none may be entered by anyone
-who did not listen.
+are criteria chosen to fit it. They were not changed after the listening, and the disposition below
+was entered by the person who listened.
 
 One artifact, not a blinded set. `listening-render`'s shuffling answers a question this review does
 not ask — which line produced which take — because there is one recording and its content is known.
 What replaces blinding as the binding control is the digest: a judgment recorded below is bound to
 `lesson.mp3` at `bde064f7…`, and a re-render produces different bytes and voids it.
 
-**Reviewer to complete.** Listen to `lesson.mp3` end to end, then to `lesson.m4a` for comparison.
-The comparison is not optional: it is the only way to tell an artifact introduced by
-`libmp3lame` at `128k` from one already present in the master, and separating those two is the
-whole purpose of reviewing the MP3 rather than the package.
+**Completed as specified.** The reviewer listened to `lesson.mp3` end to end, then to
+`lesson.m4a` for comparison. The comparison is not optional: it is the only way to tell an artifact
+introduced by `libmp3lame` at `128k` from one already present in the master, and separating those
+two is the whole purpose of reviewing the MP3 rather than the package.
 
 | # | Criterion | What a finding looks like | Finding |
 |---|---|---|---|
-| 1 | Joins | A click, a truncation, or an audible discontinuity at either segment boundary | |
-| 2 | Pauses | A silence that does not land where the transcript implies, or that reads as a fault rather than a beat — the 2 000 ms interval after the recall prompt especially | |
-| 3 | Encoding | Anything audible in `lesson.mp3` that is *not* in `lesson.m4a`: swirl on sibilants, pre-echo, high-frequency loss | |
-| 4 | Continuity | Level, tone, or pace shifting between segments so the three do not read as one recording | |
-| 5 | Text integrity | Any word spoken that is not in `transcript.txt`, or any word omitted | |
+| 1 | Joins | A click, a truncation, or an audible discontinuity at either segment boundary | None. No click, truncation, or audible discontinuity at either boundary |
+| 2 | Pauses | A silence that does not land where the transcript implies, or that reads as a fault rather than a beat — the 2 000 ms interval after the recall prompt especially | None. Every silence landed where the transcript implies, the 2 000 ms recall interval included |
+| 3 | Encoding | Anything audible in `lesson.mp3` that is *not* in `lesson.m4a`: swirl on sibilants, pre-echo, high-frequency loss | None audible in this environment. See §What this review will not cover on what laptop speakers reach |
+| 4 | Continuity | Level, tone, or pace shifting between segments so the three do not read as one recording | None. Level, tone, and pace read as one recording across the three segments |
+| 5 | Text integrity | Any word spoken that is not in `transcript.txt`, or any word omitted | None. No word spoken that is absent from `transcript.txt`, and none omitted |
 
 | Field | Value |
 |---|---|
-| Reviewer | |
-| Date | |
-| Playback environment | |
-| Overall finding | |
-| Disposition | `accept` / `retake` |
+| Reviewer | Ross Todd, project owner and engineering owner |
+| Date | 2026-09-02 |
+| Playback environment | Built-in laptop speakers |
+| Overall finding | No finding on any of the five criteria |
+| Disposition | `accept` |
 
 **What this review will not cover**, whatever it finds.
 
@@ -238,27 +238,39 @@ whole purpose of reviewing the MP3 rather than the package.
   not calibrate the profile, and ADR-0003 still owes that.
 - **One reviewer, and the environment masks what it masks.** No second listener and no inter-rater
   agreement, on the terms E1-S3's review recorded.
+- **Built-in laptop speakers.** This is the limit that bears hardest on criterion 3, which is the
+  criterion the MP3 review exists for. `libmp3lame` artifacts at `128k` — swirl on sibilants,
+  pre-echo, high-frequency loss — sit in exactly the band small drivers reproduce least, so a
+  clear result records that nothing was audible on those speakers and does not establish that
+  nothing is audible on headphones or monitors. Criterion 4's level and tone judgment is bounded
+  the same way. Criteria 1, 2, and 5 — joins, pause placement, and spoken-versus-written text —
+  are not: a click, a misplaced silence, or a wrong word carries on any speaker.
 
 ## Deviations and limitations
 
 - **The MP3 profile is uncalibrated.** `ADR-0001-D009`, approved 2026-09-01, bounds the
   permission and expires at ADR-0003, which still records MP3 codec arguments as `Pending`. This
   record does not claim a calibrated export.
-- **Listening is unverified.** No human listening record has been taken for either export, and
-  none is claimed. §Review result now carries the instrument — the artifact, its digest, and
-  criteria fixed before listening — but its disposition is empty and only a person who listened
-  may fill it. `DELIVERY-PLAN.md` and `AGENTS.md` §Completion require the check or an explicit
-  statement that it remains outstanding; this is that statement.
+- **Listening is verified once, on one environment.** The record was taken 2026-09-02: `accept`,
+  no finding on any of the five criteria, bound by digest to `lesson.mp3` at `bde064f7…`, so a
+  re-render voids it. What it does not settle is set out in §What this review will not cover, and
+  the binding one is the playback environment: built-in laptop speakers cannot arbitrate criterion
+  3, the MP3-versus-M4A comparison the review exists for, at the band `libmp3lame` artifacts
+  occupy. `DELIVERY-PLAN.md` and `AGENTS.md` §Completion require the check; this is the check, at
+  the reach the environment gave it.
 - **Caption precision is amended, not achieved.** The exact frame boundaries remain in
   `manifest.json`, but the WebVTT projection floors to milliseconds and cannot satisfy ADR-0001
   §17.12 for a boundary that does not divide by 24 frames. The error is under one millisecond and
   always early. `ADR-0001-D010`, approved 2026-09-01, authorizes the projection and carries no
   expiry, so this limit is permanent until an ADR amendment changes §13.5 or §17.12. Chapter
   boundaries are exact and unaffected.
-- **The renderer identity is unsigned.** `text_renderer_version` closes a real reuse gap and its
-  test passes, but the approval row `E1-S4-INTERFACE-CHANGE-001` §Approval carries for it is
-  `Pending`: it was added after the other four rows were signed. The field is a required manifest
-  field on that record's authority for the `1.0-skeleton` break, not on a signature of its own.
+- **The renderer identity was signed late, and separately.** `text_renderer_version` closes a real
+  reuse gap and its test passes. Review added it as a fifth required manifest field and a third
+  package-reuse input *after* the other four approval rows were signed, so it stood `Pending` in
+  `E1-S4-INTERFACE-CHANGE-001` §Approval from 2026-09-01 until the T-AUDIO contract owner signed
+  it on 2026-09-02. For that day the field was required on that record's authority for the
+  `1.0-skeleton` break rather than on a signature of its own. The four earlier rows were unaffected
+  throughout, because the class, the version, and the migration they accepted are unchanged.
 - **No loudness normalization.** ADR-0001 §13.4's two-pass normalization is E2-S3 and is not
   attempted here, so neither export carries a loudness claim.
 - **Chapters are a sidecar, not embedded.** The reasoning is in
@@ -295,7 +307,7 @@ whole purpose of reviewing the MP3 rather than the package.
   | **Test alone, eight cores saturated** | **pre-change** | **2 000** | **1** | **0.05%** |
 
   Six failures in total, every one of them the same panic at the same line. The predicted PID-file
-  race — `.expect("helper must record the escaped descendant")` — did not occur once in 5 560
+  race — `.expect("helper must record the escaped descendant")` — did not occur once in 5 126
   executions.
 
   On the matched 2 000-run arms: pre-change 1/2 000 (95% upper bound 0.28%), current 3/2 000
@@ -311,7 +323,7 @@ whole purpose of reviewing the MP3 rather than the package.
   Nothing in E1-S4 moved it, and this is now measured rather than inferred from `process.rs`
   carrying no diff — which is all an earlier draft of this record had, and was not evidence.
 
-  Load is the variable, not this story. The 126 idle runs found nothing because at 0.2% they were
+  Load is the variable, not this story. The 120 idle runs found nothing because at 0.2% they were
   expected to find nothing: their combined yield is a quarter of one failure. Only saturating
   every core surfaced it, and then on both trees alike.
 
@@ -345,7 +357,7 @@ whole purpose of reviewing the MP3 rather than the package.
 
   `terminate` samples the tree with `ProcessOwnership::refresh`, then kills the group, then signals
   the pidfds it recorded. A descendant that escapes between the sample and the kill is in neither
-  set. That is the documented residual, and it is what the two captured failures are: not a new
+  set. That is the documented residual, and it is what the six captured failures are: not a new
   defect, and not a test artifact, but the accepted deviation being observed.
 
   So `t4_e0_timeout_terminates_escaped_descendant_that_closes_capture_pipes` asserts containment of
@@ -370,9 +382,9 @@ whole purpose of reviewing the MP3 rather than the package.
 
 ## Review
 
-**No row below is signed.** Each records a decision a role is asked for and has not yet made.
+**Both rows are signed.** Each records the decision the role made and the date it made it.
 
 | Role | Name | Decision | Date |
 |---|---|---|---|
-| Engineering owner | Ross Todd | Pending | |
-| Project owner | Ross Todd | Pending | |
+| Engineering owner | Ross Todd | Accepted | 2026-09-02 |
+| Project owner | Ross Todd | Accepted | 2026-09-02 |

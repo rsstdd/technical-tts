@@ -3,10 +3,11 @@
 ## Identification
 
 - Record ID: `E1-S4-INTERFACE-CHANGE-001`
-- Status: **Accepted, 2026-09-01, with one row reopened.** §Approval records the decision each role
-  made and the date it was signed. A fifth required manifest field, `text_renderer_version`, was
-  added by review *after* those signatures; its row is **Pending** and the four signed rows are
-  unaffected, because the class, the version, and the migration they accepted are unchanged.
+- Status: **Accepted, 2026-09-01; the reopened row signed 2026-09-02.** §Approval records the
+  decision each role made and the date it was signed. A fifth required manifest field,
+  `text_renderer_version`, was added by review *after* those signatures, so its row was signed
+  separately on 2026-09-02. The four rows signed on 2026-09-01 were unaffected throughout,
+  because the class, the version, and the migration they accepted are unchanged.
 - Contract owner: T-AUDIO (`package_writer`, the package manifest, the export profiles)
 - Engineering owner: Engineering owner
 - Affected-track reviewers: T-AUDIO, T-CORE
@@ -233,8 +234,11 @@ the fail-closed outcome rather than a silent misread.
 - **Caption boundaries are not frame-exact in `transcript.vtt`**, and cannot be while §13.5 names
   WebVTT. `ADR-0001-D010` authorizes the projection rather than closing the underlying conflict;
   its §Rollback names the two ADR amendments that would end it instead.
-- **No three-segment G1 fixture and no real-Chatterbox package.** Both remain G1 integration
-  requirements, and the E1-S4 evidence record stays `Proposed` until then.
+- **No three-segment G1 fixture and no real-Chatterbox package.** Both were G1 integration
+  requirements when this record was signed on 2026-09-01. Both were met the same day:
+  `fixtures/lessons/e1-s4-three-segment.json` is committed and registered, and a complete package
+  was rendered from it through the real Chatterbox worker. The E1-S4 evidence record was accepted
+  at G1 on 2026-09-02, once the listening record against that package was taken.
 
 ## Approval
 
@@ -247,16 +251,17 @@ Ross Todd holds every role listed. `docs/governance/PROJECT-EXECUTION-CHARTER.md
 a personal project and requires each approval to name its role and accepted risk separately, which
 is why the rows stay separate for one signatory.
 
-This acceptance covers the contract this record describes. It does **not** accept
-`evidence/gates/g1/e1-s4/e1-s4-minimal-package-generation-v1.md`, which stays `Proposed` until G1:
-an interface record accepts a contract change, never the story that carried it.
+This acceptance covers the contract this record describes. It did **not** accept
+`evidence/gates/g1/e1-s4/e1-s4-minimal-package-generation-v1.md`, which stayed `Proposed` until its
+own G1 acceptance on 2026-09-02: an interface record accepts a contract change, never the story
+that carried it.
 
 | Role | Decision sought | Status |
 |---|---|---|
 | Project owner | Accept the package manifest taking a major increment to `1.0-skeleton` and retaining its provisional suffix, and that `ADR-0001-D005` does not reach it | Accepted — Ross Todd, 2026-09-01 |
 | Contract owner (T-AUDIO) | Accept `e0.package-writer.2.0`, the four added publication paths, the six-artifact package, and the provisional MP3 profile `ADR-0001-D009` requests | Accepted — Ross Todd, 2026-09-01 |
 | Contract owner (T-CORE) | Accept `manifest-v1.schema.json` replacing `manifest-v0.schema.json`, the recorded required-field surface, and that no synthesis, verification, or cache identity moves | Accepted — Ross Todd, 2026-09-01 |
-| Contract owner (T-AUDIO) | Accept `text_renderer_version` as a fifth required manifest field and a third package-reuse input, added by review inside the same `1.0-skeleton` break | **Pending** — raised 2026-09-01, after the rows above were signed |
+| Contract owner (T-AUDIO) | Accept `text_renderer_version` as a fifth required manifest field and a third package-reuse input, added by review inside the same `1.0-skeleton` break | Accepted — Ross Todd, 2026-09-02. Raised after the rows above were signed and signed separately |
 
 - Effective version and date: **2026-09-01.** `manifest.json` `1.0-skeleton`;
   `PACKAGE_WRITER_CONTRACT_VERSION` `e0.package-writer.2.0`; `TRANSACTION_IDENTITY_VERSION`
