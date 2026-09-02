@@ -294,7 +294,7 @@ whole purpose of reviewing the MP3 rather than the package.
   | **Test alone, eight cores saturated** | **current** | **2 000** | **3** | **0.15%** |
   | **Test alone, eight cores saturated** | **pre-change** | **2 000** | **1** | **0.05%** |
 
-  Five failures in total, every one of them the same panic at the same line. The predicted PID-file
+  Six failures in total, every one of them the same panic at the same line. The predicted PID-file
   race — `.expect("helper must record the escaped descendant")` — did not occur once in 5 560
   executions.
 
@@ -318,8 +318,9 @@ whole purpose of reviewing the MP3 rather than the package.
   **It is not a test-harness artifact, and it is not the failure that was predicted.** The
   hypothesis under test was that the helper — the test binary re-invoking itself — could not write
   its PID file inside the 250 ms deadline under load, panicking at
-  `.expect("helper must record the escaped descendant")`. That is not what happens. Both captured
-  failures are identical and are the containment assertion at `process.rs:1848`:
+  `.expect("helper must record the escaped descendant")`. That is not what happens. All six
+  captured failures are identical and reached the containment assertion historically reported at
+  `process.rs:1848`; in the current source that assertion spans `process.rs:1855–1865`:
 
   ```text
   panicked at crates/study-tts-runtime/src/process.rs:1848:9:
