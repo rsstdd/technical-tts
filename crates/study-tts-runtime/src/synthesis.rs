@@ -14,7 +14,8 @@ use std::{
 
 use study_tts_core::{
     CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, CacheKey, DeterminismClass,
-    LanguageTag, Revision, SynthesisContext, VoiceConditioningHash, WorkerBundleHash,
+    LanguageTag, ModelArtifactsHash, Revision, SynthesisContext, VoiceConditioningHash,
+    WorkerBundleHash,
 };
 use thiserror::Error;
 
@@ -58,6 +59,12 @@ pub struct BackendDescriptor {
     pub model_revision: Revision,
     /// Tokenizer or codec revision the backend applies.
     pub tokenizer_revision: Revision,
+    /// Identity of the model bytes the gate proved before this backend started.
+    ///
+    /// Carried on the descriptor rather than recomputed at the key, so what
+    /// reaches a cache entry is what `verify_model_artifacts` actually proved
+    /// for the root this backend was launched against.
+    pub model_artifacts_hash: ModelArtifactsHash,
     /// Languages this backend declares it speaks.
     ///
     /// A set rather than a list because declaring `en` twice says nothing more
@@ -95,6 +102,7 @@ impl BackendDescriptor {
             model_repository: self.model_repository.clone(),
             model_revision: self.model_revision.clone(),
             tokenizer_revision: self.tokenizer_revision.clone(),
+            model_artifacts_hash: self.model_artifacts_hash.clone(),
             language,
             determinism_class: self.determinism_class,
             seed: self.seed,
@@ -244,6 +252,7 @@ pub(crate) fn sample_descriptor() -> BackendDescriptor {
         model_revision: "0123456789abcdef0123456789abcdef01234567"
             .parse()
             .expect("a hex revision parses"),
+        model_artifacts_hash: "4".repeat(64).parse().expect("a digest of fours parses"),
         tokenizer_revision: "tokenizer-2026-01"
             .parse()
             .expect("a dated tokenizer revision parses"),

@@ -45,9 +45,9 @@ pub use contract::{
 };
 pub use digest::{BLAKE3_HEX_PATTERN, is_blake3_hex};
 pub use identity::{
-    CACHE_SCHEMA_VERSION, DeterminismClass, MAX_REVISION_BYTES, MalformedRevision,
-    MalformedWorkerBundleHash, Revision, SYNTHESIS_IDENTITY_VERSION, SynthesisContext,
-    WorkerBundleHash,
+    CACHE_SCHEMA_VERSION, DeterminismClass, MAX_REVISION_BYTES, MalformedModelArtifactsHash,
+    MalformedRevision, MalformedWorkerBundleHash, ModelArtifactsHash, Revision,
+    SYNTHESIS_IDENTITY_VERSION, SynthesisContext, WorkerBundleHash,
 };
 pub use job::{
     MalformedManifestDigest, ManifestDigest, PROVISIONAL_JOB_SCHEMA_VERSION,

@@ -22,8 +22,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use study_tts_core::{
     CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE,
-    CacheKey, DeterminismClass, LanguageTag, PlannedSegment, Revision, SynthesisContext,
-    VoiceConditioningHash, WorkerBundleHash, is_blake3_hex,
+    CacheKey, DeterminismClass, LanguageTag, ModelArtifactsHash, PlannedSegment, Revision,
+    SynthesisContext, VoiceConditioningHash, WorkerBundleHash, is_blake3_hex,
 };
 use tempfile::Builder;
 
@@ -222,6 +222,15 @@ struct ArtifactProvenance {
     model_repository: String,
     model_revision: Revision,
     tokenizer_revision: Revision,
+    /// Identity of the model bytes the gate proved for the build that wrote
+    /// this entry.
+    ///
+    /// Recorded because the key is derived from it: without it this record
+    /// could not recompute the key the entry is published under, which is the
+    /// check `synthesize_transaction` makes before publishing. Required rather
+    /// than optional, which is why [`study_tts_core::CACHE_SCHEMA_VERSION`]
+    /// takes a major with it.
+    model_artifacts_hash: ModelArtifactsHash,
     language: LanguageTag,
     determinism_class: DeterminismClass,
     seed: u64,
@@ -267,6 +276,7 @@ impl ArtifactProvenance {
             model_repository: self.model_repository.clone(),
             model_revision: self.model_revision.clone(),
             tokenizer_revision: self.tokenizer_revision.clone(),
+            model_artifacts_hash: self.model_artifacts_hash.clone(),
             language: self.language.clone(),
             determinism_class: self.determinism_class,
             seed: self.seed,
@@ -603,6 +613,7 @@ fn synthesize_transaction(
             model_repository: report.context.model_repository.clone(),
             model_revision: report.context.model_revision.clone(),
             tokenizer_revision: report.context.tokenizer_revision.clone(),
+            model_artifacts_hash: report.context.model_artifacts_hash.clone(),
             language: report.context.language.clone(),
             determinism_class: report.context.determinism_class,
             seed: report.context.seed,
@@ -1387,6 +1398,7 @@ mod tests {
             worker_bundle_hash: "1".repeat(64).parse().expect("a digest of ones parses"),
             model_repository: "study-tts/test-backend".to_owned(),
             model_revision: "v1".parse().expect("`v1` is a revision"),
+            model_artifacts_hash: "4".repeat(64).parse().expect("a digest of fours parses"),
             tokenizer_revision: "none".parse().expect("`none` is a revision"),
             language: "en".parse().expect("`en` is a well-formed language tag"),
             determinism_class: DeterminismClass::Reproducible,
@@ -1521,6 +1533,7 @@ mod tests {
                 model_repository: context.model_repository.clone(),
                 model_revision: context.model_revision.clone(),
                 tokenizer_revision: context.tokenizer_revision.clone(),
+                model_artifacts_hash: context.model_artifacts_hash.clone(),
                 language: context.language.clone(),
                 determinism_class: context.determinism_class,
                 seed: context.seed,

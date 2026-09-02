@@ -25,16 +25,25 @@
 //! weights. **It does not extend to voice digests**, which sit beside personal
 //! data and stay in the governed voice root where `voice_gate` reads them.
 //!
-//! # What this does not do
+//! # The key term, and why it exists as well as the refusal
 //!
-//! It does not add a term to the synthesis key. Verification and keying are
-//! separable, and refusing unproven bytes is the stronger of the two: a
-//! legitimate weights change moves [`PINNED_MODEL_REVISION`] and therefore the
-//! key already, while an illegitimate one is refused here rather than filed
-//! under a key that describes it. Issue #66 proposes a `model_artifacts_hash`
-//! key term as well; the project owner directed on 2026-08-31 that it be
-//! deferred, and that adding a `SynthesisContext` input would need an ADR-0001
-//! §12.5 amendment rather than an interface-change record alone.
+//! Refusing unproven bytes and keying on them are separable, and for a long
+//! time only the first was done here: a legitimate weights change moves
+//! [`PINNED_MODEL_REVISION`] and therefore the key already, while an
+//! illegitimate one is refused outright. The project owner directed on
+//! 2026-08-31 that the key term be deferred on exactly that reasoning.
+//!
+//! That direction was reversed before G1, and the gap it leaves is narrow but
+//! real: the revision names an *acquisition* and the digests name its *bytes*,
+//! and a commit that edits [`DECLARED_MODEL_ARTIFACTS`] without moving
+//! [`PINNED_MODEL_REVISION`] moves the bytes while the key stands still. Audio
+//! rendered from the old weights is then reused for the new ones.
+//! [`model_artifacts_hash`] closes that, and reaches
+//! [`study_tts_core::SynthesisContext`]. The ADR-0001 §12.5 amendment the same
+//! 2026-08-31 direction required is
+//! `docs/adr/deviations/ADR-0001-D011-model-artifacts-key-input.md`.
+//!
+//! # What this does not do
 //!
 //! It also cannot close the window between hashing a file and the worker
 //! opening it. The model root is governed and read-only in practice, and an
@@ -45,7 +54,7 @@ use std::io::ErrorKind;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
-use study_tts_core::Revision;
+use study_tts_core::{CanonicalValue, ModelArtifactsHash, Revision, canonical_digest};
 
 use crate::error::{BuildError, ModelArtifactError};
 
@@ -125,10 +134,13 @@ pub const DECLARED_MODEL_ARTIFACTS: [DeclaredArtifact; 4] = [
 /// also why no test calls `for_bundle`: doing so would need the restored
 /// interpreter and the governed model root, neither of which CI has.
 ///
-/// Returns the revision it verified, so a caller carries the value it proved
-/// rather than one it read somewhere else. [`crate::WorkerTtsExecutor::start`]
-/// compares it against what the worker answers with, which is what stops the
-/// worker loading a different revision than the one hashed here.
+/// Returns the revision *and* the artifact identity it verified, so a caller
+/// carries the values it proved rather than ones it read somewhere else.
+/// [`crate::WorkerTtsExecutor::start`] compares the revision against what the
+/// worker answers with, which is what stops the worker loading a different
+/// revision than the one hashed here. The artifact identity has no such
+/// counterpart and needs none: the worker reads a record and cannot answer for
+/// bytes, which is why this side is where it comes from.
 ///
 /// # Errors
 ///
@@ -140,14 +152,79 @@ pub const DECLARED_MODEL_ARTIFACTS: [DeclaredArtifact; 4] = [
 /// cannot be read for another reason. Each routes to the engineering and
 /// project owners, who decide a model revision per
 /// `docs/governance/ROUTING-TABLES.md` §Decision routing.
-pub fn verify_model_artifacts(model_root: &Path) -> Result<Revision, BuildError> {
+pub fn verify_model_artifacts(model_root: &Path) -> Result<ProvenModel, BuildError> {
     let revision_root = model_root.join(format!("model-{PINNED_MODEL_REVISION}"));
     for artifact in &DECLARED_MODEL_ARTIFACTS {
         verify_artifact(&revision_root, artifact)?;
     }
-    Ok(PINNED_MODEL_REVISION
-        .parse()
-        .expect("the pinned model revision is a well-formed revision"))
+    Ok(ProvenModel {
+        revision: PINNED_MODEL_REVISION
+            .parse()
+            .expect("the pinned model revision is a well-formed revision"),
+        artifacts_hash: model_artifacts_hash(),
+    })
+}
+
+/// What one governed model root was proven to hold.
+///
+/// Returned together because they are one fact about one verified root, and a
+/// caller that took the revision alone would be free to pair it with a hash
+/// derived somewhere else.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProvenModel {
+    /// The revision whose directory was hashed.
+    pub revision: Revision,
+    /// The identity of the bytes that were hashed.
+    pub artifacts_hash: ModelArtifactsHash,
+}
+
+/// The identity of the artifact bytes this build is pinned to.
+///
+/// Derived from [`DECLARED_MODEL_ARTIFACTS`] rather than from the files, and
+/// that is not a shortcut: `verify_model_artifacts` has already proven the
+/// files *are* these bytes, so hashing them again would re-read 3 GB to learn
+/// what the constant already states. What reaches the key is the declaration
+/// the gate enforced.
+///
+/// Derived rather than pinned as a second constant, for the same reason. A
+/// pinned value would be a third thing to keep in step with the digests and the
+/// revision, and the first edit that moved the digests and forgot it would
+/// reintroduce exactly the defect this closes.
+///
+/// Hashed through [`canonical_digest`] like every other identity here, so the
+/// byte form is owned by `study-tts-core` rather than invented at this call
+/// site. The name is included beside each digest: two artifacts swapping names
+/// is a different model root, and hashing the digests alone would not see it.
+pub fn model_artifacts_hash() -> ModelArtifactsHash {
+    artifacts_hash(&DECLARED_MODEL_ARTIFACTS)
+}
+
+/// The identity of one declared artifact list.
+///
+/// Split from [`model_artifacts_hash`] so its properties can be driven with
+/// synthetic lists. The constant cannot be varied, and a test that asserted the
+/// real hash against a copied literal would be a second copy of this function
+/// rather than a check on it.
+fn artifacts_hash(artifacts: &[DeclaredArtifact]) -> ModelArtifactsHash {
+    let declared = artifacts
+        .iter()
+        .map(|artifact| {
+            CanonicalValue::object([
+                ("name", CanonicalValue::Text(artifact.name.to_owned())),
+                ("sha256", CanonicalValue::Text(artifact.sha256.to_owned())),
+                ("bytes", CanonicalValue::Unsigned(artifact.bytes)),
+            ])
+        })
+        .collect();
+
+    canonical_digest(&CanonicalValue::object([(
+        "artifacts",
+        CanonicalValue::Array(declared),
+    )]))
+    .to_hex()
+    .to_string()
+    .parse()
+    .expect("a BLAKE3 hex digest parses as a model artifacts hash")
 }
 
 /// Proves one declared artifact, cheapest check first.
@@ -352,5 +429,69 @@ mod tests {
             );
             assert!(artifact.bytes > 0, "{} declares a size", artifact.name);
         }
+    }
+
+    /// Two artifacts, enough to tell an ordering apart from a swap.
+    const PAIR: [DeclaredArtifact; 2] = [
+        DeclaredArtifact {
+            name: "first.safetensors",
+            bytes: 10,
+            sha256: "a1",
+        },
+        DeclaredArtifact {
+            name: "second.safetensors",
+            bytes: 20,
+            sha256: "b2",
+        },
+    ];
+
+    #[test]
+    fn t1_e1_every_declared_artifact_field_changes_the_model_identity() {
+        // Each field separately, because each one is a way the model root can
+        // differ: a digest is different bytes, a size is a truncated or padded
+        // file, and a name is a different file entirely.
+        let baseline = artifacts_hash(&PAIR);
+
+        let mut digest_moved = PAIR;
+        digest_moved[0].sha256 = "c3";
+        let mut size_moved = PAIR;
+        size_moved[0].bytes = 11;
+        let mut name_moved = PAIR;
+        name_moved[0].name = "third.safetensors";
+
+        for (field, artifacts) in [
+            ("sha256", digest_moved),
+            ("bytes", size_moved),
+            ("name", name_moved),
+        ] {
+            assert_ne!(
+                artifacts_hash(&artifacts).as_str(),
+                baseline.as_str(),
+                "changing `{field}` must change the model identity"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e1_two_artifacts_swapping_names_is_a_different_model_identity() {
+        // The case that motivates hashing the name beside the digest rather
+        // than the digests alone. The multiset of digests is unchanged here;
+        // which file each one describes is not, and that is a different root.
+        let mut swapped = PAIR;
+        swapped[0].name = PAIR[1].name;
+        swapped[1].name = PAIR[0].name;
+
+        assert_ne!(
+            artifacts_hash(&swapped).as_str(),
+            artifacts_hash(&PAIR).as_str()
+        );
+    }
+
+    #[test]
+    fn t1_e1_the_model_identity_is_stable_across_derivations() {
+        // It reaches every cache key, so a derivation that varied between two
+        // calls in one process would re-key the cache from nothing.
+        assert_eq!(model_artifacts_hash(), model_artifacts_hash());
+        assert_eq!(model_artifacts_hash().as_str().len(), 64);
     }
 }

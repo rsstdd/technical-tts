@@ -567,6 +567,7 @@ fn planning_context() -> study_tts_core::SynthesisContext {
         model_repository: "study-tts/deterministic-tone".to_owned(),
         model_revision: "none".parse().expect("`none` is a revision"),
         tokenizer_revision: "none".parse().expect("`none` is a revision"),
+        model_artifacts_hash: blake3::hash(b"schema-test model artifacts").into(),
         language: "en".parse().expect("`en` is a language tag"),
         determinism_class: study_tts_core::DeterminismClass::Reproducible,
         seed: 0,

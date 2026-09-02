@@ -102,9 +102,17 @@ weights — and this does not extend to voice digests, which stay in the governe
 **Changing them is a governed-backend change.** A new revision is ADR-0002's decision, taken by the
 engineering and project owners per `docs/governance/ROUTING-TABLES.md` §Decision routing, and the
 constants are updated from the new acquisition's `bundle-manifest.json` as part of it — never
-edited to make a failing gate pass. `ADR-0001-D005` and issue #66 record why the derived digest is
-not also a synthesis-key input: verification refuses unproven bytes outright, and adding a
-`SynthesisContext` term would move every cache key and needs an ADR-0001 §12.5 amendment.
+edited to make a failing gate pass.
+
+**The derived digest is also a synthesis-key input, from E1-S5.** It was not, and the reasoning for
+that was recorded here: verification refuses unproven bytes outright, so a legitimate weights change
+moves `PINNED_MODEL_REVISION` and the key with it, while an illegitimate one never renders. What
+that leaves open is one case — a commit that edits `DECLARED_MODEL_ARTIFACTS` and does *not* move
+`PINNED_MODEL_REVISION`. The gate proves the new bytes, the key stands still, and audio from the old
+weights is reused for the new ones. `model_gate::model_artifacts_hash` closes it by making the key
+follow the digests, which is issue #66 and needs the ADR-0001 §12.5 amendment
+`docs/adr/deviations/ADR-0001-D011-model-artifacts-key-input.md` requests. **Until that amendment is
+approved the change is prepared and not authorized**, and this paragraph describes prepared work.
 
 ---
 
