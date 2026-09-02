@@ -27,7 +27,7 @@ The priority order is technical correctness, comfortable listening, retention va
 | Delivery backlog | Approved in [DELIVERY-PLAN.md](DELIVERY-PLAN.md) |
 | Rust workspace | Four-crate workspace with a tested end-to-end skeleton and the E1-S1 contract baseline |
 | Model and voice qualification | E0-S2 rights prerequisites and E0-S3 qualification complete; full-box performance qualification remains required before G3 |
-| Chatterbox worker | Single-worker synthesis lands in E1-S3: the shipped worker loads Chatterbox once per lifetime, renders offline into an assigned staging root, and reports its four identities. Five reference-machine criteria pass and a human listening review is recorded; the story record is `Proposed` until G1 |
+| Chatterbox worker | Single-worker synthesis lands in E1-S3: the shipped worker loads Chatterbox once per lifetime, renders offline into an assigned staging root, and reports its four identities. Five reference-machine criteria pass and a human listening review is recorded; the story record was accepted 2026-09-02 |
 | ASR verifier | Not started |
 | CLI | Two authoring commands implemented at E1-S5: `study-tts lesson new` scaffolds a lesson that already validates, and `study-tts lesson validate` checks one through the same `load_lesson` a render uses. Every other command below remains architectural intent. See [`docs/operations/AUTHORING.md`](docs/operations/AUTHORING.md) |
 | Schemas and fixtures | Seven published versioned schemas under `schemas/`, generated from the Rust types and checked against the checked-in files; skeleton, contract, and deterministic-audio fixtures present |

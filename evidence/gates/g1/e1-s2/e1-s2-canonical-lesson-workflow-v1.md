@@ -4,7 +4,7 @@
 - Candidate revision: working tree on `main` at the E1-S2 implementation
 - Accountable owner: Engineering owner
 - Approvers: Engineering owner and project owner
-- Status: Proposed
+- Status: Accepted
 
 ## Scope and decision
 
@@ -340,6 +340,6 @@ Run from the repository root on Ubuntu 24.04 under WSL2, with `ffmpeg` and `ffpr
 
 | Role | Name | Decision | Date |
 |---|---|---|---|
-| Contract owner (T-CORE) | | Pending | |
-| Engineering owner | | Pending | |
-| Project owner | | Pending | |
+| Contract owner (T-CORE) | Ross Todd for T-CORE | Accepted | 2026-09-02 |
+| Engineering owner | Ross Todd | Accepted | 2026-09-02 |
+| Project owner | Ross Todd | Accepted | 2026-09-02 |
