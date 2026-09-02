@@ -1,14 +1,14 @@
 # ADR-0001-D011 — The synthesis key names the model's bytes as well as its revision
 
-- **Status:** Proposed. Nothing below is approved; §Decision carries no signature.
-- **Date raised:** 2026-09-02
+- **Status:** Approved
+- **Date:** 2026-09-02
 - **Controlling ADR and sections:** ADR-0001 §12.5, which enumerates the synthesis-key inputs
 - **Requesting story:** E1-S5, for issue #66
 - **Owner:** Engineering owner
 - **Approver:** Project owner and engineering owner
 - **Expiry:** None. This adds an input to a ratified enumeration; it does not resolve itself.
 
-## Proposed amendment
+## Approved amendment
 
 Admit **`model_artifacts_hash`** — BLAKE3 over the declared name, size, and SHA-256 of every model
 artifact this build is pinned to — as a synthesis-key input under ADR-0001 §12.5, alongside the
@@ -86,8 +86,10 @@ nothing is rewritten in place at any point, in either direction.
 
 ## Decision
 
-- [ ] Approve through an ADR amendment
+- [x] Approve through an ADR amendment
 - [ ] Reject
 - [ ] Defer
 
-Approvers and date:
+Approvers and date: Ross Todd, project owner and engineering owner, 2026-09-02.
+`docs/governance/PROJECT-EXECUTION-CHARTER.md` permits one signatory to hold both roles for a
+personal project.

@@ -110,9 +110,9 @@ moves `PINNED_MODEL_REVISION` and the key with it, while an illegitimate one nev
 that leaves open is one case — a commit that edits `DECLARED_MODEL_ARTIFACTS` and does *not* move
 `PINNED_MODEL_REVISION`. The gate proves the new bytes, the key stands still, and audio from the old
 weights is reused for the new ones. `model_gate::model_artifacts_hash` closes it by making the key
-follow the digests, which is issue #66 and needs the ADR-0001 §12.5 amendment
-`docs/adr/deviations/ADR-0001-D011-model-artifacts-key-input.md` requests. **Until that amendment is
-approved the change is prepared and not authorized**, and this paragraph describes prepared work.
+follow the digests, which is issue #66. It needed an ADR-0001 §12.5 amendment, because that section
+enumerates its key inputs and a record cannot add one:
+`docs/adr/deviations/ADR-0001-D011-model-artifacts-key-input.md`, approved 2026-09-02.
 
 ---
 

@@ -3,7 +3,8 @@
 ## Identification
 
 - Record ID: `E1-S5-INTERFACE-CHANGE-001`
-- Status: **Proposed.** §Approval carries no signature. Nothing here may be read as accepted.
+- Status: **Accepted, 2026-09-02.** §Approval records the decision each role made and the date it
+  was signed.
 - Contract owner: T-CLI (the `study-tts` command surface)
 - Engineering owner: Engineering owner
 - Affected-track reviewers: T-CLI, T-CORE
@@ -164,8 +165,7 @@ current directory is process-wide state and these tests run concurrently.
 
 ## Approval
 
-**No row below is signed.** Each records a decision a role is being asked for, and nothing here is
-accepted until the row carries a name and a date.
+**Every row below is signed.** Each records a decision a role made and the date it was made.
 
 Ross Todd holds every role listed. `docs/governance/PROJECT-EXECUTION-CHARTER.md` permits that for
 a personal project and requires each approval to name its role and accepted risk separately, which
@@ -173,9 +173,9 @@ is why the rows stay separate for one signatory.
 
 | Role | Decision sought | Status |
 |---|---|---|
-| Project owner | Accept retiring the E1-S1 status executable and its pinned stdout, and renaming the binary to `study-tts` | Pending |
-| Contract owner (T-CLI) | Accept `lesson new` and `lesson validate` as the published E1-S5 surface, a single nonzero exit for every refusal, and `clap` plus its fifteen-crate tree | Pending |
-| Contract owner (T-CORE) | Accept `load_lesson`, `scaffold_lesson`, and `SCAFFOLD_VOICE_PROFILE` as compatible additions, `IoError::DestinationExists` as an unrouted refusal, and that no schema or identity moves | Pending |
-| Engineering owner | Accept the `parent_of` behavioral fix reaching `write_json_atomically`, and the limits recorded above | Pending |
+| Project owner | Accept retiring the E1-S1 status executable and its pinned stdout, and renaming the binary to `study-tts` | Accepted — Ross Todd, 2026-09-02 |
+| Contract owner (T-CLI) | Accept `lesson new` and `lesson validate` as the published E1-S5 surface, a single nonzero exit for every refusal, and `clap` plus its fifteen-crate tree | Accepted — Ross Todd, 2026-09-02 |
+| Contract owner (T-CORE) | Accept `load_lesson`, `scaffold_lesson`, and `SCAFFOLD_VOICE_PROFILE` as compatible additions, `IoError::DestinationExists` as an unrouted refusal, and that no schema or identity moves | Accepted — Ross Todd, 2026-09-02 |
+| Engineering owner | Accept the `parent_of` behavioral fix reaching `write_json_atomically`, and the limits recorded above | Accepted — Ross Todd, 2026-09-02 |
 
-- Effective version and date: not effective; `Proposed`.
+- Effective version and date: `study-tts` `lesson new` / `lesson validate`, effective 2026-09-02.

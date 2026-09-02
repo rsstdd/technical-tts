@@ -3,7 +3,9 @@
 ## Identification
 
 - Record ID: `E1-S3-INTERFACE-CHANGE-004`
-- Status: **Proposed.** §Approval carries no signature. Nothing here may be read as accepted.
+- Status: **Accepted, 2026-09-02.** §Approval records the decision each role made and the date it
+  was signed. §Limits records what acceptance does *not* settle: the reference-machine
+  reproducibility measurement has not run, and `deterministic_seed` stays `False` until it does.
 - Contract owner: T-WORKER (`tts_executor`, the worker bundle identity)
 - Engineering owner: Engineering owner
 - Affected-track reviewers: T-WORKER, T-CORE
@@ -149,16 +151,16 @@ would describe only the first.
 
 ## Approval
 
-**No row below is signed.** Each records a decision a role is being asked for.
+**Every row below is signed.** Each records a decision a role made and the date it was made.
 
 Ross Todd holds every role listed. `docs/governance/PROJECT-EXECUTION-CHARTER.md` permits that for
 a personal project and requires each approval to name its role and accepted risk separately.
 
 | Role | Decision sought | Status |
 |---|---|---|
-| Project owner | Accept that the worker bundle identity moves, that every synthesis key and plan hash moves with it, and that the accepted E1-S4 package and its listening review become historical rather than current | Pending |
-| Contract owner (T-WORKER) | Accept seeding at model construction as well as per take, `_seed_generators` as the single site, and `deterministic_seed` remaining `False` until measured | Pending |
-| Contract owner (T-CORE) | Accept that no frame, launcher field, or schema moves, and that verification identities are untouched | Pending |
-| Engineering owner | Accept the limits recorded above, in particular that the reference-machine reproducibility criterion has not been run | Pending |
+| Project owner | Accept that the worker bundle identity moves, that every synthesis key and plan hash moves with it, and that the accepted E1-S4 package and its listening review become historical rather than current | Accepted — Ross Todd, 2026-09-02 |
+| Contract owner (T-WORKER) | Accept seeding at model construction as well as per take, `_seed_generators` as the single site, and `deterministic_seed` remaining `False` until measured | Accepted — Ross Todd, 2026-09-02 |
+| Contract owner (T-CORE) | Accept that no frame, launcher field, or schema moves, and that verification identities are untouched | Accepted — Ross Todd, 2026-09-02 |
+| Engineering owner | Accept the limits recorded above, in particular that the reference-machine reproducibility criterion has not been run | Accepted — Ross Todd, 2026-09-02 |
 
-- Effective version and date: not effective; `Proposed`.
+- Effective version and date: worker seeding before model construction, effective 2026-09-02.

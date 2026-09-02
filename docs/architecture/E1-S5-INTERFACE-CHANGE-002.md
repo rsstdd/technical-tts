@@ -3,14 +3,16 @@
 ## Identification
 
 - Record ID: `E1-S5-INTERFACE-CHANGE-002`
-- Status: **Proposed.** §Approval carries no signature. Nothing here may be read as accepted.
+- Status: **Accepted, 2026-09-02**, together with the amendment it depends on. §Approval records
+  the decision each role made and the date it was signed.
 - Contract owner: T-CORE (`SynthesisContext`, the synthesis identity)
 - Engineering owner: Engineering owner
 - Affected-track reviewers: T-CORE, T-WORKER, T-AUDIO
 - Accepted ADR, if architectural:
-  [`ADR-0001-D011`](../adr/deviations/ADR-0001-D011-model-artifacts-key-input.md), **Proposed**. ADR-0001 §12.5 enumerates the synthesis-key inputs, so adding one needs an
-  amendment rather than this record alone. **That amendment is not approved, and until it is, this
-  record describes a change that is not authorized.**
+  [`ADR-0001-D011`](../adr/deviations/ADR-0001-D011-model-artifacts-key-input.md), **Approved
+  2026-09-02**. ADR-0001 §12.5 enumerates the synthesis-key inputs, so adding one needs an
+  amendment rather than this record alone. Both were signed together, which is the only order
+  that makes sense: this record is the change the amendment authorizes.
 
 Issue #66, finding 2 of the 2026-08-31 audit of E1-S3: changed model weights kept an unchanged
 synthesis identity. The gate added since refuses weights that are not the pinned bytes, so the
@@ -96,8 +98,10 @@ hash derived somewhere else.
 
 ## Limits this change does not close
 
-- **The amendment is not approved.** `ADR-0001-D011` is `Proposed`. A Proposed ADR authorizes
-  nothing, so this record is a description of prepared work rather than of an authorized change.
+- **Acceptance is not qualification.** `ADR-0001-D011` was approved on 2026-09-02 and this record
+  with it, so the change is authorized. Nothing about it has been *measured*: every key in the
+  project has moved and no requalification, re-render, or listening review has run against the
+  build that carries them.
 - **The key follows the *declaration*, not a re-read of the files at launch.** If the pinned
   digests were wrong about bytes the gate then accepted, the key would be wrong in the same way —
   but that cannot happen, because the gate compares the files against those same digests and
@@ -115,17 +119,18 @@ hash derived somewhere else.
 
 ## Approval
 
-**No row below is signed.**
+**Every row below is signed.**
 
 Ross Todd holds every role listed. `docs/governance/PROJECT-EXECUTION-CHARTER.md` permits that for
 a personal project and requires each approval to name its role and accepted risk separately.
 
 | Role | Decision sought | Status |
 |---|---|---|
-| Project owner | Accept that every synthesis key and plan hash moves before G1, and that the 2026-08-31 direction deferring this term is reversed | Pending |
-| Contract owner (T-CORE) | Accept `model_artifacts_hash` as a `SynthesisContext` input, `SYNTHESIS_IDENTITY_VERSION` at `e1-s5-v1`, and `CACHE_SCHEMA_VERSION` at `3.0` | Pending |
-| Contract owner (T-WORKER) | Accept `ProvenModel`, the descriptor carrying the value from the configuration rather than the worker's answer, and the fake's distinct constant | Pending |
-| Affected track (T-AUDIO) | Accept that no published schema and no package identity moves | Pending |
-| Engineering owner | Accept the limits above, in particular that `ADR-0001-D011` is unapproved and no requalification has run | Pending |
+| Project owner | Accept that every synthesis key and plan hash moves before G1, and that the 2026-08-31 direction deferring this term is reversed | Accepted — Ross Todd, 2026-09-02 |
+| Contract owner (T-CORE) | Accept `model_artifacts_hash` as a `SynthesisContext` input, `SYNTHESIS_IDENTITY_VERSION` at `e1-s5-v1`, and `CACHE_SCHEMA_VERSION` at `3.0` | Accepted — Ross Todd, 2026-09-02 |
+| Contract owner (T-WORKER) | Accept `ProvenModel`, the descriptor carrying the value from the configuration rather than the worker's answer, and the fake's distinct constant | Accepted — Ross Todd, 2026-09-02 |
+| Affected track (T-AUDIO) | Accept that no published schema and no package identity moves | Accepted — Ross Todd, 2026-09-02 |
+| Engineering owner | Accept the limits above, in particular that `ADR-0001-D011` is unapproved and no requalification has run | Accepted — Ross Todd, 2026-09-02 |
 
-- Effective version and date: not effective; `Proposed`.
+- Effective version and date: `SYNTHESIS_IDENTITY_VERSION` `e1-s5-v1` and
+  `CACHE_SCHEMA_VERSION` `3.0`, effective 2026-09-02.
