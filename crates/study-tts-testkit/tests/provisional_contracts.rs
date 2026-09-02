@@ -441,6 +441,48 @@ fn t4_e1_the_real_package_writer_passes_the_shared_contract() {
     }
 }
 
+/// The real repository against the contract the fake has always been read
+/// through.
+///
+/// Parity was inferred rather than shown until E1-S5:
+/// `run_job_repository_contract_scenario` ran only against
+/// `InMemoryJobRepository`, and `FileSystemJobRepository` appeared only inside
+/// `t4_e0_walking_skeleton_uses_only_published_seams`, wrapped in a recorder
+/// that observes calls rather than checking the contract. This closes that gap
+/// the way `t4_e1_the_real_package_writer_passes_the_shared_contract` closed
+/// the identical one for the package writer at E1-S4.
+#[test]
+fn t4_e1_the_real_job_repository_passes_the_shared_contract() {
+    let workspace = TempDir::new().expect("create real-repository contract workspace");
+    let executor = FakeTtsExecutor::default();
+    let plan = validated_plan(&executor);
+    let snapshot = ProvisionalJobSnapshot::planned("contract-job", plan.plan_hash.clone());
+
+    let loaded =
+        run_job_repository_contract_scenario(&FileSystemJobRepository, workspace.path(), &snapshot)
+            .expect("the real job repository must pass the shared job-state contract");
+
+    assert_eq!(
+        loaded, snapshot,
+        "a durable snapshot must load back as the one that was replaced"
+    );
+
+    // Advancing through the same adapter, which the in-memory scenario also
+    // does: a repository that retains only the first state would pass the
+    // scenario above and still lose every transition after it.
+    let caching = snapshot.advancing(study_tts_core::ProvisionalJobStage::Caching);
+    FileSystemJobRepository
+        .replace(workspace.path(), &caching)
+        .expect("retain a second durable job replacement");
+    assert_eq!(
+        FileSystemJobRepository
+            .load(workspace.path(), "contract-job")
+            .expect("load the advanced snapshot"),
+        Some(caching),
+        "the advanced state must replace the one it succeeded"
+    );
+}
+
 #[test]
 fn t4_e0_walking_skeleton_uses_only_published_seams() {
     let workspace = TempDir::new().expect("create seam workspace");
