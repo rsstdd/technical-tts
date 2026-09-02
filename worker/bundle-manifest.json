@@ -47,6 +47,10 @@
       "digest": "6gXHIZHO914EgABjZ_2a72bY2qgAo4Qb4XX0F9wijqQ"
     },
     {
+      "distribution": "cloudpickle",
+      "digest": "37fBGLQYQkiWRWQ7mdc7ndzNqqqTmd5sxfoKd1Qh9KU"
+    },
+    {
       "distribution": "conformer",
       "digest": "BwsqpMi54KGZla1oFRQzWfF1tNjrxH6-aoy4QhgGrSc"
     },
@@ -64,7 +68,7 @@
     },
     {
       "distribution": "filelock",
-      "digest": "vxFq7GUu7aD8W1DpO2qsuCjlBExIBaLt929LKR9hAKg"
+      "digest": "6zasmKwE-yZ6_tgSf4HjxlDKUx8ZfFUdzbcgLB3kC90"
     },
     {
       "distribution": "fsspec",
@@ -84,7 +88,7 @@
     },
     {
       "distribution": "importlib-metadata",
-      "digest": "9TZNNM9BkhIwDOEXsfkHY6WwDzi3WIeMnlc2_sC-EnM"
+      "digest": "cybOEo5716fZRCPlgezcJc1CSGIwWXTxmvVEQDksiFs"
     },
     {
       "distribution": "jinja2",
@@ -92,7 +96,7 @@
     },
     {
       "distribution": "joblib",
-      "digest": "vB0AnWuWNTnfrtl9Ddi3h8bKkyLYk8O5B5bRQQNAI3w"
+      "digest": "vDWAEVCXEA_rZPxjKuXuxhmU-ha2-YUo9_X0rBQc5C4"
     },
     {
       "distribution": "lazy-loader",
@@ -120,7 +124,7 @@
     },
     {
       "distribution": "msgpack",
-      "digest": "lfsYftt1awKZzz98kBCsJCqFr5bgi2Wo5vmotjEsERk"
+      "digest": "grtMbyNaIH5Ug_9R_hC9SRMljjfk1EWUqps7UegaWbk"
     },
     {
       "distribution": "narwhals",
@@ -152,7 +156,7 @@
     },
     {
       "distribution": "platformdirs",
-      "digest": "Z7gfWGA-U6u2Bmlb_WLJXZRq6sTxsPhJBSH1rB47mnA"
+      "digest": "gU_GT9MS828FkgkDXBy2gaAnzb39dWr230dL-ezutx8"
     },
     {
       "distribution": "pooch",
@@ -160,7 +164,7 @@
     },
     {
       "distribution": "protobuf",
-      "digest": "R9eLTHrDhhOOBqcNFXpKuoFpa2UxEzLIWfs5ut8Asc8"
+      "digest": "9fT9nOVjzYR9dMa5AJNARKoTVSTgzOytjKQ_G5xTvNk"
     },
     {
       "distribution": "pycparser",
@@ -172,7 +176,7 @@
     },
     {
       "distribution": "regex",
-      "digest": "p_tvU-Y7Jo7rIflODVYK6Ofs1tYa-jyADZOJHkx2Yp8"
+      "digest": "3fH8pstdXFRuuk_kkx5O_VJ58e1eujUYdeM8_Yq_eL4"
     },
     {
       "distribution": "requests",
@@ -200,7 +204,7 @@
     },
     {
       "distribution": "setuptools",
-      "digest": "Cv4aKsOg0LUgltxXZ4LNt5qvLubC6VCIHtk0VRKudgA"
+      "digest": "qv4d_xsDbcPeHYb54kjJ4otDF4WnvkPkmYjEoC86ACQ"
     },
     {
       "distribution": "soundfile",
@@ -212,7 +216,7 @@
     },
     {
       "distribution": "sympy",
-      "digest": "unXXZ7bY4cPcvJPL3_3zXa0akn3gcKzROZRPWIY24-w"
+      "digest": "GX89UOEWBcMV-VwX3oenAOz9Drkb34xfK6F7_ShSYZE"
     },
     {
       "distribution": "threadpoolctl",
@@ -224,11 +228,11 @@
     },
     {
       "distribution": "torch",
-      "digest": "v9Ou7WxllFjAuoTZtTPokG3xhY0GRTkwtackM12uSt4"
+      "digest": "cTK6I40p4xhe1liJ52ctr7kX07h-_qLrzY1-pHVlX0g"
     },
     {
       "distribution": "torchaudio",
-      "digest": "TQa1kNqYbvx3f3fefjY7wXlG7mFGLo11w_Pyhxqvc40"
+      "digest": "CMaMzxW1YNE_uF7JyXFg9vWduoYpA7GJgK3tI-i5XnE"
     },
     {
       "distribution": "tqdm",

@@ -3257,12 +3257,12 @@ mod tests {
         let path = root.path().join(WORKER_REQUIREMENTS_PATH);
         let original = fs::read_to_string(&path).expect("the copied declaration is readable");
         assert!(
-            original.contains("\"torch==2.6.0+cpu\""),
+            original.contains("\"torch==2.10.0+cpu\""),
             "the checked-in declaration is expected to pin torch exactly"
         );
         fs::write(
             &path,
-            original.replace("\"torch==2.6.0+cpu\"", "\"torch==2.13.0\""),
+            original.replace("\"torch==2.10.0+cpu\"", "\"torch==2.13.0\""),
         )
         .expect("the declaration is writable");
 
@@ -3281,7 +3281,7 @@ mod tests {
             &WorkerRequirementFault::LockedAtAnotherVersion {
                 distribution: "torch".to_owned(),
                 declared: "2.13.0".to_owned(),
-                locked: "2.6.0+cpu".to_owned(),
+                locked: "2.10.0+cpu".to_owned(),
             }
         );
     }
