@@ -84,18 +84,21 @@ not active calendar promises. Full-box performance must pass the unchanged targe
 acceptance.
 
 **2026-09-02 backend-uplift reforecast:** the governed backend moved from `torch==2.6.0+cpu` to
-`torch==2.10.0+cpu` with `setuptools` raised to `81.0.0`, closing nine of ten Dependabot alerts and
-moving the worker-bundle identity to
+`torch==2.10.0+cpu` with `setuptools` raised to `81.0.0`, remediating eight of ten Dependabot
+advisories and moving the worker-bundle identity to
 `d87aee58cc06d10dc0310c15225c60f9064bf2d17b53c3929bcdb803a98ca703`. **No calendar moves.** A
 same-machine A/B improved every performance measure by 7–14% and regressed none, but it did not lift
 either failed ADR-0002 measurement: the `<= 6.0` RTF outcome is decided by utterance length rather
 than by the backend — both versions fail on a 3-second utterance and both pass on a 14-second
 one — so a single RTF figure is not a schedule input unless the utterance length is stated beside
 it. `torch` is a speech-affecting worker input, so ADR-0002 §Expiry condition 2 is triggered and the
-waiver is re-earned rather than carried; the randomized listening review is outstanding and is what
-blocks that acceptance. M2 therefore remains conditionally three weeks and M3 eleven weeks after
-overall G0 closure, unchanged, and full-box performance qualification before G3 acceptance is
-untouched. Evidence:
+waiver is re-earned rather than carried; the randomized listening review was supplied on 2026-09-02
+and the requalification accepted the same day. M2 therefore remains conditionally three weeks and M3
+eleven weeks after overall G0 closure, unchanged, and full-box performance qualification before G3
+acceptance is untouched. Two advisories remain applicable to the installed versions —
+`GHSA-rrmf-rvhw-rf47` needs `torch 2.13.0` and `GHSA-h35f-9h28-mq5c` needs `setuptools 83.0.0`,
+which the documented `pkg_resources` runtime cap blocks — and both are carried as residual
+obligations owed before release candidate rather than as schedule inputs. Evidence:
 `evidence/gates/g0/e0-s3/e0-s3-g0-requalification-torch-2-10-0-v1.md`.
 
 ### 2.4 Capability matrix

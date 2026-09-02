@@ -1,12 +1,70 @@
 # E0-S3 / G0 — ADR-0002 requalification for the `torch 2.10.0` backend uplift
 
-Status: **Measurements complete; acceptance not granted.** This record supplies the mechanical
-half of ADR-0002 §Required evidence for the dependency uplift tracked in issue #69. It does not
-grant the waiver, and it is not a gate decision. The two items ADR-0002 requires that no script can
-produce — the randomized listening assessment and the schedule reforecast — are absent, and are
-named as such below.
+- Status: Accepted
+
+**Accepted 2026-09-02.** The ADR-0002 waiver is re-earned for the `torch 2.10.0` backend under the
+clarified §Expiry standard. §Acceptance basis records exactly what that rests on, and §Residual
+obligations records what it does not close.
+
+This record began as measurements without a decision. Both items it recorded as absent were
+subsequently supplied — the randomized listening assessment on 2026-09-02, and the schedule
+reforecast in `DELIVERY-PLAN.md` §2.3, which landed in the same commit as this record and was never
+in fact missing.
 
 Date: 2026-09-02. Machine: `reference-wsl2-d9d550f06b783405`, unchanged.
+
+## Acceptance basis
+
+ADR-0002 §Expiry, as clarified by its 2026-09-02 amendment, requires re-establishing every
+§Required evidence item a condition-2 change could have invalidated, and carrying forward what it
+cannot reach. Item by item, for a speech-affecting worker input:
+
+| Requirement | Evidence | Status |
+|---|---|---|
+| Single-worker RTF and 60-minute projection | §Performance | Re-established |
+| Ten-run fixed-seed determinism characterization | §Fixed-seed determinism — one decoded-PCM hash across ten takes, `c9e7cc161bc66c9d…` | Re-established |
+| Listener assessment | §Randomized listening assessment — 6 of 6 `accept`, completed sheet SHA-256 `28abd94cc6e81cbd8b914d0a368602e06505cc9fdd338c0b3edde227a11a71f1` | Re-established |
+| Worker-bundle and FFmpeg identities | §Identities | Re-established |
+| Environment integrity | §Environment integrity | Re-established |
+| Schedule reforecast | `DELIVERY-PLAN.md` §2.3, *2026-09-02 backend-uplift reforecast* | Supplied |
+| Source revisions, licences, permitted scope | Carried forward from the accepted G0 qualification | Unreached by this change |
+| Reference-machine inventory | `docs/operations/REFERENCE-ENVIRONMENT.md`, machine unchanged | Unreached |
+| Voice consent and checksum records | `rights-voice-owner-fallback-v2`, voice unchanged | Unreached |
+
+Three things are **not** required and were not performed:
+
+- **A blind listening of all ten fixed-seed takes.** ADR-0002's amendment separates deterministic
+  characterization from perceptual assessment. Where decoded-PCM evidence establishes the ten are
+  identical, listening to all ten adds nothing to the characterization — one is the same audio as
+  the other nine.
+- **Additional listening-script content.** The six-line committed fixture belongs to the listener
+  assessment and has no numerical relationship to the ten fixed-seed generations. The apparent
+  shortfall was a misreading of the pre-amendment table.
+- **Full-box performance qualification.** ADR-0002 §Expiry requires it before **G3**, regardless of
+  this change, and it is untouched by this acceptance.
+
+**No requirement was reduced and no historical conclusion was changed to reach this acceptance.**
+The ten-run characterization is still ten runs; the listener assessment is still the approved blind,
+checksum-bound procedure; G0's failed performance measurements stand exactly as measured, and the
+waiver remains a waiver.
+
+## Residual obligations
+
+**Two advisories remain applicable to the installed versions.** Determined from the advisories' own
+version ranges, which are the authority here — GitHub reports both as `fixed`, and that alert state
+does not override a range the installed version sits inside.
+
+| Advisory | Severity | Range | Installed | Disposition |
+|---|---|---|---|---|
+| `GHSA-rrmf-rvhw-rf47` | low | `<= 2.12.1`, needs `2.13.0` | `torch 2.10.0+cpu` | Open. `torch.jit`, `lstm_cell`, `pad_packed_sequence`, and `unpack_sequence` appear nowhere in `worker/` or `crates/`, so the affected paths are unreachable by this build. Raising to `2.13.0` pairs a `torchaudio` built against `torch 2.11` with a `torch` two minors newer, which is an unverified ABI bet on a bundle whose identity gates every cache entry |
+| `GHSA-h35f-9h28-mq5c` | medium | `< 83.0.0`, needs `83.0.0` | `setuptools 81.0.0` | Open, and blocked by the runtime cap §Dependency delta explains: `pkg_resources` was removed in `82.0.1` and `perth/perth_net/__init__.py` imports it at runtime |
+
+**Neither is gate-blocking here, and neither is closed by this acceptance.** ADR-0001 places
+dependency, advisory, and license checks at release and SBOM time;
+`docs/governance/ROUTING-TABLES.md` routes a security control or accepted vulnerability to a
+threat/risk record decided by the project owner **before release candidate**; and `deny.toml`
+covers Rust crates rather than the Python worker environment. Both therefore carry forward as
+obligations owed before release candidate, under E6-S2, and **must not be recorded as remediated**.
 
 ## Why this record exists
 
@@ -68,6 +126,15 @@ residual hazard is narrow and worth stating: the installed metadata is now inter
 so `pip check` complains, and **any dependency-resolving `pip install` into the qualified
 environment would try to restore `torch 2.6.0`.** Every command in §Restoring the environment passes
 `--no-deps`, which is what contains it. Correcting the declaration is a separate provenance task.
+
+**Two alerts read `fixed` while their installed versions remain in range.** Checked 2026-09-02
+against the advisories' own stated ranges rather than against the alert state: `torch 2.10.0+cpu`
+sits inside GHSA-rrmf-rvhw-rf47's `<= 2.12.1`, which needs `2.13.0`, and `setuptools 81.0.0` sits
+inside GHSA-h35f-9h28-mq5c's `< 83.0.0`, which needs `83.0.0` and is blocked by the cap explained
+below. GitHub nonetheless reports both as `fixed`, with no dismissal reason and the same timestamp
+as the eight genuine closures. **Eight of ten are remediated; two are bookkeeping.** An alert state
+is therefore not evidence of remediation here, and the counts in §Dependency delta are the versions
+compared against the ranges rather than the alert list.
 
 **`setuptools` is capped at `81.0.0`, not raised to current.** `pkg_resources` was removed in
 `82.0.1`, and `perth/perth_net/__init__.py` imports it at runtime; above the cap the backend fails
@@ -201,8 +268,12 @@ should gain that scope rather than be retracted.
 
 - ~~**Randomized listening assessment.**~~ **Supplied 2026-09-02.** See §Randomized listening
   assessment below. This was the item blocking acceptance; it no longer is.
-- **Schedule reforecast.** Still absent.
-- **The acceptance decision**, which is the owner's under §Acceptance.
+- ~~**Schedule reforecast.**~~ **Already supplied**, and this line was wrong when written.
+  `DELIVERY-PLAN.md` §2.3 carries the *2026-09-02 backend-uplift reforecast*, landed in the same
+  commit as this record. It records **no calendar moves**, holds M2 at three weeks and M3 at eleven
+  weeks after overall G0 closure, and leaves full-box performance qualification before G3 untouched.
+- **The acceptance decision**, which is the owner's under §Acceptance. This is now the only item
+  outstanding.
 - Full-box performance qualification, which §Expiry requires before G3 regardless of this change.
 
 ## Randomized listening assessment
