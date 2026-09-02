@@ -49,9 +49,13 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 EVIDENCE = REPO / "evidence"
 
-# Path and digest on one line, in either column order a table happens to use.
-# The `[^\n]*?` between them is what allows the `|` separators of a Markdown
-# table; anchoring to the line is what stops a match spanning two rows.
+# Path then digest on one line, which is the order every citation table in
+# `evidence/` uses. The `[^\n]*?` between them is what allows the `|`
+# separators of a Markdown table; anchoring to the line is what stops a match
+# spanning two rows. Accepting the reverse order too would mispair prose rather
+# than widen coverage: a cell reading "SHA-256 `<digest>` as
+# `docs/testing/TEST-DATA-MANIFEST.md` records" would bind the fixture's digest
+# to that document, which cites nothing here.
 CITATION = re.compile(
     r"`([A-Za-z0-9_./-]+\.(?:md|json|toml|lock|ndjson|py|rs))`[^\n]*?`([0-9a-f]{64})`"
 )
