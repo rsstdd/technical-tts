@@ -36,6 +36,7 @@ fn context() -> SynthesisContext {
         model_repository: "study-tts/deterministic-tone".to_owned(),
         model_revision: "v1".parse().expect("`v1` is a revision"),
         tokenizer_revision: "none".parse().expect("`none` is a revision"),
+        model_artifacts_hash: "4".repeat(64).parse().expect("a digest of fours parses"),
         language: "en".parse().expect("`en` is a well-formed language tag"),
         determinism_class: DeterminismClass::Reproducible,
         seed: 0,

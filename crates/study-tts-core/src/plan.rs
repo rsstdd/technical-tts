@@ -617,17 +617,28 @@ mod tests {
         // `E1-S3-INTERFACE-CHANGE-002` records the move, and supersedes the
         // `abd889db…` plan hash `E1-S3-INTERFACE-CHANGE-001` §Plan document
         // cites.
+        //
+        // All three moved together again at E1-S5, and this one is a cache-wide
+        // invalidation for two independent reasons rather than one.
+        // `SynthesisContext` gained `model_artifacts_hash`, so the key follows
+        // the model's bytes rather than the name of the acquisition they
+        // arrived under — issue #66 — and `SYNTHESIS_IDENTITY_VERSION` moved to
+        // `e1-s5-v1` because the input list changed, which is the lever that
+        // constant exists to be. `CACHE_SCHEMA_VERSION` moved to `3.0` in the
+        // same change, because `ArtifactProvenance` has to record the new input
+        // or an entry cannot recompute the key it is published under.
+        // `E1-S5-INTERFACE-CHANGE-002` records all of it.
         assert_eq!(
             first.plan_hash.as_str(),
-            "46bf2c57d31eb5cf337973c32ca0cd6ae1ee40bf5e51cfbe5fbd8fc18fff793e"
+            "e7d4a8c9de93cdb52a45e08f1667cf397453b6653363046411a61abb8fb666d1"
         );
         assert_eq!(
             first.segments[0].cache_key.as_str(),
-            "01ffb5593c2e0daac0a1ce08a1e4ea375cc56276e72446e684fffca9b0ae5a6c"
+            "05f1f5f546d723c8ccbf74922487f83e9479e5c4977928f8e396c85d05ba5e6e"
         );
         assert_eq!(
             first.segments[1].cache_key.as_str(),
-            "d4248913a9a39a2ec7efe89fb8b7f5573d47f54ad9a4b8340742d1af7f8c19ee"
+            "6aad0b954673dcc918b39aa75764a3f0a989aa069c0ca494e8973f0ecaaf3822"
         );
 
         assert_eq!(first.plan_hash, second.plan_hash);

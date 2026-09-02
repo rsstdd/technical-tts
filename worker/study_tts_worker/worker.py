@@ -476,6 +476,33 @@ def _voice_conditioning(voice_root: Path) -> dict[str, str]:
     return conditioning
 
 
+def _seed_generators(seed: int) -> None:
+    """Seeds every global generator a render draws from.
+
+    One function rather than three lines in two places, because the two places
+    have to agree: seeding at load and seeding per take are the same operation
+    at different times, and a generator added to one and forgotten in the other
+    would leave a lifetime whose first take was reproducible and whose second
+    was not.
+
+    NumPy's legacy global generator takes 32 bits, so the seed is reduced to
+    that width for it alone. Reducing it is deliberate rather than a bug to fix
+    later: the value is a coordinate, not an identity, and the identity that
+    reaches an ADR-0001 §12.5 synthesis key is the unreduced `seed` the Rust end
+    reads from the same launcher.
+
+    Imports here rather than at module scope for the reason
+    :func:`_load_backend` gives: these read the offline variables as they load.
+    Both call sites have already paid for the import by the time they call this.
+    """
+    import numpy
+    import torch
+
+    random.seed(seed)
+    numpy.random.seed(seed % (2**32))
+    torch.manual_seed(seed)
+
+
 def _load_backend(launcher: dict[str, Any], threads: int) -> _Backend:
     """Loads the model once, and every voice this root can speak with.
 
@@ -498,6 +525,7 @@ def _load_backend(launcher: dict[str, Any], threads: int) -> _Backend:
     # they load, and `main` applies those before serving any frame. An import at
     # module scope would read them before this process had set them.
     try:
+        import numpy
         import torch
         from chatterbox.tts import ChatterboxTTS, Conditionals
     except ImportError as error:
@@ -508,6 +536,16 @@ def _load_backend(launcher: dict[str, Any], threads: int) -> _Backend:
     # per-worker value.
     torch.set_num_threads(threads)
     torch.set_num_interop_threads(1)
+
+    # Seeded before the model is constructed, not only before each take.
+    # Constructing the model draws from the global generators -- the vocoder's
+    # noise among them -- so a process that seeded only per request would draw
+    # that once, unseeded, and carry it for its whole lifetime. Two workers
+    # given the same seed would then render the same request differently, which
+    # is a difference no cache key can see. `numpy` is unused here beyond this
+    # call, and is imported above so a missing one is the same single refusal
+    # every other backend import is.
+    _seed_generators(launcher["seed"])
 
     try:
         model = ChatterboxTTS.from_local(str(model_root / f"model-{model_revision}"), "cpu")
@@ -739,14 +777,11 @@ def _render(
     try:
         import numpy
         import soundfile
-        import torch
 
-        # Reset before every take, not once at load: generation advances the global
+        # Reset before every take as well as at load: generation advances the global
         # random state, so a second take under one seed would otherwise sample from
         # wherever the first one left off and the seed would describe only the first.
-        random.seed(parameters["seed"])
-        numpy.random.seed(parameters["seed"] % (2**32))
-        torch.manual_seed(parameters["seed"])
+        _seed_generators(parameters["seed"])
 
         # Set per request, not once at load: each request names its own voice, and a
         # model left conditioned on the previous one would render a voice the plan
@@ -828,13 +863,30 @@ def _capabilities(launcher: dict[str, Any], backend: _Backend | None) -> dict[st
         "sample_rate": CANONICAL_SAMPLE_RATE_HZ,
         "channels": CANONICAL_CHANNELS,
         "sample_format": CANONICAL_SAMPLE_FORMAT,
-        # Measured rather than assumed. E0-S3 rendered ten fixed-seed takes with
-        # identical decoded samples and then declined to generalise past "this
-        # environment and bounded run set"; ADR-0001 §12.5 says identical seeds
-        # do not guarantee identical output across dependency, platform, or
-        # execution changes. Claiming reproducibility here would put that claim
-        # into every cache key.
-        "deterministic_seed": False,
+        # Measured rather than assumed, and the measurement is on the reference
+        # machine rather than in this file. E0-S3 rendered ten fixed-seed takes
+        # with identical decoded samples and then declined to generalise past
+        # "this environment and bounded run set"; ADR-0001 §12.5 says identical
+        # seeds do not guarantee identical output across dependency, platform,
+        # or execution changes. Claiming reproducibility without evidence would
+        # put an unproven claim into every cache key.
+        #
+        # `True` since E1-S5. Two things had to happen, in this order.
+        # `_seed_generators` now runs before the model is constructed as well as
+        # before every take, which removed the one defect that made the answer
+        # *necessarily* False: the vocoder's noise used to be drawn once per
+        # process from an unseeded generator, so each lifetime was internally
+        # consistent and lifetimes disagreed with each other. That was a
+        # mechanism. Then
+        # `t5_e1_two_lifetimes_render_identical_audio_under_one_seed` measured
+        # it on the reference machine: two fresh lifetimes under seed 42
+        # produced byte-identical canonical WAVs over 92 160 frames, with zero
+        # of those frames differing by bit pattern.
+        #
+        # This value reaches `determinism_class` and therefore every synthesis
+        # key, so it is not a flag to toggle while investigating something. It
+        # returns to `False` only alongside a measurement showing why.
+        "deterministic_seed": True,
         "device": launcher["device"],
     }
 

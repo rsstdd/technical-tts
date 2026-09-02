@@ -7,6 +7,7 @@
 
 mod assembly;
 mod audio_edges;
+mod authoring;
 mod cache;
 mod cache_port;
 mod distinct_map;
@@ -39,6 +40,7 @@ pub use audio_edges::{
     ProvisionalCalibration, REQUIRED_EDGE_SILENCE_MS, SilenceThreshold, condition_edges,
     measure_edge_silence, samples_for,
 };
+pub use authoring::{SCAFFOLD_VOICE_PROFILE, scaffold_lesson};
 pub use cache::ValidatedCachedArtifact;
 pub use cache_port::{
     CACHE_PUBLICATION_CONTRACT_VERSION, CachePublisher, CacheResolveRequest,
@@ -56,7 +58,8 @@ pub use job_repository::{
     FileSystemJobRepository, JOB_STATE_CONTRACT_VERSION, JobOwnership, JobRepository,
 };
 pub use model_gate::{
-    DECLARED_MODEL_ARTIFACTS, DeclaredArtifact, PINNED_MODEL_REVISION, verify_model_artifacts,
+    DECLARED_MODEL_ARTIFACTS, DeclaredArtifact, PINNED_MODEL_REVISION, ProvenModel,
+    model_artifacts_hash, verify_model_artifacts,
 };
 pub use package_port::{
     FileSystemPackageWriter, PACKAGE_WRITER_CONTRACT_VERSION, PackagePreflightRequest,
@@ -65,7 +68,7 @@ pub use package_port::{
 };
 pub use pipeline::{
     BuildRequest, BuildResult, PreviewServiceBundle, build_preview, build_preview_with_services,
-    publish, validate_m4a_output, validate_production_manifest,
+    load_lesson, publish, validate_m4a_output, validate_production_manifest,
 };
 pub use schemas::{
     JOB_SCHEMA_VERSION, MANIFEST_SCHEMA_VERSION, PUBLISHED_SCHEMAS, PublishedSchema,
@@ -85,8 +88,8 @@ pub use worker_bundle::{
 };
 pub use worker_environment::WORKER_INTERPRETER_PATH;
 pub use worker_executor::{
-    PROTOCOL_FAKE_BUNDLE_HASH, WORKER_INITIALIZE_DEADLINE, WORKER_REQUEST_DEADLINE,
-    WorkerConfiguration, WorkerTtsExecutor,
+    PROTOCOL_FAKE_BUNDLE_HASH, PROTOCOL_FAKE_MODEL_ARTIFACTS_HASH, WORKER_INITIALIZE_DEADLINE,
+    WORKER_REQUEST_DEADLINE, WorkerConfiguration, WorkerTtsExecutor,
 };
 pub use worker_launcher::{LAUNCHER_SCHEMA_VERSION, THREAD_ENVIRONMENT, WorkerLauncher};
 pub use worker_protocol::{

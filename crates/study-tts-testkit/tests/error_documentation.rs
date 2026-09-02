@@ -42,7 +42,7 @@ struct Contract {
     errors: &'static [(&'static str, &'static str)],
 }
 
-const CONTRACTS: [Contract; 3] = [
+const CONTRACTS: [Contract; 5] = [
     Contract {
         module: "crates/study-tts-runtime/src/pipeline.rs",
         item: "pub fn build_preview(",
@@ -67,6 +67,24 @@ const CONTRACTS: [Contract; 3] = [
                 "crates/study-tts-runtime/src/error/state.rs",
             ),
         ],
+    },
+    // The two E1-S5 authoring entry points, reached directly by `study-tts
+    // lesson validate` and `study-tts lesson new`, so `build_preview`'s prose
+    // does not describe either. `IoError` only, for the reason given above
+    // about `ValidatedLesson::from_json`: both delegate the lesson half of
+    // their contract to `AuthoredLesson::validate` by rustdoc link, and a
+    // `LessonError` row would demand a third copy of that list. What each one
+    // *does* have to state is which file operations it performs, and those are
+    // opposites — one only reads, the other only writes.
+    Contract {
+        module: "crates/study-tts-runtime/src/pipeline.rs",
+        item: "pub fn load_lesson(",
+        errors: &[("IoError", "crates/study-tts-runtime/src/error/io_error.rs")],
+    },
+    Contract {
+        module: "crates/study-tts-runtime/src/authoring.rs",
+        item: "pub fn scaffold_lesson(",
+        errors: &[("IoError", "crates/study-tts-runtime/src/error/io_error.rs")],
     },
     // The lesson boundary is documented separately because it is reached
     // directly: a caller holding an `AuthoredLesson` never passes through

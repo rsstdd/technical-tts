@@ -45,6 +45,15 @@ use study_tts_runtime::{
 /// runs while staying distinct from any real bundle's.
 pub const DETERMINISTIC_TONE_BUNDLE_HASH: &str = study_tts_runtime::PROTOCOL_FAKE_BUNDLE_HASH;
 
+/// Model identity the deterministic tone executor reports.
+///
+/// Defined as the runtime's constant rather than as a second copy of the
+/// literal, for the reason [`DETERMINISTIC_TONE_BUNDLE_HASH`] is: the fake and
+/// the executable protocol fake must report one identity, or a key derived
+/// through one would not match a key derived through the other.
+pub const DETERMINISTIC_TONE_MODEL_ARTIFACTS_HASH: &str =
+    study_tts_runtime::PROTOCOL_FAKE_MODEL_ARTIFACTS_HASH;
+
 /// The conditioning artifact a synthetic voice root holds for `profile_id`.
 ///
 /// The protocol fake has no voice directory to read, so it content-addresses an
@@ -160,6 +169,9 @@ impl TtsExecutor for FakeTtsExecutor {
                 .expect("the fake bundle hash is a well-formed digest"),
             model_repository: "study-tts/deterministic-tone".to_owned(),
             model_revision: "v1".parse().expect("`v1` is a revision"),
+            model_artifacts_hash: DETERMINISTIC_TONE_MODEL_ARTIFACTS_HASH
+                .parse()
+                .expect("the fake model identity is a well-formed digest"),
             tokenizer_revision: "none".parse().expect("`none` is a revision"),
             languages: BTreeSet::from([tone_language()]),
             determinism_class: DeterminismClass::Reproducible,

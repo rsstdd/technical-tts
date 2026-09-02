@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -390,7 +391,10 @@ class BackendRefusalTests(unittest.TestCase):
         frames = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual(frames[0]["capabilities"]["voices"], [])
         self.assertEqual(frames[0]["capabilities"]["styles"], [])
-        self.assertFalse(frames[0]["capabilities"]["deterministic_seed"])
+        # `True` since E1-S5, and measured rather than declared: see the
+        # capability's own comment in `worker.py`. Asserted here so the
+        # declaration cannot drift without a test saying so.
+        self.assertTrue(frames[0]["capabilities"]["deterministic_seed"])
 
 
 class OfflineEnvironmentTests(unittest.TestCase):
@@ -575,6 +579,120 @@ class LauncherShapeTests(unittest.TestCase):
             os.environ.clear()
             os.environ.update(before)
 
+
+
+class SeedOrdering(unittest.TestCase):
+    """Every generator is seeded before the model is constructed.
+
+    The property is an *ordering*, and nothing about the code's shape proves
+    one: seeding after `ChatterboxTTS.from_local` would look almost identical
+    and read the same launcher. What it would produce is a vocoder whose noise
+    was drawn once per process from an unseeded generator, so two workers given
+    the same seed would render the same request differently -- a difference no
+    ADR-0001 §12.5 cache key can see, because the key names the seed both
+    workers were given.
+
+    Torch, NumPy, and Chatterbox are replaced by recorders rather than
+    installed. This is the boundary, not the logic: what is under test is the
+    order in which this module calls them, which a recorder observes exactly and
+    a real backend would only make expensive.
+    """
+
+    def _load_with_recorders(self, seed: int) -> list[str]:
+        """Runs `_load_backend` against recording backends, returning the calls."""
+        calls: list[str] = []
+
+        class Recorder(types.ModuleType):
+            """A module whose every recorded call appends its own name."""
+
+            def __init__(self, name: str, **attributes: object) -> None:
+                super().__init__(name)
+                for attribute, value in attributes.items():
+                    setattr(self, attribute, value)
+
+        def record(label: str, result: object = None):
+            def called(*_arguments: object, **_keywords: object) -> object:
+                calls.append(label)
+                return result
+
+            return called
+
+        model = unittest.mock.Mock()
+        model.sr = worker_module.CANONICAL_SAMPLE_RATE_HZ
+        torch = Recorder(
+            "torch",
+            manual_seed=record("torch.manual_seed"),
+            set_num_threads=record("torch.set_num_threads"),
+            set_num_interop_threads=record("torch.set_num_interop_threads"),
+        )
+        numpy = Recorder("numpy", random=Recorder("numpy.random", seed=record("numpy.seed")))
+        chatterbox = Recorder("chatterbox")
+        chatterbox_tts = Recorder(
+            "chatterbox.tts",
+            ChatterboxTTS=Recorder("ChatterboxTTS", from_local=record("from_local", model)),
+            Conditionals=Recorder(
+                "Conditionals", load=record("Conditionals.load", unittest.mock.Mock())
+            ),
+        )
+
+        modules = {
+            "torch": torch,
+            "numpy": numpy,
+            "chatterbox": chatterbox,
+            "chatterbox.tts": chatterbox_tts,
+        }
+        # `random` is the standard library's, so it is patched rather than
+        # replaced: a recorder there would hide the module the worker really
+        # seeds.
+        with unittest.mock.patch.dict(sys.modules, modules), unittest.mock.patch.object(
+            worker_module.random, "seed", record("random.seed")
+        ), unittest.mock.patch.object(
+            worker_module, "_governed_root", lambda *_: Path("/nonexistent")
+        ), unittest.mock.patch.object(
+            worker_module, "_model_identities", lambda *_: ("rev", "codec")
+        ), unittest.mock.patch.object(
+            worker_module, "_voice_conditioning", lambda *_: {"owner-fallback-v1": "d" * 64}
+        ):
+            worker_module._load_backend({"seed": seed, "device": "cpu"}, threads=1)
+
+        return calls
+
+    def test_every_generator_is_seeded_before_the_model_is_constructed(self) -> None:
+        calls = self._load_with_recorders(seed=7)
+
+        self.assertIn("from_local", calls)
+        construction = calls.index("from_local")
+        for generator in ("random.seed", "numpy.seed", "torch.manual_seed"):
+            self.assertIn(generator, calls)
+            self.assertLess(
+                calls.index(generator),
+                construction,
+                f"{generator} must precede model construction, got {calls}",
+            )
+
+    def test_the_seed_a_lifetime_uses_is_the_one_its_launcher_records(self) -> None:
+        recorded: list[int] = []
+        with unittest.mock.patch.object(
+            worker_module, "_seed_generators", lambda seed: recorded.append(seed)
+        ), unittest.mock.patch.dict(
+            sys.modules,
+            {
+                "torch": unittest.mock.Mock(),
+                "numpy": unittest.mock.Mock(),
+                "chatterbox": unittest.mock.Mock(),
+                "chatterbox.tts": unittest.mock.Mock(),
+            },
+        ), unittest.mock.patch.object(
+            worker_module, "_governed_root", lambda *_: Path("/nonexistent")
+        ), unittest.mock.patch.object(
+            worker_module, "_model_identities", lambda *_: ("rev", "codec")
+        ), unittest.mock.patch.object(
+            worker_module, "_voice_conditioning", lambda *_: {"owner-fallback-v1": "d" * 64}
+        ):
+            with contextlib.suppress(worker_module.BackendUnavailable):
+                worker_module._load_backend({"seed": 4242, "device": "cpu"}, threads=1)
+
+        self.assertEqual(recorded, [4242])
 
 if __name__ == "__main__":
     unittest.main()

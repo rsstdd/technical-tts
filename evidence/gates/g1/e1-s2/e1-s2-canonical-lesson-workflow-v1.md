@@ -4,7 +4,7 @@
 - Candidate revision: working tree on `main` at the E1-S2 implementation
 - Accountable owner: Engineering owner
 - Approvers: Engineering owner and project owner
-- Status: Proposed
+- Status: Accepted
 
 ## Scope and decision
 
@@ -304,13 +304,11 @@ run repeatedly rather than once.
 
 None affecting this story's own criteria; all six are met.
 
-**This record itself stays `Proposed`, deliberately.** `evidence/README.md` §Accepting a record at
-its gate says a story keeps one record, "`Proposed` for as long as the work runs … and accepted
-once, at the gate it serves, against the bytes that gate actually approved. A version after that
-means a conclusion was wrong." E1-S2 serves G1, which has not run. Accepting it now would accept
-it against bytes G1 has not seen, and any later correction would have to arrive as a `-v2`
-carrying a signal — that a conclusion was wrong — which would not be true. It is accepted at G1,
-not here.
+**Before G1, this record stayed `Proposed`, deliberately.** `evidence/README.md` §Accepting a
+record at its gate says a story keeps one record, "`Proposed` for as long as the work runs … and
+accepted once, at the gate it serves, against the bytes that gate actually approved. A version
+after that means a conclusion was wrong." E1-S2 serves G1, so it was accepted once at that gate
+against the bytes G1 approved rather than earlier against an interim candidate.
 
 That is not the same question as the provenance reconciliation, which had to be accepted now:
 it grants a suppression that only takes effect while accepted, and it makes a claim about bytes
@@ -340,6 +338,6 @@ Run from the repository root on Ubuntu 24.04 under WSL2, with `ffmpeg` and `ffpr
 
 | Role | Name | Decision | Date |
 |---|---|---|---|
-| Contract owner (T-CORE) | | Pending | |
-| Engineering owner | | Pending | |
-| Project owner | | Pending | |
+| Contract owner (T-CORE) | Ross Todd for T-CORE | Accept the lesson `3.1` and plan `2.0` contract, including located refusals and required voice resolution; accept the explicit risk that an unused speaker declaration is neither resolved nor refused because no segment synthesizes from it | 2026-09-02 |
+| Engineering owner | Ross Todd | Accept the six criteria and verification above; accept the explicit risk that containment of the operator-supplied voice-profile root remains owned by E5-S4 | 2026-09-02 |
+| Project owner | Ross Todd | Accept the E1-S2 candidate as a whole at G1, including the recorded `UnusedSpeaker` omission and the limits that this story produces no audio and performs no listening review | 2026-09-02 |

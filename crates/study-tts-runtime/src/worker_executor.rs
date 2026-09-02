@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use study_tts_core::{
     CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, DeterminismClass,
-    LanguageTag, Revision, VoiceUse, WorkerBundleHash,
+    LanguageTag, ModelArtifactsHash, Revision, VoiceUse, WorkerBundleHash,
 };
 
 use crate::model_gate::verify_model_artifacts;
@@ -107,6 +107,13 @@ pub struct WorkerConfiguration {
     /// [`crate::verify_model_artifacts`] never hashed.
     /// [`WorkerTtsExecutor::start`] compares the two.
     model_revision: Revision,
+    /// Identity of the model bytes the gate proved for this launch.
+    ///
+    /// Carried beside the revision because the two are one fact about one
+    /// verified root, and because only this side has it: the worker reports a
+    /// revision it read from the acquisition record and has no way to answer
+    /// for the bytes. `verify_model_artifacts` is what proved them.
+    model_artifacts_hash: ModelArtifactsHash,
     /// Seed the backend samples with.
     seed: u64,
     /// Backend generation parameters, by name, in their configured spelling.
@@ -198,7 +205,7 @@ impl WorkerConfiguration {
         // weights, so ADR-0001 §12.5's key described a claim rather than the
         // bytes that produced the audio. Issue #66, and the model half of the
         // 2026-08-31 audit's sixth finding.
-        let model_revision = verify_model_artifacts(model_root)?;
+        let proven = verify_model_artifacts(model_root)?;
         // And every voice the worker will hold before any of them is read as an
         // object. `initialize` walks the whole governed root and deserializes
         // each `conditionals.pt`, so gating only the profile a request names
@@ -238,7 +245,8 @@ impl WorkerConfiguration {
             threads: launcher.threads,
             worker_bundle_hash,
             model_repository: launcher.model_repository.clone(),
-            model_revision,
+            model_revision: proven.revision,
+            model_artifacts_hash: proven.artifacts_hash,
             seed: launcher.seed,
             generation_parameters: launcher.generation_parameters.clone(),
             initialize_deadline: WORKER_INITIALIZE_DEADLINE,
@@ -319,6 +327,13 @@ impl WorkerConfiguration {
             model_revision: "v1"
                 .parse()
                 .expect("the protocol fake's revision is well formed"),
+            // A fixed well-formed digest rather than a derivation, on the same
+            // terms as the revision above: there are no weights to prove, and a
+            // constant keeps the fake's keys stable across runs while staying
+            // distinct from any real model root's.
+            model_artifacts_hash: PROTOCOL_FAKE_MODEL_ARTIFACTS_HASH
+                .parse()
+                .expect("the protocol fake's model identity is a well-formed digest"),
             seed: 0,
             generation_parameters: BTreeMap::new(),
             initialize_deadline: deadline,
@@ -356,6 +371,17 @@ fn render_declared(declared: &BTreeSet<String>) -> String {
 /// drift apart.
 pub const PROTOCOL_FAKE_BUNDLE_HASH: &str =
     "0000000000000000000000000000000000000000000000000000000000000001";
+
+/// The model identity [`WorkerConfiguration::for_protocol_fake`] reports.
+///
+/// A constant for the reason [`PROTOCOL_FAKE_BUNDLE_HASH`] is one, and distinct
+/// from it so a key derived under the fake names two different synthetic
+/// identities rather than one repeated. The fake loads no weights, so there is
+/// nothing for `verify_model_artifacts` to prove and nothing this could be
+/// derived from; what matters is that it is fixed, well formed, and reachable
+/// by no real model root.
+pub const PROTOCOL_FAKE_MODEL_ARTIFACTS_HASH: &str =
+    "0000000000000000000000000000000000000000000000000000000000000002";
 
 /// Resolves `root` so it still names the same directory from another
 /// working directory.
@@ -536,6 +562,11 @@ impl WorkerTtsExecutor {
                 model_repository: configuration.model_repository.clone(),
                 model_revision: identities.model_revision,
                 tokenizer_revision: identities.tokenizer_revision,
+                // From the configuration, not from `identities`: the worker
+                // answers for the revision it read and cannot answer for the
+                // bytes. This is the value the gate proved for the root this
+                // worker was launched against.
+                model_artifacts_hash: configuration.model_artifacts_hash.clone(),
                 languages,
                 determinism_class: if capabilities.deterministic_seed {
                     DeterminismClass::Reproducible

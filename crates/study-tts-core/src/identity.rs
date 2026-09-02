@@ -36,10 +36,13 @@ use crate::{
 /// below changes. It moved from `e0-s0-v1` when E1-S1 replaced the six-field
 /// walking-skeleton identity with the complete ADR-0001 §12.5 input set, and
 /// again when E1-S2 resolved voice references so `voice_conditioning_hash`
-/// stopped serializing as absent for every speaker. The reasoning is recorded
-/// in `docs/architecture/E1-S1-INTERFACE-CHANGE-001.md` and
-/// `docs/architecture/E1-S2-INTERFACE-CHANGE-001.md`.
-pub const SYNTHESIS_IDENTITY_VERSION: &str = "e1-s2-v1";
+/// stopped serializing as absent for every speaker, and again at E1-S5 when
+/// [`SynthesisContext::model_artifacts_hash`] made the key follow the model's
+/// bytes rather than the name of the acquisition they arrived under. The
+/// reasoning is recorded in `docs/architecture/E1-S1-INTERFACE-CHANGE-001.md`,
+/// `docs/architecture/E1-S2-INTERFACE-CHANGE-001.md`, and
+/// `docs/architecture/E1-S5-INTERFACE-CHANGE-002.md`.
+pub const SYNTHESIS_IDENTITY_VERSION: &str = "e1-s5-v1";
 
 /// Version of the cache-entry record format.
 ///
@@ -49,7 +52,13 @@ pub const SYNTHESIS_IDENTITY_VERSION: &str = "e1-s2-v1";
 /// than in the cache because `study-tts-runtime` reads it as an identity input
 /// and a second copy could drift; `crates/study-tts-runtime/src/cache.rs`
 /// imports this constant and names this module in return.
-pub const CACHE_SCHEMA_VERSION: &str = "2.0";
+///
+/// `3.0` since E1-S5: `ArtifactProvenance` gained a required
+/// `model_artifacts_hash`, without which a record cannot recompute the key its
+/// entry is published under. A required field is a **Breaking contract** move
+/// under `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` §Change
+/// classes, so the major increments.
+pub const CACHE_SCHEMA_VERSION: &str = "3.0";
 
 /// Whether a backend reproduces bytes for a fixed seed.
 ///
@@ -120,6 +129,51 @@ json_schema_as_string!(
     "WorkerBundleHash",
     "BLAKE3 over the worker bundle's declared inputs and runtime ABI \
      (ADR-0001 12.5), as 64 lowercase hexadecimal characters.",
+    pattern = crate::digest::BLAKE3_HEX_PATTERN,
+);
+
+/// The identity of the model bytes a build proved before it started a worker.
+///
+/// A value object rather than a `String` for the reason [`WorkerBundleHash`] is
+/// one. `study-tts-runtime` derives it from the artifact digests its model gate
+/// is pinned to; this crate only accepts it.
+///
+/// **Why the key needs this as well as [`SynthesisContext::model_revision`].**
+/// The revision names an *acquisition*; this names its *bytes*. They move
+/// together whenever a new revision is qualified, so in ordinary use one is
+/// redundant. They come apart in exactly one case: a commit that edits the
+/// pinned artifact digests without moving the revision string. Before this
+/// field the key stood still across such a change, and audio rendered from the
+/// old weights was reused for the new ones. Issue #66 is that defect.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ModelArtifactsHash(String);
+
+impl ModelArtifactsHash {
+    /// The hash as it is written into an identity and a manifest.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+blake3_newtype!(ModelArtifactsHash, MalformedModelArtifactsHash);
+
+/// Remedy routing: the hash is derived mechanically from the artifact digests
+/// the model gate is pinned to, so the message names recomputing it rather than
+/// editing the recorded value.
+#[derive(Debug, Error)]
+#[error(
+    "model artifacts hash `{0}` is not a BLAKE3 digest in lowercase hexadecimal; it is derived \
+     mechanically from the artifact digests `study-tts-runtime`'s model gate is pinned to; \
+     recompute it from those rather than editing the recorded value"
+)]
+pub struct MalformedModelArtifactsHash(String);
+
+json_schema_as_string!(
+    ModelArtifactsHash,
+    "ModelArtifactsHash",
+    "BLAKE3 over the pinned model artifact digests a build proved before \
+     starting a worker, as 64 lowercase hexadecimal characters.",
     pattern = crate::digest::BLAKE3_HEX_PATTERN,
 );
 
@@ -278,6 +332,12 @@ pub struct SynthesisContext {
     /// the same consequence: different tokenizer bytes under one key is audio
     /// the key does not describe.
     pub tokenizer_revision: Revision,
+    /// Identity of the model bytes this build proved before starting a worker.
+    ///
+    /// Sits beside `model_revision` rather than replacing it: see
+    /// [`ModelArtifactsHash`] for the one case in which the two come apart,
+    /// which is the case this field exists for.
+    pub model_artifacts_hash: ModelArtifactsHash,
     /// Spoken language of the lesson, checked and case-normalized.
     ///
     /// A [`LanguageTag`] rather than a `String` because it reaches the key:
@@ -427,6 +487,10 @@ fn segment_digest(
             "tokenizer_revision",
             context.tokenizer_revision.as_str().into(),
         ),
+        (
+            "model_artifacts_hash",
+            context.model_artifacts_hash.as_str().into(),
+        ),
         // Still optional, though `RenderPlan::for_lesson` refuses to derive a
         // key without it: `key_for` recomputes an *executor's* reported
         // identity, and a report that dropped the artifact must produce a key
@@ -477,6 +541,7 @@ pub(crate) fn sample_context() -> SynthesisContext {
         model_repository: "example/standard-chatterbox".to_owned(),
         model_revision: revision("0123456789abcdef0123456789abcdef01234567"),
         tokenizer_revision: revision("tokenizer-2026-01"),
+        model_artifacts_hash: "4".repeat(64).parse().expect("a digest of fours parses"),
         language: "en".parse().expect("`en` is a well-formed language tag"),
         determinism_class: DeterminismClass::SeededNondeterministic,
         seed: 42,
@@ -592,6 +657,7 @@ mod tests {
             model_repository: _,
             model_revision: _,
             tokenizer_revision: _,
+            model_artifacts_hash: _,
             language: _,
             determinism_class: _,
             seed: _,
@@ -614,7 +680,7 @@ mod tests {
         let baseline = synthesis_digest(&sample_context(), &sample_segment(), BASE_TAKE);
 
         // ADR-0001 §12.5 synthesis-key inputs that come from the environment.
-        let context_inputs: [ContextMutation; 9] = [
+        let context_inputs: [ContextMutation; 10] = [
             ("worker_bundle_hash", |context| {
                 context.worker_bundle_hash =
                     "9".repeat(64).parse().expect("a digest of nines parses");
@@ -627,6 +693,15 @@ mod tests {
             }),
             ("tokenizer_revision", |context| {
                 context.tokenizer_revision = revision("tokenizer-2026-02");
+            }),
+            // The input issue #66 exists for. Moved without touching
+            // `model_revision`, which is the one case the two come apart in:
+            // a commit editing the pinned artifact digests and leaving the
+            // revision string alone. Before this field the key stood still
+            // across exactly that change.
+            ("model_artifacts_hash", |context| {
+                context.model_artifacts_hash =
+                    "5".repeat(64).parse().expect("a digest of fives parses");
             }),
             ("language", |context| {
                 context.language = "de".parse().expect("`de` is a well-formed language tag");

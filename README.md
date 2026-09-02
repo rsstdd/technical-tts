@@ -5,7 +5,7 @@
 The project targets software-engineering education, technical interview preparation, and repeated listening. It uses Rust for every durable decision, Chatterbox for speech synthesis, an in-process Whisper verifier for post-render text-integrity triage, and FFmpeg for final audio processing.
 
 > [!IMPORTANT]
-> This repository contains the tested E0-S0 walking skeleton and the E1-S1 contract baseline. It uses a deterministic tone synthesizer, not Chatterbox, to exercise lesson loading, planning, validated WAV caching, Rust PCM assembly, real FFmpeg M4A and MP3 export, and a private-preview package manifest. On top of that E1-S1 added the published versioned schemas, the synthesis and verification identities, the worker-bundle identity, and the locked Python worker environment, and E1-S4 completed the minimal package: both lossy exports derived independently from the master, a transcript, WebVTT captions and FFMETADATA chapters derived from the written sample boundaries, and a checksum for every artifact. The Chatterbox worker, hardened recovery, loudness normalization, and the product CLI are not implemented. Planned commands and behavior remain architectural intent rather than completed functionality.
+> This repository contains the tested E0-S0 walking skeleton and the E1-S1 contract baseline. The E0-S0 walking-skeleton tests use a deterministic tone synthesizer, not Chatterbox, to exercise lesson loading, planning, validated WAV caching, Rust PCM assembly, real FFmpeg M4A and MP3 export, and a private-preview package manifest. On top of that E1-S1 added the published versioned schemas, the synthesis and verification identities, the worker-bundle identity, and the locked Python worker environment, E1-S3 shipped the worker that loads Chatterbox, and E1-S4 completed the minimal package: both lossy exports derived independently from the master, a transcript, WebVTT captions and FFMETADATA chapters derived from the written sample boundaries, and a checksum for every artifact. E1-S5 then added the two authoring commands — `study-tts lesson new` and `study-tts lesson validate` — which are the whole of the product CLI that exists. Hardened recovery, loudness normalization, and every other command are not implemented. Planned commands and behavior remain architectural intent rather than completed functionality.
 
 ## Goals
 
@@ -27,9 +27,9 @@ The priority order is technical correctness, comfortable listening, retention va
 | Delivery backlog | Approved in [DELIVERY-PLAN.md](DELIVERY-PLAN.md) |
 | Rust workspace | Four-crate workspace with a tested end-to-end skeleton and the E1-S1 contract baseline |
 | Model and voice qualification | E0-S2 rights prerequisites and E0-S3 qualification complete; full-box performance qualification remains required before G3 |
-| Chatterbox worker | Single-worker synthesis lands in E1-S3: the shipped worker loads Chatterbox once per lifetime, renders offline into an assigned staging root, and reports its four identities. Five reference-machine criteria pass and a human listening review is recorded; the story record is `Proposed` until G1 |
+| Chatterbox worker | Single-worker synthesis lands in E1-S3: the shipped worker loads Chatterbox once per lifetime, renders offline into an assigned staging root, and reports its four identities. Five reference-machine criteria pass and a human listening review is recorded; the story record was accepted 2026-09-02 |
 | ASR verifier | Not started |
-| CLI | Product commands not implemented |
+| CLI | Two authoring commands implemented at E1-S5: `study-tts lesson new` scaffolds a lesson that already validates, and `study-tts lesson validate` checks one through the same `load_lesson` a render uses. Every other command below remains architectural intent. See [`docs/operations/AUTHORING.md`](docs/operations/AUTHORING.md) |
 | Schemas and fixtures | Seven published versioned schemas under `schemas/`, generated from the Rust types and checked against the checked-in files; skeleton, contract, and deterministic-audio fixtures present |
 | Identities | Canonical serialization and the BLAKE3 synthesis and verification identities implemented; the worker-bundle identity is derived mechanically, with the environment precondition [ADR-0001-D006](docs/adr/deviations/ADR-0001-D006-worker-environment-lock-verification-cost.md) carries forward from D004 |
 | Continuous integration | Fast offline pull-request checks with tier-duration reporting, separated from a dispatch-only reference-machine qualification workflow |
@@ -173,14 +173,26 @@ cargo test --offline -p study-tts-testkit --test walking_skeleton --locked
 
 These commands validate the Rust boundaries and the fake-worker audio path. They do not install Chatterbox, download model weights, or qualify natural speech.
 
-## Planned CLI
+## CLI
+
+Implemented today, and nothing else:
+
+```bash
+study-tts lesson new <lesson-id> --out lesson.json
+study-tts lesson validate lesson.json
+```
+
+[`docs/operations/AUTHORING.md`](docs/operations/AUTHORING.md) documents the scaffold, edit,
+review, validate, preview loop they open, including how to hear a lesson while no product render
+command exists.
+
+### Planned
 
 The following interface is architectural intent and is not implemented yet:
 
 ```bash
 study-tts doctor
 study-tts lesson compile source.md --out lesson.json
-study-tts lesson validate lesson.json
 study-tts render lesson.json --format m4a
 study-tts resume <job-id>
 study-tts inspect <job-id>

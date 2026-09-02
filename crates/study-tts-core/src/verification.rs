@@ -644,6 +644,10 @@ mod tests {
             model_repository: _,
             model_revision: _,
             tokenizer_revision: _,
+            // Synthesis-side: it identifies the weights that produced the
+            // audio. Nothing here re-runs when ASR changes, so the two lists
+            // stay disjoint.
+            model_artifacts_hash: _,
             language: _,
             determinism_class: _,
             seed: _,

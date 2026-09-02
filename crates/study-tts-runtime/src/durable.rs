@@ -8,6 +8,7 @@
 
 use std::{
     fs::{self, File},
+    io::Write,
     path::Path,
 };
 
@@ -181,6 +182,54 @@ pub(crate) fn write_json_atomically<T: Serialize>(
     filesystem.sync_directory(parent)
 }
 
+/// Writes bytes through file sync and an atomic rename that claims an unused
+/// name.
+///
+/// The caller receives the outcome rather than an error for a taken
+/// destination, because only the caller knows whether losing the race is a
+/// refusal or a no-op. `study-tts lesson new` treats it as a refusal;
+/// [`crate::authoring::scaffold_lesson`] is the sentence that says so.
+///
+/// Bytes rather than a `Serialize` value, unlike [`write_json_atomically`], so
+/// a caller can validate the exact bytes it is about to publish. Serializing
+/// twice would leave the document that was checked and the document that was
+/// written as two artifacts nothing holds together.
+///
+/// # Errors
+///
+/// [`ManagedPathError::UnrootedDestination`] when `destination` has no parent,
+/// or [`IoError::FileSystem`] when staging, writing, synchronization, or the
+/// rename fails.
+pub(crate) fn write_bytes_noreplace(
+    filesystem: &dyn DurableFileSystem,
+    destination: &Path,
+    bytes: &[u8],
+) -> Result<RenameOutcome, BuildError> {
+    let parent = parent_of(destination)?;
+    // The published mode comes from the staged temporary, which `tempfile`
+    // creates `0600`, and the rename carries it to the destination.
+    // `t4_e1_a_scaffold_is_published_owner_readable_only` is what holds it, so
+    // a change to plain creation here fails rather than quietly widening the
+    // mode on a file holding an author's own work.
+    let mut staged = Builder::new()
+        .prefix("authored-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .map_err(|error| io_error(parent, error))?;
+    staged
+        .as_file_mut()
+        .write_all(bytes)
+        .map_err(|error| io_error(destination, error))?;
+    filesystem.sync_file(staged.path())?;
+    let staged_path = staged.into_temp_path();
+
+    let outcome = filesystem.rename_noreplace(&staged_path, destination)?;
+    if outcome == RenameOutcome::Published {
+        filesystem.sync_directory(parent)?;
+    }
+    Ok(outcome)
+}
+
 /// Synchronizes a complete staged directory before its publication rename.
 ///
 /// # Errors
@@ -217,13 +266,21 @@ pub(crate) fn publish_directory_noreplace(
     Ok(outcome)
 }
 
+/// The directory a destination is staged in.
+///
+/// `Path::parent` answers an empty path for a bare file name, which names the
+/// current directory rather than a missing one. Staging into `""` fails with
+/// `ENOENT`, so without this an author writing `--out lesson.json` would be
+/// refused a destination that is perfectly writable.
 fn parent_of(path: &Path) -> Result<&Path, BuildError> {
-    path.parent().ok_or_else(|| {
-        ManagedPathError::UnrootedDestination {
+    match path.parent() {
+        Some(parent) if parent.as_os_str().is_empty() => Ok(Path::new(".")),
+        Some(parent) => Ok(parent),
+        None => Err(ManagedPathError::UnrootedDestination {
             path: path.to_path_buf(),
         }
-        .into()
-    })
+        .into()),
+    }
 }
 
 #[cfg(test)]
@@ -240,6 +297,11 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct FailingReplacementFileSystem {
+        inner: OsDurableFileSystem,
+    }
+
+    #[derive(Debug, Default)]
+    struct FailingRenameFileSystem {
         inner: OsDurableFileSystem,
     }
 
@@ -265,6 +327,31 @@ mod tests {
                 destination,
                 std::io::Error::other("injected replacement interruption"),
             ))
+        }
+    }
+
+    impl DurableFileSystem for FailingRenameFileSystem {
+        fn sync_file(&self, path: &Path) -> Result<(), BuildError> {
+            self.inner.sync_file(path)
+        }
+
+        fn sync_directory(&self, path: &Path) -> Result<(), BuildError> {
+            self.inner.sync_directory(path)
+        }
+
+        fn rename_noreplace(
+            &self,
+            _staged: &Path,
+            destination: &Path,
+        ) -> Result<RenameOutcome, BuildError> {
+            Err(io_error(
+                destination,
+                std::io::Error::other("injected rename interruption"),
+            ))
+        }
+
+        fn replace_file(&self, staged: &Path, destination: &Path) -> Result<(), BuildError> {
+            self.inner.replace_file(staged, destination)
         }
     }
 
@@ -307,6 +394,119 @@ mod tests {
         assert_eq!(events[2], format!("directory:{}", staged.display()));
         assert_eq!(events[3], format!("rename:{}", destination.display()));
         assert_eq!(events[4], format!("directory:{}", root.path().display()));
+    }
+
+    #[test]
+    fn t4_e1_durable_byte_publication_flushes_file_then_rename_then_parent() {
+        let root = TempDir::new().expect("create durable workspace");
+        let destination = root.path().join("lesson.json");
+        let filesystem = TracingFileSystem::default();
+
+        let outcome = write_bytes_noreplace(&filesystem, &destination, b"authored")
+            .expect("publish durable bytes");
+
+        assert_eq!(outcome, RenameOutcome::Published);
+        let events = filesystem.events.lock().expect("trace lock");
+        assert_eq!(events.len(), 3);
+        assert!(events[0].starts_with("file:"));
+        assert_eq!(events[1], format!("rename:{}", destination.display()));
+        assert_eq!(events[2], format!("directory:{}", root.path().display()));
+    }
+
+    #[test]
+    fn t4_e1_a_taken_destination_keeps_its_bytes_and_leaves_no_staged_file() {
+        let root = TempDir::new().expect("create durable workspace");
+        let destination = root.path().join("lesson.json");
+        fs::write(&destination, b"the author's own bytes").expect("write prior document");
+        let filesystem = TracingFileSystem::default();
+
+        let outcome = write_bytes_noreplace(&filesystem, &destination, b"replacement")
+            .expect("a taken destination is an outcome, not an error");
+
+        assert_eq!(outcome, RenameOutcome::DestinationExists);
+        assert_eq!(
+            fs::read(&destination).expect("read prior document"),
+            b"the author's own bytes"
+        );
+        assert_eq!(
+            fs::read_dir(root.path())
+                .expect("read durable workspace")
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>(),
+            [destination],
+            "a refused publication leaves no staged sibling behind"
+        );
+        // The parent is not synchronized, because nothing about it changed.
+        let events = filesystem.events.lock().expect("trace lock");
+        assert_eq!(events.len(), 2);
+        assert!(events[0].starts_with("file:"));
+        assert!(events[1].starts_with("rename:"));
+    }
+
+    #[test]
+    fn t4_e1_a_failed_byte_publication_leaves_no_destination_or_staged_file() {
+        let root = TempDir::new().expect("create durable workspace");
+        let destination = root.path().join("lesson.json");
+
+        let error = write_bytes_noreplace(
+            &FailingRenameFileSystem::default(),
+            &destination,
+            b"authored",
+        )
+        .expect_err("injected rename must fail");
+
+        let BuildError::Io(IoError::FileSystem { path, source }) = error else {
+            panic!("rename failure used the wrong error class: {error}");
+        };
+        assert_eq!(path, destination);
+        assert_eq!(source.kind(), std::io::ErrorKind::Other);
+        assert!(
+            !destination.exists(),
+            "a failed rename created its destination"
+        );
+        let staged = fs::read_dir(root.path())
+            .expect("read durable workspace")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .filter(|name| {
+                let name = name.to_string_lossy();
+                name.starts_with("authored-") && name.ends_with(".tmp")
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            staged.is_empty(),
+            "a failed rename left a staged sibling behind"
+        );
+    }
+
+    /// A bare file name resolves to the current directory, not to `""`.
+    ///
+    /// The one case no caller inside a workspace root can reach, and the one
+    /// an author typing `--out lesson.json` reaches first: `tempfile_in("")`
+    /// fails with `ENOENT`, so before this the refusal named a destination that
+    /// was perfectly writable. Asserted on `parent_of` rather than by
+    /// publishing a relative path, because the current directory is
+    /// process-wide state and these tests run concurrently.
+    #[test]
+    fn t1_e1_a_destination_with_no_directory_component_stages_in_the_current_directory() {
+        assert_eq!(
+            parent_of(Path::new("lesson.json")).expect("a bare file name has somewhere to stage"),
+            Path::new("."),
+        );
+        assert_eq!(
+            parent_of(Path::new("lessons/lesson.json")).expect("a relative path keeps its parent"),
+            Path::new("lessons"),
+        );
+        assert!(
+            matches!(
+                parent_of(Path::new("/")),
+                Err(BuildError::ManagedPath(
+                    ManagedPathError::UnrootedDestination { .. }
+                ))
+            ),
+            "a path with no parent at all is still refused"
+        );
     }
 
     #[test]

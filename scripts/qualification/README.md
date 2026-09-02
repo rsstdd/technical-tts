@@ -196,3 +196,122 @@ instrument refuses an `--output-root` that exists.
 **Retake the review whenever the audio changes**, not only when the text does.
 `ADR-0001-D007`'s edge conditioning pads and ramps every segment, so a build
 that changes it produces different samples from the same script.
+
+## Requalifying after the seeding change
+
+`worker/study_tts_worker/worker.py` now seeds `random`, NumPy, and Torch before
+`ChatterboxTTS.from_local` as well as before every take.
+`docs/architecture/E1-S3-INTERFACE-CHANGE-004.md` records why, and what it costs:
+`worker.py` is a declared bundle input, so **the worker bundle identity moved,
+and every synthesis key and plan hash moved with it**. Nothing above is still
+current. This section is the run that makes it current again.
+
+Four steps, in this order. Each one's output is the next one's input, and the
+last is the only one a person can do.
+
+### 1. Requalify the worker session, and record the new identity
+
+The same instrument, unchanged in how it is invoked:
+
+```text
+cargo build --package study-tts-testkit --example worker-qualification
+
+unshare --user --map-root-user --net \
+  ./target/debug/examples/worker-qualification \
+    --bundle-root . \
+    --model-root <governed model root> \
+    --voice-root <governed voice root> \
+    --output-root <fresh directory>
+```
+
+It now reports **six** criteria rather than five, and
+`qualification-result.json` gains a `launcher_seed` field beside
+`worker_bundle_hash`. The identity it prints is the new one; copy the result
+file under `evidence/gates/g1/e1-s3/` and cite it by the SHA-256 the last line
+reports, exactly as before.
+
+The added criterion is
+`t5_e1_two_lifetimes_render_identical_audio_under_one_seed`. Like
+`t5_e1_worker_survives_restart_and_starts_offline` it is **not** one of the
+`DELIVERY-PLAN.md` names — that document is digest-pinned by accepted evidence,
+so a criterion name is not added to it here. It starts two more worker
+lifetimes, so budget two extra model loads on top of the restart criterion's
+two.
+
+**What it decides.** It renders one seeded request in two fresh lifetimes
+through `run_worker_restart_contract_scenario`, checks that both reported the
+same synthesis identity, and then compares the two canonical WAVs as bytes and
+as decoded samples. The verdict is byte equality, because that is what a cache
+entry is validated and addressed by. The sample comparison is reported rather
+than asserted, and it is there to tell you *which* defect you have: audio that
+differs is a sampler that is not reproducible, while identical audio in
+differing containers is a reproducible sampler and an artifact that is not. The
+observation says which in as many words.
+
+Its decision logic is covered at T1 by six tests in the example's own `tests`
+module, which is deliberate: the criterion can only run here, so nothing else
+would ever exercise the code deciding its verdict. The reference machine
+supplies the audio; those tests supply the arithmetic.
+
+**Only this criterion can turn `deterministic_seed` on.** The seeding change is
+a mechanism, not a measurement — it removed the one defect that made the answer
+necessarily `False`. If this criterion passes, the flip becomes available and
+moves the four call sites `E1-S3-INTERFACE-CHANGE-004.md` §Limits names,
+`determinism_class` among them, which moves every synthesis key again. Do not
+make that flip in the same run as this measurement.
+
+### 2. Re-render the three-segment package
+
+```text
+cargo run --package study-tts-testkit --example package-render -- \
+  --bundle-root . \
+  --model-root <governed model root> \
+  --voice-root <governed voice root> \
+  --lesson fixtures/lessons/e1-s4-three-segment.json \
+  --output-root <a second fresh directory>
+```
+
+The lesson is unchanged and committed; what changed is underneath it. Record
+the printed worker bundle identity, the package identity, and the seven
+per-artifact BLAKE3 digests.
+
+### 3. Take a fresh listening review
+
+**The E1-S4 listening record does not transfer, and this is not a formality.**
+That review was taken on 2026-09-02 against `lesson.mp3` at
+`bde064f729a82a63d3cc79e8367741f9d78f63562f7027e15c6ea80f9e6e8e77`, rendered
+under worker bundle
+`3e1f487cf259cd5b17bdeea16845c14426dbbded76f47732dd06b02198003747`. The seeded
+decoder noise is different audio, and every cache key naming it has moved. A
+disposition is a judgment about bytes; these are not those bytes.
+
+`evidence/gates/g1/e1-s4/e1-s4-minimal-package-generation-v1.md` is accepted and
+is **not** edited. What it attests stays true of the artifacts it names, which
+are now historical.
+
+Use `docs/templates/HUMAN-LISTENING-REVIEW-TEMPLATE.md`. This is the in-context
+package review — the whole lesson, in order — rather than the blinded take set
+`listening-render` and `check_listening_review.py` handle; that pair stays the
+route for comparing takes of one line.
+
+**Fix the criteria before listening.** The E1-S4 record states the reason about
+its own: criteria chosen after hearing the audio are criteria chosen to fit it.
+Write them down, then listen.
+
+**Record the playback environment, and let it bound the result.** The E1-S4
+review was taken on built-in laptop speakers, and its record says what that does
+and does not reach: `libmp3lame` artifacts at `128k` sit in the band small
+drivers reproduce least, so a clear result on those speakers records that
+nothing was audible on them. Joins, pause placement, and spoken-versus-written
+text carry on any speaker; level, tone, and encoder artifacts do not.
+
+Nobody who did not listen may enter the disposition.
+
+### 4. Open the E1-S5 evidence
+
+Not before step 3 closes. E1-S5's story evidence and the G1 gate record describe
+a build whose identities are the ones step 1 recorded and whose audio is the
+audio step 3 heard. An evidence record written earlier is stale the moment it is
+written, which is the ordering
+`docs/architecture/E1-S5-INTERFACE-CHANGE-001.md` §Limits states and this
+procedure exists to keep.

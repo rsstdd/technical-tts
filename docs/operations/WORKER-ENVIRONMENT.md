@@ -439,6 +439,33 @@ The checked-in `worker/bundle-manifest.json` does declare it, however, so its by
 the current bundle hash and the reconciliation runs. `REQUIRED_BUNDLE_INPUTS` is the mandatory
 floor; the manifest's `inputs` array is the complete set hashed for this bundle.
 
+**It recurred on 2026-09-02, and the guard caught it.** `13956ea` raised `worker/pyproject.toml` to
+`torch==2.13.0` and `setuptools==83.0.0` on `main` and again left `worker/requirements.lock`
+untouched, this time at `torch==2.10.0+cpu` and `setuptools==81.0.0`. This is the second occurrence
+of the shape described above and the first since the reconciliation existed, so it is worth
+recording what changed between them:
+
+- **The first went unnoticed until an audit.** It moved the worker-bundle identity silently, because
+  every check read the lock and the lock had not moved.
+- **The second failed loudly and immediately.** `LockedAtAnotherVersion { distribution: "torch",
+  declared: "2.13.0", locked: "2.10.0+cpu" }` refused the bundle, eleven `worker_environment` tests
+  went red on every merge into `main`, and the cause was in the refusal rather than to be found.
+
+Two further observations, because neither is obvious from the refusal alone:
+
+- **A manifest-only bump makes an advisory look remediated when nothing has been remediated.**
+  GitHub reported all ten Dependabot alerts `fixed` with no dismissal, because the *declaration*
+  named versions outside the advisory ranges. The lock, the restored environment, and every
+  qualification measurement stayed where they were. An alert state describes a manifest; only the
+  lock and the installed environment describe what runs.
+- **The proposed versions were unusable in both directions.** `setuptools 83.0.0` is blocked by the
+  `pkg_resources` runtime cap this document records, and `torch 2.13.0` is a worker-bundle identity
+  change needing the `torchaudio` ABI question answered, the lock regenerated, and a
+  requalification — none of which a manifest edit supplies.
+
+Reverted in `40e8c9b`, which touches the declaration alone and returns the identity to
+`d87aee58cc06d10dc0310c15225c60f9064bf2d17b53c3929bcdb803a98ca703` rather than creating a new one.
+
 ### Reading the current identity
 
 ```text

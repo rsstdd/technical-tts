@@ -5,6 +5,12 @@ edition = "2024"
 license.workspace = true
 rust-version.workspace = true
 
+# `study-tts` rather than the package name: the command an author types is the
+# published surface, and `DELIVERY-PLAN.md` E1-S5 names it that way.
+[[bin]]
+name = "study-tts"
+path = "src/main.rs"
+
 [lints]
 workspace = true
 
@@ -12,6 +18,15 @@ workspace = true
 # them lands, not in advance: an unused dependency is still audited,
 # licensed, and carried in Cargo.lock.
 #
-# This crate reports E1-S1 status until product commands land at E1-S5, so it
-# has no dependencies at all — not even the workspace crates.
+# E1-S5 is that story for `clap`, which ADR-0001 §7.2 names for "stable
+# subcommands and non-interactive use". The two workspace crates carry every
+# other decision: this binary parses arguments, calls two functions, and
+# formats refusals.
 [dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+study-tts-core = { version = "0.1.0", path = "../study-tts-core" }
+study-tts-runtime = { version = "0.1.0", path = "../study-tts-runtime" }
+
+[dev-dependencies]
+study-tts-testkit = { version = "0.1.0", path = "../study-tts-testkit" }
+tempfile = "3.27.0"
