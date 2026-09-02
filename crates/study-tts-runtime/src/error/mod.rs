@@ -317,9 +317,9 @@ mod tests {
     // How the document's Owner column spells each `RemedyOwner`. This half is
     // code's to state, because only the enum can say which prose it answers to.
     // A row owned by anybody else resolves to no variant and fails the refusal
-    // that claimed it: `Core`, `Verification`, and `Human-review owner` own rows
-    // no refusal routes to, and giving one of them advice is a decision that
-    // starts with a new variant here.
+    // that claimed it: `Core`, `Verification`, and `Human-review owner` own
+    // rows no refusal routes to, and giving one of them advice is a decision
+    // that starts with a new variant here.
     const OWNER_SPELLINGS: [(&str, RemedyOwner); 5] = [
         ("Project owner", RemedyOwner::ProjectOwner),
         ("Runtime", RemedyOwner::Runtime),
@@ -484,9 +484,9 @@ mod tests {
                 row: "Failed release gate",
                 action: "preserve the candidate and create a corrective gate issue",
             },
-            // No §Failure routing row describes a manifest claiming a status it
-            // did not earn. "Production publication" is a §Decision routing row,
-            // which names a decider rather than a remedy owner.
+            // No §Failure routing row describes a manifest claiming a status
+            // it did not earn. "Production publication" is a §Decision routing
+            // row, which names a decider rather than a remedy owner.
             PublicationError::Release(ReleaseError::PrivateProfileCannotClaimProduction)
             | PublicationError::MalformedProductionManifest { .. }
             | PublicationError::ManifestNotProductionRelease { .. } => Expected::Rowless {

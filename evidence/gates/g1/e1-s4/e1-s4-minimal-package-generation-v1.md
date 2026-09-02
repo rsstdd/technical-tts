@@ -9,8 +9,10 @@
 
 Opened at the story's implementation and accumulating findings until G1, per
 `evidence/README.md` §Accepting a record at its gate. It stays `Proposed`: the story's own
-acceptance is a G1 decision, and two of its preconditions are not met here — a real-Chatterbox
-three-segment package, and a human listening record for the MP3.
+acceptance is a G1 decision, and one of its preconditions is not met here — a human listening
+record for the MP3. The other, a real-Chatterbox three-segment package, was met on 2026-09-01 and
+is documented in §Listening material with its lesson, bundle identity, package identity, and
+per-artifact digests.
 
 ## Provenance
 
@@ -68,16 +70,16 @@ The T4 tier was timed separately with
 
 | Measurement | Threshold | Result | Pass/fail |
 |---|---:|---:|---|
-| Workspace tests | 0 failures | 419 passed, 0 failed | Pass |
+| Workspace tests | 0 failures | 426 passed, 0 failed | Pass |
 | Doc tests | 0 failures | 8 passed, 0 failed | Pass |
 | Clippy `-D warnings` | Clean | Clean | Pass |
 | `cargo fmt --check` | Clean | Clean | Pass |
-| Rust conventions | 0 violations | 0 violations in 77 files | Pass |
+| Rust conventions | 0 violations | 0 violations in 78 files | Pass |
 | Evidence provenance | 0 unaccounted mismatches | Clean | Pass |
 | Generated-schema drift | None | None; `manifest-v1.schema.json` regenerates byte-identical | Pass |
-| T4 tier wall time | 5 minutes | 13.0 s | Pass |
+| T4 tier wall time | 5 minutes | 12.3 s | Pass |
 | Whitespace (`git diff --check`) | Clean | Clean | Pass |
-| Caption boundary contract | Exact written boundaries | Millisecond floors; non-aligned frames differ | **Fail — acceptance open** |
+| Caption boundary contract | Exact written boundaries | Millisecond floors; non-aligned frames differ | **Fail as written; met as amended** under `ADR-0001-D010` |
 
 ### The named story tests
 
