@@ -167,8 +167,8 @@ Each take carries a large fixed cost that does not scale with the audio produced
 | `torch 2.10.0+cpu` | 7.68 s | 3.67 | 4.97 |
 
 **A single RTF number is not meaningful for this backend unless the utterance length is stated
-beside it**, and ADR-0002's table does not carry one on the RTF row. On a 3 second utterance both
-backends fail the gate; on a 14 second utterance both pass it; the `torch` uplift improves RTF by
+beside it**, and ADR-0002's table does not carry one on the RTF row. On a 3-second utterance both
+backends fail the gate; on a 14-second utterance both pass it; the `torch` uplift improves RTF by
 approximately 5–11% — 9.2% mean and 11.3% worst at the shorter length, and 6.0% mean and 5.1%
 worst at the roughly 14-second length — and decides the gate in neither direction.
 

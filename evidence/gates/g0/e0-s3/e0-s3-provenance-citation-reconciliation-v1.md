@@ -42,7 +42,7 @@ Recovered by hashing each cited path at the commit that first added the record c
 | Record | Cited input | Cited | Should have been |
 |---|---|---|---|
 | `e0-s3-g0-qualification-report-v1.md` | `DELIVERY-PLAN.md` | `8faf22a6d5a5…` | `add598619c5e…` |
-| `e0-s3-g0-qualification-report-v1.md` | `docs/adr/ADR-0002-…qualification.md` | `5bada66fe25c…` | `397dd2efa309…` |
+| `e0-s3-g0-qualification-report-v1.md` | `docs/adr/ADR-0002-model-hardware-voice-format-qualification.md` | `5bada66fe25c…` | `397dd2efa309…` |
 | `e0-s3-g0-qualification-report-v1.md` | `docs/operations/REFERENCE-ENVIRONMENT.md` | `09b88760258a…` | `a673a4b1570d…` |
 | `e0-s3-g0-qualification-report-v1.md` | `docs/testing/TEST-DATA-MANIFEST.md` | `56b2fa747a5b…` | `cc5836100651…` |
 | `e0-s3-g0-qualification-report-v1.md` | `scripts/qualification/chatterbox_spike.py` | `67153661bd41…` | `6f4c432f53cf…` |
@@ -53,7 +53,7 @@ Recovered by hashing each cited path at the commit that first added the record c
 | `e0-s3-audit-remediation-v2.md` | `scripts/qualification/tests/test_chatterbox_spike.py` | `37fe190bc7e8…` | `cad0a451115c…` |
 | `e0-s3-audit-remediation-v2.md` | `scripts/qualification/analyze_wav_variation.py` | `3ddff01a9012…` | `454be8ec3aec…` |
 | `e0-s3-audit-remediation-v2.md` | `scripts/qualification/tests/test_analyze_wav_variation.py` | `fe833de1174b…` | `4c7460523b5a…` |
-| `e0-s3-g0-qualification-decision-v3.md` | `evidence/…/e0-s3-audit-remediation-v2.md` | `bcda43efddca…` | `8d7ebbfe9a65…` |
+| `e0-s3-g0-qualification-decision-v3.md` | `evidence/gates/g0/e0-s3/e0-s3-audit-remediation-v2.md` | `bcda43efddca…` | `8d7ebbfe9a65…` |
 | `e0-s4-provisional-contract-baseline-v1.md` | `docs/architecture/PROVISIONAL-CONTRACT-BASELINE.md` | `9defb41bb9f0…` | `b6a61564cd66…` |
 
 **Every one is recoverable**, so the provenance is repairable rather than lost. That is the reason
