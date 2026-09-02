@@ -130,7 +130,7 @@ a personal project and requires each approval to name its role and accepted risk
 | Contract owner (T-CORE) | Accept `model_artifacts_hash` as a `SynthesisContext` input, `SYNTHESIS_IDENTITY_VERSION` at `e1-s5-v1`, and `CACHE_SCHEMA_VERSION` at `3.0` | Accepted — Ross Todd, 2026-09-02 |
 | Contract owner (T-WORKER) | Accept `ProvenModel`, the descriptor carrying the value from the configuration rather than the worker's answer, and the fake's distinct constant | Accepted — Ross Todd, 2026-09-02 |
 | Affected track (T-AUDIO) | Accept that no published schema and no package identity moves | Accepted — Ross Todd, 2026-09-02 |
-| Engineering owner | Accept the limits above, in particular that `ADR-0001-D011` is unapproved and no requalification has run | Accepted — Ross Todd, 2026-09-02 |
+| Engineering owner | Accept the limits above, in particular that `ADR-0001-D011` is approved while no requalification has run | Accepted — Ross Todd, 2026-09-02 |
 
 - Effective version and date: `SYNTHESIS_IDENTITY_VERSION` `e1-s5-v1` and
   `CACHE_SCHEMA_VERSION` `3.0`, effective 2026-09-02.

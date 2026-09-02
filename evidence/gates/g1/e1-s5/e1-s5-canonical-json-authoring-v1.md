@@ -10,9 +10,8 @@
 ## Scope and decision
 
 `DELIVERY-PLAN.md` §E1-S5 names four tasks and three acceptance tests. All four are implemented and
-all three tests pass. This record is `Proposed` because §Review result is not answered: the human
-listening review is a person's to take, and `evidence/README.md` accepts a story record at its
-gate rather than when its code lands.
+all three tests pass. This record is `Accepted`: §Review result records the completed human
+listening review, and §Review records the signed per-role decisions made at G1.
 
 The story's own scope is small — two authoring commands. What this record has to carry is larger,
 because closing E1-S5 required moving every synthesis key in the project twice, and a record that
