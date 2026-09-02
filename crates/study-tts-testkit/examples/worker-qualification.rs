@@ -49,8 +49,8 @@ use study_tts_core::{
     VoiceUse,
 };
 use study_tts_runtime::{
-    SynthesisRequest, TtsExecutor, WorkerBundle, WorkerConfiguration, WorkerTtsExecutor,
-    resolve_voice_conditioning,
+    SynthesisRequest, TtsExecutor, WorkerBundle, WorkerConfiguration, WorkerLauncher,
+    WorkerTtsExecutor, resolve_voice_conditioning,
 };
 use study_tts_testkit::{run_tts_executor_contract_scenario, run_worker_restart_contract_scenario};
 
@@ -61,6 +61,23 @@ use study_tts_testkit::{run_tts_executor_contract_scenario, run_worker_restart_c
 /// where a per-request reload would have had to happen twice, so a single
 /// mis-scoped load cannot be read as a startup cost.
 const LIFETIME_TAKES: usize = 3;
+
+/// The sentence both lifetimes of the reproducibility criterion render.
+///
+/// Deliberately not the listening script. What that script exists to ask is
+/// whether audio sounds right to a person; what this asks is whether two
+/// processes agree, and agreement on one sentence is agreement on the sampler
+/// rather than on the words.
+const REPRODUCIBILITY_TEXT: &str =
+    "Two workers given one seed and one bundle render this sentence identically.";
+
+/// Take number the reproducibility renders carry.
+///
+/// Distinct from the restart criterion's only so the two runs' request
+/// identifiers differ in a diagnostic log. `take` reaches no seed: the seed
+/// every request carries is `worker/launcher.json`'s, applied by
+/// `WorkerConfiguration::for_bundle` and unchanged by the take.
+const REPRODUCIBILITY_TAKE: usize = 1;
 
 /// What one criterion observed, in the shape an evidence table reads.
 struct Outcome {
@@ -176,6 +193,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     // the same principle as the output root that must not already exist.
     let isolation = NetworkIsolation::require()?;
     let configuration = Configuration::from_arguments()?;
+    // Read from `worker/launcher.json` rather than from the configuration
+    // built below, which keeps its launch fields private on purpose: together
+    // they are what starts a process under a claimed identity. This is the same
+    // declared bundle input the worker itself reads, so the seed recorded in
+    // the result is the one both ends used rather than one this file chose.
+    let seed = WorkerLauncher::read(&configuration.bundle_root)?.seed;
     let mut outcomes = Vec::new();
 
     outcomes.push(bundle_identity_is_stable(&configuration)?);
@@ -202,6 +225,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         &voice,
         &isolation,
     )?);
+    outcomes.push(lifetimes_render_identical_audio(
+        &configuration,
+        &launch,
+        &voice,
+        seed,
+    )?);
     outcomes.push(output_stayed_in_the_staging_root(
         &configuration,
         &executor,
@@ -219,6 +248,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let passed = outcomes.iter().all(|outcome| outcome.passed);
     let result = render_result(
         descriptor.worker_bundle_hash.as_str(),
+        seed,
         &isolation,
         &outcomes,
     )?;
@@ -428,6 +458,206 @@ fn worker_restarts_and_stays_offline(
             isolation.interfaces
         ),
     ))
+}
+
+/// `t5_e1_two_lifetimes_render_identical_audio_under_one_seed`.
+///
+/// **Not a `DELIVERY-PLAN.md` name.** It has exactly the standing
+/// `t5_e1_worker_survives_restart_and_starts_offline` has: a helper criterion
+/// covering a property nothing shared between the fake and the real worker
+/// measures. `DELIVERY-PLAN.md` is digest-pinned by accepted evidence under
+/// `evidence/gates/`, so a criterion name is not added to it here; adding one
+/// is a project-owner edit with a provenance recomputation behind it.
+///
+/// **This is the criterion `capabilities.deterministic_seed` turns on, and the
+/// only thing that can turn it on.** `worker/study_tts_worker/worker.py` seeds
+/// every generator before the model is constructed as well as before each take,
+/// which removes the defect that made the answer necessarily `False` — the
+/// vocoder's noise used to be drawn once per process from an unseeded
+/// generator, so each lifetime was internally consistent and lifetimes
+/// disagreed with each other. That is a mechanism. Whether the answer is now
+/// `True` is a measurement, and this is it.
+/// `docs/architecture/E1-S3-INTERFACE-CHANGE-004.md` §Limits carries what the
+/// flip then moves.
+///
+/// The two lifetimes are driven through
+/// [`run_worker_restart_contract_scenario`] rather than a loop written here,
+/// for the reason this whole instrument is a Rust example: it is the same
+/// function the T4 suite drives the protocol fake through, so the shipped path
+/// is what is qualified. It costs two more model loads, which is why the
+/// criterion is stated in `scripts/qualification/README.md` as a run-time cost
+/// rather than discovered as one.
+fn lifetimes_render_identical_audio(
+    configuration: &Configuration,
+    launch: &WorkerConfiguration,
+    voice: &GovernedVoice,
+    seed: u64,
+) -> Result<Outcome, Box<dyn Error>> {
+    const CRITERION: &str = "t5_e1_two_lifetimes_render_identical_audio_under_one_seed";
+
+    let staging = configuration.staging_root.join("reproducibility");
+    fs::create_dir_all(&staging)?;
+    let first = staging.join("first.wav");
+    let second = staging.join("second.wav");
+
+    let lifetimes = run_worker_restart_contract_scenario(
+        launch,
+        &request(voice, REPRODUCIBILITY_TAKE, REPRODUCIBILITY_TEXT)?,
+        &first,
+        &second,
+    )?;
+
+    // The identity half before the audio half. Two lifetimes reporting
+    // different synthesis contexts would be two different bundles, and
+    // identical bytes out of those would be a coincidence rather than the
+    // property this criterion names -- while different bytes would be explained
+    // by the identity rather than by the sampler.
+    let [first_lifetime, second_lifetime] = &lifetimes;
+    if first_lifetime.report.context != second_lifetime.report.context {
+        return Ok(Outcome::new(
+            CRITERION,
+            false,
+            "the two lifetimes reported different synthesis identities, so their renders \
+             are not comparable and nothing about reproducibility was measured"
+                .to_owned(),
+        ));
+    }
+
+    let comparison = compare_renders(&first, &second)?;
+    Ok(Outcome::new(
+        CRITERION,
+        comparison.passed(),
+        comparison.observed(seed),
+    ))
+}
+
+/// How two renders of one request compare, as bytes and as decoded samples.
+#[derive(Debug)]
+struct RenderComparison {
+    /// SHA-256 of each rendered file, in lifetime order.
+    digests: [String; 2],
+    /// Frames each file decoded to, in lifetime order.
+    frames: [usize; 2],
+    /// Whether the two files are byte-identical.
+    identical_bytes: bool,
+    /// Frames whose sample bits differ, plus the difference in frame counts.
+    differing_frames: usize,
+    /// The largest absolute sample difference over the frames both hold.
+    largest_difference: f32,
+}
+
+impl RenderComparison {
+    /// Whether the criterion holds.
+    ///
+    /// Byte equality, not sample equality, and the difference is the whole
+    /// point. A cache entry is validated and addressed by the bytes of its
+    /// canonical WAV, so two renders whose audio agrees and whose containers do
+    /// not still publish different bytes under one key. Sample equality is
+    /// reported rather than asserted, because it is what tells an operator
+    /// *which* defect they have.
+    fn passed(&self) -> bool {
+        self.identical_bytes
+    }
+
+    /// What was measured, in the shape an evidence table reads.
+    fn observed(&self, seed: u64) -> String {
+        if self.identical_bytes {
+            return format!(
+                "two fresh lifetimes under launcher seed {seed} wrote byte-identical canonical \
+                 WAVs of {} frames at SHA-256 {}",
+                self.frames[0], self.digests[0]
+            );
+        }
+        if self.differing_frames == 0 {
+            return format!(
+                "two fresh lifetimes under launcher seed {seed} decoded to identical PCM over \
+                 {} frames and wrote different bytes, SHA-256 {} and {}: the sampler is \
+                 reproducible and the published artifact is not",
+                self.frames[0], self.digests[0], self.digests[1]
+            );
+        }
+        format!(
+            "two fresh lifetimes under launcher seed {seed} disagreed on {} frames, by at most \
+             {:e}; they decoded to {} and {} frames, SHA-256 {} and {}",
+            self.differing_frames,
+            self.largest_difference,
+            self.frames[0],
+            self.frames[1],
+            self.digests[0],
+            self.digests[1],
+        )
+    }
+}
+
+/// Compares two rendered takes as bytes and as decoded samples.
+///
+/// Both, because they answer different questions and only one of them is the
+/// gate. A sampler that drew different noise and a container that recorded a
+/// different chunk produce the same verdict and are completely different
+/// defects, and an operator who is told only "the bytes differ" has to go and
+/// find out which.
+///
+/// Samples are compared as bit patterns rather than with `==`, so a NaN
+/// compares equal to itself: an encoder that emitted one in both lifetimes is
+/// reproducible, and float equality would report that as a difference forever.
+///
+/// # Errors
+///
+/// Whatever reading either file reports, and a refusal naming the file when it
+/// is not a canonical-format take.
+fn compare_renders(first: &Path, second: &Path) -> Result<RenderComparison, Box<dyn Error>> {
+    let bytes = [fs::read(first)?, fs::read(second)?];
+    let samples = [decoded_samples(first)?, decoded_samples(second)?];
+
+    let paired = || samples[0].iter().zip(&samples[1]);
+    let differing_over_common_frames = paired()
+        .filter(|(left, right)| left.to_bits() != right.to_bits())
+        .count();
+
+    Ok(RenderComparison {
+        digests: [
+            hex(&Sha256::digest(&bytes[0])),
+            hex(&Sha256::digest(&bytes[1])),
+        ],
+        frames: [samples[0].len(), samples[1].len()],
+        identical_bytes: bytes[0] == bytes[1],
+        // The length difference counts. Frames one lifetime produced and the
+        // other did not are frames the two disagreed on, and zipping alone
+        // would report a truncated render as perfect agreement over its own
+        // length.
+        differing_frames: differing_over_common_frames
+            + samples[0].len().abs_diff(samples[1].len()),
+        largest_difference: paired()
+            .map(|(left, right)| (left - right).abs())
+            .fold(0.0_f32, f32::max),
+    })
+}
+
+/// The canonical float samples one rendered take holds.
+///
+/// The format is checked rather than assumed: a take in some other shape would
+/// decode to samples that compare fine and describe audio this project does not
+/// publish, which is a passing criterion about the wrong thing.
+///
+/// # Errors
+///
+/// Whatever opening or decoding the file reports, and a refusal naming the file
+/// when its declared format is not the canonical one.
+fn decoded_samples(path: &Path) -> Result<Vec<f32>, Box<dyn Error>> {
+    let mut reader = hound::WavReader::open(path)?;
+    let spec = reader.spec();
+    if spec.channels != CANONICAL_CHANNELS
+        || spec.sample_rate != CANONICAL_SAMPLE_RATE
+        || spec.sample_format != hound::SampleFormat::Float
+        || spec.bits_per_sample != 32
+    {
+        return Err(format!(
+            "`{}` is not a canonical-format take: {spec:?}",
+            path.display()
+        )
+        .into());
+    }
+    Ok(reader.samples::<f32>().collect::<Result<Vec<_>, _>>()?)
 }
 
 /// `t5_e1_worker_output_cannot_escape_staging_root`.
@@ -712,6 +942,7 @@ impl NetworkIsolation {
 /// The result object an evidence record cites, hashed as it stands.
 fn render_result(
     worker_bundle_hash: &str,
+    launcher_seed: u64,
     isolation: &NetworkIsolation,
     outcomes: &[Outcome],
 ) -> Result<String, serde_json::Error> {
@@ -727,6 +958,10 @@ fn render_result(
         .collect();
     serde_json::to_string_pretty(&serde_json::json!({
         "worker_bundle_hash": worker_bundle_hash,
+        // Recorded because one criterion's claim is about this value. A result
+        // asserting that two lifetimes agreed, without saying what they agreed
+        // under, describes an experiment nobody can repeat.
+        "launcher_seed": launcher_seed,
         "network_isolation": {
             "interfaces": isolation.interfaces,
             "ipv4_routes": isolation.ipv4_routes,
@@ -799,6 +1034,139 @@ mod tests {
         );
     }
 
+    /// Writes `samples` as a canonical-format take at `path`.
+    fn write_take(path: &Path, samples: &[f32]) {
+        let mut writer = hound::WavWriter::create(
+            path,
+            hound::WavSpec {
+                channels: CANONICAL_CHANNELS,
+                sample_rate: CANONICAL_SAMPLE_RATE,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )
+        .expect("create a canonical take");
+        for sample in samples {
+            writer.write_sample(*sample).expect("write a sample");
+        }
+        writer.finalize().expect("finalize the take");
+    }
+
+    /// Two takes written into one scratch directory, then compared.
+    fn compare(first: &[f32], second: &[f32]) -> RenderComparison {
+        let workspace = TempDir::new().expect("create a comparison workspace");
+        let first_path = workspace.path().join("first.wav");
+        let second_path = workspace.path().join("second.wav");
+        write_take(&first_path, first);
+        write_take(&second_path, second);
+        compare_renders(&first_path, &second_path).expect("compare two canonical takes")
+    }
+
+    /// The T5 criterion's own logic, at a tier that costs no weights.
+    ///
+    /// `t5_e1_two_lifetimes_render_identical_audio_under_one_seed` can only run
+    /// on the reference machine, so nothing would otherwise ever exercise the
+    /// code deciding its verdict. These four cover the decision; the reference
+    /// machine supplies the audio.
+    #[test]
+    fn t1_e1_two_identical_takes_compare_as_reproducible() {
+        let comparison = compare(&[0.25, -0.5, 0.75], &[0.25, -0.5, 0.75]);
+
+        assert!(comparison.passed(), "identical bytes are the criterion");
+        assert_eq!(comparison.differing_frames, 0);
+        assert_eq!(comparison.digests[0], comparison.digests[1]);
+        assert_eq!(comparison.frames, [3, 3]);
+    }
+
+    #[test]
+    fn t1_e1_one_differing_sample_is_counted_and_measured() {
+        let comparison = compare(&[0.25, -0.5, 0.75], &[0.25, -0.25, 0.75]);
+
+        assert!(!comparison.passed());
+        assert_eq!(comparison.differing_frames, 1);
+        assert!(
+            (comparison.largest_difference - 0.25).abs() < f32::EPSILON,
+            "the reported difference must be the one that was heard, got {}",
+            comparison.largest_difference
+        );
+    }
+
+    #[test]
+    fn t1_e1_a_truncated_take_is_not_agreement_over_its_own_length() {
+        // Zipping alone reports perfect agreement here, because every frame the
+        // shorter take holds matches. The frames it does not hold are frames
+        // the two lifetimes disagreed on.
+        let comparison = compare(&[0.25, -0.5, 0.75], &[0.25]);
+
+        assert!(!comparison.passed());
+        assert_eq!(comparison.differing_frames, 2);
+        assert_eq!(comparison.frames, [3, 1]);
+    }
+
+    #[test]
+    fn t1_e1_a_take_that_is_not_canonical_format_is_refused() {
+        let workspace = TempDir::new().expect("create a format workspace");
+        let canonical = workspace.path().join("first.wav");
+        let stereo = workspace.path().join("second.wav");
+        write_take(&canonical, &[0.25]);
+        let mut writer = hound::WavWriter::create(
+            &stereo,
+            hound::WavSpec {
+                channels: 2,
+                sample_rate: CANONICAL_SAMPLE_RATE,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )
+        .expect("create a two-channel take");
+        writer.write_sample(0.25_f32).expect("write a sample");
+        writer.write_sample(0.25_f32).expect("write a sample");
+        writer.finalize().expect("finalize the take");
+
+        let refusal = compare_renders(&canonical, &stereo)
+            .expect_err("a take outside the canonical format must be refused")
+            .to_string();
+
+        assert!(
+            refusal.contains("not a canonical-format take"),
+            "the refusal does not name the format: {refusal}"
+        );
+    }
+
+    #[test]
+    fn t1_e1_a_take_that_is_not_a_number_still_compares_equal_to_itself() {
+        // The reason samples are compared as bit patterns. Under `==` a NaN is
+        // unequal to itself, so two lifetimes that both emitted one would be
+        // reported as disagreeing forever -- while the bytes on disk, and the
+        // verdict, said they agreed.
+        let comparison = compare(&[f32::NAN, 0.25], &[f32::NAN, 0.25]);
+
+        assert!(comparison.passed());
+        assert_eq!(comparison.differing_frames, 0);
+    }
+
+    #[test]
+    fn t1_e1_identical_audio_in_differing_containers_is_reported_as_such() {
+        // Built by hand rather than rendered: producing two files whose PCM
+        // agrees and whose bytes do not needs a container this project never
+        // writes, and what is under test is the sentence an operator reads.
+        let comparison = RenderComparison {
+            digests: ["a".repeat(64), "b".repeat(64)],
+            frames: [96_000, 96_000],
+            identical_bytes: false,
+            differing_frames: 0,
+            largest_difference: 0.0,
+        };
+
+        let observed = comparison.observed(42);
+
+        assert!(!comparison.passed(), "byte equality is the gate");
+        assert!(
+            observed.contains("the sampler is reproducible and the published artifact is not"),
+            "the observation must separate the two defects: {observed}"
+        );
+    }
+
     #[test]
     fn t1_e1_qualification_observations_are_json_escaped() {
         let isolation = NetworkIsolation {
@@ -812,7 +1180,7 @@ mod tests {
             "quoted \"value\" with \\ and newline\n".to_owned(),
         )];
 
-        let rendered = render_result("bundle", &isolation, &outcomes)
+        let rendered = render_result("bundle", 42, &isolation, &outcomes)
             .expect("serialize the qualification result");
         let result: serde_json::Value =
             serde_json::from_str(&rendered).expect("the qualification result is JSON");
@@ -831,7 +1199,7 @@ mod tests {
             namespace_inode: 1,
         };
 
-        let rendered = render_result("bundle", &isolation, &[])
+        let rendered = render_result("bundle", 42, &isolation, &[])
             .expect("serialize the route measurement as evidence");
         let result: serde_json::Value =
             serde_json::from_str(&rendered).expect("the qualification result is JSON");

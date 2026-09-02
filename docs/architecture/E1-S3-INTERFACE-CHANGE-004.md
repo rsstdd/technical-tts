@@ -92,17 +92,39 @@ would describe only the first.
   'torch.set_num_interop_threads', 'from_local', 'random.seed', …]` — rather than assumed to
   discriminate. `test_the_seed_a_lifetime_uses_is_the_one_its_launcher_records` holds the second
   half: the value seeded is the launcher's, not a constant.
-- **Reference-machine qualification:** **not run.** See §Limits.
+- **Reference-machine qualification:** **not run.** The criterion that would run it now exists —
+  `t5_e1_two_lifetimes_render_identical_audio_under_one_seed` in
+  `crates/study-tts-testkit/examples/worker-qualification.rs` — and its decision logic is covered
+  at T1 by six tests in that example's own `tests` module, because the criterion itself can only
+  run on the reference machine and nothing else would exercise the code deciding its verdict. Two
+  of those tests were confirmed to fail under a mutated comparison rather than assumed to
+  discriminate: `==` in place of bit-pattern equality, and a zip with no length term.
+  `scripts/qualification/README.md` §Requalifying after the seeding change is the procedure. See
+  §Limits for what running it does and does not settle.
 
 ## Limits this change does not close
 
 - **`deterministic_seed` stays `False`, and this record does not propose flipping it.** What
   landed is a mechanism: the one defect that made the answer *necessarily* `False` is gone.
-  Whether the answer is now `True` is a measurement, and the measurement is two fresh worker
-  lifetimes on the reference machine producing identical decoded PCM and byte-identical canonical
-  cached WAVs. Nothing in this repository can run that. Claiming reproducibility before it runs
+  Whether the answer is now `True` is a measurement — two fresh worker lifetimes producing
+  identical decoded PCM and byte-identical canonical WAVs — and that measurement is now
+  *instrumented* rather than performed. Only the reference machine has the weights, the lawful
+  voice profile, and the qualified interpreter it needs. Claiming reproducibility before it runs
   would put an unproven claim into every cache key, which is the precise thing the capability's
   own comment refuses.
+- **The criterion is not a `DELIVERY-PLAN.md` name**, and none was added: that document is
+  digest-pinned by accepted evidence, so adding one is a project-owner edit with a provenance
+  recomputation behind it. It has the standing
+  `t5_e1_worker_survives_restart_and_starts_offline` already has — a helper criterion the README
+  records as such.
+- **The criterion's verdict is byte equality, and sample equality is only reported.** That is
+  deliberate, because a cache entry is validated and addressed by the bytes of its canonical WAV:
+  two renders whose audio agrees and whose containers do not still publish different bytes under
+  one key. What the sample comparison buys is the diagnosis — audio that differs is a sampler that
+  is not reproducible, while identical audio in differing containers is a reproducible sampler and
+  an artifact that is not — and the observation says which.
+- **The criterion costs two more model loads per qualification run**, on top of the restart
+  criterion's two.
 - **Four call sites move with that flip, when it is made.**
   `crates/study-tts-runtime/src/worker_protocol.rs` declares `deterministic_seed` and is a
   two-sided coupling with `worker/study_tts_worker/protocol.py`;
