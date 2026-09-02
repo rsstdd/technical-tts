@@ -199,13 +199,48 @@ should gain that scope rather than be retracted.
 
 ## Not supplied by this record
 
-- **Randomized listening assessment.** ADR-0002 requires "voice consent/checksum and listener
-  assessment", and its decision table records "10/10 blind samples accepted with no required-category
-  findings". The audio has changed, so that result does not carry over, and no script can reproduce
-  it. **This is the item blocking acceptance.**
-- **Schedule reforecast.**
+- ~~**Randomized listening assessment.**~~ **Supplied 2026-09-02.** See §Randomized listening
+  assessment below. This was the item blocking acceptance; it no longer is.
+- **Schedule reforecast.** Still absent.
 - **The acceptance decision**, which is the owner's under §Acceptance.
 - Full-box performance qualification, which §Expiry requires before G3 regardless of this change.
+
+## Randomized listening assessment
+
+Supplied 2026-09-02, after this record's measurements, and **not at the identity they were taken
+at**. The audio moved twice more between them — seeding before model construction (#70) and
+`deterministic_seed` → `True` — so the assessment was rendered at the current bundle rather than at
+`d87aee58…`, which is the identity a reader should hold it against.
+
+| Item | Value |
+|---|---|
+| Worker bundle identity | `1af4e1713ee3eb7e96d6d0f4d2845f741e78e8a87dd320796f1e561f0f179d05` |
+| Voice profile | `owner-fallback-v1` |
+| Script | `fixtures/listening/e1-s3-listening-script.json`, committed and registered |
+| Samples | 6, blinded as `sample-01` … `sample-06` |
+| Sheet as rendered, pending | SHA-256 `96dabe2a8180bf13401efbcbd773c01a4ae2b2ebabb2b961b085382e41dd3e5f` |
+| Sheet as completed | SHA-256 `28abd94cc6e81cbd8b914d0a368602e06505cc9fdd338c0b3edde227a11a71f1` |
+| Reviewer | Ross Todd |
+| Date | 2026-09-02 |
+| Playback environment | Built-in laptop speakers |
+| Result | 6 of 6 `accept`; `none` on all five criteria of all six samples |
+| Overall finding | "All six samples sounded good. No finding on any criterion, on any sample." |
+
+`check_listening_review.py` exits `0`, which is what binds each judgment to the bytes it was made
+against: it refuses an incomplete sheet and refuses one whose recorded digests no longer describe
+the audio beside it. The key was opened only by that script, after the sheet was complete.
+
+**Six samples, where ADR-0002's decision table records ten.** The committed script carries six
+lines, and E1-S3's review used six. The script is committed precisely so a retake reviews the same
+words and only the audio differs, so the comparable baseline for this assessment is E1-S3's six
+rather than the ten of the original G0 characterization. Stated here rather than left for a reader
+to notice, because the counts differ and the record should say why.
+
+**Built-in laptop speakers bound what a clear result means.** `libmp3lame` artifacts sit in the band
+small drivers reproduce least — though these samples are canonical WAV rather than MP3, so that
+particular limit bites less here than it does on a package review. What it does bound is the
+`noise_or_artifacts` and `pacing` criteria generally: a clear result records that nothing was
+audible on those speakers.
 
 ## Reproduction
 
