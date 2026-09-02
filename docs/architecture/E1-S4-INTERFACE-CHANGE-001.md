@@ -111,7 +111,11 @@ breaking correction, so there is nothing for that permission to waive.
 An FFmpeg that cannot encode `libmp3lame` is refused during package preflight, before synthesis and
 before any durable state exists. `tools::inspect` reads only the first line of `-version`, which is
 identical whether or not the encoder was compiled in, so the inventory is asked for separately.
-The refusal routes to the audio/runtime owner and names the encoder to install.
+The refusal is deliberately unrouted: no `docs/governance/ROUTING-TABLES.md` §Failure routing row
+fits an absent encoder, because the "Invalid or over-range audio" row answers with quarantine and a
+bounded retry, and neither reaches a build that has produced no audio and cannot gain an encoder by
+retrying. It is an environment failure like `MissingTool`, and its own message names the encoder to
+install.
 
 ## What the package now contains, and what derives it
 

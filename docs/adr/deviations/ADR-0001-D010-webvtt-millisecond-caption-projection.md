@@ -78,9 +78,11 @@ E2-S4 run report and any E5 verification that needs them.
   acceptable *because* the exact value survives somewhere; without that this record has no
   compensating control and should be rejected.
 - It does not reach chapter boundaries, which are exact, or the automated-check requirement that
-  caption timestamps be monotonic — flooring a monotonic sequence stays monotonic, and equal
-  adjacent cues would require two boundaries inside the same millisecond, which a nonzero segment
-  cannot produce.
+  caption timestamps be monotonic — flooring a monotonic sequence stays monotonic. It does not make
+  adjacent cue timestamps distinct: one millisecond is 24 frames at 24 kHz, so a segment shorter
+  than 24 frames floors to the same timestamp as its predecessor's boundary. Nothing in the
+  projection prevents that; it does not arise because a spoken segment is substantially longer than
+  a millisecond, not because a nonzero segment cannot produce it.
 
 ## Alternatives considered
 

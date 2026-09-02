@@ -111,6 +111,50 @@ The T4 tier was timed separately with
 | `t4_e1_every_package_file_is_owner_only` | All seven published files are mode `600`. The three text documents went through `fs::write` and landed `0666 & ~umask`, so the transcript and captions were the only world-readable files in a `private_preview` package and their mode moved with the operator |
 | `t4_e1_a_symlinked_package_file_is_refused` | `manifest.json` or an artifact replaced by a symlink is refused by `managed::leaf`, not followed out of the package |
 | `t1_e1_each_packaged_artifact_is_held_to_its_own_codec` | `pcm_f32le`, `aac`, and `mp3` map to the master and the two exports, pinned without FFmpeg or ffprobe so a swapped arm fails offline |
+| `t1_e0_governed_remedy_mappings_are_exhaustive` | Kept its name and changed what it proves. See §A changed test behind an unchanged name |
+
+### A changed test behind an unchanged name
+
+`t1_e0_governed_remedy_mappings_are_exhaustive` was strengthened while reviewing this story's
+`ToolError::MissingEncoder` routing. Its name is unchanged because
+`docs/governance/ROUTING-TABLES.md` §Failure routing names it, as do
+`e1-s1-provisional-contract-baseline-v8`, `evidence_e0_model_and_voice_rights_records_complete`,
+and its `-v2`. Renaming it would break those citations, so this section records the behavior change
+instead. It is not an E1-S4 acceptance criterion.
+
+What it did: nine `expected_*_remedy` helpers restated `remedy()` arm for arm, so the expectation
+agreed with any owner, action, and row the implementation happened to carry, including a wrong one.
+It exercised 62 of the 108 refusal variants.
+
+What it does: it reads `docs/governance/ROUTING-TABLES.md` §Failure routing at compile time through
+`include_str!` and takes each refusal's owner from the row that refusal claims. A row the document
+does not carry, or one lifted from §Decision routing, fails the build. The helpers now state only
+the row and the action, stay exhaustive, and all 108 variants are constructed.
+
+This closes a finding no baseline had been able to close. `e1-s1-provisional-contract-baseline-v8`
+recorded that **nothing mechanically ties a routing-row name to the table it names**, which is how
+`Worker bundle input missing or oversized` survived in every worker-bundle refusal although
+§Failure routing never carried that row; `-v10` restated it as "a check that reads
+`docs/governance/ROUTING-TABLES.md` and refuses an unknown row remains the durable fix and is still
+not written". That check is now written and was demonstrated: renaming a row in the document fails
+the test, and the document was restored unchanged.
+
+It found one live defect in the same shape. `crates/study-tts-runtime/src/error/publication.rs`
+routed three variants — `Release(PrivateProfileCannotClaimProduction)`,
+`MalformedProductionManifest`, and `ManifestNotProductionRelease` — to the row
+`Production publication`, which is a §Decision routing row naming a decider rather than a remedy
+owner, and which `RemedyAdvice::routing()` already forbade in prose. They now carry the same owner
+and action with no row. No refusal's owner or action text changed.
+
+`ROUTING-TABLES.md` was **not** edited: its §Failure routing prose already claims this test "pins
+owner, action, and routing-row names with exhaustive matches", which the test now satisfies more
+completely than when the sentence was written. No provenance reconciliation is therefore owed for
+it, and `scripts/check-evidence-provenance.py` passes.
+
+One limit remains. Sampling completeness is hand-maintained: a new variant is a compile error in
+the expectation match, but nothing forces it into the arrays that exercise the match, so that half
+is caught by review. Making it compile-enforced needs a derive macro or a new dependency, which
+`AGENTS.md` and the `ponytail` standard both weigh against.
 
 ## Raw artifacts
 
@@ -230,44 +274,96 @@ whole purpose of reviewing the MP3 rather than the package.
   worker sees it. The first render of the three-segment fixture was refused exactly so. The
   refusal is correct and fail-closed; the gap between what the schema accepts and what the backend
   declares is a fake-versus-real divergence G1 owns.
-- **One flake observed once, and not reproduced.**
+- **One flake, reproduced, measured, and pre-existing.**
   `t4_e0_timeout_terminates_escaped_descendant_that_closes_capture_pipes` failed once during this
-  story's work and has not failed since. `docs/testing/TEST-STRATEGY.md` calls a flaky test a
-  defect, so it was investigated rather than dismissed, and it remains owed an owner and an issue
-  before G1.
+  story's work. `docs/testing/TEST-STRATEGY.md` calls a flaky test a defect, so it was measured
+  rather than dismissed, on 2026-09-01, against `b562852` (the tree before this story) and the
+  current tree.
 
-  An earlier draft of this record called it **pre-existing**. That was an inference from
-  `process.rs` carrying no diff, and it was not evidence: a story can induce a timing failure in a
-  file it never edits. It was measured instead, on 2026-09-01, against `b562852` (the tree before
-  this story) and the current tree:
+  | Condition | Tree | Runs | Failures | Rate |
+  |---|---|---:|---:|---:|
+  | Test alone, idle | pre-change | 50 | 0 | — |
+  | Test alone, idle | current | 50 | 0 | — |
+  | `cargo test --workspace --all-targets`, idle | pre-change | 10 | 0 | — |
+  | `cargo test --workspace --all-targets`, idle | current | 10 | 0 | — |
+  | Full suite, eight cores saturated | current | 6 | 0 | — |
+  | **Test alone, eight cores saturated** | **pre-change** | **500** | **1** | **0.20%** |
+  | **Test alone, eight cores saturated** | **current** | **500** | **1** | **0.20%** |
+  | **Test alone, eight cores saturated** | **current** | **2 000** | **3** | **0.15%** |
+  | **Test alone, eight cores saturated** | **pre-change** | **2 000** | **1** | **0.05%** |
 
-  | Condition | Tree | Runs | Failures |
-  |---|---|---:|---:|
-  | Test alone | pre-change | 50 | 0 |
-  | Test alone | current | 50 | 0 |
-  | `cargo test --workspace --all-targets` | pre-change | 10 | 0 |
-  | `cargo test --workspace --all-targets` | current | 10 | 0 |
-  | Same, with all eight cores saturated | current | 6 | 0 |
+  Five failures in total, every one of them the same panic at the same line. The predicted PID-file
+  race — `.expect("helper must record the escaped descendant")` — did not occur once in 5 560
+  executions.
 
-  126 executions, no reproduction. **This neither convicts nor exonerates the story.** Under the
-  rule of three, zero failures in the sixteen post-change full-suite runs bounds the per-run rate
-  at roughly 19% with 95% confidence — so a rate of one or two percent, which is what a single
-  observation across a day's work suggests, is entirely consistent with this result. The
-  disposition is *unreproduced*, not *fixed* and not *absent*.
+  On the matched 2 000-run arms: pre-change 1/2 000 (95% upper bound 0.28%), current 3/2 000
+  (upper bound 0.44%), Fisher exact two-tailed **p = 0.62**. No difference is detectable, and the
+  arms are now equally powered rather than 500 against 2 500.
 
-  One hypothesis was eliminated. This story took a package render from two subprocess spawns to
-  six across twenty-nine T4 tests, and an earlier note here proposed that as the load that
-  destabilized a 250 ms deadline. It cannot be: Cargo runs test binaries one at a time, so
-  `walking_skeleton` in `study-tts-testkit` never runs concurrently with `process.rs` in
-  `study-tts-runtime`'s lib target.
+  **It is pre-existing**, and that rests on the reproduction against `b562852` rather than on the
+  rates agreeing: a tree that predates this story exhibits the failure, which settles the question
+  whatever the rates are. On the rates themselves the honest statement is *no detectable
+  difference*, not equality. At matched N the arms give p = 0.62, which rules out nothing: this
+  design could not detect a threefold change in rate, so it is evidence of no *observed* effect
+  rather than evidence of no effect.
+  Nothing in E1-S4 moved it, and this is now measured rather than inferred from `process.rs`
+  carrying no diff — which is all an earlier draft of this record had, and was not evidence.
 
-  What to instrument if it recurs, rather than what to change now: the helper is the test binary
-  re-invoking itself, and it must start, initialize the harness, spawn a descendant, and write a
-  PID file inside the 250 ms deadline before
-  `fs::read_to_string(&descendant_pid_path).expect("helper must record the escaped descendant")`
-  runs. That `expect` is the most load-sensitive line in the test and the first place to capture
-  diagnostics. Raising the deadline without a reproduction would be changing a value to silence a
-  failure nobody has seen twice, which is the shape of a fix that hides a defect.
+  Load is the variable, not this story. The 126 idle runs found nothing because at 0.2% they were
+  expected to find nothing: their combined yield is a quarter of one failure. Only saturating
+  every core surfaced it, and then on both trees alike.
+
+  **It is not a test-harness artifact, and it is not the failure that was predicted.** The
+  hypothesis under test was that the helper — the test binary re-invoking itself — could not write
+  its PID file inside the 250 ms deadline under load, panicking at
+  `.expect("helper must record the escaped descendant")`. That is not what happens. Both captured
+  failures are identical and are the containment assertion at `process.rs:1848`:
+
+  ```text
+  panicked at crates/study-tts-runtime/src/process.rs:1848:9:
+  escaped descendant 136178 survived bounded cleanup
+  ```
+
+  The PID file is written. The descendant is found. It is **still alive when bounded cleanup
+  returns**. Under CPU starvation the containment path does not reap a descendant that has left
+  its process group within the window it allows itself, which is a defect in the control rather
+  than in the test observing it. `ADR-0001-D008` already records worker process-tree containment
+  as *partial* and `DELIVERY-PLAN.md` §Story E5-S4 task 7 owns closing it; this measurement gives
+  that story a reproduction recipe and a rate.
+
+  **What it actually is: the test asserts a guarantee `ADR-0001-D008` says this build does not
+  have.** That record, approved 2026-08-31, permits containment to be "the union of a process-group
+  kill and a set of recorded pidfds, rather than the full child process tree ADR-0001 §10.3
+  requires", and names the residual exactly:
+
+  > A descendant that calls `setsid()` in the window between the enumeration and its parent's exit
+  > is in no group this build owns and appears in no `/proc` entry the exit left behind, so nothing
+  > can name it.
+
+  `terminate` samples the tree with `ProcessOwnership::refresh`, then kills the group, then signals
+  the pidfds it recorded. A descendant that escapes between the sample and the kill is in neither
+  set. That is the documented residual, and it is what the two captured failures are: not a new
+  defect, and not a test artifact, but the accepted deviation being observed.
+
+  So `t4_e0_timeout_terminates_escaped_descendant_that_closes_capture_pipes` asserts containment of
+  an escaped descendant, which is the property D008 explicitly does not claim — and which D008
+  names `t4_e5_a_descendant_that_leaves_its_process_group_is_still_contained` as the check its
+  permission *ends at*, in E5-S4. The E0 test asserts the E5-S4 guarantee ahead of the story that
+  provides it. It passes 99.8% of the time because the race usually resolves favourably, not
+  because the guarantee holds.
+
+  **This is the owner's decision, and it is not a test edit.** `CLAUDE.md` §Non-negotiables forbids
+  weakening a containment control to make a test pass, and rewriting this assertion to match
+  today's weaker guarantee would be exactly that. The two defensible routes are: close the gap in
+  E5-S4 with the cgroup v2 `cgroup.kill` D008 §Alternatives already calls "the correct mechanism",
+  after which the test is legitimately green; or record the E0 test as the D008 residual's early
+  witness, with an owner, so a failure is read as the known gap rather than as a mystery.
+
+  **Do not widen the deadline, and do not quarantine.** Widening it would suppress the only signal
+  that the control is incomplete under load, and quarantining requires an owner, expiry, issue,
+  and unaffected-gate analysis that a 0.2% real containment failure does not deserve to receive
+  instead of a fix. The remaining action is unchanged: an owner and an issue before G1, now with
+  evidence attached — reproduce with the test binary alone, 500 iterations, all cores saturated.
 
 ## Review
 

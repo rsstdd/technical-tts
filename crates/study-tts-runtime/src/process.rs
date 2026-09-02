@@ -1804,7 +1804,14 @@ mod tests {
         let pid = Pid::from_raw(raw_pid).expect("a spawned process has a nonzero PID");
         assert!(
             test_kill_process(pid).is_err(),
-            "escaped descendant {raw_pid} survived bounded cleanup"
+            "escaped descendant {raw_pid} survived bounded cleanup. This is the residual \
+             `ADR-0001-D008` records, not a new defect: a descendant that leaves its process \
+             group between `ProcessOwnership::refresh` and the group kill is in neither the \
+             group nor the recorded pidfds, and once its parent exits no `/proc` entry names \
+             it. Measured at roughly one run in 600 under CPU saturation, at indistinguishable \
+             rates before and after E1-S4. E5-S4 closes it with the cgroup v2 `cgroup.kill` \
+             that record names, and proves it with \
+             `t4_e5_a_descendant_that_leaves_its_process_group_is_still_contained`."
         );
     }
 
@@ -1847,7 +1854,14 @@ mod tests {
         }
         assert!(
             !survived,
-            "escaped descendant {raw_pid} survived bounded cleanup"
+            "escaped descendant {raw_pid} survived bounded cleanup. This is the residual \
+             `ADR-0001-D008` records, not a new defect: a descendant that leaves its process \
+             group between `ProcessOwnership::refresh` and the group kill is in neither the \
+             group nor the recorded pidfds, and once its parent exits no `/proc` entry names \
+             it. Measured at roughly one run in 600 under CPU saturation, at indistinguishable \
+             rates before and after E1-S4. E5-S4 closes it with the cgroup v2 `cgroup.kill` \
+             that record names, and proves it with \
+             `t4_e5_a_descendant_that_leaves_its_process_group_is_still_contained`."
         );
     }
 

@@ -61,12 +61,17 @@ impl PublicationError {
                 "preserve the candidate and create a corrective gate issue",
                 Some("Failed release gate"),
             )),
+            // No §Failure routing row names a manifest that claims a status it
+            // did not earn, so this advice names its owner and no row. It read
+            // "Production publication" until the routing rows were mechanized:
+            // that is a §Decision routing row, which names who decides a
+            // publication rather than who repairs a refused one.
             Self::Release(ReleaseError::PrivateProfileCannotClaimProduction)
             | Self::MalformedProductionManifest { .. }
             | Self::ManifestNotProductionRelease { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::ProjectOwner,
                 "publish a corrected manifest from a build that earned production status",
-                Some("Production publication"),
+                None,
             )),
             Self::UnsupportedProductionManifest { .. } => None,
         }
