@@ -863,25 +863,30 @@ def _capabilities(launcher: dict[str, Any], backend: _Backend | None) -> dict[st
         "sample_rate": CANONICAL_SAMPLE_RATE_HZ,
         "channels": CANONICAL_CHANNELS,
         "sample_format": CANONICAL_SAMPLE_FORMAT,
-        # Measured rather than assumed. E0-S3 rendered ten fixed-seed takes with
-        # identical decoded samples and then declined to generalise past "this
-        # environment and bounded run set"; ADR-0001 §12.5 says identical seeds
-        # do not guarantee identical output across dependency, platform, or
-        # execution changes. Claiming reproducibility here would put that claim
-        # into every cache key.
+        # Measured rather than assumed, and the measurement is on the reference
+        # machine rather than in this file. E0-S3 rendered ten fixed-seed takes
+        # with identical decoded samples and then declined to generalise past
+        # "this environment and bounded run set"; ADR-0001 §12.5 says identical
+        # seeds do not guarantee identical output across dependency, platform,
+        # or execution changes. Claiming reproducibility without evidence would
+        # put an unproven claim into every cache key.
         #
+        # `True` since E1-S5. Two things had to happen, in this order.
         # `_seed_generators` now runs before the model is constructed as well as
-        # before every take, which removes the one defect that made the answer
+        # before every take, which removed the one defect that made the answer
         # *necessarily* False: the vocoder's noise used to be drawn once per
-        # process from an unseeded generator. That is a mechanism, not a
-        # measurement. Flipping this to True needs two fresh worker lifetimes on
-        # the reference machine producing identical decoded PCM and
-        # byte-identical canonical cached WAVs, and it moves
-        # `determinism_class` into every synthesis key, so it is made once and
-        # with evidence behind it.
-        # `docs/architecture/E1-S3-INTERFACE-CHANGE-004.md` §Limits carries what
-        # remains.
-        "deterministic_seed": False,
+        # process from an unseeded generator, so each lifetime was internally
+        # consistent and lifetimes disagreed with each other. That was a
+        # mechanism. Then
+        # `t5_e1_two_lifetimes_render_identical_audio_under_one_seed` measured
+        # it on the reference machine: two fresh lifetimes under seed 42
+        # produced byte-identical canonical WAVs over 92 160 frames, with zero
+        # of those frames differing by bit pattern.
+        #
+        # This value reaches `determinism_class` and therefore every synthesis
+        # key, so it is not a flag to toggle while investigating something. It
+        # returns to `False` only alongside a measurement showing why.
+        "deterministic_seed": True,
         "device": launcher["device"],
     }
 

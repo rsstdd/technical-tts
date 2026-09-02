@@ -391,7 +391,10 @@ class BackendRefusalTests(unittest.TestCase):
         frames = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual(frames[0]["capabilities"]["voices"], [])
         self.assertEqual(frames[0]["capabilities"]["styles"], [])
-        self.assertFalse(frames[0]["capabilities"]["deterministic_seed"])
+        # `True` since E1-S5, and measured rather than declared: see the
+        # capability's own comment in `worker.py`. Asserted here so the
+        # declaration cannot drift without a test saying so.
+        self.assertTrue(frames[0]["capabilities"]["deterministic_seed"])
 
 
 class OfflineEnvironmentTests(unittest.TestCase):
