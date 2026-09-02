@@ -531,11 +531,15 @@ fn lifetimes_render_identical_audio(
     ))
 }
 
-/// How two renders of one request compare, as bytes and as decoded samples.
+/// How two renders of one request compare, as canonical bytes and as samples.
 #[derive(Debug)]
 struct RenderComparison {
-    /// SHA-256 of each rendered file, in lifetime order.
+    /// SHA-256 of each take's canonical re-encoding, in lifetime order.
     digests: [String; 2],
+    /// SHA-256 of each take as the worker wrote it, in lifetime order.
+    ///
+    /// Reported and never judged. See [`RenderComparison::passed`].
+    staged_digests: [String; 2],
     /// Frames each file decoded to, in lifetime order.
     frames: [usize; 2],
     /// Whether the two files are byte-identical.
@@ -549,12 +553,20 @@ struct RenderComparison {
 impl RenderComparison {
     /// Whether the criterion holds.
     ///
-    /// Byte equality, not sample equality, and the difference is the whole
-    /// point. A cache entry is validated and addressed by the bytes of its
-    /// canonical WAV, so two renders whose audio agrees and whose containers do
-    /// not still publish different bytes under one key. Sample equality is
-    /// reported rather than asserted, because it is what tells an operator
-    /// *which* defect they have.
+    /// Byte equality of the **canonical** encoding, which is the artifact a
+    /// cache entry is validated and addressed by. Not the bytes the worker
+    /// wrote: `soundfile` stamps a wall-clock time into libsndfile's `PEAK`
+    /// chunk, so two staged takes of identical audio differ by one byte at
+    /// offset 61 and comparing those measures the clock rather than the
+    /// sampler. That is not a hypothetical — it is what the first run of this
+    /// criterion found, and the reason it reads this way.
+    ///
+    /// The timestamp reaches nothing downstream:
+    /// `cache::write_canonical_samples` decodes, conditions, and rewrites every
+    /// take through `hound` from the samples and a fixed spec, so a published
+    /// entry carries no `PEAK` chunk.
+    /// Re-encoding both takes the same way is therefore not an approximation of
+    /// the gate — it *is* the artifact the gate names.
     fn passed(&self) -> bool {
         self.identical_bytes
     }
@@ -563,16 +575,17 @@ impl RenderComparison {
     fn observed(&self, seed: u64) -> String {
         if self.identical_bytes {
             return format!(
-                "two fresh lifetimes under launcher seed {seed} wrote byte-identical canonical \
-                 WAVs of {} frames at SHA-256 {}",
-                self.frames[0], self.digests[0]
+                "two fresh lifetimes under launcher seed {seed} produced byte-identical canonical \
+                 WAVs of {} frames at SHA-256 {}; the takes as staged differ only in libsndfile's \
+                 `PEAK` wall-clock stamp ({} and {}), which no published entry carries",
+                self.frames[0], self.digests[0], self.staged_digests[0], self.staged_digests[1]
             );
         }
         if self.differing_frames == 0 {
             return format!(
                 "two fresh lifetimes under launcher seed {seed} decoded to identical PCM over \
-                 {} frames and wrote different bytes, SHA-256 {} and {}: the sampler is \
-                 reproducible and the published artifact is not",
+                 {} frames and still re-encoded to different canonical bytes, SHA-256 {} and {}: \
+                 the sampler is reproducible and the canonical encoder is not",
                 self.frames[0], self.digests[0], self.digests[1]
             );
         }
@@ -606,8 +619,12 @@ impl RenderComparison {
 /// Whatever reading either file reports, and a refusal naming the file when it
 /// is not a canonical-format take.
 fn compare_renders(first: &Path, second: &Path) -> Result<RenderComparison, Box<dyn Error>> {
-    let bytes = [fs::read(first)?, fs::read(second)?];
+    let staged = [fs::read(first)?, fs::read(second)?];
     let samples = [decoded_samples(first)?, decoded_samples(second)?];
+    let canonical = [
+        canonical_encoding(&samples[0])?,
+        canonical_encoding(&samples[1])?,
+    ];
 
     let paired = || samples[0].iter().zip(&samples[1]);
     let differing_over_common_frames = paired()
@@ -616,11 +633,15 @@ fn compare_renders(first: &Path, second: &Path) -> Result<RenderComparison, Box<
 
     Ok(RenderComparison {
         digests: [
-            hex(&Sha256::digest(&bytes[0])),
-            hex(&Sha256::digest(&bytes[1])),
+            hex(&Sha256::digest(&canonical[0])),
+            hex(&Sha256::digest(&canonical[1])),
+        ],
+        staged_digests: [
+            hex(&Sha256::digest(&staged[0])),
+            hex(&Sha256::digest(&staged[1])),
         ],
         frames: [samples[0].len(), samples[1].len()],
-        identical_bytes: bytes[0] == bytes[1],
+        identical_bytes: canonical[0] == canonical[1],
         // The length difference counts. Frames one lifetime produced and the
         // other did not are frames the two disagreed on, and zipping alone
         // would report a truncated render as perfect agreement over its own
@@ -631,6 +652,38 @@ fn compare_renders(first: &Path, second: &Path) -> Result<RenderComparison, Box<
             .map(|(left, right)| (left - right).abs())
             .fold(0.0_f32, f32::max),
     })
+}
+
+/// One take re-encoded exactly as the cache would publish it.
+///
+/// Mirrors `cache::write_canonical_samples`: the same fixed spec, written
+/// through `hound` from the samples, with no chunk carrying anything but audio.
+/// A change to that function without a matching change here would compare an
+/// artifact the cache does not write, so the two are named in each other's
+/// comments.
+///
+/// In memory rather than through a file, because nothing needs the bytes to
+/// exist anywhere: what is wanted is whether two sample vectors encode alike.
+///
+/// # Errors
+///
+/// Whatever the encoder reports.
+fn canonical_encoding(samples: &[f32]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    let mut writer = hound::WavWriter::new(
+        &mut buffer,
+        hound::WavSpec {
+            channels: CANONICAL_CHANNELS,
+            sample_rate: CANONICAL_SAMPLE_RATE,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        },
+    )?;
+    for sample in samples {
+        writer.write_sample(*sample)?;
+    }
+    writer.finalize()?;
+    Ok(buffer.into_inner())
 }
 
 /// The canonical float samples one rendered take holds.
@@ -1145,13 +1198,53 @@ mod tests {
         assert_eq!(comparison.differing_frames, 0);
     }
 
+    /// The case the first real run of this criterion found.
+    ///
+    /// `soundfile` writes libsndfile's `PEAK` chunk, which carries the
+    /// wall-clock time of the write. Two lifetimes rendering bit-identical
+    /// audio 35 seconds apart produced staged files differing by one byte at
+    /// offset 61, and the criterion failed on it while the sampler was
+    /// perfectly reproducible. Re-encoding canonically is what makes the
+    /// verdict about the artifact a cache entry is addressed by; this is the
+    /// regression that would catch a return to comparing staged bytes.
     #[test]
-    fn t1_e1_identical_audio_in_differing_containers_is_reported_as_such() {
-        // Built by hand rather than rendered: producing two files whose PCM
-        // agrees and whose bytes do not needs a container this project never
-        // writes, and what is under test is the sentence an operator reads.
+    fn t1_e1_a_container_timestamp_does_not_make_two_takes_irreproducible() {
+        let workspace = TempDir::new().expect("create a timestamp workspace");
+        let first = workspace.path().join("first.wav");
+        let second = workspace.path().join("second.wav");
+        let samples = [0.25_f32, -0.5, 0.75];
+        write_take(&first, &samples);
+        write_take(&second, &samples);
+
+        // Standing in for the `PEAK` stamp: one byte of container metadata,
+        // ahead of the sample data, differing between two identical renders.
+        let mut bytes = std::fs::read(&second).expect("read the second take");
+        bytes[16] ^= 0xff;
+        std::fs::write(&second, &bytes).expect("restamp the second take");
+
+        let comparison = compare_renders(&first, &second).expect("compare two takes");
+
+        assert_ne!(
+            comparison.staged_digests[0], comparison.staged_digests[1],
+            "the staged bytes must differ, or this test exercises nothing"
+        );
+        assert_eq!(comparison.differing_frames, 0, "the audio is identical");
+        assert!(
+            comparison.passed(),
+            "identical audio in a restamped container is reproducible: {}",
+            comparison.observed(42)
+        );
+    }
+
+    #[test]
+    fn t1_e1_a_nondeterministic_canonical_encoder_is_named_as_such() {
+        // Built by hand: the canonical encoder is a pure function of spec and
+        // samples, so this state cannot be produced. It is still the state the
+        // criterion would have to report if that ever stopped being true, and
+        // the sentence must not blame the sampler for it.
         let comparison = RenderComparison {
             digests: ["a".repeat(64), "b".repeat(64)],
+            staged_digests: ["c".repeat(64), "d".repeat(64)],
             frames: [96_000, 96_000],
             identical_bytes: false,
             differing_frames: 0,
@@ -1160,10 +1253,10 @@ mod tests {
 
         let observed = comparison.observed(42);
 
-        assert!(!comparison.passed(), "byte equality is the gate");
+        assert!(!comparison.passed(), "canonical byte equality is the gate");
         assert!(
-            observed.contains("the sampler is reproducible and the published artifact is not"),
-            "the observation must separate the two defects: {observed}"
+            observed.contains("the sampler is reproducible and the canonical encoder is not"),
+            "the observation must name the encoder, not the sampler: {observed}"
         );
     }
 
