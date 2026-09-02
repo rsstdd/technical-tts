@@ -82,6 +82,18 @@ as the cache would and compares those bytes, with the staged digests reported an
 
 ## Limits this change does not close
 
+**The declared capability is broader than the evidence behind it, and that gap is recorded rather
+than closed.** `deterministic_seed` is a blanket claim made to every consumer and reaching every
+cache key; what was measured is one environment, one seed, one sentence, one voice, and one pair of
+worker lifetimes. The value is retained at this identity for evidence consistency — the
+implementation, requalification, package render, listening reviews, and G1 gate record all describe
+`1af4e1713ee3eb7e96d6d0f4d2845f741e78e8a87dd320796f1e561f0f179d05`, and changing it would move the
+identity out from under all of them. **Retention is not endorsement.** Narrowing it, and
+establishing an envelope wide enough to justify whatever is then asserted, is a mandatory obligation
+at the next worker-bundle identity move; `docs/architecture/G1-FREEZE-CHARTER.md` §Obligations owed
+at the next worker-bundle identity move carries it, and governs where any record here reads more
+generally than the measurement supports.
+
 - **Reproducibility is claimed for this environment, not in general.** ADR-0001 §12.5 says
   identical seeds do not guarantee identical output across dependency, platform, or execution
   changes, and this measurement was taken on one machine, one bundle, one seed, one sentence.

@@ -14,11 +14,11 @@ at G0; freeze at G1".
 
 `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` §G1 freeze mandates nine fields for every
 frozen contract — contract, owner, consumers, canonical representation, compatibility rule,
-contract tests, identity effect, migration, approval. **The columns below are those nine fields and
-are not a second copy of them.** That document is the authority for what each column means; if the
-two ever disagree, it wins and this charter is wrong. Approval is the one field kept out of the
-table, in §Approval, because it is one decision per role over the whole charter rather than a cell
-per row.
+contract tests, identity effect, migration, approval. **The columns below are the first eight
+fields and are not a second copy of them.** That document is the authority for what each column
+means; if the two ever disagree, it wins and this charter is wrong. Approval is the one field kept
+out of the table, in §Approval, because it is one decision per role over the whole charter rather
+than a cell per row.
 
 ## What "frozen" means here, and what it does not
 
@@ -119,15 +119,59 @@ Freezing it in does not close the door — it prices the door, and this paragrap
 as one already-paid identity move rather than a new one. `worker/bundle-manifest.json` `inputs` is
 frozen **as it stands**, `pyproject.toml` included, with this as the standing exception.
 
+## Obligations owed at the next worker-bundle identity move
+
+Two corrections are owed and neither is discretionary. Both are deferred for the same reason — each
+would otherwise force a qualification cycle of its own — and both are **mandatory** at the next
+change that moves the worker-bundle identity for reasons of its own. They are recorded here rather
+than in `worker/study_tts_worker/worker.py`, because that file is a declared bundle input and a
+comment added to it would itself move the identity this charter freezes.
+
+### 1. Remove `worker/pyproject.toml` from the declared bundle inputs
+
+Per §The open §12.5 question above. It does not semantically belong in the identity under
+ADR-0001 §12.5, and its continued inclusion is a compatibility decision rather than an endorsement
+of the current identity definition.
+
+### 2. Narrow or requalify `capabilities.deterministic_seed`
+
+**`deterministic_seed = True` is retained for the qualified identity
+`1af4e1713ee3eb7e96d6d0f4d2845f741e78e8a87dd320796f1e561f0f179d05`, for evidence consistency.** The
+committed implementation, the requalification result, the package render, both listening reviews,
+and the G1 gate record all describe that one identity, and changing the declaration now would move
+the identity out from under every one of them.
+
+**Retention is not endorsement, and the distinction is the point.** What was measured is one
+environment, one seed, one sentence, one voice, and one pair of worker lifetimes.
+`t5_e1_two_lifetimes_render_identical_audio_under_one_seed` observed zero of 92 160 frames differing
+and byte-identical canonical WAVs — a real result, and a **narrow** one. It does **not** establish
+that a blanket deterministic-worker capability is warranted. The qualification envelope is too
+narrow to support that general claim, and a capability declared to every consumer is a general
+claim.
+
+At the next otherwise-required identity move, in the **same** cycle as obligation 1:
+
+- change `deterministic_seed` to the value and semantics the evidence actually supports;
+- establish a broader qualification envelope **before** asserting any general deterministic
+  capability — enough variation in input text, voices and configurations, and seeds or deterministic
+  conditions to justify what is being asserted;
+- perform requalification, package rendering, listening review, and gate evidence for the new
+  identity **after both changes are present**, so one cycle covers both.
+
+**Nothing in the current G1 evidence may be read as claiming more than it demonstrates.**
+`E1-S3-INTERFACE-CHANGE-005` §Limits states the observed envelope; where any record generalizes
+beyond it, that record is wrong and this paragraph governs.
+
 ## What this charter does not freeze, and cannot
 
 - **Nothing measured.** A charter records contracts and versions. It attests no qualification
   result, no listening review, and no rendered package.
 - **`determinism_class`'s value, as distinct from its field.** The charter freezes the field. The
-  value was a measurement owed by the reference machine, and it has since been taken: two fresh
-  lifetimes produced byte-identical canonical WAVs over 92 160 frames, so the worker declares
-  `reproducible` per `E1-S3-INTERFACE-CHANGE-005`. That result is bounded to one environment, one
-  seed, and one sentence, and the freeze does not widen it.
+  bounded result used at acceptance is recorded outside this charter in
+  `evidence/gates/g1/e1-s3/e1-s5-requalification-result.json`: two fresh lifetimes produced
+  byte-identical canonical WAVs over 92 160 frames. This charter references that result; it does
+  not attest it, qualify a wider corpus, or widen it beyond one environment, one seed, and one
+  sentence.
 - **The E1-S5 story and the G1 gate.** Those are evidence records against measured bytes, and this
   is not one.
 

@@ -11,17 +11,19 @@
 
 ## Scope and criteria
 
-`DELIVERY-PLAN.md` §E1-S5 states G1 acceptance as four conjuncts. They are taken here in the order
-the plan writes them, and each is answered by a record rather than by this one.
+`DELIVERY-PLAN.md` §E1-S5 states G1 acceptance as four conjuncts. The first four rows take them in
+the order the plan writes them. The final two rows are required supporting evidence under
+ADR-0001 §17.5 and the E1-S3 qualification criteria; they are supplementary to the four-conjunct
+count, not optional.
 
-| Requirement | Story | Test/evidence ID | Result | Artifact link/checksum |
-|---|---|---|---|---|
-| A reviewed three-segment lesson renders through real Chatterbox and produces a complete private-preview package | E1-S4, re-rendered at E1-S5 | `e1-s5-canonical-json-authoring-v1` §Listening material | Pass | package `3dbc3415d84a08177d7fe2e0b0b791a854b9d0309ffb8986424ce09b07b78fe6`, seven artifacts, 14.960 s master, `private_preview` |
-| The lesson is authorable through the published schema and scaffold | E1-S5 | `t4_e1_scaffolded_lesson_validates_without_manual_repair`, `t4_e1_scaffolded_lesson_renders_through_the_walking_skeleton`, `t1_e1_validation_error_names_the_offending_field_path` | Pass | `E1-S5-INTERFACE-CHANGE-001`, Accepted 2026-09-02 |
-| Fake and real implementations pass shared contracts | E1-S1, E1-S3, E1-S4, E1-S5 | `run_tts_executor_contract_scenario`, `run_cache_contract_scenario`, `run_package_writer_contract_scenario`, `run_job_repository_contract_scenario` | Pass | See §The seam that closed last |
-| The G1 interfaces freeze through a versioned charter | E1-S5 | `docs/architecture/G1-FREEZE-CHARTER.md` | Pass | Accepted 2026-09-02; eighteen contracts, twenty-one versioned constants accounted for |
-| Human listening review (ADR-0001 §17.5) | E1-S5 | `e1-s5-canonical-json-authoring-v1` §Review result | Pass | Taken 2026-09-02, built-in laptop speakers, no finding on any of five criteria, disposition `accept` |
-| Reference-machine qualification, offline | E1-S3, requalified at E1-S5 | six `t5_e1_` criteria | Pass | [`e1-s5-requalification-result.json`](e1-s3/e1-s5-requalification-result.json), SHA-256 `bebee3e0b2c5e0bbe6586ef65d2a5918f57537088d25535477c2097a98b8d4c0` |
+| Requirement | Classification | Story | Test/evidence ID | Result | Artifact link/checksum |
+|---|---|---|---|---|---|
+| A reviewed three-segment lesson renders through real Chatterbox and produces a complete private-preview package | Required G1 conjunct | E1-S4, re-rendered at E1-S5 | `e1-s5-canonical-json-authoring-v1` §Listening material | Pass | package `3dbc3415d84a08177d7fe2e0b0b791a854b9d0309ffb8986424ce09b07b78fe6`, seven artifacts, 14.960 s master, `private_preview` |
+| The lesson is authorable through the published schema and scaffold | Required G1 conjunct | E1-S5 | `t4_e1_scaffolded_lesson_validates_without_manual_repair`, `t4_e1_scaffolded_lesson_renders_through_the_walking_skeleton`, `t1_e1_validation_error_names_the_offending_field_path` | Pass | `E1-S5-INTERFACE-CHANGE-001`, Accepted 2026-09-02 |
+| Fake and real implementations pass shared contracts | Required G1 conjunct | E1-S1, E1-S3, E1-S4, E1-S5 | `run_tts_executor_contract_scenario`, `run_cache_contract_scenario`, `run_package_writer_contract_scenario`, `run_job_repository_contract_scenario` | Pass | See §The seam that closed last |
+| The G1 interfaces freeze through a versioned charter | Required G1 conjunct | E1-S5 | `docs/architecture/G1-FREEZE-CHARTER.md` | Pass | Accepted 2026-09-02; eighteen contracts, twenty-one versioned constants accounted for |
+| Human listening review (ADR-0001 §17.5) | Required supporting evidence | E1-S5 | `e1-s5-canonical-json-authoring-v1` §Review result | Pass | Taken 2026-09-02, built-in laptop speakers, no finding on any of five criteria, disposition `accept` |
+| Reference-machine qualification, offline | Required supporting evidence | E1-S3, requalified at E1-S5 | six `t5_e1_` criteria | Pass | [`e1-s5-requalification-result.json`](e1-s3/e1-s5-requalification-result.json), SHA-256 `bebee3e0b2c5e0bbe6586ef65d2a5918f57537088d25535477c2097a98b8d4c0` |
 
 ## The seam that closed last
 
@@ -60,9 +62,9 @@ candidate this gate accepts.
 
 | Finding | Severity | Owner | Required action | Deadline |
 |---|---|---|---|---|
-| `worker/pyproject.toml` is a declared bundle input though ADR-0001 §12.5 does not list it | Minor | Engineering owner | Remove it from `worker/bundle-manifest.json` `inputs` at the next change that moves the worker-bundle identity for its own reasons, per `G1-FREEZE-CHARTER` §The open §12.5 question. `check_requirements_match_lock` makes the failure mode unreachable meanwhile | Next identity move |
+| `worker/pyproject.toml` is a declared bundle input though ADR-0001 §12.5 does not list it | Minor | Engineering owner | Remove it from `worker/bundle-manifest.json` `inputs` at the next change that moves the worker-bundle identity for its own reasons, in the same cycle as the capability obligation below, per `G1-FREEZE-CHARTER` §Obligations owed at the next worker-bundle identity move. `check_requirements_match_lock` makes the failure mode unreachable meanwhile | Next identity move |
 | Fourteen evidence citations name file versions never committed | Minor | Project owner | Issue #71's reconciliation, and `check_evidence_citations.py` into CI with `fetch-depth: 0` once it is accepted. Gates nothing here: every affected record is superseded or reconciled, and `check-evidence-provenance.py` passes | E2 |
-| Reproducibility is measured for one environment, one seed, one sentence | Minor | Engineering owner | Widen the criterion's corpus if a later story depends on reproducibility beyond cache-key stability | E5-S2 |
+| `deterministic_seed` is declared `True` on an envelope of one environment, one seed, one sentence, one voice, and one pair of lifetimes | Minor | Engineering owner | Retained at this identity for evidence consistency; **retention is not endorsement**. Narrow it and establish a wider envelope at the next worker-bundle identity move, per `G1-FREEZE-CHARTER` §Obligations owed at the next worker-bundle identity move | Next identity move |
 | ADR-0003, ADR-0004, ADR-0005 remain `Proposed` | Minor | Project owner | Each awaits evidence from E2-S3, E5-S1, E6-S2, or E4 and carries a "Decision to be completed" section. None gates G1 | Their own epics |
 
 ## Decision
