@@ -546,8 +546,9 @@ struct RenderComparison {
     identical_bytes: bool,
     /// Frames whose sample bits differ, plus the difference in frame counts.
     differing_frames: usize,
-    /// The largest absolute sample difference over the frames both hold.
-    largest_difference: f32,
+    /// The largest absolute sample difference over the frames both hold, or
+    /// none when a differing pair has no numeric distance.
+    largest_difference: Option<f32>,
 }
 
 impl RenderComparison {
@@ -560,6 +561,13 @@ impl RenderComparison {
     /// offset 61 and comparing those measures the clock rather than the
     /// sampler. That is not a hypothetical — it is what the first run of this
     /// criterion found, and the reason it reads this way.
+    ///
+    /// **ADR-0002 characterized the same thing at G0**, which is worth knowing
+    /// before treating a container difference here as news: its decision table
+    /// records "container bytes vary; decoded PCM identical in 10/10 … `PEAK`
+    /// timestamp only, correlation/cosine `1.0`". An instrument that failed a
+    /// backend over that byte would be contradicting a ratified
+    /// characterization rather than discovering something.
     ///
     /// The timestamp reaches nothing downstream:
     /// `cache::write_canonical_samples` decodes, conditions, and rewrites every
@@ -589,11 +597,17 @@ impl RenderComparison {
                 self.frames[0], self.digests[0], self.digests[1]
             );
         }
+        let difference = match self.largest_difference {
+            Some(largest) => format!("by at most {largest:e}"),
+            None => {
+                "including mismatched non-numeric samples, so no numeric maximum exists".to_owned()
+            }
+        };
         format!(
-            "two fresh lifetimes under launcher seed {seed} disagreed on {} frames, by at most \
-             {:e}; they decoded to {} and {} frames, SHA-256 {} and {}",
+            "two fresh lifetimes under launcher seed {seed} disagreed on {} frames, {}; they \
+             decoded to {} and {} frames, SHA-256 {} and {}",
             self.differing_frames,
-            self.largest_difference,
+            difference,
             self.frames[0],
             self.frames[1],
             self.digests[0],
@@ -613,6 +627,7 @@ impl RenderComparison {
 /// Samples are compared as bit patterns rather than with `==`, so a NaN
 /// compares equal to itself: an encoder that emitted one in both lifetimes is
 /// reproducible, and float equality would report that as a difference forever.
+/// Distinct NaN payloads remain differences but have no numeric distance.
 ///
 /// # Errors
 ///
@@ -649,8 +664,11 @@ fn compare_renders(first: &Path, second: &Path) -> Result<RenderComparison, Box<
         differing_frames: differing_over_common_frames
             + samples[0].len().abs_diff(samples[1].len()),
         largest_difference: paired()
+            .filter(|(left, right)| left.to_bits() != right.to_bits())
             .map(|(left, right)| (left - right).abs())
-            .fold(0.0_f32, f32::max),
+            .try_fold(0.0_f32, |largest, difference| {
+                (!difference.is_nan()).then(|| largest.max(difference))
+            }),
     })
 }
 
@@ -1119,7 +1137,7 @@ mod tests {
     ///
     /// `t5_e1_two_lifetimes_render_identical_audio_under_one_seed` can only run
     /// on the reference machine, so nothing would otherwise ever exercise the
-    /// code deciding its verdict. These four cover the decision; the reference
+    /// code deciding its verdict. These tests cover the decision; the reference
     /// machine supplies the audio.
     #[test]
     fn t1_e1_two_identical_takes_compare_as_reproducible() {
@@ -1137,11 +1155,7 @@ mod tests {
 
         assert!(!comparison.passed());
         assert_eq!(comparison.differing_frames, 1);
-        assert!(
-            (comparison.largest_difference - 0.25).abs() < f32::EPSILON,
-            "the reported difference must be the one that was heard, got {}",
-            comparison.largest_difference
-        );
+        assert_eq!(comparison.largest_difference, Some(0.25));
     }
 
     #[test]
@@ -1198,6 +1212,22 @@ mod tests {
         assert_eq!(comparison.differing_frames, 0);
     }
 
+    #[test]
+    fn t4_e1_distinct_nan_payloads_are_reported_without_a_false_numeric_maximum() {
+        let first_nan = f32::from_bits(0x7fc0_0000);
+        let second_nan = f32::from_bits(0x7fc0_0001);
+
+        let comparison = compare(&[first_nan], &[second_nan]);
+        let observed = comparison.observed(42);
+
+        assert_eq!(comparison.differing_frames, 1);
+        assert_eq!(comparison.largest_difference, None);
+        assert!(
+            observed.contains("no numeric maximum exists"),
+            "mismatched NaN payloads must not be reported as a zero difference: {observed}"
+        );
+    }
+
     /// The case the first real run of this criterion found.
     ///
     /// `soundfile` writes libsndfile's `PEAK` chunk, which carries the
@@ -1216,11 +1246,15 @@ mod tests {
         write_take(&first, &samples);
         write_take(&second, &samples);
 
-        // Standing in for the `PEAK` stamp: one byte of container metadata,
-        // ahead of the sample data, differing between two identical renders.
-        let mut bytes = std::fs::read(&second).expect("read the second take");
-        bytes[16] ^= 0xff;
-        std::fs::write(&second, &bytes).expect("restamp the second take");
+        // A valid ancillary chunk stands in for the differing `PEAK` stamp
+        // without making the container malformed.
+        let mut bytes = fs::read(&second).expect("read the second take");
+        bytes.extend_from_slice(b"JUNK");
+        bytes.extend_from_slice(&4_u32.to_le_bytes());
+        bytes.extend_from_slice(&0xdead_beef_u32.to_le_bytes());
+        let riff_length = u32::try_from(bytes.len() - 8).expect("WAV length fits in RIFF");
+        bytes[4..8].copy_from_slice(&riff_length.to_le_bytes());
+        fs::write(&second, &bytes).expect("restamp the second take");
 
         let comparison = compare_renders(&first, &second).expect("compare two takes");
 
@@ -1248,7 +1282,7 @@ mod tests {
             frames: [96_000, 96_000],
             identical_bytes: false,
             differing_frames: 0,
-            largest_difference: 0.0,
+            largest_difference: Some(0.0),
         };
 
         let observed = comparison.observed(42);
