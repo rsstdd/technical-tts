@@ -523,7 +523,7 @@ grep -v '^chatterbox-tts==' worker/requirements.lock | \
     --force-reinstall --no-build-isolation --requirement /dev/stdin
 ```
 
-The first command installs the hashed `setuptools==78.1.0` wheel before the second builds the sole
+The first command installs the hashed `setuptools==81.0.0` wheel before the second builds the sole
 sdist; `--no-build-isolation` prevents that build from resolving an unrecorded build environment.
 The second command force-reinstalls every pin, so reusing an otherwise clean destination cannot
 leave stale same-version bytes in place. `--no-index` makes this phase offline and proves the
@@ -664,10 +664,20 @@ together.
 
 1. Create a scratch environment: `python3.12 -m venv /tmp/worker-lock`.
 2. Assert CPython 3.12.3 and `pip==24.0` as in the restore procedure; do not upgrade the installer.
-3. Install only the direct dependencies declared in `worker/pyproject.toml`, using the four
-   resolution directives recorded at the top of `requirements.lock`.
+3. Install, using the four resolution directives recorded at the top of `requirements.lock`: the
+   direct dependencies `worker/pyproject.toml` declares **other than `chatterbox-tts`**, the
+   dependencies the governed tree's own `pyproject.toml` declares, and the `setuptools` pin from
+   `[build-system]`. **Not `chatterbox-tts` from an index.** The published metadata for
+   `chatterbox-tts==0.1.2` carries its own `Requires-Dist: torch==...`, which resolves against the
+   index's copy rather than the governed tree's — so installing it here would silently reimpose the
+   pin the governed tree exists to control, and a lock regenerated after relaxing that pin would
+   fail to resolve for a reason nothing in this procedure names.
 4. Install the governed `chatterbox-tts` source tree with `--isolated --no-deps
    --no-build-isolation --force-reinstall`.
+   **`s3tokenizer` is pinned by hand, not by resolution.** The governed tree declares it with no
+   version at all, so an unpinned resolve takes whatever is newest and freezes a backend change into
+   a lock named after something else. Carry the version the previous lock resolved unless moving it
+   is the point of the change.
 5. Freeze: `/tmp/worker-lock/bin/python -m pip freeze`.
 6. Replace the `chatterbox-tts @ file://...` line with `chatterbox-tts==<version>` and a comment
    recording the commit, so the lock never carries a machine-local path.

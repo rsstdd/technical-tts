@@ -1,10 +1,12 @@
-//! Encoding the master WAV to M4A through FFmpeg, and verifying the result
-//! with ffprobe.
+//! Encoding the master WAV to M4A and MP3 through FFmpeg, and verifying the
+//! master and both exports with ffprobe.
 //!
-//! The codec, channel count, and stream count this build produces are named
+//! The codec, channel count, and stream count each artifact carries are named
 //! once and used by both ends: the encode maps them and the probe verifies
 //! them, so the verification cannot drift into passing something the encoder
-//! no longer writes.
+//! no longer writes. Both exports are encoded from the master and never from
+//! each other, which [`EncodedFormat`] makes a property of the type rather than
+//! of a call site remembering to pass the right path.
 //!
 //! `ProbeResponse` is the one deserialization boundary in this workspace
 //! without `deny_unknown_fields`. It parses a diagnostic tool's output rather
@@ -19,16 +21,39 @@ use tempfile::Builder;
 
 use crate::{
     BuildError, ManagedPathError, ToolError, ToolInvocation, ToolOperation, io_error,
-    process::{self, CommandRunError, FFMPEG_ENCODE_POLICY, FFPROBE_POLICY},
+    process::{self, CommandRunError, FFMPEG_ENCODE_POLICY, FFPROBE_POLICY, VERSION_PROBE_POLICY},
     tools::ToolIdentity,
 };
 
-/// The audio codec every encoded output carries.
+/// The audio codec the M4A export carries.
 ///
 /// One definition for both ends of the agreement: the FFmpeg profile encodes
-/// to it and `probe_m4a` verifies it. Two literals could drift apart silently,
-/// leaving verification passing something the encoder no longer produces.
-const REQUIRED_CODEC: &str = "aac";
+/// to it and [`PackagedAudio::codec`] verifies it. Two literals could drift
+/// apart silently, leaving verification passing something the encoder no longer
+/// produces.
+const M4A_CODEC: &str = "aac";
+
+/// The audio codec the MP3 export carries, on the same terms.
+///
+/// The encoder is `libmp3lame` and the codec ffprobe reports for what it writes
+/// is `mp3`; the two are different names for the two ends of one agreement and
+/// neither can be derived from the other.
+const MP3_CODEC: &str = "mp3";
+
+/// The FFmpeg encoder that produces [`MP3_CODEC`].
+///
+/// Named separately because this is the token `preflight_encoder` looks for in
+/// `ffmpeg -encoders`: an FFmpeg built without it encodes no MP3, and a build
+/// that discovered that after synthesis would have wasted the whole render.
+pub(crate) const MP3_ENCODER: &str = "libmp3lame";
+
+/// The sample format the canonical master carries, as ffprobe names it.
+///
+/// `cache` and `assembly` already hold the master to
+/// [`study_tts_core::CANONICAL_SAMPLE_FORMAT`]; this is the same requirement
+/// stated in ffprobe's vocabulary, so the structural validation of the master
+/// is performed by a decoder this build did not write.
+const MASTER_WAV_CODEC: &str = "pcm_f32le";
 
 /// The channel count every encoded output carries, on the same terms.
 ///
@@ -56,7 +81,7 @@ const REQUIRED_STREAMS: usize = 1;
 const INPUT_PATH_ARGUMENT: &str = "{input_path}";
 const OUTPUT_PATH_ARGUMENT: &str = "{output_path}";
 
-const FFMPEG_ARGUMENT_PROFILE: &[&str] = &[
+const FFMPEG_M4A_ARGUMENT_PROFILE: &[&str] = &[
     "-nostdin",
     "-hide_banner",
     "-loglevel",
@@ -72,11 +97,54 @@ const FFMPEG_ARGUMENT_PROFILE: &[&str] = &[
     "-channel_layout",
     REQUIRED_CHANNEL_LAYOUT,
     "-c:a",
-    REQUIRED_CODEC,
+    M4A_CODEC,
     "-b:a",
     "96k",
     OUTPUT_PATH_ARGUMENT,
 ];
+
+/// The MP3 encode, which is the M4A profile with its codec and bitrate
+/// swapped.
+///
+/// Deliberately not derived from [`FFMPEG_M4A_ARGUMENT_PROFILE`] by editing a
+/// copy at run time: both lists are hashed into the tool-profile identities the
+/// manifest records and package reuse compares, so each one is written out to
+/// be read against the manifest it produces.
+///
+/// The codec and bitrate are **provisional**. ADR-0003 is `Proposed; awaiting
+/// calibration` and records "MP3 codec arguments" as `Pending`, so this build
+/// chooses a value no *audio* profile states, under the bounded permission in
+/// `docs/adr/deviations/ADR-0001-D009-provisional-mp3-profile.md`, which is
+/// approved, expires when ADR-0003 is accepted, and names this constant in
+/// return.
+const FFMPEG_MP3_ARGUMENT_PROFILE: &[&str] = &[
+    "-nostdin",
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-y",
+    "-i",
+    INPUT_PATH_ARGUMENT,
+    "-map_metadata",
+    "-1",
+    "-vn",
+    "-ac",
+    "1",
+    "-channel_layout",
+    REQUIRED_CHANNEL_LAYOUT,
+    "-c:a",
+    MP3_ENCODER,
+    "-b:a",
+    "128k",
+    OUTPUT_PATH_ARGUMENT,
+];
+
+/// The encoder inventory probe, which carries no path at all.
+///
+/// Preflight rather than lazy discovery, on the terms `tools.rs` already sets:
+/// an FFmpeg with no MP3 encoder must be refused before this build synthesizes
+/// anything, not after it has rendered every segment.
+const FFMPEG_ENCODERS_ARGUMENT_PROFILE: &[&str] = &["-nostdin", "-hide_banner", "-encoders"];
 
 const FFPROBE_ARGUMENT_PROFILE: &[&str] = &[
     "-v",
@@ -139,12 +207,133 @@ pub(crate) struct ToolExecution {
 }
 
 /// Path-normalized FFmpeg and ffprobe argument identities for one build.
+///
+/// One ffprobe profile covers all three validations because the probe asks the
+/// same question of every artifact and differs only in the path it is handed;
+/// the encodes differ in their arguments, so each carries its own identity.
 #[derive(Clone, Debug)]
 pub(crate) struct ExportProfiles {
-    /// Encoding argument identity.
-    pub ffmpeg: ToolProfile,
+    /// M4A encoding argument identity.
+    pub ffmpeg_m4a: ToolProfile,
+    /// MP3 encoding argument identity.
+    pub ffmpeg_mp3: ToolProfile,
+    /// Encoder-inventory preflight argument identity.
+    pub ffmpeg_encoders: ToolProfile,
     /// Probe argument identity.
     pub ffprobe: ToolProfile,
+}
+
+impl ExportProfiles {
+    /// Every argument identity this build can record, in a stable order.
+    ///
+    /// Package reuse compares this set rather than a per-tool pair, and
+    /// `preview::transaction_identity` hashes it: adding a format changes the
+    /// set, so a package written before that format existed stops matching and
+    /// is rebuilt rather than silently reused as complete.
+    ///
+    /// Destructured rather than read field by field, and with no `..`: a
+    /// profile added to this struct then fails to compile here instead of
+    /// being quietly absent from both the reuse comparison and the transaction
+    /// identity, which is the one failure this list exists to prevent.
+    pub(crate) fn identities(&self) -> [&ToolProfileHash; 4] {
+        let Self {
+            ffmpeg_m4a,
+            ffmpeg_mp3,
+            ffmpeg_encoders,
+            ffprobe,
+        } = self;
+        [
+            ffmpeg_m4a.identity(),
+            ffmpeg_mp3.identity(),
+            ffmpeg_encoders.identity(),
+            ffprobe.identity(),
+        ]
+    }
+}
+
+/// One audio artifact this build both produces and structurally validates.
+///
+/// The master is in this enum and not in [`EncodedFormat`] because Rust writes
+/// it and FFmpeg does not: the two enums exist so that "encode the master WAV"
+/// cannot be spelled at all, rather than being spelled and then refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PackagedAudio {
+    /// The canonical lossless master `assembly` writes.
+    MasterWav,
+    /// The M4A derived from the master.
+    M4a,
+    /// The MP3 derived from the master.
+    Mp3,
+}
+
+impl PackagedAudio {
+    /// The codec ffprobe must report for this artifact.
+    pub(crate) fn codec(self) -> &'static str {
+        match self {
+            Self::MasterWav => MASTER_WAV_CODEC,
+            Self::M4a => M4A_CODEC,
+            Self::Mp3 => MP3_CODEC,
+        }
+    }
+
+    /// Which validation a supervision failure should name.
+    fn validation(self) -> ToolOperation {
+        match self {
+            Self::MasterWav => ToolOperation::MasterWavValidation,
+            Self::M4a => ToolOperation::M4aValidation,
+            Self::Mp3 => ToolOperation::Mp3Validation,
+        }
+    }
+}
+
+/// One lossy format derived independently from the canonical master.
+///
+/// ADR-0001 §13.5 requires both exports to come from the master rather than
+/// from each other, and `encode` taking the master path is what makes a
+/// lossy-to-lossy chain unspellable here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EncodedFormat {
+    /// The default listening file.
+    M4a,
+    /// The compatibility output.
+    Mp3,
+}
+
+impl EncodedFormat {
+    /// The artifact this format becomes once encoded.
+    pub(crate) fn packaged(self) -> PackagedAudio {
+        match self {
+            Self::M4a => PackagedAudio::M4a,
+            Self::Mp3 => PackagedAudio::Mp3,
+        }
+    }
+
+    /// The argument identity that produces this format.
+    fn profile(self, profiles: &ExportProfiles) -> &ToolProfile {
+        match self {
+            Self::M4a => &profiles.ffmpeg_m4a,
+            Self::Mp3 => &profiles.ffmpeg_mp3,
+        }
+    }
+
+    /// Which encode a supervision failure should name.
+    fn encode(self) -> ToolOperation {
+        match self {
+            Self::M4a => ToolOperation::M4aEncode,
+            Self::Mp3 => ToolOperation::Mp3Encode,
+        }
+    }
+
+    /// The suffix the staged file carries while FFmpeg is writing it.
+    ///
+    /// FFmpeg selects its muxer from the output extension, so a staged file
+    /// named without one would be encoded as something else entirely.
+    fn staging_suffix(self) -> &'static str {
+        match self {
+            Self::M4a => ".m4a",
+            Self::Mp3 => ".mp3",
+        }
+    }
 }
 
 /// One tool's normalized argument sequence and deterministic identity.
@@ -191,20 +380,23 @@ impl ToolProfile {
 /// Returns the command profiles that define this build's export behavior.
 pub(crate) fn export_profiles() -> ExportProfiles {
     ExportProfiles {
-        ffmpeg: ToolProfile::new("ffmpeg", FFMPEG_ARGUMENT_PROFILE),
+        ffmpeg_m4a: ToolProfile::new("ffmpeg", FFMPEG_M4A_ARGUMENT_PROFILE),
+        ffmpeg_mp3: ToolProfile::new("ffmpeg", FFMPEG_MP3_ARGUMENT_PROFILE),
+        ffmpeg_encoders: ToolProfile::new("ffmpeg", FFMPEG_ENCODERS_ARGUMENT_PROFILE),
         ffprobe: ToolProfile::new("ffprobe", FFPROBE_ARGUMENT_PROFILE),
     }
 }
 
-/// Encodes the master WAV to M4A, returning what FFmpeg was told to do.
+/// Encodes the master WAV to one lossy format, returning what FFmpeg was told
+/// to do.
 ///
-/// Encoded to a staged path beside the destination and renamed on success, so
-/// a failed encode never leaves a partial `.m4a` for a later step to find. The
+/// Encoded to a staged path beside the destination and renamed on success, so a
+/// failed encode never leaves a partial export for a later step to find. The
 /// staging guard is held across the encode rather than released once it has
 /// reserved a name: FFmpeg opens its output container before it can discover
 /// it cannot finish, so a failure after that point leaves a partial file that
 /// only the guard's drop removes. Previews are what an operator listens
-/// through, and one that accumulates a partial `.m4a` per failed encode stops
+/// through, and one that accumulates a partial export per failed encode stops
 /// being a record of what the build produced.
 ///
 /// A process killed outright still leaves the staged file because no drop runs.
@@ -236,12 +428,14 @@ pub(crate) fn export_profiles() -> ExportProfiles {
 /// invariant fails;
 /// [`ToolError::Ffmpeg`] carrying the status and stderr when it runs and fails;
 /// otherwise [`crate::IoError::FileSystem`].
-pub(crate) fn export_m4a(
+pub(crate) fn encode(
     ffmpeg: &ToolIdentity,
-    profile: &ToolProfile,
+    profiles: &ExportProfiles,
+    format: EncodedFormat,
     master_wav: &Path,
     destination: &Path,
 ) -> Result<ToolExecution, BuildError> {
+    let profile = format.profile(profiles);
     let parent = destination
         .parent()
         .ok_or_else(|| ManagedPathError::UnrootedDestination {
@@ -252,7 +446,7 @@ pub(crate) fn export_m4a(
     // whole `NamedTempFile` here would take the cleanup with it.
     let staged = Builder::new()
         .prefix("lesson-")
-        .suffix(".m4a")
+        .suffix(format.staging_suffix())
         .tempfile_in(parent)
         .map_err(|error| io_error(parent, error))?
         .into_temp_path();
@@ -260,7 +454,7 @@ pub(crate) fn export_m4a(
     let arguments = materialize_arguments(profile, master_wav, Some(&staged));
     let mut command = Command::new(&ffmpeg.resolved_executable);
     command.args(&arguments);
-    let invocation = ToolInvocation::new("FFmpeg", ToolOperation::M4aEncode, destination);
+    let invocation = ToolInvocation::new("FFmpeg", format.encode(), destination);
     let output =
         process::run(invocation, command, FFMPEG_ENCODE_POLICY).map_err(|error| match error {
             CommandRunError::Start(source) => ToolError::StartFfmpeg {
@@ -319,15 +513,16 @@ pub(crate) fn export_m4a(
 /// [`ToolError::UnexpectedEncodedStreamCount`] when the stream count differs;
 /// or [`ToolError::UnexpectedEncodedStream`] when the codec or channel count is
 /// not the one this build encodes to.
-pub(crate) fn probe_m4a(
+pub(crate) fn probe(
     ffprobe: &ToolIdentity,
     profile: &ToolProfile,
-    m4a: &Path,
+    artifact: PackagedAudio,
+    path: &Path,
 ) -> Result<ToolExecution, BuildError> {
-    let arguments = materialize_arguments(profile, m4a, None);
+    let arguments = materialize_arguments(profile, path, None);
     let mut command = Command::new(&ffprobe.resolved_executable);
     command.args(&arguments);
-    let invocation = ToolInvocation::new("ffprobe", ToolOperation::M4aValidation, m4a);
+    let invocation = ToolInvocation::new("ffprobe", artifact.validation(), path);
     let output =
         process::run(invocation, command, FFPROBE_POLICY).map_err(|error| match error {
             CommandRunError::Start(source) => ToolError::InspectTool {
@@ -344,7 +539,7 @@ pub(crate) fn probe_m4a(
         }
         .into());
     }
-    interpret_probe(m4a, &output.stdout)?;
+    interpret_probe(artifact, path, &output.stdout)?;
 
     Ok(ToolExecution {
         arguments: display_arguments(&arguments),
@@ -352,20 +547,94 @@ pub(crate) fn probe_m4a(
     })
 }
 
+/// Refuses an FFmpeg that cannot encode [`MP3_ENCODER`], before any work runs.
+///
+/// Asks the binary rather than trusting the platform: FFmpeg is routinely
+/// packaged without `libmp3lame`, and `tools::inspect` reports only the first
+/// line of `-version`, which says nothing about which encoders were compiled
+/// in. Running here, inside package preflight, is what keeps a missing encoder
+/// from being discovered after a full render has already been synthesized.
+///
+/// # Errors
+///
+/// [`ToolError::StartFfmpeg`] when the binary cannot be launched; the same
+/// supervision variants [`encode`] documents when a named supervision invariant
+/// fails; [`ToolError::Ffmpeg`] when the inventory probe itself exits non-zero;
+/// and [`ToolError::MissingEncoder`] when it succeeds and the encoder is not
+/// listed, which routes the operator to their FFmpeg build.
+pub(crate) fn preflight_encoder(
+    ffmpeg: &ToolIdentity,
+    profile: &ToolProfile,
+    encoder: &'static str,
+) -> Result<ToolExecution, BuildError> {
+    let arguments = materialize_arguments(profile, Path::new(""), None);
+    let mut command = Command::new(&ffmpeg.resolved_executable);
+    command.args(&arguments);
+    let invocation = ToolInvocation::new(
+        "FFmpeg",
+        ToolOperation::EncoderProbe,
+        &ffmpeg.resolved_executable,
+    );
+    let output =
+        process::run(invocation, command, VERSION_PROBE_POLICY).map_err(|error| match error {
+            CommandRunError::Start(source) => ToolError::StartFfmpeg {
+                executable: ffmpeg.resolved_executable.clone(),
+                source,
+            },
+            CommandRunError::Supervision(error) => error,
+        })?;
+    if !output.status.success() {
+        return Err(ToolError::Ffmpeg {
+            status: output.status.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        }
+        .into());
+    }
+    if !lists_encoder(&output.stdout, encoder) {
+        return Err(ToolError::MissingEncoder {
+            executable: ffmpeg.resolved_executable.clone(),
+            encoder,
+        }
+        .into());
+    }
+
+    Ok(ToolExecution {
+        arguments: display_arguments(&arguments),
+        argument_profile_blake3: profile.identity().clone(),
+    })
+}
+
+/// Whether an `ffmpeg -encoders` listing offers `encoder` by that exact name.
+///
+/// Each inventory line is `<capability flags> <name> <description>`, so the
+/// name is the second whitespace-separated token. Matched positionally rather
+/// than by searching the line, because every encoder's description repeats
+/// words that appear in other encoders' names — a substring search finds
+/// `libmp3lame` in the description of a binary that cannot encode MP3 at all.
+fn lists_encoder(listing: &[u8], encoder: &str) -> bool {
+    String::from_utf8_lossy(listing)
+        .lines()
+        .any(|line| line.split_whitespace().nth(1) == Some(encoder))
+}
+
 /// Reads one ffprobe response and decides whether it describes the stream this
 /// build produces.
 ///
-/// Split from `probe_m4a` so both outcomes are reachable without running a real
+/// Split from [`probe`] so both outcomes are reachable without running a real
 /// ffprobe: the failure modes are a response that cannot be read and a response
 /// that reports the wrong stream, and only the first needs bytes a real tool
 /// would never emit.
-fn interpret_probe(m4a: &Path, response: &[u8]) -> Result<(), BuildError> {
+fn interpret_probe(
+    artifact: PackagedAudio,
+    path: &Path,
+    response: &[u8],
+) -> Result<(), BuildError> {
     // Mapped explicitly rather than through `?`, because a probe this build
     // cannot read leaves the output unverified and must not surface as a
     // generic JSON failure naming no subsystem.
     let probe: ProbeResponse =
         serde_json::from_slice(response).map_err(|source| ToolError::UnreadableProbeResponse {
-            path: m4a.to_path_buf(),
+            path: path.to_path_buf(),
             source,
         })?;
 
@@ -374,7 +643,7 @@ fn interpret_probe(m4a: &Path, response: &[u8]) -> Result<(), BuildError> {
     // the stream this build writes, and nothing looked at the rest.
     if probe.streams.len() != REQUIRED_STREAMS {
         return Err(ToolError::UnexpectedEncodedStreamCount {
-            path: m4a.to_path_buf(),
+            path: path.to_path_buf(),
             found: probe.streams.len(),
             required: REQUIRED_STREAMS,
         }
@@ -384,12 +653,12 @@ fn interpret_probe(m4a: &Path, response: &[u8]) -> Result<(), BuildError> {
     let stream = probe.streams.first();
     let codec = stream.and_then(|stream| stream.codec_name.clone());
     let channels = stream.and_then(|stream| stream.channels);
-    if codec.as_deref() != Some(REQUIRED_CODEC) || channels != Some(REQUIRED_CHANNELS) {
+    if codec.as_deref() != Some(artifact.codec()) || channels != Some(REQUIRED_CHANNELS) {
         return Err(ToolError::UnexpectedEncodedStream {
-            path: m4a.to_path_buf(),
+            path: path.to_path_buf(),
             codec,
             channels,
-            required_codec: REQUIRED_CODEC,
+            required_codec: artifact.codec(),
             required_channels: REQUIRED_CHANNELS,
         }
         .into());
@@ -397,13 +666,18 @@ fn interpret_probe(m4a: &Path, response: &[u8]) -> Result<(), BuildError> {
     Ok(())
 }
 
-/// The encode this build performs, stated as one list.
+/// Substitutes the path placeholders in one profile, in order.
 ///
-/// Every flag is load-bearing. `-nostdin` keeps a prompt from hanging an
-/// offline render; `-map_metadata -1` and `-vn` strip anything that did not
-/// come from the master, so the container holds exactly the single stream
-/// `probe_m4a` verifies; the codec, channel count, and channel layout come from
+/// Every flag in the encode profiles is load-bearing. `-nostdin` keeps a prompt
+/// from hanging an offline render; `-map_metadata -1` and `-vn` strip anything
+/// that did not come from the master, so the container holds exactly the single
+/// stream [`probe`] verifies; the channel count and channel layout come from
 /// the constants that verification also reads, so the two cannot drift.
+///
+/// A profile carrying neither placeholder — the encoder inventory — passes
+/// through unchanged, so `input` is simply never consulted. Only `output` is an
+/// `Option`, because only its absence is a real case: a probe has an input and
+/// no output.
 fn materialize_arguments(
     profile: &ToolProfile,
     input: &Path,
@@ -482,9 +756,10 @@ mod tests {
         let destination = directory.path().join("lesson.m4a");
 
         let profiles = export_profiles();
-        let error = export_m4a(
+        let error = encode(
             &identity,
-            &profiles.ffmpeg,
+            &profiles,
+            EncodedFormat::M4a,
             Path::new("/master.wav"),
             &destination,
         )
@@ -496,7 +771,7 @@ mod tests {
 
         // Nothing the encode staged may outlive it. A leftover is not merely
         // untidy: previews are what an operator listens through, and a
-        // directory that accumulates one partial `.m4a` per failed encode
+        // directory that accumulates one partial export per failed encode
         // stops being a record of what the build produced.
         assert!(
             directory.path().join("ran").is_file(),
@@ -526,7 +801,7 @@ mod tests {
             br#"{"streams":"none"}"#,
             br#"{"streams":[{"codec_name":"aac","channels":"two"}]}"#,
         ] {
-            let error = interpret_probe(m4a, unreadable)
+            let error = interpret_probe(PackagedAudio::M4a, m4a, unreadable)
                 .expect_err("an unreadable probe response must not verify an output");
             assert!(
                 matches!(
@@ -554,7 +829,7 @@ mod tests {
                 Some(2),
             ),
         ] {
-            let error = interpret_probe(m4a, &response)
+            let error = interpret_probe(PackagedAudio::M4a, m4a, &response)
                 .expect_err("an unexpected stream must not verify an output");
             assert!(
                 matches!(
@@ -589,7 +864,7 @@ mod tests {
                 2,
             ),
         ] {
-            let error = interpret_probe(m4a, &response)
+            let error = interpret_probe(PackagedAudio::M4a, m4a, &response)
                 .expect_err("a wrong stream count must not verify an output");
             assert!(
                 matches!(
@@ -605,8 +880,12 @@ mod tests {
             );
         }
 
-        interpret_probe(m4a, br#"{"streams":[{"codec_name":"aac","channels":1}]}"#)
-            .expect("one mono AAC stream is the stream this build produces");
+        interpret_probe(
+            PackagedAudio::M4a,
+            m4a,
+            br#"{"streams":[{"codec_name":"aac","channels":1}]}"#,
+        )
+        .expect("one mono AAC stream is the stream this build produces");
     }
 
     // Bounds the `deny_unknown_fields` exception recorded on `ProbeResponse`:
@@ -620,8 +899,12 @@ mod tests {
 
         // The shape a real ffprobe 6.1 emits under the pinned selection. The
         // `programs` array it volunteers is the field strictness would reject.
-        interpret_probe(m4a, &response_for(r#"{"codec_name":"aac","channels":1}"#))
-            .expect("the response a real ffprobe emits must be accepted");
+        interpret_probe(
+            PackagedAudio::M4a,
+            m4a,
+            &response_for(r#"{"codec_name":"aac","channels":1}"#),
+        )
+        .expect("the response a real ffprobe emits must be accepted");
 
         // Each field read here is absent-or-wrong, never defaulted, so a
         // spelling this build no longer recognizes is reported as a stream it
@@ -646,7 +929,7 @@ mod tests {
                 Some(2),
             ),
         ] {
-            let error = interpret_probe(m4a, &response_for(stream))
+            let error = interpret_probe(PackagedAudio::M4a, m4a, &response_for(stream))
                 .expect_err("an unconfirmed stream must not verify an output");
             assert!(
                 matches!(
@@ -664,7 +947,7 @@ mod tests {
         // The container itself is the one rename with nothing to describe, and
         // `#[serde(default)]` is what would otherwise make it look like a file
         // holding no streams rather than a response this build cannot read.
-        let error = interpret_probe(m4a, br#"{"programs":[],"stream":[]}"#)
+        let error = interpret_probe(PackagedAudio::M4a, m4a, br#"{"programs":[],"stream":[]}"#)
             .expect_err("a response with no readable streams must not verify an output");
         assert!(
             matches!(
@@ -675,11 +958,39 @@ mod tests {
         );
     }
 
+    /// Each artifact is held to the codec its own section assigns it.
+    ///
+    /// The T4 suite proves these against real files, but it needs FFmpeg and
+    /// ffprobe to do it, and this claim needs neither: swapping two arms of
+    /// `PackagedAudio::codec` would leave every artifact validated against
+    /// another artifact's codec, and that is readable here.
+    ///
+    /// Matched exhaustively rather than listed, so a fourth artifact is a
+    /// compile error in this test rather than an untested one.
+    #[test]
+    fn t1_e1_each_packaged_artifact_is_held_to_its_own_codec() {
+        for artifact in [
+            PackagedAudio::MasterWav,
+            PackagedAudio::M4a,
+            PackagedAudio::Mp3,
+        ] {
+            let expected = match artifact {
+                // The canonical master ADR-0001 §13.1 defines, as ffprobe
+                // spells it; §13.5's two exports.
+                PackagedAudio::MasterWav => "pcm_f32le",
+                PackagedAudio::M4a => "aac",
+                PackagedAudio::Mp3 => "mp3",
+            };
+
+            assert_eq!(artifact.codec(), expected, "{artifact:?}");
+        }
+    }
+
     #[test]
     fn t1_e0_ffmpeg_arguments_are_pinned_and_explicit() {
         let profiles = export_profiles();
         let arguments = materialize_arguments(
-            &profiles.ffmpeg,
+            &profiles.ffmpeg_m4a,
             Path::new("/input.wav"),
             Some(Path::new("/output.m4a")),
         );

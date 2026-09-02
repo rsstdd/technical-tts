@@ -1,0 +1,36 @@
+# Dependabot configuration.
+#
+# `worker/` is deliberately not given version updates. `worker/pyproject.toml` and
+# `worker/requirements.lock` are both declared inputs in `worker/bundle-manifest.json`, so editing
+# either moves the worker-bundle identity and re-keys every cache entry in the project — ADR-0001
+# §12.5. A bot cannot complete that change: it would also have to regenerate the hashed lock, the
+# manifest's `record_digests`, and the ADR-0002 qualification the identity is recorded against.
+#
+# This is not hypothetical. PR #56 raised `torch` and `setuptools` in the declaration alone, left
+# the lock behind, and moved the bundle identity silently; issue #65 records it, and
+# `check_requirements_match_lock` in `crates/study-tts-runtime/src/worker_environment.rs` now
+# refuses the resulting state before the probe runs. Uplifts are done by hand through
+# `docs/operations/WORKER-ENVIRONMENT.md` §Regenerating the lock — issue #69 is the worked example.
+#
+# **This file does not stop Dependabot security updates**, which is what opened PR #56. Those are
+# governed by the repository's own "Dependabot security updates" setting, not by this
+# configuration, and suppressing them here would need `ignore` rules that hide future genuine
+# advisories for the same packages. They are left on deliberately: a security PR that fails CI is
+# a visible prompt to run the manual procedure, which is better than an alert nobody raises.
+
+# The `cargo` entry exists because the schema requires at least one, and it is held at
+# `open-pull-requests-limit: 0` so this file changes no behavior it was not asked to change: the
+# repository had no version updates before it, and it has none after. Raise the limit to turn
+# grouped Rust version updates on — that is a deliberate decision, not a side effect of recording
+# the note above.
+
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+    groups:
+      cargo:
+        patterns: ["*"]

@@ -61,11 +61,38 @@ pub(crate) struct ToolIdentity {
 /// can record — an unsuccessful exit or empty output alike, since a manifest
 /// that names no version cannot say what produced the build.
 pub(crate) fn inspect(tool: &str, requested: &Path) -> Result<ToolIdentity, BuildError> {
-    let resolved_executable =
-        resolve_executable(requested).ok_or_else(|| ToolError::MissingTool {
+    identify(tool, resolve(tool, requested)?)
+}
+
+/// Resolves one request to a binary without running anything.
+///
+/// Split from [`identify`] so a caller needing several tools can resolve them
+/// all before spawning any: a build that must refuse for a missing ffprobe
+/// should not have started FFmpeg first. [`inspect`] is the two steps together,
+/// for a caller that needs only one tool.
+///
+/// # Errors
+///
+/// [`ToolError::MissingTool`] when nothing executable answers `requested`.
+pub(crate) fn resolve(tool: &str, requested: &Path) -> Result<PathBuf, BuildError> {
+    resolve_executable(requested)
+        .ok_or_else(|| ToolError::MissingTool {
             tool: tool.to_owned(),
             requested: requested.to_path_buf(),
-        })?;
+        })
+        .map_err(Into::into)
+}
+
+/// Records the version an already-resolved binary reports.
+///
+/// # Errors
+///
+/// The supervision and probe failures [`inspect`] documents; resolution has
+/// already happened, so [`ToolError::MissingTool`] is not among them.
+pub(crate) fn identify(
+    tool: &str,
+    resolved_executable: PathBuf,
+) -> Result<ToolIdentity, BuildError> {
     let mut command = Command::new(&resolved_executable);
     command.arg("-version");
     let invocation = ToolInvocation::new(tool, ToolOperation::VersionProbe, &resolved_executable);

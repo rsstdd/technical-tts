@@ -22,6 +22,8 @@ The Delivery Plan and GitHub stories contain the exhaustive named-test lists. Th
 | Managed-path containment | E1-S3, E5-S4 | traversal, symlink, staging-escape tests | G1/M3 |
 | Rust-owned PCM assembly | E1-S4, E2-S3 | exact sample count, edge conditioning, join tests | G1/M2 |
 | Canonical master and independent exports | E1-S4 | structural validation and lossy-source rejection | G1 |
+| Timeline-derived captions and chapters | E1-S4 | chapter boundaries are exact frame counts; caption boundaries are the floored millisecond projection `ADR-0001-D010` approves, with the exact frames retained in `manifest.json`; every artifact checksummed | G1 |
+| Provisional MP3 profile pending calibration | E1-S4, E5-S1 | `ADR-0001-D009`; encoder preflight and profile-change generation tests | G1/G3 |
 | Atomic job state and recovery | E2-S1, E5-S5 | interruption at every state/write boundary | M2/M3 |
 | Explicit takes and prune roots | E2-S2 | stale-base rejection, manifest propagation, prune protection | M2/G3 |
 | Preview loudness versus frozen production references | E2-S3, E5-S1 | provisional/frozen separation and unrelated-retake stability | M2/G3 |

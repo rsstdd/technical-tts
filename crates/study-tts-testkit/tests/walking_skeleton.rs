@@ -19,7 +19,7 @@ use study_tts_core::{CacheKey, LessonError, MAX_LESSON_JSON_BYTES, ReleaseError}
 use study_tts_runtime::{
     BackendDescriptor, BackendError, BuildError, BuildRequest, CacheEntryFault, CacheError,
     DurableStateError, IoError, ManagedPathError, PublicationError, SynthesisReport,
-    SynthesisRequest, ToolError, TtsExecutor, build_preview, publish, validate_encoded_output,
+    SynthesisRequest, ToolError, TtsExecutor, build_preview, publish, validate_m4a_output,
     validate_production_manifest,
 };
 use study_tts_testkit::{
@@ -305,12 +305,17 @@ fn t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest() {
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(&result.manifest).expect("read minimal manifest"))
             .expect("parse minimal manifest");
-    assert_eq!(manifest["schema_version"], "0.2-skeleton");
+    assert_eq!(manifest["schema_version"], "1.0-skeleton");
     assert_eq!(manifest["release_status"], "private_preview");
     assert_eq!(manifest["lesson_id"], "e0-s0-walking-skeleton");
     assert_eq!(manifest["segments"].as_array().map(Vec::len), Some(2));
-    assert!(manifest["artifacts"]["master_wav"]["blake3"].is_string());
-    assert!(manifest["artifacts"]["m4a"]["blake3"].is_string());
+    for artifact in PACKAGE_ARTIFACTS {
+        assert!(
+            manifest["artifacts"][artifact.field]["blake3"].is_string(),
+            "the manifest must record a checksum for `{}`",
+            artifact.name
+        );
+    }
     assert!(manifest["tools"]["ffmpeg"]["resolved_executable"].is_string());
     assert!(
         manifest["tools"]["ffmpeg"]["version"]
@@ -318,16 +323,60 @@ fn t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest() {
             .is_some_and(|version| version.starts_with("ffmpeg version"))
     );
     assert!(
-        manifest["tools"]["ffmpeg"]["arguments"]
-            .as_array()
-            .is_some_and(|arguments| arguments.iter().any(|argument| argument == "mono"))
-    );
-    assert!(
         manifest["tools"]["ffprobe"]["version"]
             .as_str()
             .is_some_and(|version| version.starts_with("ffprobe version"))
     );
+    let executions = manifest["tools"]["executions"]
+        .as_array()
+        .expect("the manifest records every execution");
+    assert!(
+        executions.iter().any(|execution| execution["arguments"]
+            .as_array()
+            .is_some_and(|arguments| arguments.iter().any(|argument| argument == "mono"))),
+        "an encode carrying the pinned channel layout must be recorded"
+    );
 }
+
+/// One package artifact, as the filesystem and the manifest each name it.
+struct PackageArtifact {
+    /// File name inside the package directory, per ADR-0001 §12.1.
+    name: &'static str,
+    /// The `artifacts` key the manifest records it under.
+    field: &'static str,
+}
+
+/// The six artifacts a complete E1-S4 package holds beside its manifest.
+///
+/// Transcribed from ADR-0001 §12.1's `output/` tree rather than read back out
+/// of the runtime, so a test asserting the package is complete cannot be
+/// satisfied by a runtime that changed its mind about what complete means.
+const PACKAGE_ARTIFACTS: [PackageArtifact; 6] = [
+    PackageArtifact {
+        name: "lesson.wav",
+        field: "master_wav",
+    },
+    PackageArtifact {
+        name: "lesson.m4a",
+        field: "m4a",
+    },
+    PackageArtifact {
+        name: "lesson.mp3",
+        field: "mp3",
+    },
+    PackageArtifact {
+        name: "transcript.txt",
+        field: "transcript",
+    },
+    PackageArtifact {
+        name: "transcript.vtt",
+        field: "captions",
+    },
+    PackageArtifact {
+        name: "chapters.ffmetadata",
+        field: "chapters",
+    },
+];
 
 #[test]
 fn t4_e1_the_published_manifest_schema_describes_what_a_package_writes() {
@@ -351,7 +400,7 @@ fn t4_e1_the_published_manifest_schema_describes_what_a_package_writes() {
         &std::fs::read(
             repository_root()
                 .join(study_tts_runtime::SCHEMA_DIRECTORY)
-                .join("manifest-v0.schema.json"),
+                .join("manifest-v1.schema.json"),
         )
         .expect("the published manifest schema is readable"),
     )
@@ -363,6 +412,385 @@ fn t4_e1_the_published_manifest_schema_describes_what_a_package_writes() {
             violations.join("\n  ")
         );
     }
+}
+
+/// Where the two-segment fixture's segments land in the master, in frames.
+///
+/// Read against the fixture rather than recomputed from the code under test.
+/// `TONE_FRAMES` is one tenth of a second — 2,400 frames at 24 kHz — and E1-S3
+/// edge conditioning adds the 10 ms of zero padding ADR-0001 §13.4 requires at
+/// each exposed edge, 240 frames twice, so each segment writes 2,880 frames of
+/// speech. The fixture declares 75 ms and 125 ms pauses, which are exactly
+/// 1,800 and 3,000 frames.
+///
+/// Each row is `(start_frame, audio_frames, pause_frames)`.
+const WRITTEN_TIMELINE: [(u64, u64, u64); 2] = [(0, 2_880, 1_800), (4_680, 2_880, 3_000)];
+
+/// Frames in the finished master: every row of [`WRITTEN_TIMELINE`] summed.
+const MASTER_FRAMES: u64 = 10_560;
+
+/// The WebVTT cue timings [`WRITTEN_TIMELINE`]'s speech boundaries produce.
+///
+/// Written out rather than converted in the test, for the reason the timeline
+/// table is: a test that recomputed the conversion would agree with any
+/// conversion, including a wrong one. Every boundary in this fixture happens to
+/// land on a whole millisecond — 2,880 frames is 120 ms, 4,680 is 195 ms, 7,560
+/// is 315 ms — so nothing here is rounded away.
+const EXPECTED_CUES: [(&str, &str); 2] = [
+    ("00:00:00.000", "00:00:00.120"),
+    ("00:00:00.195", "00:00:00.315"),
+];
+
+/// Runs ffprobe over one artifact and returns its codec and channel count.
+///
+/// The build already probed each artifact; this probes them again from outside,
+/// so the claim is about the files rather than about the runtime agreeing with
+/// itself.
+///
+/// # Panics
+///
+/// If ffprobe cannot be run or its output cannot be read. Both are T4
+/// dependencies the suite already requires.
+fn probe_stream(path: &Path) -> (String, u64) {
+    let output = std::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_name,channels",
+            "-of",
+            "json",
+        ])
+        .arg(path)
+        .output()
+        .expect("run ffprobe");
+    assert!(
+        output.status.success(),
+        "ffprobe failed for `{}`: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let probe: Value = serde_json::from_slice(&output.stdout).expect("parse ffprobe output");
+    let streams = probe["streams"]
+        .as_array()
+        .expect("ffprobe reports streams");
+    assert_eq!(
+        streams.len(),
+        1,
+        "`{}` must hold exactly one stream",
+        path.display()
+    );
+    (
+        streams[0]["codec_name"]
+            .as_str()
+            .expect("ffprobe reports a codec")
+            .to_owned(),
+        streams[0]["channels"]
+            .as_u64()
+            .expect("ffprobe reports a channel count"),
+    )
+}
+
+fn read_manifest(result: &study_tts_runtime::BuildResult) -> Value {
+    serde_json::from_slice(&std::fs::read(&result.manifest).expect("read package manifest"))
+        .expect("parse package manifest")
+}
+
+#[test]
+fn t4_e1_master_sample_count_equals_segments_plus_silence() {
+    let (_workspace, result, _worker) = run_skeleton();
+
+    assert_eq!(
+        hound::WavReader::open(&result.master_wav)
+            .expect("open assembled master")
+            .duration() as u64,
+        MASTER_FRAMES,
+        "the master must hold every segment's conditioned speech plus its exact silence"
+    );
+
+    let manifest = read_manifest(&result);
+    assert_eq!(manifest["total_frames"].as_u64(), Some(MASTER_FRAMES));
+    let segments = manifest["segments"]
+        .as_array()
+        .expect("the manifest records its segments");
+    assert_eq!(segments.len(), WRITTEN_TIMELINE.len());
+    for (index, (start, audio, pause)) in WRITTEN_TIMELINE.into_iter().enumerate() {
+        let segment = &segments[index];
+        assert_eq!(
+            (
+                segment["start_frame"].as_u64(),
+                segment["frames"].as_u64(),
+                segment["pause_frames"].as_u64(),
+            ),
+            (Some(start), Some(audio), Some(pause)),
+            "segment {index}"
+        );
+    }
+}
+
+#[test]
+fn t4_e1_caption_boundaries_equal_written_sample_boundaries() {
+    let (_workspace, result, _worker) = run_skeleton();
+    let captions = std::fs::read_to_string(&result.captions).expect("read captions");
+
+    assert!(
+        captions.starts_with("WEBVTT\n"),
+        "captions must be WebVTT: {captions}"
+    );
+    // Parsed out of the file rather than read off the timeline the build used.
+    // A manifest holding the right frames beside a cue holding the wrong
+    // timestamp is exactly the defect this test exists to catch, and comparing
+    // the manifest to itself could not see it.
+    let cues: Vec<(&str, &str)> = captions
+        .lines()
+        .filter_map(|line| line.split_once(" --> "))
+        .collect();
+
+    assert_eq!(
+        cues,
+        EXPECTED_CUES.to_vec(),
+        "every cue must begin and end at the sample boundary the master was written at"
+    );
+}
+
+#[test]
+fn t4_e1_wav_m4a_and_mp3_pass_structural_validation() {
+    let (_workspace, result, _worker) = run_skeleton();
+
+    // The codecs ADR-0001 §13.5 and §13.3 assign each output: a float master,
+    // AAC for the listening file, MP3 for the compatibility output, all mono.
+    // Not §12.7, which is recovery and assigns no codec.
+    const EXPECTED: [(&str, &str); 3] = [
+        ("lesson.wav", "pcm_f32le"),
+        ("lesson.m4a", "aac"),
+        ("lesson.mp3", "mp3"),
+    ];
+
+    for (name, codec) in EXPECTED {
+        let path = result.package_dir.join(name);
+        assert_eq!(probe_stream(&path), (codec.to_owned(), 1), "`{name}`");
+    }
+}
+
+#[test]
+fn t4_e1_paths_with_spaces_and_unicode_are_supported() {
+    // The workspace carries them, not the lesson ID: `PORTABLE_ID_PATTERN` in
+    // `study-tts-core` forbids a space or a non-ASCII character in an ID, and
+    // the workspace is where the risk actually is — every staged path and every
+    // `{input_path}` and `{output_path}` FFmpeg is handed is built from it, so
+    // this is the shape a shell would have broken.
+    let root = TempDir::new().expect("create isolated workspace root");
+    let workspace = root.path().join("prévisualisation « ✓ » dir");
+    std::fs::create_dir(&workspace).expect("create awkwardly named workspace");
+    let worker = DeterministicToneWorker::default();
+
+    let result = build_preview(
+        build_request(&walking_skeleton_fixture(), &workspace),
+        &worker,
+    )
+    .expect("a workspace path with spaces and non-ASCII characters must build");
+
+    for artifact in PACKAGE_ARTIFACTS {
+        let path = result.package_dir.join(artifact.name);
+        assert!(path.is_file(), "`{}` must be written", artifact.name);
+    }
+    assert!(result.package_dir.starts_with(&workspace));
+}
+
+#[cfg(unix)]
+#[test]
+fn t4_e1_ffmpeg_failure_preserves_master_and_prior_state() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (workspace, first, worker) = run_skeleton();
+    let previous_current =
+        std::fs::read(&first.publication_record).expect("read previous current record");
+    let changed_lesson = workspace.path().join("changed.json");
+    let mut lesson: Value = serde_json::from_slice(
+        &std::fs::read(walking_skeleton_fixture()).expect("read walking-skeleton fixture"),
+    )
+    .expect("parse walking-skeleton fixture");
+    lesson["segments"][0]["spoken_text"] = Value::String("Changed for the MP3 failure.".to_owned());
+    std::fs::write(
+        &changed_lesson,
+        serde_json::to_vec_pretty(&lesson).expect("serialize changed lesson"),
+    )
+    .expect("write changed lesson");
+
+    // Fails the MP3 encode specifically, after preflight has passed and the
+    // M4A has succeeded. That is the interesting failure: the transaction is
+    // part way through writing a package, and what must survive is the previous
+    // selection, the previous package, and the new master — with no partial MP3
+    // left behind.
+    let failing_ffmpeg = workspace.path().join("mp3-failing-ffmpeg");
+    std::fs::write(
+        &failing_ffmpeg,
+        b"#!/bin/sh\n\
+for argument; do\n\
+  if [ \"$argument\" = \"-encoders\" ]; then\n\
+    echo ' A....D libmp3lame           libmp3lame MP3 (MPEG audio layer 3)'\n\
+    exit 0\n\
+  fi\n\
+done\n\
+if [ \"$1\" = \"-version\" ]; then\n\
+  echo 'ffmpeg version mp3-failure'\n\
+  exit 0\n\
+fi\n\
+for output; do :; done\n\
+case \"$output\" in\n\
+  *.mp3) : > \"$output\"; exit 12 ;;\n\
+esac\n\
+exec ffmpeg \"$@\"\n",
+    )
+    .expect("write MP3-failing FFmpeg wrapper");
+    let mut permissions = std::fs::metadata(&failing_ffmpeg)
+        .expect("wrapper metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&failing_ffmpeg, permissions).expect("make wrapper executable");
+
+    let mut request = build_request(&changed_lesson, workspace.path());
+    request.ffmpeg_executable = failing_ffmpeg;
+    let error = build_preview(request, &worker).expect_err("MP3 encode failure must surface");
+
+    assert!(
+        matches!(error, BuildError::Tool(ToolError::Ffmpeg { .. })),
+        "an MP3 encode failure must arrive as an FFmpeg refusal: `{error}`"
+    );
+    assert_eq!(
+        std::fs::read(&first.publication_record).expect("read retained current record"),
+        previous_current,
+        "the prior selection must be untouched"
+    );
+    assert!(
+        first.package_dir.is_dir(),
+        "the prior package must be untouched"
+    );
+    for artifact in PACKAGE_ARTIFACTS {
+        assert!(
+            first.package_dir.join(artifact.name).is_file(),
+            "the prior package must keep `{}`",
+            artifact.name
+        );
+    }
+
+    // The abandoned staging directory keeps the master the failed build
+    // assembled, and holds no partial MP3: `export::encode` stages the encode
+    // beside its destination and drops the guard on failure.
+    let staging = workspace.path().join("jobs/e0-s0-walking-skeleton/staging");
+    let staged: Vec<std::path::PathBuf> = std::fs::read_dir(&staging)
+        .expect("read the abandoned staging root")
+        .map(|entry| entry.expect("read staged transaction").path())
+        .collect();
+    let masters = staged
+        .iter()
+        .filter(|stage| stage.join("lesson.wav").is_file())
+        .count();
+    assert_eq!(masters, 1, "the new master must remain recoverable");
+    for stage in &staged {
+        assert!(
+            !stage.join("lesson.mp3").exists(),
+            "no partial MP3 may survive in `{}`",
+            stage.display()
+        );
+    }
+}
+
+#[test]
+fn t4_e1_manifest_checksums_match_every_output() {
+    let (_workspace, result, _worker) = run_skeleton();
+    let manifest = read_manifest(&result);
+
+    for artifact in PACKAGE_ARTIFACTS {
+        let path = result.package_dir.join(artifact.name);
+        let recorded = manifest["artifacts"][artifact.field]["blake3"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the manifest must record `{}`", artifact.name));
+        let found = blake3::hash(&std::fs::read(&path).expect("read package artifact"))
+            .to_hex()
+            .to_string();
+
+        assert_eq!(recorded, found, "`{}`", artifact.name);
+        assert_eq!(
+            manifest["artifacts"][artifact.field]["path"].as_str(),
+            Some(artifact.name),
+            "the manifest must name `{}` by its published path",
+            artifact.name
+        );
+    }
+}
+
+/// Every file inside a published package is owner-only, the manifest included.
+///
+/// The gap this closes: four of the seven were created `0600` by `tempfile`
+/// while the three text documents went through `fs::write`, which creates
+/// `0666 & ~umask`. The transcript and the captions carry the whole authored
+/// lesson in plaintext, so under a common `022` umask they were the only
+/// world-readable files in a `private_preview` package — and their mode moved
+/// with whoever ran the build.
+///
+/// Asserted against a really-rendered package rather than a fixture, because
+/// the defect was in how the runtime creates the file, which a fixture writing
+/// its own bytes would not reproduce.
+#[test]
+#[cfg(unix)]
+fn t4_e1_every_package_file_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let (_workspace, result, _worker) = run_skeleton();
+
+    let named: Vec<&str> = PACKAGE_ARTIFACTS
+        .iter()
+        .map(|artifact| artifact.name)
+        .chain(std::iter::once("manifest.json"))
+        .collect();
+    for name in named {
+        let path = result.package_dir.join(name);
+        let mode = std::fs::metadata(&path)
+            .unwrap_or_else(|error| panic!("`{name}` must be published: {error}"))
+            .permissions()
+            .mode();
+
+        assert_eq!(mode & 0o777, 0o600, "`{name}` is mode {:o}", mode & 0o777);
+    }
+}
+
+#[test]
+fn t4_e1_lossy_output_is_never_source_for_another_export() {
+    let (_workspace, result, _worker) = run_skeleton();
+    let manifest = read_manifest(&result);
+    let executions = manifest["tools"]["executions"]
+        .as_array()
+        .expect("the manifest records every execution");
+
+    let mut encodes = 0;
+    for execution in executions {
+        let arguments: Vec<&str> = execution["arguments"]
+            .as_array()
+            .expect("an execution records its arguments")
+            .iter()
+            .map(|argument| argument.as_str().expect("an argument is a string"))
+            .collect();
+        let Some(input) = arguments
+            .iter()
+            .position(|argument| *argument == "-i")
+            .and_then(|flag| arguments.get(flag + 1))
+        else {
+            continue;
+        };
+        if execution["tool"] != "ffmpeg" {
+            continue;
+        }
+        encodes += 1;
+        assert!(
+            input.ends_with("lesson.wav"),
+            "every export must be encoded from the canonical master, not from `{input}`"
+        );
+    }
+    assert_eq!(
+        encodes, 2,
+        "both lossy exports must be encoded, each from the master"
+    );
 }
 
 #[test]
@@ -841,10 +1269,21 @@ fn t4_e0_ffmpeg_failure_leaves_previous_current_preview_unchanged() {
     )
     .expect("write changed lesson");
 
+    // The wrapper answers preflight — both the version probe and the encoder
+    // inventory — and fails only the encode. Without the inventory arm this
+    // test would pass on a refusal raised before any durable work started,
+    // which proves nothing about preserving a package the encode was part way
+    // through writing.
     let failing_ffmpeg = workspace.path().join("failing-ffmpeg");
     std::fs::write(
         &failing_ffmpeg,
         b"#!/bin/sh\n\
+for argument; do\n\
+  if [ \"$argument\" = \"-encoders\" ]; then\n\
+    echo ' A....D libmp3lame           libmp3lame MP3 (MPEG audio layer 3)'\n\
+    exit 0\n\
+  fi\n\
+done\n\
 if [ \"$1\" = \"-version\" ]; then\n\
   echo 'ffmpeg version test-failure'\n\
   exit 0\n\
@@ -975,6 +1414,81 @@ fn t4_e0_cache_identity_proves_hits_and_speech_affecting_misses() {
     );
 }
 
+/// An FFmpeg with no MP3 encoder is refused before anything is synthesized.
+///
+/// The gap this closes: `tools::inspect` reads only the first line of
+/// `-version`, which is identical whether or not `libmp3lame` was compiled in.
+/// Without an inventory probe the refusal would arrive after a full render, and
+/// on a real lesson that is minutes of synthesis thrown away.
+#[cfg(unix)]
+#[test]
+fn t4_e1_missing_mp3_encoder_fails_before_synthesis_and_durable_work() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = TempDir::new().expect("create isolated preflight root");
+    let workspace = root.path().join("not-created");
+    let encoderless = root.path().join("encoderless-ffmpeg");
+    // A plausible inventory that simply does not offer the encoder. The `aac`
+    // row is what keeps this from passing for a wrapper that lists nothing at
+    // all, and the description mentioning MP3 is what a substring search would
+    // wrongly accept.
+    std::fs::write(
+        &encoderless,
+        b"#!/bin/sh\n\
+for argument; do\n\
+  if [ \"$argument\" = \"-encoders\" ]; then\n\
+    echo ' Encoders:'\n\
+    echo ' A....D aac                  AAC (Advanced Audio Coding)'\n\
+    echo ' A....D wrapped              a decoder that mentions libmp3lame in prose'\n\
+    exit 0\n\
+  fi\n\
+done\n\
+if [ \"$1\" = \"-version\" ]; then\n\
+  echo 'ffmpeg version encoderless'\n\
+  exit 0\n\
+fi\n\
+exit 1\n",
+    )
+    .expect("write encoderless FFmpeg wrapper");
+    let mut permissions = std::fs::metadata(&encoderless)
+        .expect("wrapper metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&encoderless, permissions).expect("make wrapper executable");
+    let worker = DeterministicToneWorker::default();
+    let mut request = build_request_with_voices(
+        &walking_skeleton_fixture(),
+        &workspace,
+        &root.path().join("voices"),
+    );
+    request.ffmpeg_executable = encoderless;
+
+    let error =
+        build_preview(request, &worker).expect_err("an FFmpeg with no MP3 encoder must be refused");
+
+    assert!(
+        matches!(
+            error,
+            BuildError::Tool(ToolError::MissingEncoder { ref encoder, .. })
+                if encoder == &"libmp3lame"
+        ),
+        "a missing encoder must be its own refusal rather than a generic encode failure: `{error}`"
+    );
+    assert!(
+        error.to_string().contains("libmp3lame"),
+        "the refusal must name the encoder to install: `{error}`"
+    );
+    assert_eq!(
+        worker.synthesis_count(),
+        0,
+        "the encoder inventory must be checked before synthesis"
+    );
+    assert!(
+        !workspace.exists(),
+        "the encoder inventory must be checked before any durable state is created"
+    );
+}
+
 #[test]
 fn t4_e0_external_tool_preflight_names_missing_binary() {
     let workspace = TempDir::new().expect("create isolated preflight workspace");
@@ -1008,12 +1522,12 @@ fn t4_e0_external_tool_preflight_names_missing_binary() {
 fn t4_e0_ffprobe_rejects_non_aac_input() {
     let (_workspace, result, _worker) = run_skeleton();
 
-    validate_encoded_output(Path::new("ffprobe"), &result.m4a)
+    validate_m4a_output(Path::new("ffprobe"), &result.m4a)
         .expect("a mono AAC export must be accepted");
 
     // The PCM master is a valid audio file that is not a valid encoded output,
     // which is the shape an encoder failing open would produce.
-    let error = validate_encoded_output(Path::new("ffprobe"), &result.master_wav)
+    let error = validate_m4a_output(Path::new("ffprobe"), &result.master_wav)
         .expect_err("a PCM master must not pass encoded-output validation");
     // The probe is readable; what it describes is wrong. Naming the codec it
     // actually found is what tells an operator the encoder failed open rather
@@ -1318,7 +1832,7 @@ fn t4_e0_private_preview_cannot_enter_production_publication() {
         Err(BuildError::Publication(
             PublicationError::UnsupportedProductionManifest { ref version }
         ))
-            if version == "0.2-skeleton"
+            if version == "1.0-skeleton"
     ));
 }
 
@@ -1543,7 +2057,7 @@ fn t4_e0_multi_stream_output_is_rejected() {
         "ffmpeg must produce the two-stream fixture"
     );
 
-    let error = validate_encoded_output(Path::new("ffprobe"), &two_stream)
+    let error = validate_m4a_output(Path::new("ffprobe"), &two_stream)
         .expect_err("a two-stream export must not pass verification");
 
     assert!(

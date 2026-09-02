@@ -5,7 +5,7 @@
 The project targets software-engineering education, technical interview preparation, and repeated listening. It uses Rust for every durable decision, Chatterbox for speech synthesis, an in-process Whisper verifier for post-render text-integrity triage, and FFmpeg for final audio processing.
 
 > [!IMPORTANT]
-> This repository contains the tested E0-S0 walking skeleton and the E1-S1 contract baseline. It uses a deterministic tone synthesizer, not Chatterbox, to exercise lesson loading, planning, validated WAV caching, Rust PCM assembly, real FFmpeg M4A export, and a minimal private-preview manifest. On top of that E1-S1 added the published versioned schemas, the synthesis and verification identities, the worker-bundle identity, and the locked Python worker environment. The Chatterbox worker, hardened recovery, the complete output package, and the product CLI are not implemented. Planned commands and behavior remain architectural intent rather than completed functionality.
+> This repository contains the tested E0-S0 walking skeleton and the E1-S1 contract baseline. It uses a deterministic tone synthesizer, not Chatterbox, to exercise lesson loading, planning, validated WAV caching, Rust PCM assembly, real FFmpeg M4A and MP3 export, and a private-preview package manifest. On top of that E1-S1 added the published versioned schemas, the synthesis and verification identities, the worker-bundle identity, and the locked Python worker environment, and E1-S4 completed the minimal package: both lossy exports derived independently from the master, a transcript, WebVTT captions and FFMETADATA chapters derived from the written sample boundaries, and a checksum for every artifact. The Chatterbox worker, hardened recovery, loudness normalization, and the product CLI are not implemented. Planned commands and behavior remain architectural intent rather than completed functionality.
 
 ## Goals
 
@@ -46,7 +46,7 @@ The workspace declares these crates:
 - `study-tts-runtime`
 - `study-tts-testkit`
 
-The T4 walking skeleton loads reviewed provisional JSON fixtures, derives deterministic cache keys, proves both cache hits and speech-affecting misses, synthesizes deterministic tone WAVs through a fake boundary, assembles exact PCM and silence in Rust, and writes outputs beneath a contained `previews/<lesson-id>/` directory. It validates lesson content before subprocess startup, preflights FFmpeg and ffprobe before synthesis, encodes and validates mono AAC/M4A, records their resolved identities and effective arguments, and writes a checksummed minimal manifest. CI executes prebuilt tests as the normal runner user with runtime network egress denied, and the production publication entry point returns a typed refusal.
+The T4 walking skeleton loads reviewed provisional JSON fixtures, derives deterministic cache keys, proves both cache hits and speech-affecting misses, synthesizes deterministic tone WAVs through a fake boundary, assembles exact PCM and silence in Rust, and writes outputs beneath a contained `previews/<lesson-id>/` directory. It validates lesson content before subprocess startup, preflights FFmpeg, ffprobe, and the `libmp3lame` encoder before synthesis, encodes mono AAC/M4A and MP3 independently from the master, validates all three with ffprobe, derives the transcript, captions, and chapters from the frame boundaries the assembly wrote, records every resolved tool identity and effective argument list, and writes a manifest checksumming all six artifacts. CI executes prebuilt tests as the normal runner user with runtime network egress denied, and the production publication entry point returns a typed refusal.
 
 The boundary order and deliberate G1 deferrals are recorded in [E0-S0 Walking Skeleton](docs/architecture/WALKING-SKELETON.md).
 
@@ -143,7 +143,7 @@ Required system capabilities include:
 - GCC and the standard Linux build toolchain;
 - CMake;
 - Python 3 with `venv` support;
-- FFmpeg and ffprobe;
+- FFmpeg and ffprobe, built with the `libmp3lame` encoder;
 - Git, curl, `pkg-config`, Clang, and OpenSSL development headers.
 
 The baseline environment check is:
@@ -154,6 +154,7 @@ cmake --version
 python3 --version
 ffmpeg -version
 ffprobe -version
+ffmpeg -hide_banner -encoders | grep libmp3lame
 ```
 
 The exact supported system versions, model installation procedure, and Python worker lockfile will become authoritative during the G0 feasibility work.

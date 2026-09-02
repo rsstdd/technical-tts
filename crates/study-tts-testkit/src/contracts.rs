@@ -313,12 +313,22 @@ impl PreparedPackageWriter for FakePackageWriter {
 
         let package_dir = self.root.join("packages").join(&plan_hash);
         fs::create_dir_all(&package_dir).map_err(|source| file_error(&package_dir, source))?;
-        let master_wav = package_dir.join("lesson.wav");
-        let m4a = package_dir.join("lesson.m4a");
+        // Every artifact the real writer publishes, so a consumer written
+        // against the fake cannot compile against a package the real path does
+        // not produce.
+        let artifact = |name: &str, contents: &str| -> Result<PathBuf, BuildError> {
+            let path = package_dir.join(name);
+            fs::write(&path, contents.as_bytes()).map_err(|source| file_error(&path, source))?;
+            Ok(path)
+        };
+        let master_wav = artifact("lesson.wav", "fake master")?;
+        let m4a = artifact("lesson.m4a", "fake m4a")?;
+        let mp3 = artifact("lesson.mp3", "fake mp3")?;
+        let transcript = artifact("transcript.txt", "fake transcript")?;
+        let captions = artifact("transcript.vtt", "WEBVTT\n")?;
+        let chapters = artifact("chapters.ffmetadata", ";FFMETADATA1\n")?;
         let manifest = package_dir.join("manifest.json");
         let publication_record = self.root.join("current.json");
-        fs::write(&master_wav, b"fake master").map_err(|source| file_error(&master_wav, source))?;
-        fs::write(&m4a, b"fake m4a").map_err(|source| file_error(&m4a, source))?;
         let manifest_bytes =
             format!("{{\"release_status\":\"private_preview\",\"plan_hash\":\"{plan_hash}\"}}");
         fs::write(&manifest, manifest_bytes.as_bytes())
@@ -331,6 +341,10 @@ impl PreparedPackageWriter for FakePackageWriter {
             publication_record,
             master_wav,
             m4a,
+            mp3,
+            transcript,
+            captions,
+            chapters,
             manifest,
             identity: SelectedPackageIdentity {
                 // The fake names the package after its manifest, as the real

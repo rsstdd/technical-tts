@@ -14,15 +14,18 @@
 //! `docs/governance/ROUTING-TABLES.md` establishes an owner, and update exact
 //! variant, message, conversion, source-chain, and advice tests together.
 //! [`BuildError::remedy`] and the category remedy methods mirror that table.
-//! `t1_e0_governed_remedy_mappings_are_exhaustive` pins *exhaustiveness* for
-//! every category but one: its `expected_*_remedy` helpers match every variant,
-//! so a new refusal is a compile error there rather than one that silently
-//! carries no advice. It does not pin the mapping — those helpers restate the
-//! implementation arm for arm, so they agree with any owner, action, and row,
-//! including a wrong one. Only the worker-bundle block writes its expectation
-//! as a literal read off the document, which is the shape the rest still needs;
-//! it buys that by listing its variants by hand, so a new one there is caught
-//! by review rather than by the compiler.
+//! `t1_e0_governed_remedy_mappings_are_exhaustive` reads that document rather
+//! than restating it, and takes each refusal's owner from the row it claims, so
+//! a refusal cannot claim a row the document assigns to somebody else, nor one
+//! the table does not list at all — a label lifted from §Decision routing fails
+//! the build rather than passing an expectation that copied it. That closes the
+//! gap every baseline since `e1-s1-provisional-contract-baseline-v8` recorded:
+//! nothing had tied a routing-row name to the table it names. The
+//! `expected_*_remedy` helpers state only the
+//! row and the action, and match every variant, so a new refusal is a compile
+//! error there rather than one that silently inherits advice. What stays
+//! hand-maintained is the *sample*: nothing forces a new variant into the
+//! arrays that exercise those matches, so that much is caught by review.
 
 use std::{io, path::PathBuf};
 
@@ -300,12 +303,118 @@ mod tests {
         }
     }
 
-    // Each helper below restates the implementation it checks, so it proves
-    // only that every variant is mapped, never that the mapping is right — a
-    // copied arm passes for any owner, action, and row. The worker-bundle
-    // block in the test writes its expectation as a literal instead, and says
-    // why; the rows here are still owed that treatment.
-    fn expected_voice_profile_remedy(error: &VoiceProfileError) -> Option<RemedyAdvice> {
+    // The governing document itself, not a transcription of it. Every baseline
+    // since `evidence/gates/g1/e1-s1/e1-s1-provisional-contract-baseline-v8.md`
+    // has recorded that nothing mechanically ties a routing-row name to the
+    // table it names, and named this check as the durable fix: a copied table
+    // agrees with a row the document never carried, which is how
+    // `Worker bundle input missing or oversized` once survived in every
+    // worker-bundle refusal. Read at compile time, so moving or renaming the
+    // document is a build failure here rather than a mirror that goes quiet.
+    const ROUTING_TABLES: &str = include_str!("../../../../docs/governance/ROUTING-TABLES.md");
+    const FAILURE_ROUTING_HEADING: &str = "## Failure routing";
+
+    // How the document's Owner column spells each `RemedyOwner`. This half is
+    // code's to state, because only the enum can say which prose it answers to.
+    // A row owned by anybody else resolves to no variant and fails the refusal
+    // that claimed it: `Core`, `Verification`, and `Human-review owner` own
+    // rows no refusal routes to, and giving one of them advice is a decision
+    // that starts with a new variant here.
+    const OWNER_SPELLINGS: [(&str, RemedyOwner); 5] = [
+        ("Project owner", RemedyOwner::ProjectOwner),
+        ("Runtime", RemedyOwner::Runtime),
+        ("Audio/runtime", RemedyOwner::AudioRuntime),
+        ("Worker/runtime", RemedyOwner::WorkerRuntime),
+        ("Gate owner", RemedyOwner::GateOwner),
+    ];
+
+    /// What a refusal is expected to hand an operator.
+    ///
+    /// Named rather than a bare `Option<RemedyAdvice>` so the owner does not
+    /// have to be restated: `Governed` reads it out of the document. An
+    /// expectation copied from the implementation still agrees with a wrong
+    /// owner, but neither can agree with a row the document assigns to somebody
+    /// else, or with a row it does not contain at all.
+    enum Expected {
+        /// No governed advice, because §Failure routing establishes no owner.
+        Unrouted,
+        /// Advice owned by whoever §Failure routing gives `row`.
+        Governed {
+            row: &'static str,
+            action: &'static str,
+        },
+        /// Advice that names no row and so states its own owner.
+        ///
+        /// Deliberate and rare. A bounded wait that expired is not any row the
+        /// document lists, and claiming one to satisfy this test would file a
+        /// refusal under a failure that does not describe it.
+        Rowless {
+            owner: RemedyOwner,
+            action: &'static str,
+        },
+    }
+
+    // Panics rather than returns, because a row this cannot resolve is the
+    // finding: the module rule grants advice only where §Failure routing
+    // establishes an owner, so a label from §Decision routing or from nowhere
+    // fails the build instead of being asserted against itself.
+    fn governed_owner(row: &str) -> RemedyOwner {
+        assert!(
+            ROUTING_TABLES.contains(FAILURE_ROUTING_HEADING),
+            "docs/governance/ROUTING-TABLES.md must still carry a `{FAILURE_ROUTING_HEADING}` \
+             section for a refusal to claim a row from"
+        );
+
+        // Columns are `Failure | Immediate action | Owner | Publication
+        // effect`, so the owner is the second one past the failure. The
+        // separator row carries no `| ` prefix and the header names no refusal,
+        // which is why neither needs skipping by position.
+        let owner = ROUTING_TABLES
+            .lines()
+            .skip_while(|line| *line != FAILURE_ROUTING_HEADING)
+            .take_while(|line| !line.starts_with("## ") || *line == FAILURE_ROUTING_HEADING)
+            .find_map(|line| {
+                let mut columns = line.strip_prefix("| ")?.split(" | ");
+                let failure = columns.next()?;
+                let owner = columns.nth(1)?;
+                (failure == row).then_some(owner)
+            })
+            .unwrap_or_else(|| {
+                panic!("`{row}` is not a §Failure routing row of docs/governance/ROUTING-TABLES.md")
+            });
+
+        OWNER_SPELLINGS
+            .iter()
+            .find_map(|(spelling, remedy_owner)| (*spelling == owner).then_some(*remedy_owner))
+            .unwrap_or_else(|| {
+                panic!(
+                    "§Failure routing gives `{row}` to `{owner}`, whom `RemedyOwner` cannot spell"
+                )
+            })
+    }
+
+    fn assert_expected_remedy(error: BuildError, expected: Expected) {
+        let expected = match expected {
+            Expected::Unrouted => None,
+            Expected::Governed { row, action } => {
+                Some(RemedyAdvice::new(governed_owner(row), action, Some(row)))
+            }
+            Expected::Rowless { owner, action } => Some(RemedyAdvice::new(owner, action, None)),
+        };
+
+        assert_eq!(error.remedy(), expected, "`{error}` has the wrong remedy");
+    }
+
+    // Each helper below states the routing row and the action a category's
+    // refusals earn, and nothing else. The owner is derived from the
+    // transcribed document, so these rows cannot agree with an owner the
+    // document does not give that row. Exhaustive so a new refusal is a compile
+    // error here rather than one that silently inherits advice.
+    //
+    // What stays hand-maintained is the *sample*: the matches below are total,
+    // but nothing forces a new variant into the arrays that exercise them, so
+    // that much is caught by review.
+    fn expected_voice_profile_remedy(error: &VoiceProfileError) -> Expected {
         match error {
             VoiceProfileError::MissingVoiceRecord { .. }
             | VoiceProfileError::VoiceRecordNotRegularFile { .. }
@@ -313,128 +422,114 @@ mod tests {
             | VoiceProfileError::VoiceProfileNotDirectory { .. }
             | VoiceProfileError::VoiceProfileIdMismatch { .. }
             | VoiceProfileError::VoiceProfileNameNotUtf8 { .. }
-            | VoiceProfileError::VoiceChecksumMismatch { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::ProjectOwner,
-                "supply or correct the voice profile record before use",
-                Some("Voice consent/checksum mismatch"),
-            )),
+            | VoiceProfileError::VoiceChecksumMismatch { .. } => Expected::Governed {
+                row: "Voice consent/checksum mismatch",
+                action: "supply or correct the voice profile record before use",
+            },
         }
     }
 
-    fn expected_rights_remedy(error: &RightsError) -> Option<RemedyAdvice> {
+    fn expected_rights_remedy(error: &RightsError) -> Expected {
         match error {
             RightsError::UnresolvedContentRights { .. }
             | RightsError::InvalidRightsDeclaration { .. }
             | RightsError::MissingContentRightsDeclaration
             | RightsError::MissingVoiceProfileDeclaration
-            | RightsError::EmptyManifestIdentifier { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::ProjectOwner,
-                "correct or resolve the rights declaration before publication",
-                Some("Missing rights classification"),
-            )),
+            | RightsError::EmptyManifestIdentifier { .. } => Expected::Governed {
+                row: "Missing rights classification",
+                action: "correct or resolve the rights declaration before publication",
+            },
         }
     }
 
-    fn expected_cache_remedy(error: &CacheError) -> Option<RemedyAdvice> {
+    fn expected_cache_remedy(error: &CacheError) -> Expected {
         match error {
-            CacheError::UnusableCacheEntry { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::Runtime,
-                "preserve the unusable cache entry and run runtime reconciliation",
-                Some("State or checksum corruption"),
-            )),
-            CacheError::UncontainedStagedFile { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::WorkerRuntime,
-                "read the quarantined attempt and correct the worker that staged an unexpected \
-                 file",
-                Some("Worker protocol or containment failure"),
-            )),
+            CacheError::UnusableCacheEntry { .. } => Expected::Governed {
+                row: "State or checksum corruption",
+                action: "preserve the unusable cache entry and run runtime reconciliation",
+            },
+            CacheError::UncontainedStagedFile { .. } => Expected::Governed {
+                row: "Worker protocol or containment failure",
+                action: "read the quarantined attempt and correct the worker that staged an \
+                         unexpected file",
+            },
             CacheError::PackageArtifactCountMismatch { .. }
-            | CacheError::PackageArtifactPlanMismatch { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::Runtime,
-                "preserve the cache and run runtime reconciliation",
-                Some("State or checksum corruption"),
-            )),
+            | CacheError::PackageArtifactPlanMismatch { .. } => Expected::Governed {
+                row: "State or checksum corruption",
+                action: "preserve the cache and run runtime reconciliation",
+            },
         }
     }
 
-    fn expected_voice_remedy(error: &VoiceError) -> Option<RemedyAdvice> {
+    fn expected_voice_remedy(error: &VoiceError) -> Expected {
         match error {
             VoiceError::MalformedChecksum { .. }
             | VoiceError::ConsentNotGranted { .. }
             | VoiceError::ProfileNotApproved { .. }
             | VoiceError::ConsentScopeExcluded { .. }
-            | VoiceError::ConsentChecksumDisagreement { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::ProjectOwner,
-                "resolve the voice consent, approval, or checksum record before use",
-                Some("Voice consent/checksum mismatch"),
-            )),
+            | VoiceError::ConsentChecksumDisagreement { .. } => Expected::Governed {
+                row: "Voice consent/checksum mismatch",
+                action: "resolve the voice consent, approval, or checksum record before use",
+            },
             VoiceError::InvalidJson(_)
             | VoiceError::UnsupportedSchema(_)
-            | VoiceError::MissingField(_) => None,
+            | VoiceError::MissingField(_) => Expected::Unrouted,
         }
     }
 
-    fn expected_publication_remedy(error: &PublicationError) -> Option<RemedyAdvice> {
+    fn expected_publication_remedy(error: &PublicationError) -> Expected {
         match error {
             PublicationError::Release(ReleaseError::MissingGateEvidence(_))
-            | PublicationError::ProductionGatesUnavailable => Some(RemedyAdvice::new(
-                RemedyOwner::GateOwner,
-                "preserve the candidate and create a corrective gate issue",
-                Some("Failed release gate"),
-            )),
+            | PublicationError::ProductionGatesUnavailable => Expected::Governed {
+                row: "Failed release gate",
+                action: "preserve the candidate and create a corrective gate issue",
+            },
+            // No §Failure routing row describes a manifest claiming a status
+            // it did not earn. "Production publication" is a §Decision routing
+            // row, which names a decider rather than a remedy owner.
             PublicationError::Release(ReleaseError::PrivateProfileCannotClaimProduction)
             | PublicationError::MalformedProductionManifest { .. }
-            | PublicationError::ManifestNotProductionRelease { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::ProjectOwner,
-                "publish a corrected manifest from a build that earned production status",
-                Some("Production publication"),
-            )),
-            PublicationError::UnsupportedProductionManifest { .. } => None,
+            | PublicationError::ManifestNotProductionRelease { .. } => Expected::Rowless {
+                owner: RemedyOwner::ProjectOwner,
+                action: "publish a corrected manifest from a build that earned production status",
+            },
+            PublicationError::UnsupportedProductionManifest { .. } => Expected::Unrouted,
         }
     }
 
-    fn expected_audio_remedy(error: &AudioError) -> Option<RemedyAdvice> {
+    fn expected_audio_remedy(error: &AudioError) -> Expected {
         match error {
-            AudioError::UnusableAudio { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::AudioRuntime,
-                "quarantine the attempt and retry within the bounded budget",
-                Some("Invalid or over-range audio"),
-            )),
-            AudioError::SynthesizerReportMismatch { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::WorkerRuntime,
-                "correct the worker report before rerunning the build",
-                Some("Worker protocol or containment failure"),
-            )),
-            AudioError::ConditioningIdentityContradiction { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::WorkerRuntime,
-                "correct the worker report before rerunning the build",
-                Some("Worker protocol or containment failure"),
-            )),
-            AudioError::SynthesizerIdentityMismatch { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::WorkerRuntime,
-                "correct the worker's synthesis identities before rerunning the build",
-                Some("Worker protocol or containment failure"),
-            )),
-            AudioError::AssembledLengthMismatch { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::Runtime,
-                "reconcile the cache before rebuilding the lesson",
-                Some("State or checksum corruption"),
-            )),
+            AudioError::UnusableAudio { .. } => Expected::Governed {
+                row: "Invalid or over-range audio",
+                action: "quarantine the attempt and retry within the bounded budget",
+            },
+            AudioError::SynthesizerReportMismatch { .. }
+            | AudioError::ConditioningIdentityContradiction { .. } => Expected::Governed {
+                row: "Worker protocol or containment failure",
+                action: "correct the worker report before rerunning the build",
+            },
+            AudioError::SynthesizerIdentityMismatch { .. } => Expected::Governed {
+                row: "Worker protocol or containment failure",
+                action: "correct the worker's synthesis identities before rerunning the build",
+            },
+            AudioError::AssembledLengthMismatch { .. } => Expected::Governed {
+                row: "State or checksum corruption",
+                action: "reconcile the cache before rebuilding the lesson",
+            },
             AudioError::PauseFrameOverflow { .. }
             | AudioError::PlannedLengthOverflow
-            | AudioError::AssembledLengthOverflow { .. } => None,
+            | AudioError::AssembledLengthOverflow { .. } => Expected::Unrouted,
         }
     }
 
-    fn expected_tool_remedy(error: &ToolError) -> Option<RemedyAdvice> {
+    fn expected_tool_remedy(error: &ToolError) -> Expected {
         match error {
             ToolError::UnreadableProbeResponse { .. }
             | ToolError::UnexpectedEncodedStreamCount { .. }
-            | ToolError::UnexpectedEncodedStream { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::AudioRuntime,
-                "reconcile the encode settings with output verification",
-                Some("Invalid or over-range audio"),
-            )),
+            | ToolError::UnexpectedEncodedStream { .. } => Expected::Governed {
+                row: "Invalid or over-range audio",
+                action: "reconcile the encode settings with output verification",
+            },
             ToolError::ToolCleanupFailed { .. }
             | ToolError::ToolChildInspectionFailed { .. }
             | ToolError::ToolTerminationSignalFailed { .. }
@@ -443,11 +538,10 @@ mod tests {
             | ToolError::ToolChildReapFailed { .. }
             | ToolError::ToolTerminationTimedOut { .. }
             | ToolError::ToolReaperStartFailed { .. }
-            | ToolError::ToolCaptureReaperStartFailed { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::WorkerRuntime,
-                "preserve diagnostics and correct the external-tool containment lifecycle",
-                Some("Worker protocol or containment failure"),
-            )),
+            | ToolError::ToolCaptureReaperStartFailed { .. } => Expected::Governed {
+                row: "Worker protocol or containment failure",
+                action: "preserve diagnostics and correct the external-tool containment lifecycle",
+            },
             ToolError::Ffmpeg { .. }
             | ToolError::ToolTimedOut { .. }
             | ToolError::ToolOutputOverflow { .. }
@@ -461,37 +555,78 @@ mod tests {
             | ToolError::ToolCaptureIncomplete { .. }
             | ToolError::StartFfmpeg { .. }
             | ToolError::MissingTool { .. }
+            | ToolError::MissingEncoder { .. }
             | ToolError::InspectTool { .. }
             | ToolError::ToolProbeFailed { .. }
-            | ToolError::Ffprobe { .. } => None,
+            | ToolError::Ffprobe { .. } => Expected::Unrouted,
         }
     }
 
-    fn expected_managed_path_remedy(error: &ManagedPathError) -> Option<RemedyAdvice> {
+    fn expected_managed_path_remedy(error: &ManagedPathError) -> Expected {
         match error {
             ManagedPathError::InvalidManagedName { .. }
-            | ManagedPathError::ManagedPathEscape { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::WorkerRuntime,
-                "correct the managed-path caller before rerunning the build",
-                Some("Worker protocol or containment failure"),
-            )),
-            ManagedPathError::UnrootedDestination { .. } => None,
+            | ManagedPathError::ManagedPathEscape { .. } => Expected::Governed {
+                row: "Worker protocol or containment failure",
+                action: "correct the managed-path caller before rerunning the build",
+            },
+            ManagedPathError::UnrootedDestination { .. } => Expected::Unrouted,
         }
     }
 
-    fn expected_durable_state_remedy(error: &DurableStateError) -> Option<RemedyAdvice> {
+    fn expected_worker_bundle_remedy(error: &WorkerBundleError) -> Expected {
+        // One owner and one row for the whole category; the action is what an
+        // operator acts on, so every distinct repair is spelled out.
+        let action = match error {
+            WorkerBundleError::MissingDeclaredInput { .. }
+            | WorkerBundleError::DeclaredInputTooLarge { .. }
+            | WorkerBundleError::UndeclaredModule { .. }
+            | WorkerBundleError::UndeclaredRequiredInput { .. }
+            | WorkerBundleError::UndeclaredImportRoot { .. }
+            | WorkerBundleError::UnreadableBundleManifest { .. } => {
+                "restore the declared worker bundle input or amend the bundle manifest"
+            }
+            WorkerBundleError::UnsupportedBundleManifest { .. } => {
+                "align the bundle manifest layout with the one this build implements"
+            }
+            WorkerBundleError::RuntimeIdentityMismatch { .. }
+            | WorkerBundleError::UnreadableRuntimeIdentity { .. }
+            | WorkerBundleError::EnvironmentDoesNotMatchLock { .. } => {
+                "restore the locked worker environment per docs/operations/WORKER-ENVIRONMENT.md"
+            }
+            WorkerBundleError::UnreadableWorkerLockfile { .. } => {
+                "regenerate worker/requirements.lock per docs/operations/WORKER-ENVIRONMENT.md"
+            }
+            WorkerBundleError::UnreadableLauncher { .. }
+            | WorkerBundleError::UnsupportedLauncher { .. } => {
+                "repair worker/launcher.json to the layout this build reads"
+            }
+            WorkerBundleError::ProtocolFakeNamedAGovernedRoot { .. } => {
+                "build the configuration with WorkerConfiguration::for_bundle, which gates the \
+                 model artifacts and every voice profile before a worker can be launched"
+            }
+            WorkerBundleError::RequirementsDisagreeWithLock { .. } => {
+                "reconcile worker/pyproject.toml with worker/requirements.lock per \
+                 docs/operations/WORKER-ENVIRONMENT.md"
+            }
+        };
+
+        Expected::Governed {
+            row: "Worker protocol or containment failure",
+            action,
+        }
+    }
+
+    fn expected_durable_state_remedy(error: &DurableStateError) -> Expected {
         match error {
-            DurableStateError::LiveJobLock { .. } => None,
-            DurableStateError::CacheLockTimeout { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::Runtime,
-                "preserve attempts and inspect the cache-key owner before retrying",
-                None,
-            )),
-            DurableStateError::QuarantineFailed { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::Runtime,
-                "preserve the staging attempt and repair quarantine before retrying",
-                None,
-            )),
+            DurableStateError::LiveJobLock { .. } => Expected::Unrouted,
+            DurableStateError::CacheLockTimeout { .. } => Expected::Rowless {
+                owner: RemedyOwner::Runtime,
+                action: "preserve attempts and inspect the cache-key owner before retrying",
+            },
+            DurableStateError::QuarantineFailed { .. } => Expected::Rowless {
+                owner: RemedyOwner::Runtime,
+                action: "preserve the staging attempt and repair quarantine before retrying",
+            },
             DurableStateError::MalformedJobLock { .. }
             | DurableStateError::IncompatibleJobLock { .. }
             | DurableStateError::MalformedJobSnapshot { .. }
@@ -510,6 +645,7 @@ mod tests {
             | DurableStateError::PackageLessonMismatch { .. }
             | DurableStateError::EmptyPackageSegmentId { .. }
             | DurableStateError::EmptyPackageSegmentAudio { .. }
+            | DurableStateError::IncoherentPackageTimeline { .. }
             | DurableStateError::UnexpectedPackageArtifactPath { .. }
             | DurableStateError::PackageArtifactChecksumMismatch { .. }
             | DurableStateError::MissingPackageToolArguments { .. }
@@ -519,24 +655,26 @@ mod tests {
             | DurableStateError::JournalSelectionMismatch { .. }
             | DurableStateError::PackagePlanMismatch { .. }
             | DurableStateError::InvalidJobDirectoryName { .. }
-            | DurableStateError::PublicationConflict { .. } => Some(RemedyAdvice::new(
-                RemedyOwner::Runtime,
-                concat!(
+            | DurableStateError::PublicationConflict { .. } => Expected::Governed {
+                row: "State or checksum corruption",
+                action: concat!(
                     "preserve the artifacts and run runtime reconciliation without overwrite ",
                     "or deletion",
                 ),
-                Some("State or checksum corruption"),
-            )),
+            },
         }
     }
 
-    fn assert_expected_remedy(error: BuildError, expected: Option<RemedyAdvice>) {
-        assert_eq!(error.remedy(), expected, "`{error}` has the wrong remedy");
+    fn assert_durable_state_remedy(error: DurableStateError) {
+        let expected = expected_durable_state_remedy(&error);
+        assert_expected_remedy(error.into(), expected);
     }
 
-    fn assert_durable_state_remedy(error: DurableStateError, expected: Option<RemedyAdvice>) {
-        assert_eq!(expected_durable_state_remedy(&error), expected);
-        assert_expected_remedy(error.into(), expected);
+    fn cache_key(seed: char) -> study_tts_core::CacheKey {
+        seed.to_string()
+            .repeat(study_tts_core::CacheKey::LENGTH)
+            .parse()
+            .expect("a repeated hex digit is a valid cache key")
     }
 
     fn tool_invocation() -> ToolInvocation {
@@ -545,11 +683,30 @@ mod tests {
 
     #[test]
     fn t1_e0_tool_invocation_preserves_typed_operation_context() {
-        for (operation, expected_label) in [
-            (ToolOperation::VersionProbe, "version probe"),
-            (ToolOperation::M4aEncode, "M4A encode"),
-            (ToolOperation::M4aValidation, "M4A validation"),
+        // Exhaustive rather than a chosen few: a new operation added without
+        // a spelling here is a compile error, not an unlabelled variant that
+        // reaches an operator's diagnostics unnoticed.
+        for operation in [
+            ToolOperation::VersionProbe,
+            ToolOperation::EncoderProbe,
+            ToolOperation::M4aEncode,
+            ToolOperation::M4aValidation,
+            ToolOperation::Mp3Encode,
+            ToolOperation::Mp3Validation,
+            ToolOperation::MasterWavValidation,
+            ToolOperation::WorkerSession,
         ] {
+            let expected_label = match operation {
+                ToolOperation::VersionProbe => "version probe",
+                ToolOperation::EncoderProbe => "encoder probe",
+                ToolOperation::M4aEncode => "M4A encode",
+                ToolOperation::M4aValidation => "M4A validation",
+                ToolOperation::Mp3Encode => "MP3 encode",
+                ToolOperation::Mp3Validation => "MP3 validation",
+                ToolOperation::MasterWavValidation => "master WAV validation",
+                ToolOperation::WorkerSession => "worker session",
+            };
+
             let invocation = ToolInvocation::new("tool", operation, Path::new("subject"));
 
             assert_eq!(invocation.tool(), "tool");
@@ -829,125 +986,111 @@ mod tests {
             assert_expected_remedy(error.into(), expected);
         }
 
-        // Written as literals rather than through an `expected_*` helper, so
-        // these rows are read off `docs/governance/ROUTING-TABLES.md` instead
-        // of restating the mapping they are supposed to check. Every variant is
-        // listed because `WorkerBundleError::remedy` hands out four different
-        // repairs, and the one an operator is handed is the one they act on.
-        //
-        // The trade is that completeness is hand-maintained: a new variant
-        // compiles with no row and is checked by nothing, so its row goes in
-        // the same commit.
-        let restore_input = "restore the declared worker bundle input or amend the bundle manifest";
-        let restore_environment =
-            "restore the locked worker environment per docs/operations/WORKER-ENVIRONMENT.md";
-        for (error, action) in [
-            (
-                WorkerBundleError::MissingDeclaredInput {
-                    path: PathBuf::from("worker/requirements.lock"),
-                    root: PathBuf::from("bundle"),
-                },
-                restore_input,
-            ),
-            (
-                WorkerBundleError::DeclaredInputTooLarge {
-                    path: PathBuf::from("worker/requirements.lock"),
-                    max_bytes: 8 * 1024 * 1024,
-                },
-                restore_input,
-            ),
-            (
-                WorkerBundleError::UndeclaredModule {
-                    module: PathBuf::from("worker/study_tts_worker/pronunciation.py"),
-                    import_root: PathBuf::from("worker/study_tts_worker"),
+        // Every variant, so each of the seven repairs this category hands out
+        // is exercised: the one an operator is given is the one they act on.
+        for error in [
+            WorkerBundleError::MissingDeclaredInput {
+                path: PathBuf::from("worker/requirements.lock"),
+                root: PathBuf::from("bundle"),
+            },
+            WorkerBundleError::DeclaredInputTooLarge {
+                path: PathBuf::from("worker/requirements.lock"),
+                max_bytes: 8 * 1024 * 1024,
+            },
+            WorkerBundleError::UndeclaredModule {
+                module: PathBuf::from("worker/study_tts_worker/pronunciation.py"),
+                import_root: PathBuf::from("worker/study_tts_worker"),
+                manifest: PathBuf::from("worker/bundle-manifest.json"),
+            },
+            WorkerBundleError::UndeclaredRequiredInput {
+                path: PathBuf::from("worker/requirements.lock"),
+                manifest: PathBuf::from("worker/bundle-manifest.json"),
+            },
+            WorkerBundleError::UndeclaredImportRoot {
+                import_root: PathBuf::from("worker/study_tts_worker"),
+                manifest: PathBuf::from("worker/bundle-manifest.json"),
+            },
+            WorkerBundleError::UnreadableBundleManifest {
+                path: PathBuf::from("worker/bundle-manifest.json"),
+                source: json_error(),
+            },
+            WorkerBundleError::UnsupportedBundleManifest {
+                path: PathBuf::from("worker/bundle-manifest.json"),
+                declared: "9.9".to_owned(),
+                required: "1.0",
+            },
+            WorkerBundleError::RuntimeIdentityMismatch {
+                mismatch: Box::new(RuntimeIdentityMismatch {
                     manifest: PathBuf::from("worker/bundle-manifest.json"),
-                },
-                restore_input,
-            ),
-            (
-                WorkerBundleError::UndeclaredRequiredInput {
-                    path: PathBuf::from("worker/requirements.lock"),
-                    manifest: PathBuf::from("worker/bundle-manifest.json"),
-                },
-                restore_input,
-            ),
-            (
-                WorkerBundleError::UndeclaredImportRoot {
-                    import_root: PathBuf::from("worker/study_tts_worker"),
-                    manifest: PathBuf::from("worker/bundle-manifest.json"),
-                },
-                restore_input,
-            ),
-            (
-                WorkerBundleError::UnreadableBundleManifest {
-                    path: PathBuf::from("worker/bundle-manifest.json"),
-                    source: json_error(),
-                },
-                restore_input,
-            ),
-            (
-                WorkerBundleError::UnsupportedBundleManifest {
-                    path: PathBuf::from("worker/bundle-manifest.json"),
-                    declared: "9.9".to_owned(),
-                    required: "1.0",
-                },
-                "align the bundle manifest layout with the one this build implements",
-            ),
-            (
-                WorkerBundleError::RuntimeIdentityMismatch {
-                    mismatch: Box::new(RuntimeIdentityMismatch {
-                        manifest: PathBuf::from("worker/bundle-manifest.json"),
-                        interpreter: PathBuf::from("worker/.venv/bin/python"),
-                        declared: runtime_identity("cp313"),
-                        observed: runtime_identity("cp312"),
-                    }),
-                },
-                restore_environment,
-            ),
-            (
-                WorkerBundleError::UnreadableRuntimeIdentity {
                     interpreter: PathBuf::from("worker/.venv/bin/python"),
-                    detail: "no module named packaging".to_owned(),
-                },
-                restore_environment,
-            ),
-            (
-                WorkerBundleError::EnvironmentDoesNotMatchLock {
-                    mismatch: Box::new(EnvironmentMismatch::Absent {
-                        distribution: "torch".to_owned(),
-                        required: "2.9.1".to_owned(),
-                    }),
-                },
-                restore_environment,
-            ),
-            (
-                WorkerBundleError::UnreadableWorkerLockfile {
-                    path: PathBuf::from("worker/requirements.lock"),
-                    locus: WorkerLockfileLocus::Line(12),
-                    reason: WorkerLockfileErrorReason::MalformedPin,
-                },
-                "regenerate worker/requirements.lock per docs/operations/WORKER-ENVIRONMENT.md",
-            ),
+                    declared: runtime_identity("cp313"),
+                    observed: runtime_identity("cp312"),
+                }),
+            },
+            WorkerBundleError::UnreadableRuntimeIdentity {
+                interpreter: PathBuf::from("worker/.venv/bin/python"),
+                detail: "no module named packaging".to_owned(),
+            },
+            WorkerBundleError::EnvironmentDoesNotMatchLock {
+                mismatch: Box::new(EnvironmentMismatch::Absent {
+                    distribution: "torch".to_owned(),
+                    required: "2.9.1".to_owned(),
+                }),
+            },
+            WorkerBundleError::UnreadableWorkerLockfile {
+                path: PathBuf::from("worker/requirements.lock"),
+                locus: WorkerLockfileLocus::Line(12),
+                reason: WorkerLockfileErrorReason::MalformedPin,
+            },
+            WorkerBundleError::UnreadableLauncher {
+                path: PathBuf::from("worker/launcher.json"),
+                detail: "unexpected end of input".to_owned(),
+            },
+            WorkerBundleError::UnsupportedLauncher {
+                found: "9.9".to_owned(),
+                supported: "1.0",
+            },
+            WorkerBundleError::ProtocolFakeNamedAGovernedRoot {
+                variable: "STUDY_TTS_MODEL_ROOT".to_owned(),
+            },
+            WorkerBundleError::RequirementsDisagreeWithLock {
+                path: PathBuf::from("worker/pyproject.toml"),
+                fault: Box::new(WorkerRequirementFault::NotAnExactPin {
+                    distribution: "torch".to_owned(),
+                }),
+            },
         ] {
-            assert_expected_remedy(
-                error.into(),
-                Some(RemedyAdvice::new(
-                    RemedyOwner::WorkerRuntime,
-                    action,
-                    Some("Worker protocol or containment failure"),
-                )),
-            );
+            let expected = expected_worker_bundle_remedy(&error);
+            assert_expected_remedy(error.into(), expected);
         }
 
-        let error = CacheError::UnusableCacheEntry {
-            entry_dir: PathBuf::from("cache-entry"),
-            segment_id: "seg-1".to_owned(),
-            fault: Box::new(CacheEntryFault::MalformedRecordedDigest {
-                recorded: "wrong".to_owned(),
-            }),
-        };
-        let expected = expected_cache_remedy(&error);
-        assert_expected_remedy(error.into(), expected);
+        for error in [
+            CacheError::UnusableCacheEntry {
+                entry_dir: PathBuf::from("cache-entry"),
+                segment_id: "seg-1".to_owned(),
+                fault: Box::new(CacheEntryFault::MalformedRecordedDigest {
+                    recorded: "wrong".to_owned(),
+                }),
+            },
+            CacheError::PackageArtifactCountMismatch {
+                found: 1,
+                required: 2,
+            },
+            CacheError::PackageArtifactPlanMismatch {
+                mismatch: Box::new(PackageArtifactMismatch {
+                    position: 0,
+                    recorded_segment_id: "seg-2".to_owned(),
+                    recorded_cache_key: cache_key('a'),
+                    recorded_pause_after_ms: 250,
+                    required_segment_id: "seg-1".to_owned(),
+                    required_cache_key: cache_key('b'),
+                    required_pause_after_ms: 500,
+                }),
+            },
+        ] {
+            let expected = expected_cache_remedy(&error);
+            assert_expected_remedy(error.into(), expected);
+        }
 
         let error = AudioError::AssembledLengthMismatch {
             destination: PathBuf::from("master.wav"),
@@ -963,6 +1106,15 @@ mod tests {
         };
         let expected = expected_audio_remedy(&error);
         assert_expected_remedy(error.into(), expected);
+
+        let error = AudioError::SynthesizerIdentityMismatch {
+            segment_id: "seg-1".to_owned(),
+            planned: cache_key('a'),
+            reported: cache_key('b'),
+        };
+        let expected = expected_audio_remedy(&error);
+        assert_expected_remedy(error.into(), expected);
+
         for error in [
             ToolError::UnreadableProbeResponse {
                 path: PathBuf::from("lesson.m4a"),
@@ -1058,24 +1210,14 @@ mod tests {
             pid: 7,
             process_start: 11,
         };
-        assert_durable_state_remedy(live_lock, None);
+        assert_durable_state_remedy(live_lock);
 
         let cache_lock = DurableStateError::CacheLockTimeout {
             path: PathBuf::from("cache.lock"),
-            cache_key: "a"
-                .repeat(study_tts_core::CacheKey::LENGTH)
-                .parse()
-                .expect("valid cache key"),
+            cache_key: cache_key('a'),
             timeout_ms: 1,
         };
-        assert_durable_state_remedy(
-            cache_lock,
-            Some(RemedyAdvice::new(
-                RemedyOwner::Runtime,
-                "preserve attempts and inspect the cache-key owner before retrying",
-                None,
-            )),
-        );
+        assert_durable_state_remedy(cache_lock);
 
         let quarantine = DurableStateError::QuarantineFailed {
             staging_path: PathBuf::from("staging"),
@@ -1085,34 +1227,137 @@ mod tests {
                 source: io::Error::other("quarantine failure"),
             })),
         };
-        assert_durable_state_remedy(
-            quarantine,
-            Some(RemedyAdvice::new(
-                RemedyOwner::Runtime,
-                "preserve the staging attempt and repair quarantine before retrying",
-                None,
-            )),
-        );
+        assert_durable_state_remedy(quarantine);
 
-        for shared in [
-            DurableStateError::PublicationConflict {
-                path: PathBuf::from("package"),
+        // The whole reconciliation group, not a representative pair: these are
+        // the refusals that stand between a corrupt durable record and an
+        // overwrite, and one of them silently carrying different advice is the
+        // failure this test exists to catch.
+        for error in [
+            DurableStateError::MalformedJobLock {
+                path: PathBuf::from("jobs/lesson/build.lock"),
+                source: json_error(),
+            },
+            DurableStateError::IncompatibleJobLock {
+                path: PathBuf::from("jobs/lesson/build.lock"),
+                schema_version: "9.9".to_owned(),
+                lesson_id: "other-lesson".to_owned(),
+                required_schema_version: "1.0",
+                required_lesson_id: "lesson".to_owned(),
+            },
+            DurableStateError::MalformedJobSnapshot {
+                path: PathBuf::from("jobs/lesson/job.json"),
+                source: json_error(),
+            },
+            DurableStateError::JobSnapshotIdentityMismatch {
+                path: PathBuf::from("jobs/lesson/job.json"),
+                recorded: "other-lesson".to_owned(),
+                required: "lesson".to_owned(),
+            },
+            DurableStateError::JobSnapshotSelectionMismatch {
+                path: PathBuf::from("jobs/lesson/job.json"),
+                stage: "published".to_owned(),
+            },
+            DurableStateError::MalformedPublicationJournal {
+                path: PathBuf::from("previews/lesson/publication.json"),
+                source: json_error(),
+            },
+            DurableStateError::MalformedCurrentPreview {
+                path: PathBuf::from("previews/lesson/current.json"),
+                source: json_error(),
+            },
+            DurableStateError::UnsupportedDurableRecord {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
+                schema_version: "9.9".to_owned(),
+            },
+            DurableStateError::CurrentLessonMismatch {
+                path: PathBuf::from("previews/lesson/current.json"),
+                recorded: "other-lesson".to_owned(),
+                required: "lesson".to_owned(),
+            },
+            DurableStateError::PublicationJournalLessonMismatch {
+                path: PathBuf::from("previews/lesson/publication.json"),
+                recorded: "other-lesson".to_owned(),
+                required: "lesson".to_owned(),
+            },
+            DurableStateError::InvalidCurrentPackageReference {
+                record: PathBuf::from("previews/lesson/current.json"),
+                reference: "../escape".to_owned(),
+            },
+            DurableStateError::MissingPackageDirectory {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
+            },
+            DurableStateError::MalformedPackageManifest {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
+                source: json_error(),
+            },
+            DurableStateError::UnsupportedPackageManifest {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
+                found: "9.9".to_owned(),
+                required: "1.0",
+            },
+            DurableStateError::PackageReleaseStatusMismatch {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
+                found: "production_release".to_owned(),
+            },
+            DurableStateError::PackageLessonMismatch {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
+                recorded: "other-lesson".to_owned(),
+                required: "lesson".to_owned(),
+            },
+            DurableStateError::EmptyPackageSegmentId {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
+            },
+            DurableStateError::EmptyPackageSegmentAudio {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
+                segment_id: "seg-1".to_owned(),
+            },
+            DurableStateError::IncoherentPackageTimeline {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
+                detail: "segment 2 starts before segment 1 ends".to_owned(),
+            },
+            DurableStateError::UnexpectedPackageArtifactPath {
+                manifest: PathBuf::from("previews/lesson/packages/manifest.json"),
+                recorded: "../lesson.wav".to_owned(),
+                required: "lesson.wav",
+            },
+            DurableStateError::PackageArtifactChecksumMismatch {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
+                expected: "a".repeat(64),
+                found: "b".repeat(64),
+            },
+            DurableStateError::MissingPackageToolArguments {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
+                tool: "FFmpeg",
+            },
+            DurableStateError::PackageManifestChecksumMismatch {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
+                expected: "a".repeat(64),
+                found: "b".repeat(64),
+            },
+            DurableStateError::MalformedDurableDigest {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
+                value: "not-a-digest".to_owned(),
             },
             DurableStateError::MissingCurrentPreview {
-                path: PathBuf::from("current.json"),
+                path: PathBuf::from("previews/lesson/current.json"),
+            },
+            DurableStateError::JournalSelectionMismatch {
+                record: PathBuf::from("previews/lesson/publication.json"),
+                journal_manifest: "a".repeat(64),
+                current_manifest: "b".repeat(64),
+            },
+            DurableStateError::PackagePlanMismatch {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
+            },
+            DurableStateError::InvalidJobDirectoryName {
+                path: PathBuf::from("jobs/lesson/job.json"),
+            },
+            DurableStateError::PublicationConflict {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
             },
         ] {
-            assert_durable_state_remedy(
-                shared,
-                Some(RemedyAdvice::new(
-                    RemedyOwner::Runtime,
-                    concat!(
-                        "preserve the artifacts and run runtime reconciliation without overwrite ",
-                        "or deletion",
-                    ),
-                    Some("State or checksum corruption"),
-                )),
-            );
+            assert_durable_state_remedy(error);
         }
     }
 
@@ -1143,6 +1388,10 @@ mod tests {
                 tool: "FFmpeg".to_owned(),
                 requested: PathBuf::from("ffmpeg"),
             }),
+            BuildError::from(ToolError::MissingEncoder {
+                executable: PathBuf::from("ffmpeg"),
+                encoder: "libmp3lame",
+            }),
             BuildError::from(ToolError::ToolTimedOut {
                 invocation: tool_invocation(),
                 timeout_ms: 1,
@@ -1156,6 +1405,57 @@ mod tests {
                 invocation: tool_invocation(),
                 stream: ToolOutputStream::Stderr,
                 source: io::Error::other("capture failure"),
+            }),
+            BuildError::from(ToolError::ToolPipeUnavailable {
+                invocation: tool_invocation(),
+                stream: ToolOutputStream::Stderr,
+            }),
+            BuildError::from(ToolError::ToolCaptureConfigurationFailed {
+                invocation: tool_invocation(),
+                stream: ToolOutputStream::Stderr,
+                source: io::Error::other("configuration failure"),
+            }),
+            BuildError::from(ToolError::ToolCaptureStartFailed {
+                invocation: tool_invocation(),
+                stream: ToolOutputStream::Stderr,
+                source: io::Error::other("capture start failure"),
+            }),
+            BuildError::from(ToolError::ToolCaptureChannelClosed {
+                invocation: tool_invocation(),
+            }),
+            BuildError::from(ToolError::ToolCaptureThreadPanicked {
+                invocation: tool_invocation(),
+                stream: ToolOutputStream::Stderr,
+            }),
+            BuildError::from(ToolError::ToolCaptureShutdownTimedOut {
+                invocation: tool_invocation(),
+                timeout_ms: 1,
+            }),
+            BuildError::from(ToolError::ToolCaptureIncomplete {
+                invocation: tool_invocation(),
+                stream: ToolOutputStream::Stderr,
+            }),
+            BuildError::from(ToolError::Ffmpeg {
+                status: "exit status: 1".to_owned(),
+                stderr: "encoder failed".to_owned(),
+            }),
+            BuildError::from(ToolError::Ffprobe {
+                status: "exit status: 1".to_owned(),
+                stderr: "probe failed".to_owned(),
+            }),
+            BuildError::from(ToolError::StartFfmpeg {
+                executable: PathBuf::from("ffmpeg"),
+                source: io::Error::other("spawn failure"),
+            }),
+            BuildError::from(ToolError::InspectTool {
+                tool: "FFmpeg".to_owned(),
+                executable: PathBuf::from("ffmpeg"),
+                source: io::Error::other("inspection failure"),
+            }),
+            BuildError::from(ToolError::ToolProbeFailed {
+                tool: "FFmpeg".to_owned(),
+                status: "exit status: 1".to_owned(),
+                stderr: "probe failed".to_owned(),
             }),
             BuildError::from(ManagedPathError::UnrootedDestination {
                 path: PathBuf::new(),

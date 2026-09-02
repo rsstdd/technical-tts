@@ -10,37 +10,25 @@
       "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
       "type": "string"
     },
-    "CurrentStoredToolUse": {
-      "additionalProperties": false,
-      "properties": {
-        "argument_profile_blake3": {
-          "$ref": "#/$defs/ToolProfileHash"
-        },
-        "arguments": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "resolved_executable": {
-          "type": "string"
-        },
-        "version": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "resolved_executable",
-        "version",
-        "arguments",
-        "argument_profile_blake3"
-      ],
-      "type": "object"
-    },
     "PlanHash": {
       "description": "BLAKE3 over the canonical serialization of a render plan's resolved segments, as 64 lowercase hexadecimal characters.",
       "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
       "type": "string"
+    },
+    "RecordedTool": {
+      "description": "Which of the two binaries an execution record belongs to.\n\nA closed vocabulary rather than a free string, so a manifest naming a third\ntool is a parse error at the boundary rather than a record nothing reads.",
+      "oneOf": [
+        {
+          "const": "ffmpeg",
+          "description": "The encoder.",
+          "type": "string"
+        },
+        {
+          "const": "ffprobe",
+          "description": "The prober.",
+          "type": "string"
+        }
+      ]
     },
     "ReleaseStatus": {
       "description": "What an artifact claims to be.",
@@ -76,16 +64,55 @@
     "StoredArtifacts": {
       "additionalProperties": false,
       "properties": {
+        "captions": {
+          "$ref": "#/$defs/StoredArtifact"
+        },
+        "chapters": {
+          "$ref": "#/$defs/StoredArtifact"
+        },
         "m4a": {
           "$ref": "#/$defs/StoredArtifact"
         },
         "master_wav": {
           "$ref": "#/$defs/StoredArtifact"
+        },
+        "mp3": {
+          "$ref": "#/$defs/StoredArtifact"
+        },
+        "transcript": {
+          "$ref": "#/$defs/StoredArtifact"
         }
       },
       "required": [
         "master_wav",
-        "m4a"
+        "m4a",
+        "mp3",
+        "transcript",
+        "captions",
+        "chapters"
+      ],
+      "type": "object"
+    },
+    "StoredExecution": {
+      "additionalProperties": false,
+      "properties": {
+        "argument_profile_blake3": {
+          "$ref": "#/$defs/ToolProfileHash"
+        },
+        "arguments": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tool": {
+          "$ref": "#/$defs/RecordedTool"
+        }
+      },
+      "required": [
+        "tool",
+        "arguments",
+        "argument_profile_blake3"
       ],
       "type": "object"
     },
@@ -110,8 +137,20 @@
           "minimum": 0,
           "type": "integer"
         },
+        "pause_frames": {
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
         "segment_id": {
           "type": "string"
+        },
+        "start_frame": {
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
@@ -119,23 +158,48 @@
         "cache_key",
         "audio_blake3",
         "frames",
-        "pause_after_ms"
+        "pause_after_ms",
+        "start_frame",
+        "pause_frames"
+      ],
+      "type": "object"
+    },
+    "StoredToolIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "resolved_executable": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "resolved_executable",
+        "version"
       ],
       "type": "object"
     },
     "StoredTools": {
       "additionalProperties": false,
       "properties": {
+        "executions": {
+          "items": {
+            "$ref": "#/$defs/StoredExecution"
+          },
+          "type": "array"
+        },
         "ffmpeg": {
-          "$ref": "#/$defs/CurrentStoredToolUse"
+          "$ref": "#/$defs/StoredToolIdentity"
         },
         "ffprobe": {
-          "$ref": "#/$defs/CurrentStoredToolUse"
+          "$ref": "#/$defs/StoredToolIdentity"
         }
       },
       "required": [
         "ffmpeg",
-        "ffprobe"
+        "ffprobe",
+        "executions"
       ],
       "type": "object"
     },
@@ -145,7 +209,7 @@
       "type": "string"
     }
   },
-  "$id": "https://schemas.study-tts.example/manifest-v0.schema.json",
+  "$id": "https://schemas.study-tts.example/manifest-v1.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "Strict owned shape used when an immutable package is reconciled or reused.",
@@ -163,7 +227,7 @@
       "$ref": "#/$defs/ReleaseStatus"
     },
     "schema_version": {
-      "const": "0.2-skeleton",
+      "const": "1.0-skeleton",
       "type": "string"
     },
     "segments": {
@@ -172,8 +236,18 @@
       },
       "type": "array"
     },
+    "text_renderer_version": {
+      "description": "Identity of the rules that produced the transcript, captions, and\nchapters. A package whose value differs from this build's is rebuilt\nrather than reused.",
+      "type": "string"
+    },
     "tools": {
       "$ref": "#/$defs/StoredTools"
+    },
+    "total_frames": {
+      "format": "uint64",
+      "maximum": 18446744073709551615,
+      "minimum": 0,
+      "type": "integer"
     }
   },
   "required": [
@@ -181,6 +255,8 @@
     "release_status",
     "lesson_id",
     "plan_hash",
+    "text_renderer_version",
+    "total_frames",
     "segments",
     "artifacts",
     "tools"

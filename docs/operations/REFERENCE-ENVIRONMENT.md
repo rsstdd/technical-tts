@@ -19,7 +19,7 @@
 | Rust | `rustc 1.97.1 (8bab26f4f 2026-07-14)`; Cargo `1.97.1`; checked-in toolchain SHA-256 recorded in raw environment evidence |
 | Python | CPython `3.12.3`, GCC `13.3.0`, glibc `2.39`; frozen inventory SHA-256 `7de742701305fd95810a46bf575dc3c18377e5c910f9f48159f256f3e4af48e2` |
 | GCC/CMake | GCC `13.3.0`; CMake `3.28.3` |
-| FFmpeg/ffprobe | Ubuntu FFmpeg/ffprobe `6.1.1-3ubuntu5`; complete build configuration retained in raw evidence |
+| FFmpeg/ffprobe | Ubuntu FFmpeg/ffprobe `6.1.1-3ubuntu5`; complete build configuration retained in raw evidence. E1-S4 additionally requires the build to offer the `libmp3lame` encoder, which package preflight verifies by exact encoder-token parsing before any synthesis runs |
 | Chatterbox code | `v0.1.2`, commit `eb90621fa748f341a5b768aed0c0c12fc561894b`; installed package SHA-256 `ffcc84b2d199002683f70525f7ee9f5c340a399e840c6eb10d2b876ea576be4d` |
 | Qualification worker identity | SHA-256 `f5628884678f52de2f3a65ea51c9bc2a86e4f5919044fa9b4340eb62465dc2a9` |
 | Model/tokenizer/codec | `ResembleAI/chatterbox` revision `1b475dffa71fb191cb6d5901215eb6f55635a9b6`; per-file SafeTensors/JSON checksums in `rights-chatterbox-weights-v2` |

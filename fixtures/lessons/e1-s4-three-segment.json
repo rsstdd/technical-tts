@@ -1,0 +1,64 @@
+{
+  "$schema": "https://schemas.study-tts.example/lesson-v3.schema.json",
+  "schema_version": "3.1",
+  "lesson_id": "e1-s4-three-segment",
+  "title": "Why a Package Records What Produced It",
+  "language": "en",
+  "learning_objectives": [
+    "Explain why a package records the tools that produced it",
+    "State what a rebuild compares before reusing a package"
+  ],
+  "source": {
+    "content_hash": "7777777777777777777777777777777777777777777777777777777777777777",
+    "references": [
+      "docs/architecture/WALKING-SKELETON.md",
+      "docs/adr/ADR-0001-production-rust-study-guide-tts.md"
+    ]
+  },
+  "speakers": {
+    "nadia": {
+      "voice_profile": "owner-fallback-v1"
+    }
+  },
+  "segments": [
+    {
+      "id": "seg-0001",
+      "speaker": "nadia",
+      "role": "explanation",
+      "source_refs": [
+        "block-001"
+      ],
+      "display_text": "A finished package records the exact tools that produced it.",
+      "spoken_text": "A finished package records the exact tools that produced it.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 400,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0002",
+      "speaker": "nadia",
+      "role": "recall_prompt",
+      "source_refs": [
+        "block-002"
+      ],
+      "display_text": "So what must a rebuild compare before it reuses one?",
+      "spoken_text": "So what must a rebuild compare before it reuses one?",
+      "style": "calm_explanatory",
+      "pause_after_ms": 2000,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0003",
+      "speaker": "nadia",
+      "role": "answer",
+      "source_refs": [
+        "block-003"
+      ],
+      "display_text": "The plan, every recorded tool profile, and the renderer that wrote the text.",
+      "spoken_text": "The plan, every recorded tool profile, and the renderer that wrote the text.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 600,
+      "review_status": "approved"
+    }
+  ]
+}

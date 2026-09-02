@@ -68,6 +68,10 @@ const MAX_PAUSE_AFTER_MS: u32 = 10_000;
 /// an invariant rather than a default, and §13.2's pause table gives a recall
 /// question 1.5-4 seconds. This is that range's floor; a prompt below it gives
 /// the listener nothing to answer in.
+///
+/// §13.2 names this constant and [`MAX_RECALL_RESPONSE_MS`] as the one row of
+/// that table code enforces, and records that the other five are defaults
+/// nothing refuses; this comment is the other end of that mirror.
 const MIN_RECALL_RESPONSE_MS: u32 = 1_500;
 
 /// Longest silence a recall prompt may leave, in milliseconds.

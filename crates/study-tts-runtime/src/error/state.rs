@@ -289,6 +289,19 @@ pub enum DurableStateError {
         segment_id: String,
     },
 
+    /// A package manifest's written timeline does not describe one master.
+    #[error(
+        "package manifest `{}` records a timeline that cannot describe one master: {detail}; \
+         preserve the package for runtime reconciliation",
+        path.display()
+    )]
+    IncoherentPackageTimeline {
+        /// Manifest carrying the contradictory timeline.
+        path: PathBuf,
+        /// Which agreement failed, and the two values that disagree.
+        detail: String,
+    },
+
     /// A package artifact record names an unexpected relative path.
     #[error(
         "package manifest `{}` records artifact path `{recorded}`, not `{required}`; preserve the \
@@ -467,6 +480,7 @@ impl DurableStateError {
             | Self::PackageLessonMismatch { .. }
             | Self::EmptyPackageSegmentId { .. }
             | Self::EmptyPackageSegmentAudio { .. }
+            | Self::IncoherentPackageTimeline { .. }
             | Self::UnexpectedPackageArtifactPath { .. }
             | Self::PackageArtifactChecksumMismatch { .. }
             | Self::MissingPackageToolArguments { .. }
