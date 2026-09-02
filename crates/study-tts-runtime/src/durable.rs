@@ -221,19 +221,11 @@ pub(crate) fn write_bytes_noreplace(
         .write_all(bytes)
         .map_err(|error| io_error(destination, error))?;
     filesystem.sync_file(staged.path())?;
-    let staged_path = staged
-        .into_temp_path()
-        .keep()
-        .map_err(|error| io_error(&error.path, error.error))?;
+    let staged_path = staged.into_temp_path();
 
     let outcome = filesystem.rename_noreplace(&staged_path, destination)?;
-    match outcome {
-        RenameOutcome::Published => filesystem.sync_directory(parent)?,
-        // The destination keeps its existing owner, so the staged sibling is
-        // litter in a directory this build does not own. A failure to remove
-        // it does not change the refusal the caller is about to raise, and
-        // reporting it instead would name the wrong file.
-        RenameOutcome::DestinationExists => drop(fs::remove_file(&staged_path)),
+    if outcome == RenameOutcome::Published {
+        filesystem.sync_directory(parent)?;
     }
     Ok(outcome)
 }
@@ -308,6 +300,11 @@ mod tests {
         inner: OsDurableFileSystem,
     }
 
+    #[derive(Debug, Default)]
+    struct FailingRenameFileSystem {
+        inner: OsDurableFileSystem,
+    }
+
     impl DurableFileSystem for FailingReplacementFileSystem {
         fn sync_file(&self, path: &Path) -> Result<(), BuildError> {
             self.inner.sync_file(path)
@@ -330,6 +327,31 @@ mod tests {
                 destination,
                 std::io::Error::other("injected replacement interruption"),
             ))
+        }
+    }
+
+    impl DurableFileSystem for FailingRenameFileSystem {
+        fn sync_file(&self, path: &Path) -> Result<(), BuildError> {
+            self.inner.sync_file(path)
+        }
+
+        fn sync_directory(&self, path: &Path) -> Result<(), BuildError> {
+            self.inner.sync_directory(path)
+        }
+
+        fn rename_noreplace(
+            &self,
+            _staged: &Path,
+            destination: &Path,
+        ) -> Result<RenameOutcome, BuildError> {
+            Err(io_error(
+                destination,
+                std::io::Error::other("injected rename interruption"),
+            ))
+        }
+
+        fn replace_file(&self, staged: &Path, destination: &Path) -> Result<(), BuildError> {
+            self.inner.replace_file(staged, destination)
         }
     }
 
@@ -420,6 +442,42 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(events[0].starts_with("file:"));
         assert!(events[1].starts_with("rename:"));
+    }
+
+    #[test]
+    fn t4_e1_a_failed_byte_publication_leaves_no_destination_or_staged_file() {
+        let root = TempDir::new().expect("create durable workspace");
+        let destination = root.path().join("lesson.json");
+
+        let error = write_bytes_noreplace(
+            &FailingRenameFileSystem::default(),
+            &destination,
+            b"authored",
+        )
+        .expect_err("injected rename must fail");
+
+        let BuildError::Io(IoError::FileSystem { path, source }) = error else {
+            panic!("rename failure used the wrong error class: {error}");
+        };
+        assert_eq!(path, destination);
+        assert_eq!(source.kind(), std::io::ErrorKind::Other);
+        assert!(
+            !destination.exists(),
+            "a failed rename created its destination"
+        );
+        let staged = fs::read_dir(root.path())
+            .expect("read durable workspace")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .filter(|name| {
+                let name = name.to_string_lossy();
+                name.starts_with("authored-") && name.ends_with(".tmp")
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            staged.is_empty(),
+            "a failed rename left a staged sibling behind"
+        );
     }
 
     /// A bare file name resolves to the current directory, not to `""`.

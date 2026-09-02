@@ -36,8 +36,7 @@ enum Command {
 enum LessonCommand {
     /// Write a new lesson scaffold that already validates.
     New {
-        /// Stable identity of the lesson, which also names its output
-        /// directory.
+        /// The stable lesson identity stored in the lesson document.
         lesson_id: String,
         /// Where to write the scaffold; an existing file is never replaced.
         #[arg(long)]
