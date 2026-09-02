@@ -242,6 +242,12 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`IoError::AudioAt`], [`IoError::WriteJson`], or
 /// [`BuildError::Synthesis`].
 ///
+/// [`IoError::DestinationExists`] is not among them either. A build claims
+/// names inside a workspace it owns, where losing a publication race is
+/// reported by the durable-state category that owns the record; refusing to
+/// replace a file somebody else authored is [`crate::scaffold_lesson`]'s
+/// invariant, and it is the only caller that raises it.
+///
 /// [`crate::ManagedPathError::InvalidManagedName`] is not among them: every
 /// name this function offers a managed helper is either a literal or an
 /// identifier the lesson gate already refused, so an unusable spelling is
@@ -318,9 +324,7 @@ pub fn build_preview_with_services(
     request: BuildRequest,
     services: PreviewServiceBundle<'_>,
 ) -> Result<BuildResult, BuildError> {
-    let lesson_bytes = read_lesson(&request.lesson_path)?;
-    let lesson =
-        ValidatedLesson::from_json(&request.lesson_path.display().to_string(), &lesson_bytes)?;
+    let lesson = load_lesson(&request.lesson_path)?;
 
     // Rights precede work, and now precede planning too: the conditioning
     // artifact each profile carries is an ADR-0001 §12.5 synthesis-key input,
@@ -503,6 +507,37 @@ impl Wake for ThreadParker {
     fn wake_by_ref(self: &Arc<Self>) {
         self.thread.unpark();
     }
+}
+
+/// Reads and validates one authored lesson document.
+///
+/// The load-and-validate step [`build_preview`] performs, published so
+/// `study-tts lesson validate` checks a document the same way the build that
+/// will render it does. Two implementations of "is this lesson usable" would
+/// be free to disagree, and the one an author consulted would be the one that
+/// did not matter.
+///
+/// # Errors
+///
+/// [`IoError::ReadFile`] when the document cannot be opened or read, and
+/// [`IoError::LessonNotRegularFile`] when the opened descriptor is not a
+/// regular file. The document's own refusals are located by
+/// [`study_tts_core::LessonDiagnostic`] and delegated whole:
+/// [`study_tts_core::LessonError::LessonJsonTooLarge`] is raised here rather
+/// than by the parser, because the bounded reader is what stops oversized
+/// bytes reaching one, and every other variant is the one
+/// [`study_tts_core::ValidatedLesson::from_json`] documents.
+///
+/// No other [`IoError`] variant is reachable, because this function writes
+/// nothing: [`IoError::DestinationExists`], [`IoError::FileSystem`],
+/// [`IoError::AudioAt`], and [`IoError::WriteJson`] belong to the boundaries
+/// that do.
+pub fn load_lesson(path: &Path) -> Result<ValidatedLesson, BuildError> {
+    let bytes = read_lesson(path)?;
+    Ok(ValidatedLesson::from_json(
+        &path.display().to_string(),
+        &bytes,
+    )?)
 }
 
 /// Reads at most one byte beyond the core lesson envelope.

@@ -7,6 +7,7 @@
 
 mod assembly;
 mod audio_edges;
+mod authoring;
 mod cache;
 mod cache_port;
 mod distinct_map;
@@ -39,6 +40,7 @@ pub use audio_edges::{
     ProvisionalCalibration, REQUIRED_EDGE_SILENCE_MS, SilenceThreshold, condition_edges,
     measure_edge_silence, samples_for,
 };
+pub use authoring::{SCAFFOLD_VOICE_PROFILE, scaffold_lesson};
 pub use cache::ValidatedCachedArtifact;
 pub use cache_port::{
     CACHE_PUBLICATION_CONTRACT_VERSION, CachePublisher, CacheResolveRequest,
@@ -65,7 +67,7 @@ pub use package_port::{
 };
 pub use pipeline::{
     BuildRequest, BuildResult, PreviewServiceBundle, build_preview, build_preview_with_services,
-    publish, validate_m4a_output, validate_production_manifest,
+    load_lesson, publish, validate_m4a_output, validate_production_manifest,
 };
 pub use schemas::{
     JOB_SCHEMA_VERSION, MANIFEST_SCHEMA_VERSION, PUBLISHED_SCHEMAS, PublishedSchema,
