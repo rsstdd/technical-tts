@@ -168,8 +168,9 @@ Each take carries a large fixed cost that does not scale with the audio produced
 
 **A single RTF number is not meaningful for this backend unless the utterance length is stated
 beside it**, and ADR-0002's table does not carry one on the RTF row. On a 3 second utterance both
-backends fail the gate; on a 14 second utterance both pass it; the `torch` uplift moves RTF by a
-consistent 7–11% and decides the gate in neither direction.
+backends fail the gate; on a 14 second utterance both pass it; the `torch` uplift improves RTF by
+approximately 5–11% — 9.2% mean and 11.3% worst at the shorter length, and 6.0% mean and 5.1%
+worst at the roughly 14-second length — and decides the gate in neither direction.
 
 **This does not lift the performance waiver, and must not be read as doing so.** The fitted 4.97 at
 ADR-0002's own utterance length sits under the `<= 6.0` gate, but it is a fit rather than a
