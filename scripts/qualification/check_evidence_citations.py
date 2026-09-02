@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import re
 import subprocess
 import sys
@@ -48,6 +49,41 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 EVIDENCE = REPO / "evidence"
+
+
+def _provenance_checker():
+    """The provenance checker, loaded as a module.
+
+    Imported rather than reimplemented, and that is the whole point. This check
+    and `scripts/check-evidence-provenance.py` must agree on what an *accepted
+    reconciliation record* is, or an accounting row would suppress a mismatch in
+    one checker and not the other. Its filename is hyphenated and therefore not
+    importable by name, so it is loaded by path; it does its work under
+    `if __name__ == "__main__"`, so loading it runs nothing.
+    """
+    path = REPO / "scripts" / "check-evidence-provenance.py"
+    specification = importlib.util.spec_from_file_location("_evidence_provenance", path)
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
+
+
+_PROVENANCE = _provenance_checker()
+
+# The heading a reconciliation writes citation accounting rows under. Distinct
+# from the provenance checker's `## Accounted provenance mismatches` because the
+# two answer different questions — that one compares a pin against the *current*
+# bytes, this one against *git history* — and a row written for one must not
+# silently suppress the other.
+ACCOUNTED_CITATION_HEADING = "## Accounted citation mismatches"
+
+# Row shape, acceptance test, and reconciliation-kind test are the provenance
+# checker's own, referenced rather than restated: `| \`record-id\` | \`path\` |`
+# and nothing else on the line, in a record whose identifier carries
+# `reconciliation` as a hyphen-separated word and which is accepted.
+# `evidence/README.md` §Provenance states the rule both checkers apply.
+ACCOUNTING_ROW = _PROVENANCE.ACCOUNTING_ROW
+RECONCILIATION_TOKEN = _PROVENANCE.RECONCILIATION_TOKEN
 
 # Path then digest on one line, which is the order every citation table in
 # `evidence/` uses. The `[^\n]*?` between them is what allows the `|`
@@ -80,6 +116,35 @@ def committed_digests(path: Path) -> set[str]:
     return digests
 
 
+def accounted_citations() -> set[tuple[str, str]]:
+    """Citation pairs an accepted reconciliation record authorizes.
+
+    A pair is `(citing record id, cited repository path)` and both must match
+    exactly. There is deliberately no wildcard, prefix, glob, whole-record
+    exemption, or directory exemption: an accounting row answers for one
+    citation in one record, and a mechanism that could answer for more would be
+    an exemption from citation integrity rather than an account of it.
+
+    An unaccepted reconciliation grants nothing, which is what makes this an
+    approval rather than a note: `evidence/README.md` §Provenance says a
+    proposed record, an unapproved superseding record, or a prose mention has no
+    effect, and `is_accepted` is the provenance checker's own predicate.
+    """
+    accounted = set()
+    for record in sorted(EVIDENCE.rglob("*.md")):
+        if RECONCILIATION_TOKEN not in _PROVENANCE.record_id(record).split("-"):
+            continue
+        if not _PROVENANCE.is_accepted(record):
+            continue
+        for line in _PROVENANCE.section(
+            record.read_text(encoding="utf-8"), ACCOUNTED_CITATION_HEADING
+        ):
+            match = ACCOUNTING_ROW.match(line)
+            if match:
+                accounted.add(match.groups())
+    return accounted
+
+
 def superseded_records() -> set[str]:
     """Record stems some other record declares it supersedes."""
     superseded = set()
@@ -96,6 +161,7 @@ def main() -> int:
     arguments = parser.parse_args()
 
     superseded = superseded_records()
+    accounted = accounted_citations()
     counts = {"match": 0, "drift": 0, "unresolved": 0}
     never: list[tuple[Path, str, str, bool]] = []
     cache: dict[Path, set[str]] = {}
@@ -116,22 +182,39 @@ def main() -> int:
             if digest in cache[target]:
                 counts["drift"] += 1
             else:
-                live = record.stem not in superseded
-                never.append((record, target.relative_to(REPO).as_posix(), digest, live))
+                cited_path = target.relative_to(REPO).as_posix()
+                # Accounted only for this exact record and this exact path.
+                # Superseded records were never failed; an accounting row is
+                # what answers for one that nothing supersedes.
+                live = record.stem not in superseded and (
+                    _PROVENANCE.record_id(record),
+                    cited_path,
+                ) not in accounted
+                never.append((record, cited_path, digest, live))
 
     print(f"match {counts['match']}  drift {counts['drift']}  "
           f"never {len(never)}  unresolved-path {counts['unresolved']}")
 
     failing = [entry for entry in never if entry[3] or arguments.all]
     for record, cited, digest, live in never:
-        marker = "LIVE " if live else "hist "
+        if live:
+            marker = "LIVE "
+        elif (_PROVENANCE.record_id(record), cited) in accounted:
+            marker = "acct "
+        else:
+            marker = "hist "
         print(f"  {marker}{digest[:12]}…  {cited}\n        cited in {record.name}")
 
     if failing:
         print(f"\n{len(failing)} citation(s) name a version that was never committed, "
               f"in a record nothing supersedes." if not arguments.all else
               f"\n{len(failing)} citation(s) name a version that was never committed.")
-        print("Correct them by superseding the record, never by editing it in place.")
+        print(
+            "Correct them by superseding the record, or account for each one with an exact\n"
+            "`| `record-id` | `path` |` row under "
+            f"`{ACCOUNTED_CITATION_HEADING}`\n"
+            "in an accepted reconciliation record. Never by editing the record in place."
+        )
         return 1
     return 0
 

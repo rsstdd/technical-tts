@@ -31,6 +31,13 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          # Full history, for the citation check below only. It asks whether a
+          # cited digest was ever committed, which it answers by walking
+          # `git log` per file, so on the default shallow clone every citation
+          # older than the fetch depth would read as never committed and the
+          # step would fail for the shape of the clone rather than for anything
+          # in the evidence.
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -64,6 +71,24 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p 'test_check_evidence_provenance.py'
           python3 scripts/check-evidence-provenance.py
+
+      - name: Check evidence citations
+        # The complement of the step above, not a replacement for it: that one
+        # compares a live pin against the *current* bytes, this one against
+        # *git history*. A record can pass either and fail the other, and the
+        # fourteen G0 citations issue #71 opened for are exactly that case —
+        # provenance passed while no commit had ever carried the cited bytes.
+        #
+        # Historical pins naming working-tree states that were never committed
+        # are accounted individually, by exact record and path, under
+        # `## Accounted citation mismatches` in an accepted reconciliation
+        # record. That mirrors the provenance checker's own mechanism rather
+        # than adding a second exception model, and the tests below are what
+        # keep it an account rather than an exemption.
+        run: |
+          python3 -m unittest discover -s scripts/qualification/tests \
+            -p 'test_check_evidence_citations.py'
+          python3 scripts/qualification/check_evidence_citations.py
 
       - name: Check Cargo.toml formatting
         run: |
