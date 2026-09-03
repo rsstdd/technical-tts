@@ -598,6 +598,7 @@ The E0-S0 skeleton already supplies the shared durable-filesystem primitives, pr
 - `t1_e2_abandoned_attempt_must_immediately_precede_the_current_attempt`
 - `t1_e2_attempt_overflow_is_refused`
 - `t4_e2_a_partial_event_log_refuses_state_replacement`
+- `t4_e2_a_full_event_log_refuses_state_replacement`
 - `t4_e2_replacement_must_name_the_document_on_disk_as_its_predecessor`
 - `t4_e2_initial_job_document_cannot_skip_planning`
 - `t4_e2_a_partial_event_log_refuses_job_load`
@@ -613,6 +614,7 @@ The E0-S0 skeleton already supplies the shared durable-filesystem primitives, pr
 - `t4_e2_resume_refuses_a_retained_plan_with_a_stale_hash`
 - `t4_e2_resume_refuses_a_retained_plan_for_another_job`
 - `t4_e2_resume_refuses_a_plan_hash_that_disagrees_with_job_state`
+- `t4_e2_a_fresh_build_restores_a_retained_plan_that_disagrees_with_job_state`
 - `t4_e2_resume_refuses_a_job_package_that_disagrees_with_selected_output`
 - `t4_e2_resume_refuses_a_selected_package_for_a_different_job_plan`
 
