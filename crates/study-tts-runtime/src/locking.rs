@@ -360,7 +360,10 @@ mod tests {
     ///
     /// The parent of the test process fits: it is alive for as long as this
     /// test runs, it is never this process, and reading it needs no spawn and
-    /// no assumption about `/proc/1`.
+    /// no assumption about `/proc/1`. Linux-only for the same reason
+    /// `recorded_owner_is_live` is: `/proc` is where the identity comes from,
+    /// and off Linux acquisition refuses before liveness is ever asked.
+    #[cfg(target_os = "linux")]
     fn record_naming_live_parent(lesson_id: &str) -> (JobLockRecord, u32) {
         let own_pid = i32::try_from(std::process::id()).expect("the test PID fits");
         let parent = process::read_process_record(own_pid)
@@ -405,6 +408,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn t4_e2_live_lock_is_refused() {
         let root = TempDir::new().expect("create lock workspace");
@@ -429,6 +433,7 @@ mod tests {
         assert_eq!(fs::read(&path).expect("record remains"), bytes);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn t4_e2_verified_stale_lock_is_recoverable() {
         let root = TempDir::new().expect("create lock workspace");
@@ -458,6 +463,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn t4_e2_failed_stale_takeover_leaves_no_live_owner_record() {
         let root = TempDir::new().expect("create lock workspace");
