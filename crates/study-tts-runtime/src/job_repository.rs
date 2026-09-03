@@ -26,7 +26,7 @@ use crate::{
         DurableFileSystem, OsDurableFileSystem, read_bounded_bytes, write_bytes_atomically,
         write_json_atomically,
     },
-    job_events::{JobEvent, JobEventKind, append_event, validate_event_log},
+    job_events::{JobEvent, JobEventKind, append_event, preflight_append, validate_event_log},
     locking, managed, pipeline, preview,
 };
 
@@ -261,9 +261,12 @@ impl JobRepository for FileSystemJobRepository {
 /// Replaces `job.json` atomically, then records that it happened.
 ///
 /// The event append is the last statement and runs only when the durable
-/// replacement returned `Ok`: ADR-0001 §12.3 step 5. The filesystem is a
-/// parameter so a test can interrupt the rename and prove no event describes
-/// the state that was never reached.
+/// replacement returned `Ok`: ADR-0001 §12.3 step 5. Because that ordering
+/// leaves the append no way to refuse without stranding a state already
+/// recorded, the event is built and preflighted first, while `job.json` still
+/// holds its prior bytes. The filesystem is a parameter so a test can
+/// interrupt the rename and prove no event describes the state that was never
+/// reached.
 fn replace_document(
     filesystem: &dyn DurableFileSystem,
     workspace: &Path,
@@ -278,19 +281,16 @@ fn replace_document(
         validate_initial_state(document)?;
     }
     let job_dir = path.parent().unwrap_or(workspace);
-    validate_event_log(job_dir, &document.job_id)?;
+    let event = JobEvent::new(
+        &document.job_id,
+        Some(document.build_attempt.get()),
+        JobEventKind::StateDurable {
+            state: document.state,
+        },
+    );
+    preflight_append(job_dir, &event)?;
     write_json_atomically(filesystem, &path, document)?;
-    append_event(
-        filesystem,
-        job_dir,
-        &JobEvent::new(
-            &document.job_id,
-            Some(document.build_attempt.get()),
-            JobEventKind::StateDurable {
-                state: document.state,
-            },
-        ),
-    )
+    append_event(filesystem, job_dir, &event)
 }
 
 fn load_retained_plan(path: &Path, job_id: &str) -> Result<RenderPlan, BuildError> {
@@ -555,7 +555,7 @@ mod tests {
     use crate::{
         BuildError, DurableStateError, IoError, PublicationError,
         durable::{OsDurableFileSystem, fault::FailingReplacementFileSystem},
-        job_events,
+        job_events::{self, MAX_JOB_EVENT_LOG_BYTES},
     };
 
     const JOB_ID: &str = "job-1";
@@ -780,6 +780,55 @@ mod tests {
             std::fs::read(path).expect("job document remains"),
             prior,
             "event-log corruption must not advance authoritative state"
+        );
+    }
+
+    #[test]
+    fn t4_e2_a_full_event_log_refuses_state_replacement() {
+        let workspace = TempDir::new().expect("create workspace");
+        let job_dir = workspace.path().join("jobs").join(JOB_ID);
+        replace_document(
+            &OsDurableFileSystem,
+            workspace.path(),
+            &document(JobState::Planned),
+        )
+        .expect("the prior state is durable");
+        let path = job_dir.join("job.json");
+        let prior = std::fs::read(&path).expect("read prior record");
+        // Valid lines, repeated until one more cannot fit: the log is within
+        // its ceiling, so only the pending append exceeds it.
+        let line = std::fs::read(job_dir.join("events.ndjson")).expect("the first event line");
+        std::fs::write(
+            job_dir.join("events.ndjson"),
+            line.repeat(MAX_JOB_EVENT_LOG_BYTES / line.len()),
+        )
+        .expect("fill the event log to its ceiling");
+
+        let error = replace_document(
+            &OsDurableFileSystem,
+            workspace.path(),
+            &document(JobState::Rendering),
+        )
+        .expect_err("an append that cannot fit must refuse before the replacement");
+
+        assert!(
+            matches!(
+                error,
+                BuildError::DurableState(ref state)
+                    if matches!(
+                        **state,
+                        DurableStateError::DurableRecordTooLarge {
+                            max_bytes: MAX_JOB_EVENT_LOG_BYTES,
+                            ..
+                        }
+                    )
+            ),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(path).expect("job document remains"),
+            prior,
+            "a state no event could record must not become authoritative"
         );
     }
 

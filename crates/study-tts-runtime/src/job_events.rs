@@ -35,9 +35,9 @@ pub(crate) const JOB_EVENT_SCHEMA_VERSION: &str = "e2.job-event.0.1";
 
 const EVENT_LOG_NAME: &str = "events.ndjson";
 // Mirrored by `docs/architecture/WALKING-SKELETON.md` §Provisional resource
-// ceilings; the first bounds disk growth and the second bounds one message.
+// ceilings; the first bounds one message and the second bounds disk growth.
 const MAX_JOB_EVENT_LINE_BYTES: usize = 4 * 1024;
-const MAX_JOB_EVENT_LOG_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_JOB_EVENT_LOG_BYTES: usize = 8 * 1024 * 1024;
 
 /// One line of `events.ndjson`.
 #[derive(Debug, Deserialize, Serialize)]
@@ -108,18 +108,7 @@ pub(crate) fn append_event(
         .map_err(|error| io_error(&path, error))?
         .len();
     validate_event_file(&mut file, &path, length, &event.job_id)?;
-
-    let mut line = serde_json::to_vec(event).map_err(|source| IoError::WriteJson {
-        path: path.clone(),
-        source,
-    })?;
-    line.push(b'\n');
-    if line.len() > MAX_JOB_EVENT_LINE_BYTES {
-        return Err(event_line_too_large(&path));
-    }
-    if length.saturating_add(line.len() as u64) > MAX_JOB_EVENT_LOG_BYTES as u64 {
-        return Err(record_too_large(&path, MAX_JOB_EVENT_LOG_BYTES));
-    }
+    let line = encode_line(&path, event, length)?;
     // The job lock keeps there being only one writer, so a completed append is
     // always one whole line.
     file.write_all(&line)
@@ -133,19 +122,59 @@ pub(crate) fn append_event(
     Ok(())
 }
 
+/// Refuses a log that could not accept `event`, before the caller makes any
+/// authoritative state durable.
+///
+/// [`append_event`] must run after that state is durable (ADR-0001 §12.3
+/// step 5), so a ceiling it discovered would refuse a transition that had
+/// already happened and leave the log describing a state it no longer
+/// records. This runs the same validation and the same append accounting
+/// while the state can still be left untouched; the append repeats both
+/// against the length it opens the file with.
+///
+/// # Errors
+///
+/// Exactly what [`append_event`] raises before it writes.
+pub(crate) fn preflight_append(job_dir: &Path, event: &JobEvent) -> Result<(), BuildError> {
+    let path = managed::leaf(job_dir, EVENT_LOG_NAME)?;
+    let length = validate_existing_log(&path, &event.job_id)?;
+    encode_line(&path, event, length).map(drop)
+}
+
 /// Refuses an untrusted event log before authoritative state is changed.
 pub(crate) fn validate_event_log(job_dir: &Path, job_id: &str) -> Result<(), BuildError> {
-    let path = managed::leaf(job_dir, EVENT_LOG_NAME)?;
-    let mut file = match std::fs::File::open(&path) {
+    validate_existing_log(&managed::leaf(job_dir, EVENT_LOG_NAME)?, job_id).map(drop)
+}
+
+/// Validates every existing line and returns the length an append must fit.
+fn validate_existing_log(path: &Path, job_id: &str) -> Result<u64, BuildError> {
+    let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(io_error(&path, error)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(io_error(path, error)),
     };
     let length = file
         .metadata()
-        .map_err(|error| io_error(&path, error))?
+        .map_err(|error| io_error(path, error))?
         .len();
-    validate_event_file(&mut file, &path, length, job_id)
+    validate_event_file(&mut file, path, length, job_id)?;
+    Ok(length)
+}
+
+/// Serializes one line, refusing it when either ceiling would be exceeded.
+fn encode_line(path: &Path, event: &JobEvent, length: u64) -> Result<Vec<u8>, BuildError> {
+    let mut line = serde_json::to_vec(event).map_err(|source| IoError::WriteJson {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    line.push(b'\n');
+    if line.len() > MAX_JOB_EVENT_LINE_BYTES {
+        return Err(event_line_too_large(path));
+    }
+    if length.saturating_add(line.len() as u64) > MAX_JOB_EVENT_LOG_BYTES as u64 {
+        return Err(record_too_large(path, MAX_JOB_EVENT_LOG_BYTES));
+    }
+    Ok(line)
 }
 
 /// Parses every existing line before an append or authoritative job load.
