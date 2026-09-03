@@ -1,6 +1,6 @@
 //! Published-cache refusals and their context-free inner faults.
 
-use std::path::PathBuf;
+use std::{io, path::PathBuf};
 
 use study_tts_core::CacheKey;
 use thiserror::Error;
@@ -132,6 +132,15 @@ impl CacheError {
 /// instruction without duplicating it at each validation site.
 #[derive(Debug, Error)]
 pub enum CacheEntryFault {
+    /// The artifact file cannot be read.
+    #[error("`{path}` could not be read ({source})")]
+    UnreadableArtifact {
+        /// Artifact path that could not be read.
+        path: PathBuf,
+        /// What the filesystem reported.
+        source: io::Error,
+    },
+
     /// The artifact is not readable as the record this build writes.
     #[error("`{path}` could not be parsed ({source})")]
     UnparseableArtifact {

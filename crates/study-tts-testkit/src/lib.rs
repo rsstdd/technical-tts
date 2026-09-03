@@ -11,10 +11,11 @@ pub use json_schema::validate_against_schema;
 
 pub use contracts::{
     FakeCachePublisher, FakeJobCall, FakePackageCall, FakePackageWriter, InMemoryJobRepository,
-    RecordingCachePublisher, RecordingJobRepository, RecordingPackageWriter, RecordingTtsExecutor,
-    SeamEventLog, WorkerLifetimeOutcome, run_cache_contract_scenario,
-    run_job_repository_contract_scenario, run_package_writer_contract_scenario,
-    run_tts_executor_contract_scenario, run_worker_restart_contract_scenario,
+    InterruptingJobRepository, RecordingCachePublisher, RecordingJobRepository,
+    RecordingPackageWriter, RecordingTtsExecutor, SeamEventLog, WorkerLifetimeOutcome,
+    run_cache_contract_scenario, run_job_repository_contract_scenario,
+    run_package_writer_contract_scenario, run_tts_executor_contract_scenario,
+    run_worker_restart_contract_scenario,
 };
 
 use std::{

@@ -36,9 +36,8 @@ use crate::{
 /// `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` §Change classes
 /// calls a **Breaking contract** and answers with a major increment.
 ///
-/// `-skeleton` rather than a bare `1.0`, for the reason
-/// `crate::schemas::JOB_SCHEMA_VERSION` states about its own document: E2-S3
-/// adds loudness normalization to this manifest and E2-S4 adds the run report,
+/// `-skeleton` rather than a bare `1.0`, because E2-S3 adds loudness
+/// normalization to this manifest and E2-S4 adds the run report,
 /// so a label claiming a frozen `1.0` would claim a stability those stories are
 /// going to break. The suffix says the layout is still provisional; the major
 /// says the change was breaking. Both are true.

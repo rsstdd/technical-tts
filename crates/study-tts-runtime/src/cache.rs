@@ -3,10 +3,9 @@
 //!
 //! An entry is reused only after its recorded metadata has been validated
 //! against this build's canonical audio format and its audio re-hashed to the
-//! digest the artifact records. Partial sibling transactions are quarantined;
-//! an unreadable or corrupt published entry is a refusal naming the entry and
-//! its runtime-reconciliation remedy, never a silent repair that could hide
-//! tampering.
+//! digest the artifact records. Partial sibling transactions and invalid
+//! published entries are moved to collision-free quarantine before synthesis
+//! publishes a replacement, as ADR-0001 §§12.6–12.7 require.
 //!
 //! The sharding layout is stated once, in [`entry_path_elements`], and is
 //! private to this crate.
@@ -30,7 +29,8 @@ use tempfile::Builder;
 use crate::{
     AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, CalibrationSource,
     ConditioningContradiction, EdgeConditioning, MAX_SEGMENT_AUDIO_MS, MAX_TRANSITION_RAMP_MS,
-    REQUIRED_EDGE_SILENCE_MS, SilenceThreshold, StagedAudioProducer, condition_edges,
+    ManagedPathError, REQUIRED_EDGE_SILENCE_MS, SilenceThreshold, StagedAudioProducer,
+    condition_edges,
     durable::{
         DurableFileSystem, RenameOutcome, publish_directory_noreplace, sync_directory_transaction,
         write_json_atomically,
@@ -348,14 +348,13 @@ pub(crate) fn rejected(entry_dir: &Path, segment_id: &str, fault: CacheEntryFaul
 ///
 /// A hit is only a hit once the entry's recorded metadata matches this build's
 /// canonical format and its audio re-hashes to the recorded digest. A partial
-/// staging transaction is quarantined and re-synthesized; a corrupt published
-/// entry is refused rather than repaired, because repair would hide tampering.
+/// transaction or invalid published entry is quarantined before synthesis
+/// publishes a replacement.
 ///
 /// # Errors
 ///
-/// [`CacheError::UnusableCacheEntry`] naming the violated invariant when a
-/// published entry cannot be trusted, [`AudioError::UnusableAudio`] when fresh
-/// synthesis produces audio this build cannot use,
+/// [`AudioError::UnusableAudio`] when fresh synthesis produces audio this
+/// build cannot use,
 /// [`ManagedPathError::ManagedPathEscape`] when a link occupies an entry path,
 /// [`crate::DurableStateError::QuarantineFailed`] when a failed attempt cannot
 /// be retained, and [`BuildError::Synthesis`] when the staged producer fails.
@@ -369,13 +368,30 @@ pub(crate) fn resolve(
 ) -> Result<ValidatedCachedArtifact, BuildError> {
     let (_shard, entry_dir) = resolve_entry_location(cache_root, &segment.cache_key)?;
     if entry_dir.is_dir() {
-        return load_entry(segment, &entry_dir);
+        match load_entry(segment, &entry_dir) {
+            Ok(entry) => return Ok(entry),
+            Err(error) if is_unusable_cache_entry(&error) => {}
+            Err(error) => return Err(error),
+        }
     }
 
     let _key_lock = locking::acquire_cache_key_lock(cache_root, &segment.cache_key)?;
     let (shard, entry_dir) = resolve_entry_location(cache_root, &segment.cache_key)?;
     if entry_dir.is_dir() {
-        return load_entry(segment, &entry_dir);
+        match load_entry(segment, &entry_dir) {
+            Ok(entry) => return Ok(entry),
+            Err(error) if is_unusable_cache_entry(&error) => {
+                quarantine_invalid_entry(
+                    filesystem,
+                    quarantine_root,
+                    job_id,
+                    segment,
+                    &entry_dir,
+                    error,
+                )?;
+            }
+            Err(error) => return Err(error),
+        }
     }
 
     reconcile_stages(
@@ -399,6 +415,32 @@ pub(crate) fn resolve(
         segment,
         producer,
     )
+}
+
+fn is_unusable_cache_entry(error: &BuildError) -> bool {
+    matches!(
+        error,
+        BuildError::Cache(CacheError::UnusableCacheEntry { .. })
+    )
+}
+
+fn quarantine_invalid_entry(
+    filesystem: &dyn DurableFileSystem,
+    quarantine_root: &Path,
+    job_id: &str,
+    segment: &PlannedSegment,
+    entry_dir: &Path,
+    primary: BuildError,
+) -> Result<(), BuildError> {
+    match quarantine_transaction(filesystem, quarantine_root, job_id, segment, entry_dir) {
+        Ok(_) => Ok(()),
+        Err(cleanup) => Err(crate::DurableStateError::QuarantineFailed {
+            staging_path: entry_dir.to_path_buf(),
+            primary: Box::new(primary),
+            cleanup: Box::new(cleanup),
+        }
+        .into()),
+    }
 }
 
 fn load_entry(
@@ -747,6 +789,11 @@ fn quarantine_transaction(
     segment: &PlannedSegment,
     stage: &Path,
 ) -> Result<PathBuf, BuildError> {
+    let source_parent = stage
+        .parent()
+        .ok_or_else(|| ManagedPathError::UnrootedDestination {
+            path: stage.to_path_buf(),
+        })?;
     let job = managed::subdirectory(quarantine_root, job_id)?;
     let segment_dir = managed::subdirectory(&job, &segment.id)?;
     let take_dir = managed::subdirectory(&segment_dir, &format!("take-{}", segment.take))?;
@@ -759,6 +806,7 @@ fn quarantine_transaction(
     if publish_directory_noreplace(filesystem, stage, &destination)? != RenameOutcome::Published {
         return Err(crate::DurableStateError::PublicationConflict { path: destination }.into());
     }
+    filesystem.sync_directory(source_parent)?;
     filesystem.sync_directory(&take_dir)?;
     Ok(destination)
 }
@@ -805,15 +853,23 @@ fn error_at_quarantine_destination(error: BuildError, destination: &Path) -> Bui
 /// # Errors
 ///
 /// [`CacheError::UnusableCacheEntry`] carrying the [`CacheEntryFault`] that
-/// names the violated invariant, or [`IoError::FileSystem`] if the artifact
-/// cannot be read.
+/// names the violated invariant.
 fn load_validated(
     segment: &PlannedSegment,
     entry_dir: &Path,
     audio_path: &Path,
     artifact_path: &Path,
 ) -> Result<ValidatedCachedArtifact, BuildError> {
-    let bytes = fs::read(artifact_path).map_err(|error| io_error(artifact_path, error))?;
+    let bytes = fs::read(artifact_path).map_err(|source| {
+        rejected(
+            entry_dir,
+            &segment.id,
+            CacheEntryFault::UnreadableArtifact {
+                path: artifact_path.to_path_buf(),
+                source,
+            },
+        )
+    })?;
 
     // Path 1: the artifact does not parse.
     let artifact: CacheArtifact = serde_json::from_slice(&bytes).map_err(|error| {
@@ -1972,6 +2028,45 @@ mod tests {
     }
 
     #[test]
+    fn t4_e2_published_entry_quarantine_failure_preserves_the_invalid_entry() {
+        let workspace = TempDir::new().expect("create cache workspace");
+        let (cache_root, quarantine_root) = crash_test_roots(workspace.path());
+        let segment = synthesized_segment();
+        let mut producer = CountingProducer::default();
+        let published = resolve(
+            &OsDurableFileSystem,
+            &cache_root,
+            &quarantine_root,
+            "job",
+            &segment,
+            &mut producer,
+        )
+        .expect("publish a valid entry");
+        fs::write(&published.audio_path, b"invalid wav").expect("invalidate published audio");
+
+        let error = resolve(
+            &FailingQuarantineFileSystem::default(),
+            &cache_root,
+            &quarantine_root,
+            "job",
+            &segment,
+            &mut producer,
+        )
+        .expect_err("a failed quarantine must stop before replacement synthesis");
+
+        assert!(matches!(
+            error,
+            BuildError::DurableState(ref state)
+                if matches!(**state, crate::DurableStateError::QuarantineFailed { .. })
+        ));
+        assert_eq!(
+            fs::read(&published.audio_path).expect("invalid entry remains"),
+            b"invalid wav"
+        );
+        assert_eq!(producer.count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn t1_e1_audio_reported_under_other_identities_is_not_published() {
         // The gate that makes a content-addressed cache honest: a producer that
         // synthesized under different inputs must not have its audio filed
@@ -2130,6 +2225,13 @@ mod tests {
     fn t1_e0_every_rejection_names_the_entry_directory_and_the_remedy() {
         let workspace = TempDir::new().expect("create cache workspace");
 
+        // Path 0: missing artifact.
+        let (dir0, audio0, artifact0) = published_entry(workspace.path(), "aa0000");
+        fs::remove_file(&artifact0).expect("remove artifact");
+        let unreadable_artifact =
+            load_validated(&synthesized_segment(), &dir0, &audio0, &artifact0)
+                .expect_err("missing artifact must be rejected");
+
         // Path 1: unparseable artifact.
         let (dir, audio, artifact) = published_entry(workspace.path(), "aa1111");
         fs::write(&artifact, b"{ not json").expect("corrupt artifact");
@@ -2200,7 +2302,10 @@ mod tests {
 
         // Each path carries the fault it is supposed to report, so a rejection
         // that reaches the right variant for the wrong reason still fails here.
-        let paths: [RejectionPath; 9] = [
+        let paths: [RejectionPath; 10] = [
+            ("unreadable artifact", unreadable_artifact, dir0, |fault| {
+                matches!(fault, CacheEntryFault::UnreadableArtifact { .. })
+            }),
             ("unparseable artifact", unparseable, dir, |fault| {
                 matches!(fault, CacheEntryFault::UnparseableArtifact { .. })
             }),

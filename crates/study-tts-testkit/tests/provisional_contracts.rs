@@ -12,7 +12,7 @@ use std::{
 use serde_json::Value;
 use study_tts_core::{
     CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, ContractDescriptor,
-    ContractVersionError, ProvisionalJobSnapshot, RenderPlan, SuccessorCompatibility,
+    ContractVersionError, JobDocument, JobState, RenderPlan, SuccessorCompatibility,
     ValidatedLesson, VoiceConditioningHash,
 };
 use study_tts_runtime::{
@@ -75,6 +75,20 @@ fn fixture_conditioning() -> BTreeMap<String, VoiceConditioningHash> {
             )
         })
         .collect()
+}
+
+/// A job document at `Planned`, the first state a build writes durably.
+fn planned_document(plan: &RenderPlan) -> JobDocument {
+    JobDocument::open_attempt(
+        &plan.lesson_id,
+        "a".repeat(64).parse().expect("a digest of a parses"),
+        plan.plan_hash.clone(),
+        None,
+    )
+    .expect("the first attempt is representable")
+    .transition(JobState::Validated)
+    .and_then(|document| document.transition(JobState::Planned))
+    .expect("created -> validated -> planned are ADR-0001 §6.4 edges")
 }
 
 fn validated_plan(executor: &FakeTtsExecutor) -> RenderPlan {
@@ -305,23 +319,37 @@ fn t4_e0_every_provisional_seam_has_a_fake() {
     assert_eq!(cache.requests().len(), 2);
 
     let jobs = InMemoryJobRepository::default();
-    let snapshot = ProvisionalJobSnapshot::planned("contract-job", plan.plan_hash.clone());
+    let planned = planned_document(&plan);
+    let lesson_bytes = std::fs::read(walking_skeleton_fixture()).expect("read retained lesson");
     assert_eq!(
-        run_job_repository_contract_scenario(&jobs, workspace.path(), &snapshot)
-            .expect("job contract scenario"),
-        snapshot
+        run_job_repository_contract_scenario(
+            &jobs,
+            workspace.path(),
+            &planned,
+            &lesson_bytes,
+            &plan,
+        )
+        .expect("job contract scenario"),
+        planned
     );
-    let caching = snapshot.advancing(study_tts_core::ProvisionalJobStage::Caching);
-    jobs.replace(workspace.path(), &caching)
+    let rendering = planned
+        .clone()
+        .transition(JobState::Rendering)
+        .expect("planned -> rendering is an ADR-0001 §6.4 edge");
+    jobs.replace(workspace.path(), &rendering)
         .expect("retain second job replacement");
-    assert_eq!(jobs.snapshots(), [snapshot.clone(), caching]);
+    assert_eq!(jobs.documents(), [planned.clone(), rendering]);
     assert_eq!(
         jobs.calls(),
         [
-            FakeJobCall::Claim("contract-job".to_owned()),
-            FakeJobCall::Replace(study_tts_core::ProvisionalJobStage::Planned),
-            FakeJobCall::Load("contract-job".to_owned()),
-            FakeJobCall::Replace(study_tts_core::ProvisionalJobStage::Caching),
+            FakeJobCall::Claim(plan.lesson_id.clone()),
+            FakeJobCall::RetainInputs(plan.lesson_id.clone()),
+            FakeJobCall::RetainedLesson(plan.lesson_id.clone()),
+            FakeJobCall::RetainedPlan(plan.lesson_id.clone()),
+            FakeJobCall::ValidatePreviewSelection(plan.lesson_id.clone()),
+            FakeJobCall::Replace(JobState::Planned),
+            FakeJobCall::Load(plan.lesson_id.clone()),
+            FakeJobCall::Replace(JobState::Rendering),
         ]
     );
 
@@ -456,29 +484,37 @@ fn t4_e1_the_real_job_repository_passes_the_shared_contract() {
     let workspace = TempDir::new().expect("create real-repository contract workspace");
     let executor = FakeTtsExecutor::default();
     let plan = validated_plan(&executor);
-    let snapshot = ProvisionalJobSnapshot::planned("contract-job", plan.plan_hash.clone());
+    let planned = planned_document(&plan);
+    let lesson_bytes = std::fs::read(walking_skeleton_fixture()).expect("read retained lesson");
 
-    let loaded =
-        run_job_repository_contract_scenario(&FileSystemJobRepository, workspace.path(), &snapshot)
-            .expect("the real job repository must pass the shared job-state contract");
+    let loaded = run_job_repository_contract_scenario(
+        &FileSystemJobRepository,
+        workspace.path(),
+        &planned,
+        &lesson_bytes,
+        &plan,
+    )
+    .expect("the real job repository must pass the shared job-state contract");
 
     assert_eq!(
-        loaded, snapshot,
-        "a durable snapshot must load back as the one that was replaced"
+        loaded, planned,
+        "a durable document must load back as the one that was replaced"
     );
 
     // Advancing through the same adapter, which the in-memory scenario also
     // does: a repository that retains only the first state would pass the
     // scenario above and still lose every transition after it.
-    let caching = snapshot.advancing(study_tts_core::ProvisionalJobStage::Caching);
+    let rendering = planned
+        .transition(JobState::Rendering)
+        .expect("planned -> rendering is an ADR-0001 §6.4 edge");
     FileSystemJobRepository
-        .replace(workspace.path(), &caching)
+        .replace(workspace.path(), &rendering)
         .expect("retain a second durable job replacement");
     assert_eq!(
         FileSystemJobRepository
-            .load(workspace.path(), "contract-job")
-            .expect("load the advanced snapshot"),
-        Some(caching),
+            .load(workspace.path(), &plan.lesson_id)
+            .expect("load the advanced document"),
+        Some(rendering),
         "the advanced state must replace the one it succeeded"
     );
 }

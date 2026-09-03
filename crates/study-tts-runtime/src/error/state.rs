@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use study_tts_core::CacheKey;
+use study_tts_core::{CacheKey, JobState};
 use thiserror::Error;
 
 use super::{RemedyAdvice, RemedyOwner};
@@ -11,19 +11,20 @@ use crate::BuildError;
 /// Why durable ownership or preview reconciliation could not proceed safely.
 #[derive(Debug, Error)]
 pub enum DurableStateError {
-    /// Another process still owns the provisional lesson job.
+    /// Another live process owns the lesson job.
     #[error(
-        "job lock `{}` is owned by live process {pid} (Linux start identity {process_start}); \
-         wait for that build to finish before retrying",
-        path.display()
+        "job lock `{}` is owned by {}; wait for that build to finish before retrying",
+        path.display(),
+        describe_lock_owner(*pid, *process_start)
     )]
     LiveJobLock {
         /// The authoritative lock record.
         path: PathBuf,
-        /// Process recorded as owner.
-        pid: u32,
+        /// Process recorded as owner, absent while the holder is mid-release
+        /// and has already cleared its record.
+        pid: Option<u32>,
         /// Linux process start-time ticks recorded for that process.
-        process_start: u64,
+        process_start: Option<u64>,
     },
 
     /// A lock record cannot be interpreted without guessing ownership.
@@ -59,27 +60,64 @@ pub enum DurableStateError {
         required_lesson_id: String,
     },
 
-    /// A provisional job snapshot is not valid strict JSON.
+    /// A job document is not valid strict JSON.
     #[error(
         "job snapshot `{}` is malformed ({source}); preserve it and route the job to runtime \
          reconciliation",
         path.display()
     )]
     MalformedJobSnapshot {
-        /// The malformed snapshot.
+        /// The malformed document.
         path: PathBuf,
         /// What strict JSON parsing reported.
         source: serde_json::Error,
     },
 
-    /// A job snapshot names a different job than its managed directory.
+    /// A job event log line is malformed, foreign, or partial.
+    #[error(
+        "job event log `{}` contains a malformed, foreign, or partial line; preserve it and route \
+         the job to runtime reconciliation",
+        path.display()
+    )]
+    MalformedJobEventLog {
+        /// The event log that cannot be trusted.
+        path: PathBuf,
+    },
+
+    /// A durable JSON record exceeds the memory ceiling for its boundary.
+    #[error(
+        "durable record `{}` exceeds the {max_bytes}-byte limit; preserve it and route the job \
+         to runtime reconciliation",
+        path.display()
+    )]
+    DurableRecordTooLarge {
+        /// Record refused before it was decoded.
+        path: PathBuf,
+        /// Maximum bytes this boundary reads.
+        max_bytes: usize,
+    },
+
+    /// One event line exceeds the message ceiling for the internal log.
+    #[error(
+        "job event log `{}` contains a line exceeding the {max_bytes}-byte limit; preserve it \
+         and route the job to runtime reconciliation",
+        path.display()
+    )]
+    JobEventLineTooLarge {
+        /// Event log containing the oversized line.
+        path: PathBuf,
+        /// Maximum bytes one event line may carry.
+        max_bytes: usize,
+    },
+
+    /// A job document names a different job than its managed directory.
     #[error(
         "job snapshot `{}` names job `{recorded}` but its directory requires `{required}`; it \
          will not be overwritten",
         path.display()
     )]
     JobSnapshotIdentityMismatch {
-        /// The authoritative job snapshot.
+        /// The authoritative job document.
         path: PathBuf,
         /// Job identity the snapshot records.
         recorded: String,
@@ -87,17 +125,252 @@ pub enum DurableStateError {
         required: String,
     },
 
-    /// A job stage and selected-package field disagree.
+    /// A job document contains more segment records than a lesson can own.
     #[error(
-        "job snapshot `{}` has an incompatible selected-package value for stage `{stage}`; \
-         preserve it for runtime reconciliation",
+        "job document `{}` contains {found} segments, exceeding the limit of {max}; preserve it \
+         for runtime reconciliation",
+        path.display()
+    )]
+    JobSnapshotSegmentCountExceeded {
+        /// Oversized job document.
+        path: PathBuf,
+        /// Segment records found.
+        found: usize,
+        /// Maximum segment records permitted.
+        max: usize,
+    },
+
+    /// The current and abandoned build-attempt identities are not consecutive.
+    #[error(
+        "job document `{}` records build attempt {build_attempt} with abandoned attempt \
+         {abandoned_attempt:?}; the first attempt must have none and every later attempt must \
+         name its immediate predecessor; preserve it for runtime reconciliation",
+        path.display()
+    )]
+    JobSnapshotAttemptMismatch {
+        /// The incoherent document.
+        path: PathBuf,
+        /// Current build-attempt identity.
+        build_attempt: u32,
+        /// Claimed predecessor, when present.
+        abandoned_attempt: Option<u32>,
+    },
+
+    /// A replacement does not continue the attempt currently on disk.
+    #[error(
+        "job document `{}` would replace attempt {current_attempt} in state `{current_state:?}` \
+         with attempt {replacement_attempt} whose predecessor is {abandoned_attempt:?} in state \
+         {abandoned_state:?}; preserve the current document for runtime reconciliation",
+        path.display()
+    )]
+    JobReplacementPredecessorMismatch {
+        /// The authoritative job document.
+        path: PathBuf,
+        /// Build attempt currently on disk.
+        current_attempt: u32,
+        /// State currently on disk.
+        current_state: JobState,
+        /// Build attempt proposed as its replacement.
+        replacement_attempt: u32,
+        /// Attempt the replacement claims to supersede.
+        abandoned_attempt: Option<u32>,
+        /// State the replacement claims its predecessor reached.
+        abandoned_state: Option<JobState>,
+    },
+
+    /// A job document's current and last-successful states cannot coexist.
+    #[error(
+        "job document `{}` records current state `{state}` with last successful state \
+         `{last_successful_state}`; preserve it for runtime reconciliation",
+        path.display()
+    )]
+    JobSnapshotLastSuccessfulStateMismatch {
+        /// The incoherent document.
+        path: PathBuf,
+        /// Current state the document records.
+        state: String,
+        /// Last successful state the document records.
+        last_successful_state: String,
+    },
+
+    /// A job document records a preview package before rendering completed.
+    #[error(
+        "job document `{}` records a preview package while in state `{state}`, before rendering \
+         completed; preserve it for runtime reconciliation",
         path.display()
     )]
     JobSnapshotSelectionMismatch {
-        /// The incompatible snapshot.
+        /// The incoherent document.
         path: PathBuf,
-        /// Diagnostic stage value that disagrees with selection state.
-        stage: String,
+        /// The state the document records.
+        state: String,
+    },
+
+    /// A selected package's directory and manifest identities disagree.
+    #[error(
+        "job document `{}` records package identity `{package_id}` but manifest identity \
+         `{manifest_blake3}`; preserve it for runtime reconciliation",
+        path.display()
+    )]
+    JobSnapshotPackageIdentityMismatch {
+        /// The incoherent document.
+        path: PathBuf,
+        /// Digest naming the immutable package directory.
+        package_id: String,
+        /// Digest recorded for the manifest inside that directory.
+        manifest_blake3: String,
+    },
+
+    /// The job document and selected preview name different packages.
+    #[error(
+        "job `{job_id}` records preview package `{recorded}` but the selected output is \
+         `{selected}`; preserve both for runtime reconciliation",
+        selected = selected.as_deref().unwrap_or("<none>")
+    )]
+    JobPreviewSelectionMismatch {
+        /// Job whose authoritative records disagree.
+        job_id: String,
+        /// Package identity recorded by `job.json`.
+        recorded: String,
+        /// Package identity selected by `current.json`, if one exists.
+        selected: Option<String>,
+    },
+
+    /// A build asked its job document for a move ADR-0001 §6.4 does not have.
+    #[error(
+        "job `{job_id}` cannot move from `{from:?}` to `{to:?}`: ADR-0001 §6.4 has no such \
+         transition; preserve the job document for runtime reconciliation"
+    )]
+    IllegalJobTransition {
+        /// The job whose document was asked to move.
+        job_id: String,
+        /// The state the document records.
+        from: JobState,
+        /// The state that was requested.
+        to: JobState,
+    },
+
+    /// A job cannot open another uniquely identified build attempt.
+    #[error(
+        "job `{job_id}` exhausted its build-attempt identity space; preserve its state for runtime \
+         reconciliation rather than reusing an attempt number"
+    )]
+    JobAttemptOverflow {
+        /// Job whose next attempt cannot be represented.
+        job_id: String,
+    },
+
+    /// The retained lesson is not the one the job document was built from.
+    #[error(
+        "retained lesson `{}` has BLAKE3 `{actual}` but the job document records `{recorded}`; \
+         preserve both for runtime reconciliation rather than re-planning from the changed copy",
+        path.display()
+    )]
+    RetainedLessonMismatch {
+        /// The retained lesson document.
+        path: PathBuf,
+        /// The digest the job document records.
+        recorded: String,
+        /// The digest of the bytes found there now.
+        actual: String,
+    },
+
+    /// The retained lesson names a different job than the lock protects.
+    #[error(
+        "retained lesson `{}` names job `{actual}` but the claimed job is `{required}`; preserve \
+         the job directory for runtime reconciliation",
+        path.display()
+    )]
+    RetainedLessonIdentityMismatch {
+        /// The retained lesson document.
+        path: PathBuf,
+        /// Job identity protected by the held lock.
+        required: String,
+        /// Lesson identity parsed from the retained document.
+        actual: String,
+    },
+
+    /// The retained render plan is not valid strict JSON.
+    #[error(
+        "retained plan `{}` is malformed ({source}); preserve it and route the job to runtime \
+         reconciliation",
+        path.display()
+    )]
+    MalformedRetainedPlan {
+        /// The malformed retained plan.
+        path: PathBuf,
+        /// What strict JSON parsing reported.
+        source: serde_json::Error,
+    },
+
+    /// The retained plan names a different job than the lock protects.
+    #[error(
+        "retained plan `{}` names job `{actual}` but the claimed job is `{required}`; preserve the \
+         job directory for runtime reconciliation",
+        path.display()
+    )]
+    RetainedPlanIdentityMismatch {
+        /// The retained plan document.
+        path: PathBuf,
+        /// Job identity protected by the held lock.
+        required: String,
+        /// Lesson identity parsed from the retained plan.
+        actual: String,
+    },
+
+    /// The retained plan's recorded and derived identities disagree.
+    #[error(
+        "retained plan `{}` records hash `{recorded}` but its segments derive `{actual}`; preserve \
+         it for runtime reconciliation",
+        path.display()
+    )]
+    RetainedPlanHashMismatch {
+        /// The retained plan document.
+        path: PathBuf,
+        /// Plan identity recorded inside `plan.json`.
+        recorded: String,
+        /// Identity derived from the plan's segments.
+        actual: String,
+    },
+
+    /// A retained plan contains more segments than a lesson can own.
+    #[error(
+        "retained plan `{}` contains {found} segments, exceeding the limit of {max}; preserve it \
+         for runtime reconciliation",
+        path.display()
+    )]
+    RetainedPlanSegmentCountExceeded {
+        /// Oversized retained plan.
+        path: PathBuf,
+        /// Planned segments found.
+        found: usize,
+        /// Maximum planned segments permitted.
+        max: usize,
+    },
+
+    /// The job document and retained plan name different plan identities.
+    #[error(
+        "retained plan `{}` records hash `{plan_recorded}` but the job document records \
+         `{job_recorded}`; preserve both for runtime reconciliation",
+        path.display()
+    )]
+    JobPlanHashMismatch {
+        /// The retained plan document.
+        path: PathBuf,
+        /// Plan identity recorded by `job.json`.
+        job_recorded: String,
+        /// Plan identity recorded inside `plan.json`.
+        plan_recorded: String,
+    },
+
+    /// A resume named a job that has no document to resume from.
+    #[error(
+        "job directory `{}` holds no job document to resume; build the lesson first",
+        path.display()
+    )]
+    NoJobToResume {
+        /// The job directory that was asked to resume.
+        path: PathBuf,
     },
 
     /// A cache-key owner did not release its lock within the bounded wait.
@@ -447,11 +720,20 @@ pub enum DurableStateError {
     },
 }
 
+fn describe_lock_owner(pid: Option<u32>, process_start: Option<u64>) -> String {
+    match (pid, process_start) {
+        (Some(pid), Some(process_start)) => {
+            format!("live process {pid} (Linux start identity {process_start})")
+        }
+        _ => "a live process that is releasing it".to_owned(),
+    }
+}
+
 impl DurableStateError {
     /// Returns governed advice for the exact ownership or integrity refusal.
     pub(super) fn remedy(&self) -> Option<RemedyAdvice> {
         match self {
-            Self::LiveJobLock { .. } => None,
+            Self::LiveJobLock { .. } | Self::NoJobToResume { .. } => None,
             Self::CacheLockTimeout { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::Runtime,
                 "preserve attempts and inspect the cache-key owner before retrying",
@@ -465,8 +747,26 @@ impl DurableStateError {
             Self::MalformedJobLock { .. }
             | Self::IncompatibleJobLock { .. }
             | Self::MalformedJobSnapshot { .. }
+            | Self::MalformedJobEventLog { .. }
+            | Self::DurableRecordTooLarge { .. }
+            | Self::JobEventLineTooLarge { .. }
             | Self::JobSnapshotIdentityMismatch { .. }
+            | Self::JobSnapshotSegmentCountExceeded { .. }
+            | Self::JobSnapshotAttemptMismatch { .. }
+            | Self::JobReplacementPredecessorMismatch { .. }
+            | Self::JobSnapshotLastSuccessfulStateMismatch { .. }
             | Self::JobSnapshotSelectionMismatch { .. }
+            | Self::JobSnapshotPackageIdentityMismatch { .. }
+            | Self::JobPreviewSelectionMismatch { .. }
+            | Self::IllegalJobTransition { .. }
+            | Self::JobAttemptOverflow { .. }
+            | Self::RetainedLessonMismatch { .. }
+            | Self::RetainedLessonIdentityMismatch { .. }
+            | Self::MalformedRetainedPlan { .. }
+            | Self::RetainedPlanIdentityMismatch { .. }
+            | Self::RetainedPlanHashMismatch { .. }
+            | Self::RetainedPlanSegmentCountExceeded { .. }
+            | Self::JobPlanHashMismatch { .. }
             | Self::MalformedPublicationJournal { .. }
             | Self::MalformedCurrentPreview { .. }
             | Self::UnsupportedDurableRecord { .. }

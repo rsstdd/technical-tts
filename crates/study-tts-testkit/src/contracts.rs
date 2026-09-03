@@ -10,18 +10,21 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     pin::pin,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     task::{Context, Poll, Wake, Waker},
     thread,
 };
 
-use study_tts_core::{ManifestDigest, ProvisionalJobSnapshot, SelectedPackageIdentity};
+use study_tts_core::{JobDocument, JobState, ManifestDigest, RenderPlan, SelectedPackageIdentity};
 use study_tts_runtime::{
     BackendDescriptor, BackendError, BuildError, CachePublisher, CacheResolveRequest,
-    FileSystemCachePublisher, IoError, JobOwnership, JobRepository, PackagePreflightRequest,
-    PackagePrepareRequest, PackagePublication, PackageWriteRequest, PackageWriter,
-    PreparedPackageWriter, StagedAudioProducer, SynthesisReport, SynthesisRequest, TtsExecutor,
-    ValidatedCachedArtifact, WorkerConfiguration, WorkerTtsExecutor,
+    FileSystemCachePublisher, FileSystemJobRepository, IoError, JobOwnership, JobRepository,
+    PackagePreflightRequest, PackagePrepareRequest, PackagePublication, PackageWriteRequest,
+    PackageWriter, PreparedPackageWriter, StagedAudioProducer, SynthesisReport, SynthesisRequest,
+    TtsExecutor, ValidatedCachedArtifact, WorkerConfiguration, WorkerTtsExecutor,
 };
 
 /// Thread-safe ordered observations shared by recording seam adapters.
@@ -185,23 +188,141 @@ impl<R: JobRepository> JobRepository for RecordingJobRepository<R> {
         self.inner.claim(workspace, job_id)
     }
 
-    fn load(
-        &self,
-        workspace: &Path,
-        job_id: &str,
-    ) -> Result<Option<ProvisionalJobSnapshot>, BuildError> {
+    fn load(&self, workspace: &Path, job_id: &str) -> Result<Option<JobDocument>, BuildError> {
         self.events.record("job.load");
         self.inner.load(workspace, job_id)
     }
 
-    fn replace(
+    fn replace(&self, workspace: &Path, document: &JobDocument) -> Result<(), BuildError> {
+        self.events
+            .record(format!("job.replace:{:?}", document.state));
+        self.inner.replace(workspace, document)
+    }
+
+    fn retain_inputs(
         &self,
         workspace: &Path,
-        snapshot: &ProvisionalJobSnapshot,
+        job_id: &str,
+        lesson: &[u8],
+        plan: &RenderPlan,
     ) -> Result<(), BuildError> {
-        self.events
-            .record(format!("job.replace:{:?}", snapshot.stage));
-        self.inner.replace(workspace, snapshot)
+        self.events.record("job.retain_inputs");
+        self.inner.retain_inputs(workspace, job_id, lesson, plan)
+    }
+
+    fn retained_lesson(
+        &self,
+        workspace: &Path,
+        job_id: &str,
+    ) -> Result<Option<Vec<u8>>, BuildError> {
+        self.events.record("job.retained_lesson");
+        self.inner.retained_lesson(workspace, job_id)
+    }
+
+    fn retained_plan(
+        &self,
+        workspace: &Path,
+        job_id: &str,
+    ) -> Result<Option<RenderPlan>, BuildError> {
+        self.events.record("job.retained_plan");
+        self.inner.retained_plan(workspace, job_id)
+    }
+
+    fn validate_preview_selection(
+        &self,
+        workspace: &Path,
+        document: &JobDocument,
+    ) -> Result<(), BuildError> {
+        self.events.record("job.validate_preview_selection");
+        self.inner.validate_preview_selection(workspace, document)
+    }
+}
+
+/// Interrupts a real build at one durable job-state write.
+///
+/// Delegates everything to [`FileSystemJobRepository`] and fails the first
+/// `replace` that would record the chosen state, before it happens. That
+/// leaves the workspace exactly as a process killed at that moment would:
+/// every artifact the earlier stages published is on disk, and `job.json`
+/// never advanced past the previous state. That is the on-disk shape ADR-0001
+/// §12.7 step 4 reconciles, and it is reachable through the public
+/// `PreviewServiceBundle` seam with no filesystem plumbing.
+#[derive(Debug)]
+pub struct InterruptingJobRepository {
+    inner: FileSystemJobRepository,
+    fail_before: JobState,
+    interrupted: AtomicUsize,
+}
+
+impl InterruptingJobRepository {
+    /// Fails the first `replace` whose document is in `state`.
+    pub fn failing_before(state: JobState) -> Self {
+        Self {
+            inner: FileSystemJobRepository,
+            fail_before: state,
+            interrupted: AtomicUsize::new(0),
+        }
+    }
+
+    /// How many times the injected interruption fired.
+    pub fn interruptions(&self) -> usize {
+        self.interrupted.load(Ordering::SeqCst)
+    }
+}
+
+impl JobRepository for InterruptingJobRepository {
+    fn claim(&self, workspace: &Path, job_id: &str) -> Result<Box<dyn JobOwnership>, BuildError> {
+        self.inner.claim(workspace, job_id)
+    }
+
+    fn load(&self, workspace: &Path, job_id: &str) -> Result<Option<JobDocument>, BuildError> {
+        self.inner.load(workspace, job_id)
+    }
+
+    fn replace(&self, workspace: &Path, document: &JobDocument) -> Result<(), BuildError> {
+        if document.state == self.fail_before
+            && self.interrupted.fetch_add(1, Ordering::SeqCst) == 0
+        {
+            return Err(file_error(
+                workspace,
+                std::io::Error::other("injected interruption before the job state advanced"),
+            ));
+        }
+        self.inner.replace(workspace, document)
+    }
+
+    fn retain_inputs(
+        &self,
+        workspace: &Path,
+        job_id: &str,
+        lesson: &[u8],
+        plan: &RenderPlan,
+    ) -> Result<(), BuildError> {
+        self.inner.retain_inputs(workspace, job_id, lesson, plan)
+    }
+
+    fn retained_lesson(
+        &self,
+        workspace: &Path,
+        job_id: &str,
+    ) -> Result<Option<Vec<u8>>, BuildError> {
+        self.inner.retained_lesson(workspace, job_id)
+    }
+
+    fn retained_plan(
+        &self,
+        workspace: &Path,
+        job_id: &str,
+    ) -> Result<Option<RenderPlan>, BuildError> {
+        self.inner.retained_plan(workspace, job_id)
+    }
+
+    fn validate_preview_selection(
+        &self,
+        workspace: &Path,
+        document: &JobDocument,
+    ) -> Result<(), BuildError> {
+        self.inner.validate_preview_selection(workspace, document)
     }
 }
 
@@ -369,15 +490,25 @@ pub enum FakeJobCall {
     Claim(String),
     /// Current state was loaded for the named job.
     Load(String),
-    /// The named stage replaced the authoritative snapshot.
-    Replace(study_tts_core::ProvisionalJobStage),
+    /// A document in the named state replaced the authoritative one.
+    Replace(JobState),
+    /// The lesson and plan were retained for the named job.
+    RetainInputs(String),
+    /// The retained lesson was read back for the named job.
+    RetainedLesson(String),
+    /// The retained plan was read back for the named job.
+    RetainedPlan(String),
+    /// Recorded and selected preview identities were compared.
+    ValidatePreviewSelection(String),
 }
 
-/// In-memory provisional job repository with complete replacement history.
+/// In-memory job repository with complete replacement history.
 #[derive(Debug, Default)]
 pub struct InMemoryJobRepository {
-    current: Mutex<BTreeMap<String, ProvisionalJobSnapshot>>,
-    history: Mutex<Vec<ProvisionalJobSnapshot>>,
+    current: Mutex<BTreeMap<String, JobDocument>>,
+    history: Mutex<Vec<JobDocument>>,
+    retained: Mutex<BTreeMap<String, Vec<u8>>>,
+    plans: Mutex<BTreeMap<String, RenderPlan>>,
     calls: Mutex<Vec<FakeJobCall>>,
 }
 
@@ -390,8 +521,8 @@ impl InMemoryJobRepository {
             .clone()
     }
 
-    /// Returns every snapshot passed to [`JobRepository::replace`].
-    pub fn snapshots(&self) -> Vec<ProvisionalJobSnapshot> {
+    /// Returns every document passed to [`JobRepository::replace`].
+    pub fn documents(&self) -> Vec<JobDocument> {
         self.history
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -408,11 +539,7 @@ impl JobRepository for InMemoryJobRepository {
         Ok(Box::new(FakeJobOwnership))
     }
 
-    fn load(
-        &self,
-        _workspace: &Path,
-        job_id: &str,
-    ) -> Result<Option<ProvisionalJobSnapshot>, BuildError> {
+    fn load(&self, _workspace: &Path, job_id: &str) -> Result<Option<JobDocument>, BuildError> {
         self.calls
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -425,23 +552,89 @@ impl JobRepository for InMemoryJobRepository {
             .cloned())
     }
 
-    fn replace(
+    fn replace(&self, _workspace: &Path, document: &JobDocument) -> Result<(), BuildError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(FakeJobCall::Replace(document.state));
+        self.history
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(document.clone());
+        self.current
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(document.job_id.clone(), document.clone());
+        Ok(())
+    }
+
+    fn retain_inputs(
         &self,
         _workspace: &Path,
-        snapshot: &ProvisionalJobSnapshot,
+        job_id: &str,
+        lesson: &[u8],
+        plan: &RenderPlan,
     ) -> Result<(), BuildError> {
         self.calls
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(FakeJobCall::Replace(snapshot.stage));
-        self.history
+            .push(FakeJobCall::RetainInputs(job_id.to_owned()));
+        self.retained
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(snapshot.clone());
-        self.current
+            .insert(job_id.to_owned(), lesson.to_vec());
+        self.plans
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(snapshot.job_id.clone(), snapshot.clone());
+            .insert(job_id.to_owned(), plan.clone());
+        Ok(())
+    }
+
+    fn retained_lesson(
+        &self,
+        _workspace: &Path,
+        job_id: &str,
+    ) -> Result<Option<Vec<u8>>, BuildError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(FakeJobCall::RetainedLesson(job_id.to_owned()));
+        Ok(self
+            .retained
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(job_id)
+            .cloned())
+    }
+
+    fn retained_plan(
+        &self,
+        _workspace: &Path,
+        job_id: &str,
+    ) -> Result<Option<RenderPlan>, BuildError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(FakeJobCall::RetainedPlan(job_id.to_owned()));
+        Ok(self
+            .plans
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(job_id)
+            .cloned())
+    }
+
+    fn validate_preview_selection(
+        &self,
+        _workspace: &Path,
+        document: &JobDocument,
+    ) -> Result<(), BuildError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(FakeJobCall::ValidatePreviewSelection(
+                document.job_id.clone(),
+            ));
         Ok(())
     }
 }
@@ -554,12 +747,35 @@ pub fn run_cache_contract_scenario(
 pub fn run_job_repository_contract_scenario(
     repository: &dyn JobRepository,
     workspace: &Path,
-    snapshot: &ProvisionalJobSnapshot,
-) -> Result<ProvisionalJobSnapshot, BuildError> {
-    let _ownership = repository.claim(workspace, &snapshot.job_id)?;
-    repository.replace(workspace, snapshot)?;
+    document: &JobDocument,
+    lesson: &[u8],
+    plan: &RenderPlan,
+) -> Result<JobDocument, BuildError> {
+    let _ownership = repository.claim(workspace, &document.job_id)?;
+    repository.retain_inputs(workspace, &document.job_id, lesson, plan)?;
+    if repository
+        .retained_lesson(workspace, &document.job_id)?
+        .as_deref()
+        != Some(lesson)
+    {
+        return Err(file_error(
+            workspace,
+            std::io::Error::other("retained lesson did not load back unchanged"),
+        ));
+    }
+    if repository
+        .retained_plan(workspace, &document.job_id)?
+        .is_none_or(|retained| retained.plan_hash != plan.plan_hash)
+    {
+        return Err(file_error(
+            workspace,
+            std::io::Error::other("retained plan did not load back unchanged"),
+        ));
+    }
+    repository.validate_preview_selection(workspace, document)?;
+    repository.replace(workspace, document)?;
     repository
-        .load(workspace, &snapshot.job_id)?
+        .load(workspace, &document.job_id)?
         .ok_or_else(|| {
             file_error(
                 workspace,

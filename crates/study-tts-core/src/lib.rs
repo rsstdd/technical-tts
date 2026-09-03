@@ -50,15 +50,16 @@ pub use identity::{
     SYNTHESIS_IDENTITY_VERSION, SynthesisContext, WorkerBundleHash,
 };
 pub use job::{
-    MalformedManifestDigest, ManifestDigest, PROVISIONAL_JOB_SCHEMA_VERSION,
-    ProvisionalJobSnapshot, ProvisionalJobStage, SelectedPackageIdentity,
+    AbandonedAttempt, JOB_SCHEMA_VERSION, JobDocument, JobState, JobStateError, LessonDigest,
+    MalformedLessonDigest, MalformedManifestDigest, ManifestDigest, SegmentStatus,
+    SelectedPackageIdentity,
 };
 pub use language::{LanguageTag, MAX_LANGUAGE_TAG_BYTES, MalformedLanguageTag};
 pub use lesson::{
     AuthoredLesson, DeliveryStyle, LESSON_SCHEMA_STEM, LESSON_SCHEMA_VERSION, LessonDiagnostic,
-    LessonError, LessonSegment, LessonSource, MAX_LESSON_JSON_BYTES, MalformedSourceContentHash,
-    ReviewStatus, SegmentRole, SourceContentHash, SpeakerDeclaration, ValidatedLesson,
-    validate_lesson_id, validate_segment_id,
+    LessonError, LessonSegment, LessonSource, MAX_LESSON_JSON_BYTES, MAX_LESSON_SEGMENTS,
+    MalformedSourceContentHash, ReviewStatus, SegmentRole, SourceContentHash, SpeakerDeclaration,
+    ValidatedLesson, validate_lesson_id, validate_segment_id,
 };
 pub use plan::{
     BASE_TAKE, CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT,

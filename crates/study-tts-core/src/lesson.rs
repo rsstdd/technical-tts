@@ -42,7 +42,9 @@ pub const MAX_LESSON_JSON_BYTES: usize = 16 * 1024 * 1024;
 
 // The five provisional authored-input ceilings below mirror
 // `docs/architecture/WALKING-SKELETON.md` §Provisional resource ceilings.
-pub(crate) const MAX_LESSON_SEGMENTS: usize = 4_096;
+/// Maximum number of segments one lesson, render plan, or job document may
+/// carry.
+pub const MAX_LESSON_SEGMENTS: usize = 4_096;
 const MAX_SEGMENT_TEXT_BYTES: usize = 64 * 1024;
 const MAX_SOURCE_REFS_PER_SEGMENT: usize = 256;
 const MAX_SOURCE_REF_BYTES: usize = 4 * 1024;

@@ -11,11 +11,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use study_tts_core::{ManifestDigest, RenderPlan, SelectedPackageIdentity};
+use study_tts_core::{RenderPlan, SelectedPackageIdentity};
 
 use crate::{
     BuildError, CacheError, ManagedPathError, PackageArtifactMismatch, assembly,
-    cache::{self, ValidatedCachedArtifact},
+    cache::ValidatedCachedArtifact,
     durable::OsDurableFileSystem,
     export::{self, EncodedFormat, ExportProfiles, PackagedAudio},
     io_error, managed,
@@ -440,14 +440,7 @@ fn write_package_document(path: &Path, document: &str) -> Result<(), BuildError>
 }
 
 fn publication(package: preview::PublishedPackage) -> Result<PackagePublication, BuildError> {
-    // `hash_file` returns what `blake3::Hash::to_hex` produced, which is what
-    // `ManifestDigest` accepts, so this parse cannot fail from any package.
-    // Written as a parse rather than a cast because the value object is the
-    // only route into the field, and a second infallible constructor is a
-    // second way for something that is not a digest to become one.
-    let manifest_blake3: ManifestDigest = cache::hash_file(&package.manifest)?
-        .parse()
-        .expect("`hash_file` returns a BLAKE3 digest in lowercase hexadecimal");
+    let manifest_blake3 = package.manifest_blake3;
     Ok(PackagePublication {
         package_dir: package.package_dir,
         publication_record: package.publication_record,

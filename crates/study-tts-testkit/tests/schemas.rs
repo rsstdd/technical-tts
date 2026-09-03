@@ -425,7 +425,7 @@ fn accepts_verification(bytes: &[u8]) -> Result<(), String> {
 }
 
 fn accepts_job(bytes: &[u8]) -> Result<(), String> {
-    serde_json::from_slice::<study_tts_core::ProvisionalJobSnapshot>(bytes)
+    serde_json::from_slice::<study_tts_core::JobDocument>(bytes)
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
@@ -444,21 +444,45 @@ fn accepts_worker_frame(bytes: &[u8]) -> Result<(), String> {
 /// The formats whose agreement is proved somewhere other than the table below,
 /// and where.
 ///
-/// Neither has a reader this crate can call, and both are checked against a
-/// document a *writer* produced rather than one committed beside them:
+/// Both are checked against a document a *writer* produced rather than one
+/// committed beside them:
 ///
-/// - `plan` is serialized and never read back (ADR-0001 §12.2 puts the loader
-///   at E2), so
+/// - `plan` is serialized by the planner and read back by the E2 retained-plan
+///   loader, so
 ///   `t3_e1_the_published_plan_schema_describes_what_the_planner_writes` plans
-///   a real lesson and validates the result. A committed valid plan would
-///   drift from the planner the first time planning changed, and nothing would
-///   read it back to notice.
+///   a real lesson and validates the result. A committed valid plan could
+///   drift from the planner independently of the retained-plan loader.
 /// - `manifest` is written and read inside `study-tts-runtime` through private
 ///   functions, so
 ///   `t4_e1_the_published_manifest_schema_describes_what_a_package_writes`
 ///   validates the manifest a real package build wrote. It lives in the T4
 ///   suite because producing one needs real FFmpeg.
 const CHECKED_ELSEWHERE: [&str; 2] = ["plan", "manifest"];
+
+#[test]
+fn t3_e2_published_job_schema_bounds_segment_count() {
+    let schema = read_json(&schema_directory().join("job-v1.schema.json"));
+    let mut document =
+        read_json(&repository_root().join("fixtures/contracts/e1-s1-job-valid.json"));
+    let segment = document["segments"]["seg-0001"].clone();
+    let segments = document["segments"]
+        .as_object_mut()
+        .expect("the valid fixture has a segment map");
+    segments.clear();
+    for index in 0..=study_tts_core::MAX_LESSON_SEGMENTS {
+        segments.insert(format!("seg-{index:04}"), segment.clone());
+    }
+
+    let violations = validate_against_schema(&schema, &document)
+        .expect_err("the published job schema must enforce the lesson segment ceiling");
+
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("/segments")),
+        "the segment-count refusal must name `/segments`, got {violations:?}"
+    );
+}
 
 const VALID_EXAMPLES: [ValidExample; 5] = [
     (
@@ -523,8 +547,11 @@ const INVALID_EXAMPLES: [InvalidExample; 10] = [
         "fixtures/contracts/e1-s1-job-malformed-digests.json",
         &[
             "/plan_hash",
-            "/selected_package/package_id",
-            "/selected_package/manifest_blake3",
+            "/lesson_blake3",
+            "/segments/seg-0001/cache_key",
+            "/segments/seg-0001/audio_blake3",
+            "/preview_package/package_id",
+            "/preview_package/manifest_blake3",
         ],
     ),
     (
@@ -830,14 +857,35 @@ fn t3_e1_every_published_schema_claims_the_uri_its_documents_name() {
 /// agree with any schema it was handed, including one that grew a required
 /// field nobody meant to add — which is the change this table exists to make
 /// impossible to land quietly.
-const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 41] = [
+const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 43] = [
     (
-        "job 0.1",
+        "job 1.0",
         "/",
-        &["job_id", "plan_hash", "schema_version", "stage"],
+        &[
+            "application_version",
+            "build_attempt",
+            "job_id",
+            "last_successful_state",
+            "lesson_blake3",
+            "plan_hash",
+            "release_status",
+            "schema_version",
+            "segments",
+            "state",
+        ],
     ),
     (
-        "job 0.1",
+        "job 1.0",
+        "/$defs/AbandonedAttempt",
+        &["build_attempt", "state"],
+    ),
+    (
+        "job 1.0",
+        "/$defs/SegmentStatus",
+        &["audio_blake3", "cache_key"],
+    ),
+    (
+        "job 1.0",
         "/$defs/SelectedPackageIdentity",
         &["manifest_blake3", "package_id"],
     ),

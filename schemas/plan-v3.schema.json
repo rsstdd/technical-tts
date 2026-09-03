@@ -37,7 +37,7 @@
     },
     "PlannedSegment": {
       "additionalProperties": false,
-      "description": "One segment with its synthesis identity resolved.\n\nContains synthesis inputs, their derived cache identity, and the timeline\nand transcript metadata needed after synthesis. `speaker`, `spoken_text`,\n`style`, and `take` affect the cache key; `id`, `display_text`, and\n`pause_after_ms` affect only the plan identity. The remaining lesson\nmetadata — role, citations, review state — reaches neither, because nothing\ndownstream of planning reads it.\n\nSerialized, never deserialized, for the reason given on [`RenderPlan`].\n`plan_hash` is derived separately by `plan_digest`, which keeps serde\ndocument-layout details out of the identity — and which destructures this\ntype without `..`, so a field added here stops compiling until somebody has\ndecided whether it belongs in the plan's identity.",
+      "description": "One segment with its synthesis identity resolved.\n\nContains synthesis inputs, their derived cache identity, and the timeline\nand transcript metadata needed after synthesis. `speaker`, `spoken_text`,\n`style`, and `take` affect the cache key; `id`, `display_text`, and\n`pause_after_ms` affect only the plan identity. The remaining lesson\nmetadata — role, citations, review state — reaches neither, because nothing\ndownstream of planning reads it.\n\n`plan_hash` is derived separately by `plan_digest`, which keeps serde\ndocument-layout details out of the identity — and which destructures this\ntype without `..`, so a field added here stops compiling until somebody has\ndecided whether it belongs in the plan's identity.",
       "properties": {
         "cache_key": {
           "$ref": "#/$defs/CacheKey",
@@ -99,7 +99,7 @@
   "$id": "https://schemas.study-tts.example/plan-v3.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "A lesson resolved into exactly what will be synthesized, derived\ndeterministically from it.\n\nProduced only by [`RenderPlan::for_lesson`] and never read back, so it does\nnot derive `Deserialize`. Adding one now would publish an unversioned parse\nboundary that accepts unknown fields and that no caller exercises; ADR-0001\n§12.2 puts persisted plans at E2, and the loader that story needs is where a\nfail-closed boundary belongs.",
+  "description": "A lesson resolved into exactly what will be synthesized, derived\ndeterministically from it.\n\nProduced by [`RenderPlan::for_lesson`] and read back only through the\nversion-gated retained-plan loader in `study_tts_runtime::job_repository`.",
   "properties": {
     "lesson_id": {
       "description": "The lesson this plan was derived from.",
@@ -110,7 +110,7 @@
       "description": "Identity of the plan as a whole, so a rebuild can be recognized as the\nsame plan."
     },
     "schema_version": {
-      "description": "Layout version of this document.\n\nFirst field because it is the first thing a reader of `plan.json` needs\nand the first thing the E2 loader will read. Typed rather than authored\ntext, unlike a lesson's: nothing hand-writes a plan, so there is no\nauthoring mistake to report against the original spelling.\n\nOutside [`RenderPlan::plan_hash`] on purpose. That hash names the\nsegments to be synthesized, and a document layout is not one of them: a\nplan whose version moved while its segments did not is the same plan,\nand must not invalidate a cache.",
+      "description": "Layout version of this document.\n\nFirst field because it is the first thing a reader of `plan.json` needs\nand the first thing the retained-plan loader reads. Typed rather than\nauthored text, unlike a lesson's: nothing hand-writes a plan, so there\nis no authoring mistake to report against the original spelling.\n\nOutside [`RenderPlan::plan_hash`] on purpose. That hash names the\nsegments to be synthesized, and a document layout is not one of them: a\nplan whose version moved while its segments did not is the same plan,\nand must not invalidate a cache.",
       "enum": [
         "3.0"
       ],
@@ -121,6 +121,7 @@
       "items": {
         "$ref": "#/$defs/PlannedSegment"
       },
+      "maxItems": 4096,
       "type": "array"
     }
   },

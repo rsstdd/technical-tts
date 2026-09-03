@@ -8,7 +8,7 @@
 
 use std::{
     fs::{self, File},
-    io::Write,
+    io::{Read, Write},
     path::Path,
 };
 
@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tempfile::Builder;
 
-use crate::{BuildError, IoError, ManagedPathError, io_error};
+use crate::{BuildError, DurableStateError, IoError, ManagedPathError, io_error};
 
 /// Result of publishing a staged path without replacing an existing winner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -161,18 +161,86 @@ pub(crate) fn write_json_atomically<T: Serialize>(
     destination: &Path,
     value: &T,
 ) -> Result<(), BuildError> {
+    replace_atomically(filesystem, destination, |staged| {
+        serde_json::to_writer_pretty(staged, value).map_err(|source| {
+            IoError::WriteJson {
+                path: destination.to_path_buf(),
+                source,
+            }
+            .into()
+        })
+    })
+}
+
+/// Writes exact bytes through the same sync, replace, sync sequence.
+///
+/// For a document this build validated as bytes and retains as bytes — the
+/// lesson beside `job.json` — so what resume reads back is what was checked,
+/// not a re-serialization of it.
+///
+/// # Errors
+///
+/// [`ManagedPathError::UnrootedDestination`] when `destination` has no parent,
+/// or [`IoError::FileSystem`] when staging, synchronization, or replacement
+/// fails.
+pub(crate) fn write_bytes_atomically(
+    filesystem: &dyn DurableFileSystem,
+    destination: &Path,
+    bytes: &[u8],
+) -> Result<(), BuildError> {
+    replace_atomically(filesystem, destination, |staged| {
+        staged
+            .write_all(bytes)
+            .map_err(|error| io_error(destination, error))
+    })
+}
+
+/// Reads a durable record without allocating beyond its boundary's ceiling.
+///
+/// # Errors
+///
+/// [`DurableStateError::DurableRecordTooLarge`] when the file advertises or
+/// yields more than `max_bytes`, or [`IoError::FileSystem`] when it cannot be
+/// opened, inspected, or read.
+pub(crate) fn read_bounded_bytes(path: &Path, max_bytes: usize) -> Result<Vec<u8>, BuildError> {
+    let file = File::open(path).map_err(|error| io_error(path, error))?;
+    let advertised = file
+        .metadata()
+        .map_err(|error| io_error(path, error))?
+        .len();
+    if advertised > max_bytes as u64 {
+        return Err(DurableStateError::DurableRecordTooLarge {
+            path: path.to_path_buf(),
+            max_bytes,
+        }
+        .into());
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(advertised).unwrap_or(max_bytes));
+    file.take(max_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_error(path, error))?;
+    if bytes.len() > max_bytes {
+        return Err(DurableStateError::DurableRecordTooLarge {
+            path: path.to_path_buf(),
+            max_bytes,
+        }
+        .into());
+    }
+    Ok(bytes)
+}
+
+fn replace_atomically(
+    filesystem: &dyn DurableFileSystem,
+    destination: &Path,
+    write: impl FnOnce(&mut File) -> Result<(), BuildError>,
+) -> Result<(), BuildError> {
     let parent = parent_of(destination)?;
     let mut staged = Builder::new()
         .prefix("json-")
         .suffix(".tmp")
         .tempfile_in(parent)
         .map_err(|error| io_error(parent, error))?;
-    serde_json::to_writer_pretty(staged.as_file_mut(), value).map_err(|source| {
-        IoError::WriteJson {
-            path: destination.to_path_buf(),
-            source,
-        }
-    })?;
+    write(staged.as_file_mut())?;
     filesystem.sync_file(staged.path())?;
     let staged_path = staged
         .into_temp_path()
@@ -283,25 +351,19 @@ fn parent_of(path: &Path) -> Result<&Path, BuildError> {
     }
 }
 
+/// Crash-injection filesystems shared by the tests of every module that
+/// publishes through this one. Test-only and crate-private on purpose: the
+/// seam exists to prove ordering, not to become API.
 #[cfg(test)]
-mod tests {
-    use serde::Serialize;
-    use tempfile::TempDir;
+pub(crate) mod fault {
+    use std::path::Path;
 
-    use super::*;
+    use super::{DurableFileSystem, OsDurableFileSystem, RenameOutcome};
+    use crate::{BuildError, io_error};
 
-    #[derive(Serialize)]
-    struct Record {
-        value: u8,
-    }
-
+    /// Fails the authoritative `replace_file`, after staging and file sync.
     #[derive(Debug, Default)]
-    struct FailingReplacementFileSystem {
-        inner: OsDurableFileSystem,
-    }
-
-    #[derive(Debug, Default)]
-    struct FailingRenameFileSystem {
+    pub(crate) struct FailingReplacementFileSystem {
         inner: OsDurableFileSystem,
     }
 
@@ -328,6 +390,24 @@ mod tests {
                 std::io::Error::other("injected replacement interruption"),
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Serialize;
+    use tempfile::TempDir;
+
+    use super::{fault::FailingReplacementFileSystem, *};
+
+    #[derive(Serialize)]
+    struct Record {
+        value: u8,
+    }
+
+    #[derive(Debug, Default)]
+    struct FailingRenameFileSystem {
+        inner: OsDurableFileSystem,
     }
 
     impl DurableFileSystem for FailingRenameFileSystem {

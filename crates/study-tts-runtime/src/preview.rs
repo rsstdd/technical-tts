@@ -11,7 +11,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use study_tts_core::{PlanHash, ToolProfileHash, is_blake3_hex};
+use study_tts_core::{ManifestDigest, PlanHash, ToolProfileHash, is_blake3_hex};
 use tempfile::Builder;
 
 use crate::{
@@ -64,6 +64,7 @@ pub(crate) struct PreviewRoots {
 /// Paths selected by one valid `current.json` record.
 #[derive(Clone, Debug)]
 pub(crate) struct PublishedPackage {
+    pub manifest_blake3: ManifestDigest,
     pub package_dir: PathBuf,
     pub master_wav: PathBuf,
     pub m4a: PathBuf,
@@ -256,6 +257,33 @@ pub(crate) fn reconcile(
             }
         }
     }
+}
+
+/// Returns the identity selected by a validated `current.json`, when present.
+///
+/// The selected package must also be complete and carry `plan_hash`; a digest
+/// agreement alone cannot prove that `job.json` completed the plan it names.
+///
+/// # Errors
+///
+/// The same exact durable-state, containment, and filesystem errors as the
+/// selected-record half of [`reconcile`].
+pub(crate) fn current_manifest_digest(
+    roots: &PreviewRoots,
+    lesson_id: &str,
+    plan_hash: &PlanHash,
+) -> Result<Option<ManifestDigest>, BuildError> {
+    let Some(package) = read_current(roots, lesson_id)? else {
+        return Ok(None);
+    };
+    let plan_matches = manifest::validate_package(
+        &package.package_dir,
+        lesson_id,
+        Some(plan_hash.as_str()),
+        None,
+    )?;
+    require_transaction_plan(&package.package_dir, plan_matches)?;
+    Ok(Some(package.manifest_blake3))
 }
 
 /// Returns the selected package only when it matches this plan and tool stack.
@@ -471,7 +499,14 @@ fn read_current(
     validate_digest(&path, &current.manifest_blake3)?;
     let package = parse_package_reference(roots, &path, &current)?;
     validate_package_checksum(&package, lesson_id, &current.manifest_blake3)?;
-    Ok(Some(published_paths(package, path)))
+    // `validate_digest` above established exactly the spelling the value
+    // object accepts, so no bytes from `current.json` can reach this expect
+    // without first satisfying that invariant.
+    let manifest_blake3 = current
+        .manifest_blake3
+        .parse()
+        .expect("the validated current-preview digest parses");
+    Ok(Some(published_paths(package, path, manifest_blake3)))
 }
 
 fn parse_package_reference(
@@ -715,8 +750,13 @@ fn require_transaction_plan(path: &Path, matches: bool) -> Result<(), BuildError
     .into())
 }
 
-fn published_paths(package_dir: PathBuf, publication_record: PathBuf) -> PublishedPackage {
+fn published_paths(
+    package_dir: PathBuf,
+    publication_record: PathBuf,
+    manifest_blake3: ManifestDigest,
+) -> PublishedPackage {
     PublishedPackage {
+        manifest_blake3,
         master_wav: package_dir.join(manifest::MASTER_WAV_NAME),
         m4a: package_dir.join(manifest::M4A_NAME),
         mp3: package_dir.join(manifest::MP3_NAME),

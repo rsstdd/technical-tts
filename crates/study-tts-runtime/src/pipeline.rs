@@ -21,27 +21,27 @@ use std::{
 use serde::Deserialize;
 use serde_json::Value;
 use study_tts_core::{
-    CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, LessonDiagnostic,
-    MAX_LESSON_JSON_BYTES, PlanError, ProvisionalJobSnapshot, ProvisionalJobStage, ReleaseClaim,
-    ReleaseStatus, RenderPlan, RightsDecision, SourceRightsDeclaration, SynthesisContext,
-    ValidatedLesson, VoiceConditioningHash, VoiceError, VoiceUse, validate_lesson_id,
+    AudioDigest, CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, JobDocument,
+    JobState, LessonDiagnostic, LessonDigest, MAX_LESSON_JSON_BYTES, PlanError, ReleaseClaim,
+    ReleaseStatus, RenderPlan, RightsDecision, SegmentStatus, SourceRightsDeclaration,
+    SynthesisContext, ValidatedLesson, VoiceConditioningHash, VoiceError, VoiceUse,
+    validate_lesson_id,
 };
 
 use crate::{
     BackendDescriptor, BackendError, BuildError, CachePublisher, CacheResolveRequest,
-    FileSystemCachePublisher, FileSystemJobRepository, FileSystemPackageWriter, IoError,
-    JobRepository, PackagePreflightRequest, PackagePrepareRequest, PackageWriteRequest,
-    PackageWriter, PublicationError, RightsError, SynthesisRequest, TtsExecutor, export, io_error,
-    tools, voice_gate,
+    DurableStateError, FileSystemCachePublisher, FileSystemJobRepository, FileSystemPackageWriter,
+    IoError, JobOwnership, JobRepository, PackagePreflightRequest, PackagePrepareRequest,
+    PackageWriteRequest, PackageWriter, PreparedPackageWriter, PublicationError, RightsError,
+    SynthesisRequest, TtsExecutor, export, io_error, tools, voice_gate,
 };
 
 /// Everything one preview build needs, named explicitly rather than read from
 /// ambient state.
 #[derive(Clone, Debug)]
 pub struct BuildRequest {
-    /// The lesson document to build; its validated `lesson_id` is the
-    /// provisional E0 lock and publication identity until versioned job IDs
-    /// land in E2.
+    /// The lesson document to build; its validated `lesson_id` is the job,
+    /// lock, and publication identity.
     pub lesson_path: PathBuf,
     /// Root the build owns; outputs, cache, and staging all resolve beneath it.
     pub workspace: PathBuf,
@@ -57,6 +57,25 @@ pub struct BuildRequest {
     /// under each profile is a §12.5 synthesis-key input, so a build with
     /// nowhere to resolve one would derive cache keys for voices it never
     /// loaded.
+    pub voice_profile_root: PathBuf,
+}
+
+/// What a resume needs that the job directory does not hold.
+///
+/// The lesson and plan are read back from `jobs/<job-id>/`; tools and the
+/// voice root are environment, and a resumed build is gated on them exactly
+/// as a fresh one is.
+#[derive(Clone, Debug)]
+pub struct ResumeRequest {
+    /// The job to resume; the validated `lesson_id` its build recorded.
+    pub job_id: String,
+    /// Root the job lives beneath.
+    pub workspace: PathBuf,
+    /// FFmpeg to encode with, resolved and version-probed before any work.
+    pub ffmpeg_executable: PathBuf,
+    /// ffprobe to validate the encoded output with, on the same terms.
+    pub ffprobe_executable: PathBuf,
+    /// Root holding the voice profiles the retained lesson names.
     pub voice_profile_root: PathBuf,
 }
 
@@ -92,7 +111,7 @@ pub struct PreviewServiceBundle<'a> {
     pub cache: &'a dyn CachePublisher,
     /// Master-first package writer.
     pub packages: &'a dyn PackageWriter,
-    /// Durable job ownership and snapshot repository.
+    /// Durable job ownership and document repository.
     pub jobs: &'a dyn JobRepository,
 }
 
@@ -264,8 +283,19 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`crate::DurableStateError::MalformedJobLock`],
 /// [`crate::DurableStateError::IncompatibleJobLock`],
 /// [`crate::DurableStateError::MalformedJobSnapshot`],
+/// [`crate::DurableStateError::MalformedJobEventLog`],
+/// [`crate::DurableStateError::DurableRecordTooLarge`],
+/// [`crate::DurableStateError::JobEventLineTooLarge`],
+/// [`crate::DurableStateError::JobSnapshotSegmentCountExceeded`],
 /// [`crate::DurableStateError::JobSnapshotIdentityMismatch`],
+/// [`crate::DurableStateError::JobSnapshotAttemptMismatch`],
+/// [`crate::DurableStateError::JobReplacementPredecessorMismatch`],
+/// [`crate::DurableStateError::JobSnapshotLastSuccessfulStateMismatch`],
 /// [`crate::DurableStateError::JobSnapshotSelectionMismatch`],
+/// [`crate::DurableStateError::JobSnapshotPackageIdentityMismatch`],
+/// [`crate::DurableStateError::JobPreviewSelectionMismatch`],
+/// [`crate::DurableStateError::IllegalJobTransition`],
+/// [`crate::DurableStateError::JobAttemptOverflow`],
 /// [`crate::DurableStateError::CacheLockTimeout`],
 /// [`crate::DurableStateError::MalformedPublicationJournal`],
 /// [`crate::DurableStateError::MalformedCurrentPreview`],
@@ -296,6 +326,16 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`crate::DurableStateError::QuarantineFailed`]. A live job lock directs the
 /// caller to wait; integrity failures preserve their records for the runtime
 /// owner rather than deleting or overwriting them.
+/// [`crate::DurableStateError::NoJobToResume`],
+/// [`crate::DurableStateError::RetainedLessonMismatch`],
+/// [`crate::DurableStateError::RetainedLessonIdentityMismatch`],
+/// [`crate::DurableStateError::MalformedRetainedPlan`],
+/// [`crate::DurableStateError::RetainedPlanIdentityMismatch`],
+/// [`crate::DurableStateError::RetainedPlanHashMismatch`],
+/// [`crate::DurableStateError::RetainedPlanSegmentCountExceeded`], and
+/// [`crate::DurableStateError::JobPlanHashMismatch`] are
+/// [`resume_preview`]'s alone: a build has its lesson and plan in hand rather
+/// than reading them back.
 pub fn build_preview(
     request: BuildRequest,
     executor: &dyn TtsExecutor,
@@ -314,7 +354,7 @@ pub fn build_preview(
     )
 }
 
-/// Builds one lesson exclusively through the published E0-S4 service seams.
+/// Builds one lesson exclusively through the published service seams.
 ///
 /// # Errors
 ///
@@ -324,17 +364,170 @@ pub fn build_preview_with_services(
     request: BuildRequest,
     services: PreviewServiceBundle<'_>,
 ) -> Result<BuildResult, BuildError> {
-    let lesson = load_lesson(&request.lesson_path)?;
+    let lesson_bytes = read_lesson(&request.lesson_path)?;
+    let lesson =
+        ValidatedLesson::from_json(&request.lesson_path.display().to_string(), &lesson_bytes)?;
+    let gated = gate(
+        lesson,
+        lesson_bytes,
+        &request.voice_profile_root,
+        &request.ffmpeg_executable,
+        &request.ffprobe_executable,
+        services,
+    )?;
 
-    // Rights precede work, and now precede planning too: the conditioning
+    fs::create_dir_all(&request.workspace).map_err(|error| io_error(&request.workspace, error))?;
+    let workspace = fs::canonicalize(&request.workspace)
+        .map_err(|error| io_error(&request.workspace, error))?;
+    let ownership = services.jobs.claim(&workspace, gated.lesson.lesson_id())?;
+    let previous = services.jobs.load(&workspace, gated.lesson.lesson_id())?;
+    render_attempt(&workspace, ownership, previous, gated, services)
+}
+
+/// Resumes a job from its retained inputs and recorded state.
+///
+/// ADR-0001 §12.7: acquire the job lock, parse and validate every authoritative
+/// document, then continue from the first missing or invalid artifact. The
+/// continuation is the same attempt a fresh build runs — the cache and package
+/// layers revalidate everything they reuse, so nothing here trusts recorded
+/// segment status in place of the artifact it names (§12.7 step 6). A resumed
+/// build is gated on voices and tools exactly as a fresh one is.
+///
+/// # Errors
+///
+/// Everything [`build_preview`] documents, since the same gates and the same
+/// attempt run here, plus retained-input refusals:
+/// [`crate::DurableStateError::NoJobToResume`] when the job directory holds no
+/// document, lesson, or plan;
+/// [`crate::DurableStateError::RetainedLessonMismatch`] or
+/// [`crate::DurableStateError::RetainedLessonIdentityMismatch`] when the lesson
+/// bytes or identity disagree;
+/// [`crate::DurableStateError::MalformedRetainedPlan`],
+/// [`crate::DurableStateError::RetainedPlanIdentityMismatch`], or
+/// [`crate::DurableStateError::RetainedPlanHashMismatch`] when `plan.json`
+/// cannot be trusted; and [`crate::DurableStateError::JobPlanHashMismatch`]
+/// when the validated plan disagrees with `job.json`.
+pub fn resume_preview(
+    request: ResumeRequest,
+    executor: &dyn TtsExecutor,
+) -> Result<BuildResult, BuildError> {
+    let cache = FileSystemCachePublisher;
+    let packages = FileSystemPackageWriter;
+    let jobs = FileSystemJobRepository;
+    resume_preview_with_services(
+        request,
+        PreviewServiceBundle {
+            executor,
+            cache: &cache,
+            packages: &packages,
+            jobs: &jobs,
+        },
+    )
+}
+
+/// Resumes one job exclusively through the published service seams.
+///
+/// # Errors
+///
+/// As [`resume_preview`].
+pub fn resume_preview_with_services(
+    request: ResumeRequest,
+    services: PreviewServiceBundle<'_>,
+) -> Result<BuildResult, BuildError> {
+    let workspace = fs::canonicalize(&request.workspace)
+        .map_err(|error| io_error(&request.workspace, error))?;
+    let no_job = || DurableStateError::NoJobToResume {
+        path: workspace.join("jobs").join(&request.job_id),
+    };
+    let ownership = services.jobs.claim(&workspace, &request.job_id)?;
+    let previous = services
+        .jobs
+        .load(&workspace, &request.job_id)?
+        .ok_or_else(no_job)?;
+    let lesson_bytes = services
+        .jobs
+        .retained_lesson(&workspace, &request.job_id)?
+        .ok_or_else(no_job)?;
+    let actual = LessonDigest::from(blake3::hash(&lesson_bytes));
+    if actual != previous.lesson_blake3 {
+        return Err(DurableStateError::RetainedLessonMismatch {
+            path: workspace
+                .join("jobs")
+                .join(&request.job_id)
+                .join("lesson.json"),
+            recorded: previous.lesson_blake3.as_str().to_owned(),
+            actual: actual.as_str().to_owned(),
+        }
+        .into());
+    }
+    let lesson = ValidatedLesson::from_json(
+        &format!("jobs/{}/lesson.json", request.job_id),
+        &lesson_bytes,
+    )?;
+    if lesson.lesson_id() != request.job_id {
+        return Err(DurableStateError::RetainedLessonIdentityMismatch {
+            path: workspace
+                .join("jobs")
+                .join(&request.job_id)
+                .join("lesson.json"),
+            required: request.job_id,
+            actual: lesson.lesson_id().to_owned(),
+        }
+        .into());
+    }
+    let retained_plan = services
+        .jobs
+        .retained_plan(&workspace, lesson.lesson_id())?
+        .ok_or_else(no_job)?;
+    if retained_plan.plan_hash != previous.plan_hash {
+        return Err(DurableStateError::JobPlanHashMismatch {
+            path: workspace
+                .join("jobs")
+                .join(lesson.lesson_id())
+                .join("plan.json"),
+            job_recorded: previous.plan_hash.as_str().to_owned(),
+            plan_recorded: retained_plan.plan_hash.as_str().to_owned(),
+        }
+        .into());
+    }
+    let gated = gate(
+        lesson,
+        lesson_bytes,
+        &request.voice_profile_root,
+        &request.ffmpeg_executable,
+        &request.ffprobe_executable,
+        services,
+    )?;
+    render_attempt(&workspace, ownership, Some(previous), gated, services)
+}
+
+/// What the gates produced and one attempt renders.
+struct GatedBuild {
+    lesson: ValidatedLesson,
+    /// The exact bytes that were validated, retained beside `job.json`.
+    lesson_bytes: Vec<u8>,
+    plan: RenderPlan,
+    synthesis_requests: Vec<SynthesisRequest>,
+    packages: Box<dyn PreparedPackageWriter>,
+}
+
+/// Runs every gate that must precede durable work, in the order the module
+/// docs commit to: rights, then planning, then executor validation, then tool
+/// preflight.
+fn gate(
+    lesson: ValidatedLesson,
+    lesson_bytes: Vec<u8>,
+    voice_profile_root: &Path,
+    ffmpeg_executable: &Path,
+    ffprobe_executable: &Path,
+    services: PreviewServiceBundle<'_>,
+) -> Result<GatedBuild, BuildError> {
+    // Rights precede work, and precede planning too: the conditioning
     // artifact each profile carries is an ADR-0001 §12.5 synthesis-key input,
     // so a plan derived before this gate would name cache entries for voices
     // nobody resolved. A refused voice still performs no observable work.
-    let voice_conditioning_hashes = voice_gate::resolve_speakers(
-        &request.voice_profile_root,
-        &lesson,
-        VoiceUse::PrivateSynthesis,
-    )?;
+    let voice_conditioning_hashes =
+        voice_gate::resolve_speakers(voice_profile_root, &lesson, VoiceUse::PrivateSynthesis)?;
 
     let descriptor = services.executor.descriptor();
     let (plan, synthesis_requests) =
@@ -344,27 +537,66 @@ pub fn build_preview_with_services(
     }
 
     let packages = services.packages.preflight(&PackagePreflightRequest {
-        ffmpeg_executable: &request.ffmpeg_executable,
-        ffprobe_executable: &request.ffprobe_executable,
+        ffmpeg_executable,
+        ffprobe_executable,
     })?;
+    Ok(GatedBuild {
+        lesson,
+        lesson_bytes,
+        plan,
+        synthesis_requests,
+        packages,
+    })
+}
 
-    fs::create_dir_all(&request.workspace).map_err(|error| io_error(&request.workspace, error))?;
-    let workspace = fs::canonicalize(&request.workspace)
-        .map_err(|error| io_error(&request.workspace, error))?;
-    let _job_ownership = services.jobs.claim(&workspace, lesson.lesson_id())?;
-    let planned = ProvisionalJobSnapshot::planned(lesson.lesson_id(), plan.plan_hash.clone());
-    services.jobs.replace(&workspace, &planned)?;
-    packages.prepare(&PackagePrepareRequest {
-        workspace: &workspace,
-        job_id: lesson.lesson_id(),
-        plan: &plan,
+/// Renders one build attempt under held ownership.
+///
+/// Opens attempt *N+1* over `previous` rather than transitioning from it:
+/// ADR-0001 §6.4 has no edge out of a finished attempt, and `job.json` records
+/// what the abandoned one had reached (§12.7 step 5). Every state change is a
+/// durable replacement through the repository, which appends the event after
+/// the write; the cache and package layers keep their own reconciliation and
+/// are what decide what is reused.
+fn render_attempt(
+    workspace: &Path,
+    ownership: Box<dyn JobOwnership>,
+    previous: Option<JobDocument>,
+    gated: GatedBuild,
+    services: PreviewServiceBundle<'_>,
+) -> Result<BuildResult, BuildError> {
+    let _job_ownership = ownership;
+    let job_id = gated.lesson.lesson_id();
+    gated.packages.prepare(&PackagePrepareRequest {
+        workspace,
+        job_id,
+        plan: &gated.plan,
     })?;
-
+    if let Some(previous) = &previous {
+        services
+            .jobs
+            .validate_preview_selection(workspace, previous)?;
+    }
     services
         .jobs
-        .replace(&workspace, &planned.advancing(ProvisionalJobStage::Caching))?;
-    let mut cached_segments = Vec::with_capacity(plan.segments.len());
-    for (segment, synthesis_request) in plan.segments.iter().zip(synthesis_requests) {
+        .retain_inputs(workspace, job_id, &gated.lesson_bytes, &gated.plan)?;
+    // Created, Validated, and Planned are walked in memory: the lesson was
+    // validated and the plan derived before ownership was claimed, and
+    // ADR-0001 §12.3 governs durable state *changes*, of which the first is
+    // the plan this attempt will render.
+    let mut document = JobDocument::open_attempt(
+        job_id,
+        LessonDigest::from(blake3::hash(&gated.lesson_bytes)),
+        gated.plan.plan_hash.clone(),
+        previous.as_ref(),
+    )?
+    .transition(JobState::Validated)?
+    .transition(JobState::Planned)?;
+    services.jobs.replace(workspace, &document)?;
+
+    document = document.transition(JobState::Rendering)?;
+    services.jobs.replace(workspace, &document)?;
+    let mut cached_segments = Vec::with_capacity(gated.plan.segments.len());
+    for (segment, synthesis_request) in gated.plan.segments.iter().zip(gated.synthesis_requests) {
         let mut pending_request = Some(synthesis_request);
         let mut producer = |destination: &Path| {
             let request = pending_request
@@ -377,28 +609,47 @@ pub fn build_preview_with_services(
         };
         let cached = services.cache.resolve(
             &CacheResolveRequest {
-                workspace: workspace.clone(),
-                job_id: lesson.lesson_id().to_owned(),
+                workspace: workspace.to_path_buf(),
+                job_id: job_id.to_owned(),
                 segment: segment.clone(),
             },
             &mut producer,
         )?;
+        let audio_blake3: AudioDigest = cached.audio_blake3().parse().map_err(|_| {
+            DurableStateError::MalformedDurableDigest {
+                path: cached.entry_dir().to_path_buf(),
+                value: cached.audio_blake3().to_owned(),
+            }
+        })?;
+        // The §6.4 self-loop: one segment completed, and the document says so
+        // durably before the next begins.
+        document = document.transition(JobState::Rendering)?.with_segment(
+            &segment.id,
+            SegmentStatus {
+                cache_key: cached.cache_key().clone(),
+                audio_blake3,
+            },
+        );
+        services.jobs.replace(workspace, &document)?;
         cached_segments.push(cached);
     }
 
-    services.jobs.replace(
-        &workspace,
-        &planned.advancing(ProvisionalJobStage::Packaging),
-    )?;
-    let package = packages.write(&PackageWriteRequest {
-        workspace: &workspace,
-        job_id: lesson.lesson_id(),
-        plan: &plan,
+    document = document.transition(JobState::Rendered)?;
+    services.jobs.replace(workspace, &document)?;
+    let package = gated.packages.write(&PackageWriteRequest {
+        workspace,
+        job_id,
+        plan: &gated.plan,
         cached_artifacts: &cached_segments,
     })?;
-    services
-        .jobs
-        .replace(&workspace, &planned.selecting(package.identity.clone()))?;
+    // The private-preview completion is recorded beside the state, not as
+    // one: `Rendered` is as far as the ADR-0001 §6.4 machine can honestly go
+    // without a verifier, and the selected package is what E2-S1 task 4 keeps
+    // separate from it.
+    services.jobs.replace(
+        workspace,
+        &document.with_preview_package(package.identity.clone()),
+    )?;
 
     Ok(BuildResult {
         package_dir: package.package_dir,
@@ -544,7 +795,7 @@ pub fn load_lesson(path: &Path) -> Result<ValidatedLesson, BuildError> {
 ///
 /// Metadata avoids reading a file already known to be oversized; the bounded
 /// read remains authoritative because the file may grow after that preflight.
-fn read_lesson(path: &Path) -> Result<Vec<u8>, BuildError> {
+pub(crate) fn read_lesson(path: &Path) -> Result<Vec<u8>, BuildError> {
     let file = open_lesson(path)?;
 
     let metadata = file.metadata().map_err(|source| IoError::ReadFile {

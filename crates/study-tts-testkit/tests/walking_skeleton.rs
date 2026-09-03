@@ -15,16 +15,19 @@ use std::{
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use study_tts_core::{CacheKey, LessonError, MAX_LESSON_JSON_BYTES, ReleaseError};
+use study_tts_core::{
+    CacheKey, JobState, LessonError, MAX_LESSON_JSON_BYTES, ReleaseError, RenderPlan,
+};
 use study_tts_runtime::{
-    BackendDescriptor, BackendError, BuildError, BuildRequest, CacheEntryFault, CacheError,
-    DurableStateError, IoError, ManagedPathError, PublicationError, SynthesisReport,
-    SynthesisRequest, ToolError, TtsExecutor, build_preview, publish, validate_m4a_output,
-    validate_production_manifest,
+    BackendDescriptor, BackendError, BuildError, BuildRequest, DurableStateError,
+    FileSystemCachePublisher, FileSystemPackageWriter, IoError, ManagedPathError,
+    PreviewServiceBundle, PublicationError, ResumeRequest, SynthesisReport, SynthesisRequest,
+    ToolError, TtsExecutor, build_preview, build_preview_with_services, load_lesson, publish,
+    resume_preview, validate_m4a_output, validate_production_manifest,
 };
 use study_tts_testkit::{
-    DeterministicToneWorker, FIXTURE_VOICE_PROFILES, cache_identity_fixture,
-    walking_skeleton_fixture, write_voice_profile_root,
+    DeterministicToneWorker, FIXTURE_VOICE_PROFILES, InterruptingJobRepository,
+    cache_identity_fixture, walking_skeleton_fixture, write_voice_profile_root,
 };
 use tempfile::TempDir;
 
@@ -123,6 +126,32 @@ fn build_request_with_voices(
         ffprobe_executable: "ffprobe".into(),
         voice_profile_root: voice_profile_root.to_path_buf(),
     }
+}
+
+const SKELETON_JOB_ID: &str = "e0-s0-walking-skeleton";
+
+fn resume_request(workspace: &Path) -> ResumeRequest {
+    let build = build_request(&walking_skeleton_fixture(), workspace);
+    ResumeRequest {
+        job_id: SKELETON_JOB_ID.to_owned(),
+        workspace: build.workspace,
+        ffmpeg_executable: build.ffmpeg_executable,
+        ffprobe_executable: build.ffprobe_executable,
+        voice_profile_root: build.voice_profile_root,
+    }
+}
+
+fn read_job_document(workspace: &Path) -> Value {
+    serde_json::from_slice(
+        &std::fs::read(
+            workspace
+                .join("jobs")
+                .join(SKELETON_JOB_ID)
+                .join("job.json"),
+        )
+        .expect("read job document"),
+    )
+    .expect("parse job document")
 }
 
 fn run_skeleton() -> (
@@ -983,29 +1012,427 @@ fn t4_e0_corrupt_publication_journal_is_refused_without_overwrite() {
 }
 
 #[test]
-fn t4_e0_corrupt_job_snapshot_is_refused_without_overwrite() {
+fn t4_e2_corrupt_job_state_is_not_overwritten() {
     let (workspace, _result, worker) = run_skeleton();
-    let snapshot = workspace
+    let document = workspace
         .path()
-        .join("jobs/e0-s0-walking-skeleton/job.json");
-    std::fs::write(&snapshot, b"{corrupt").expect("corrupt job snapshot");
+        .join("jobs")
+        .join(SKELETON_JOB_ID)
+        .join("job.json");
+    std::fs::write(&document, b"{corrupt").expect("corrupt job document");
 
-    let error = build_preview(
+    let build_error = build_preview(
         build_request(&walking_skeleton_fixture(), workspace.path()),
         &worker,
     )
-    .expect_err("corrupt authoritative job state must be refused");
+    .expect_err("corrupt authoritative job state must be refused by a build");
+    let resume_error = resume_preview(resume_request(workspace.path()), &worker)
+        .expect_err("corrupt authoritative job state must be refused by a resume");
+
+    for error in [build_error, resume_error] {
+        assert!(
+            matches!(
+                error,
+                BuildError::DurableState(ref state)
+                    if matches!(**state, DurableStateError::MalformedJobSnapshot { .. })
+            ),
+            "{error}"
+        );
+    }
+    assert_eq!(
+        std::fs::read(document).expect("job document remains"),
+        b"{corrupt"
+    );
+    assert_eq!(worker.synthesis_count(), 2);
+}
+
+#[test]
+fn t4_e2_resume_refuses_a_retained_lesson_for_another_job() {
+    let (workspace, _result, worker) = run_skeleton();
+    let job_dir = workspace.path().join("jobs").join(SKELETON_JOB_ID);
+    let other_lesson = write_lesson_with_id(workspace.path(), "other.json", "other-job");
+    let retained = std::fs::read(other_lesson).expect("read other lesson");
+    std::fs::write(job_dir.join("lesson.json"), &retained).expect("replace retained lesson");
+    let mut document = read_job_document(workspace.path());
+    document["lesson_blake3"] = Value::String(blake3::hash(&retained).to_hex().to_string());
+    std::fs::write(
+        job_dir.join("job.json"),
+        serde_json::to_vec_pretty(&document).expect("serialize coherent altered job document"),
+    )
+    .expect("write coherent altered job document");
+
+    let error = resume_preview(resume_request(workspace.path()), &worker)
+        .expect_err("a retained lesson for another job must be refused under the claimed lock");
 
     assert!(matches!(
         error,
         BuildError::DurableState(ref state)
-            if matches!(**state, DurableStateError::MalformedJobSnapshot { .. })
+            if matches!(
+                **state,
+                DurableStateError::RetainedLessonIdentityMismatch { .. }
+            )
+    ));
+    assert!(!workspace.path().join("jobs/other-job").exists());
+    assert_eq!(worker.synthesis_count(), 2);
+}
+
+#[test]
+fn t4_e2_resume_refuses_a_malformed_retained_plan() {
+    let (workspace, _result, worker) = run_skeleton();
+    let plan = workspace
+        .path()
+        .join("jobs")
+        .join(SKELETON_JOB_ID)
+        .join("plan.json");
+    std::fs::write(&plan, b"{corrupt").expect("corrupt retained plan");
+
+    let error = resume_preview(resume_request(workspace.path()), &worker)
+        .expect_err("a malformed authoritative plan must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::DurableState(ref state)
+            if matches!(**state, DurableStateError::MalformedRetainedPlan { .. })
     ));
     assert_eq!(
-        std::fs::read(snapshot).expect("job snapshot remains"),
+        std::fs::read(plan).expect("retained plan remains"),
         b"{corrupt"
     );
     assert_eq!(worker.synthesis_count(), 2);
+}
+
+#[test]
+fn t4_e2_resume_refuses_a_retained_plan_with_a_stale_hash() {
+    let (workspace, _result, worker) = run_skeleton();
+    let plan = workspace
+        .path()
+        .join("jobs")
+        .join(SKELETON_JOB_ID)
+        .join("plan.json");
+    let mut retained: RenderPlan =
+        serde_json::from_slice(&std::fs::read(&plan).expect("read retained plan"))
+            .expect("parse retained plan");
+    retained.segments[0].display_text = "changed display text".to_owned();
+    std::fs::write(
+        &plan,
+        serde_json::to_vec_pretty(&retained).expect("serialize altered plan"),
+    )
+    .expect("write altered plan");
+
+    let error = resume_preview(resume_request(workspace.path()), &worker)
+        .expect_err("a retained plan whose content does not derive its hash must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::DurableState(ref state)
+            if matches!(**state, DurableStateError::RetainedPlanHashMismatch { .. })
+    ));
+    assert_eq!(worker.synthesis_count(), 2);
+}
+
+#[test]
+fn t4_e2_resume_refuses_a_retained_plan_for_another_job() {
+    let (workspace, _result, worker) = run_skeleton();
+    let plan = workspace
+        .path()
+        .join("jobs")
+        .join(SKELETON_JOB_ID)
+        .join("plan.json");
+    let mut retained: RenderPlan =
+        serde_json::from_slice(&std::fs::read(&plan).expect("read retained plan"))
+            .expect("parse retained plan");
+    retained.lesson_id = "other-job".to_owned();
+    std::fs::write(
+        &plan,
+        serde_json::to_vec_pretty(&retained).expect("serialize altered plan"),
+    )
+    .expect("write altered plan");
+
+    let error = resume_preview(resume_request(workspace.path()), &worker)
+        .expect_err("a retained plan for another job must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::DurableState(ref state)
+            if matches!(**state, DurableStateError::RetainedPlanIdentityMismatch { .. })
+    ));
+    assert_eq!(worker.synthesis_count(), 2);
+}
+
+#[test]
+fn t4_e2_resume_refuses_a_plan_hash_that_disagrees_with_job_state() {
+    let (workspace, _result, worker) = run_skeleton();
+    let plan = workspace
+        .path()
+        .join("jobs")
+        .join(SKELETON_JOB_ID)
+        .join("plan.json");
+    let mut retained: RenderPlan =
+        serde_json::from_slice(&std::fs::read(&plan).expect("read retained plan"))
+            .expect("parse retained plan");
+    retained.segments[0].display_text = "changed display text".to_owned();
+    retained.plan_hash = retained.derived_hash();
+    std::fs::write(
+        &plan,
+        serde_json::to_vec_pretty(&retained).expect("serialize self-consistent plan"),
+    )
+    .expect("write self-consistent plan");
+
+    let error = resume_preview(resume_request(workspace.path()), &worker)
+        .expect_err("a retained plan whose identity disagrees with job state must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::DurableState(ref state)
+            if matches!(**state, DurableStateError::JobPlanHashMismatch { .. })
+    ));
+    assert_eq!(worker.synthesis_count(), 2);
+}
+
+#[test]
+fn t4_e2_resume_refuses_a_job_package_that_disagrees_with_selected_output() {
+    let (workspace, _result, worker) = run_skeleton();
+    let path = workspace
+        .path()
+        .join("jobs")
+        .join(SKELETON_JOB_ID)
+        .join("job.json");
+    let mut document = read_job_document(workspace.path());
+    let contradictory = "d".repeat(64);
+    document["preview_package"]["package_id"] = Value::String(contradictory.clone());
+    document["preview_package"]["manifest_blake3"] = Value::String(contradictory);
+    let bytes = serde_json::to_vec_pretty(&document).expect("serialize contradictory job state");
+    std::fs::write(&path, &bytes).expect("replace job state");
+
+    let error = resume_preview(resume_request(workspace.path()), &worker)
+        .expect_err("job and selected-output identities must agree before state is replaced");
+
+    assert!(matches!(
+        error,
+        BuildError::DurableState(ref state)
+            if matches!(
+                **state,
+                DurableStateError::JobPreviewSelectionMismatch { .. }
+            )
+    ));
+    assert_eq!(
+        std::fs::read(path).expect("job state remains"),
+        bytes,
+        "contradictory authoritative state must not be overwritten"
+    );
+    assert_eq!(worker.synthesis_count(), 2);
+}
+
+#[test]
+fn t4_e2_resume_refuses_a_selected_package_for_a_different_job_plan() {
+    let (workspace, _result, worker) = run_skeleton();
+    let job_dir = workspace.path().join("jobs").join(SKELETON_JOB_ID);
+    let plan_path = job_dir.join("plan.json");
+    let job_path = job_dir.join("job.json");
+    let mut retained: RenderPlan =
+        serde_json::from_slice(&std::fs::read(&plan_path).expect("read retained plan"))
+            .expect("parse retained plan");
+    retained.segments[0].display_text = "a different plan".to_owned();
+    retained.plan_hash = retained.derived_hash();
+    let plan_bytes = serde_json::to_vec_pretty(&retained).expect("serialize altered plan");
+    std::fs::write(&plan_path, &plan_bytes).expect("write altered plan");
+    let mut document = read_job_document(workspace.path());
+    document["plan_hash"] = Value::String(retained.plan_hash.as_str().to_owned());
+    let job_bytes = serde_json::to_vec_pretty(&document).expect("serialize altered job state");
+    std::fs::write(&job_path, &job_bytes).expect("write altered job state");
+
+    let error = resume_preview(resume_request(workspace.path()), &worker)
+        .expect_err("a selected output for another authoritative plan must be refused");
+
+    assert!(matches!(
+        error,
+        BuildError::DurableState(ref state)
+            if matches!(**state, DurableStateError::PackagePlanMismatch { .. })
+    ));
+    assert_eq!(std::fs::read(job_path).expect("job remains"), job_bytes);
+    assert_eq!(std::fs::read(plan_path).expect("plan remains"), plan_bytes);
+    assert_eq!(worker.synthesis_count(), 2);
+}
+
+#[test]
+fn t4_e2_job_directory_holds_validated_lesson_and_plan() {
+    let (workspace, result, _worker) = run_skeleton();
+    let job_dir = workspace.path().join("jobs").join(SKELETON_JOB_ID);
+
+    let lesson = load_lesson(&job_dir.join("lesson.json")).expect("the retained lesson validates");
+    let plan: RenderPlan =
+        serde_json::from_slice(&std::fs::read(job_dir.join("plan.json")).expect("read plan"))
+            .expect("the retained plan parses");
+    let manifest = read_manifest(&result);
+    let document = read_job_document(workspace.path());
+
+    assert_eq!(lesson.lesson_id(), SKELETON_JOB_ID);
+    assert_eq!(plan.lesson_id, SKELETON_JOB_ID);
+    assert_eq!(plan.schema_version, study_tts_core::PLAN_SCHEMA_VERSION);
+    assert_eq!(plan.plan_hash, plan.derived_hash());
+    assert_eq!(manifest["plan_hash"], plan.plan_hash.as_str());
+    assert_eq!(document["plan_hash"], plan.plan_hash.as_str());
+    assert_eq!(document["state"], "rendered");
+    assert_eq!(document["last_successful_state"], "rendered");
+    assert_eq!(document["build_attempt"], 1);
+    assert_eq!(document["release_status"], "private_preview");
+    assert_eq!(
+        document["segments"]
+            .as_object()
+            .expect("segments recorded")
+            .len(),
+        2
+    );
+    assert!(document["preview_package"]["manifest_blake3"].is_string());
+}
+
+#[test]
+fn t4_e2_no_op_rebuild_produces_identical_manifest() {
+    let (workspace, first, worker) = run_skeleton();
+    let manifest_before = std::fs::read(&first.manifest).expect("read first manifest");
+
+    let second = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect("a rebuild with nothing changed succeeds");
+
+    assert_eq!(
+        worker.synthesis_count(),
+        2,
+        "nothing changed, so nothing is resynthesized"
+    );
+    assert_eq!(first.package_dir, second.package_dir);
+    assert_eq!(
+        std::fs::read(&second.manifest).expect("read second manifest"),
+        manifest_before,
+        "the selected manifest is byte-identical across a no-op rebuild"
+    );
+    let document = read_job_document(workspace.path());
+    assert_eq!(document["build_attempt"], 2);
+    assert_eq!(document["abandoned_attempt"]["build_attempt"], 1);
+    assert_eq!(document["abandoned_attempt"]["state"], "rendered");
+    assert_eq!(document["state"], "rendered");
+}
+
+#[test]
+fn t4_e2_resume_regenerates_only_missing_or_invalid_segments() {
+    for invalid in [false, true] {
+        let (workspace, first, worker) = run_skeleton();
+        let document = read_job_document(workspace.path());
+        let cache_keys: Vec<(String, CacheKey)> = document["segments"]
+            .as_object()
+            .expect("segments recorded")
+            .iter()
+            .map(|(segment_id, status)| {
+                (
+                    segment_id.clone(),
+                    status["cache_key"]
+                        .as_str()
+                        .expect("a recorded cache key")
+                        .parse()
+                        .expect("a recorded cache key parses"),
+                )
+            })
+            .collect();
+        let cache_root = workspace.path().join("cache");
+        let replaced = find_cache_entry_dir(&cache_root, &cache_keys[0].1);
+        let surviving = find_cache_entry_dir(&cache_root, &cache_keys[1].1).join("audio.wav");
+        let surviving_bytes = std::fs::read(&surviving).expect("read surviving audio");
+        if invalid {
+            std::fs::write(replaced.join("audio.wav"), b"invalid wav")
+                .expect("invalidate one published cache entry");
+        } else {
+            std::fs::remove_dir_all(&replaced).expect("remove one published cache entry");
+        }
+
+        let resumed =
+            resume_preview(resume_request(workspace.path()), &worker).expect("the resume succeeds");
+
+        assert_eq!(
+            worker.synthesis_count(),
+            3,
+            "exactly the {} segment is regenerated",
+            if invalid { "invalid" } else { "missing" }
+        );
+        assert_eq!(
+            std::fs::read(&surviving).expect("read surviving audio again"),
+            surviving_bytes,
+            "the valid entry is reused byte for byte"
+        );
+        assert!(
+            replaced.join("audio.wav").is_file(),
+            "the missing or invalid entry is republished"
+        );
+        if invalid {
+            let take_dir = workspace
+                .path()
+                .join("quarantine/e0-s0-walking-skeleton")
+                .join(&cache_keys[0].0)
+                .join("take-0");
+            let preserved = std::fs::read_dir(take_dir)
+                .expect("invalid entry has a quarantine attempt")
+                .map(|entry| {
+                    entry
+                        .expect("read quarantine attempt")
+                        .path()
+                        .join("cache-entry/audio.wav")
+                })
+                .any(|audio| {
+                    std::fs::read(audio).is_ok_and(|bytes| bytes.as_slice() == b"invalid wav")
+                });
+            assert!(
+                preserved,
+                "the invalid published entry is preserved in quarantine"
+            );
+        }
+        assert_eq!(resumed.package_dir, first.package_dir);
+        let manifest = read_manifest(&resumed);
+        assert_eq!(manifest["segments"].as_array().expect("segments").len(), 2);
+        let document = read_job_document(workspace.path());
+        assert_eq!(document["build_attempt"], 2);
+        assert_eq!(document["state"], "rendered");
+    }
+}
+
+#[test]
+fn t4_e2_interrupt_after_cache_publish_reconciles_on_resume() {
+    let workspace = TempDir::new().expect("create interrupted workspace");
+    let worker = DeterministicToneWorker::default();
+    // Both segments are published to the cache before the attempt records
+    // `Rendered`; failing that write is the crash ADR-0001 §12.7 step 4 names.
+    let jobs = InterruptingJobRepository::failing_before(JobState::Rendered);
+    let error = build_preview_with_services(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        PreviewServiceBundle {
+            executor: &worker,
+            cache: &FileSystemCachePublisher,
+            packages: &FileSystemPackageWriter,
+            jobs: &jobs,
+        },
+    )
+    .expect_err("the injected interruption must surface");
+    assert!(matches!(error, BuildError::Io(IoError::FileSystem { .. })));
+    assert_eq!(jobs.interruptions(), 1);
+    assert_eq!(worker.synthesis_count(), 2);
+    let interrupted = read_job_document(workspace.path());
+    assert_eq!(interrupted["state"], "rendering");
+    assert_eq!(interrupted["build_attempt"], 1);
+
+    let resumed =
+        resume_preview(resume_request(workspace.path()), &worker).expect("the resume succeeds");
+
+    assert_eq!(
+        worker.synthesis_count(),
+        2,
+        "artifacts published before the state advanced are reconciled, not resynthesized"
+    );
+    assert!(resumed.manifest.is_file());
+    let document = read_job_document(workspace.path());
+    assert_eq!(document["build_attempt"], 2);
+    assert_eq!(document["abandoned_attempt"]["state"], "rendering");
+    assert_eq!(document["state"], "rendered");
+    assert!(document["preview_package"]["package_id"].is_string());
 }
 
 #[test]
@@ -1749,7 +2176,7 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         ("channels", Value::from(2)),
         ("sample_format", Value::String("s16le".to_owned())),
     ];
-    for (field, replacement) in mutations {
+    for (index, (field, replacement)) in mutations.into_iter().enumerate() {
         let mut mutated = original.clone();
         mutated[field] = replacement;
         std::fs::write(
@@ -1758,32 +2185,15 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         )
         .expect("write corrupt artifact");
 
-        let error = build_preview(
+        build_preview(
             build_request(&walking_skeleton_fixture(), workspace.path()),
             &worker,
         )
-        .expect_err("corrupt cache metadata must be rejected");
-
-        // Every one of these mutations makes the artifact describe audio this
-        // build cannot consume, so they must all arrive as that fault rather
-        // than merely as some cache error.
-        let BuildError::Cache(CacheError::UnusableCacheEntry { fault, .. }) = &error else {
-            panic!("`{field}` mutation produced the wrong variant: `{error}`");
-        };
-        assert!(
-            matches!(**fault, CacheEntryFault::IncompatibleArtifact { .. }),
-            "`{field}` mutation produced the wrong fault: `{fault}`"
-        );
-        let message = error.to_string();
-        // A poisoned entry fails every later build, so the message must name
-        // the artifact runtime reconciliation owns.
-        assert!(
-            message.contains(&entry_dir.display().to_string()),
-            "`{field}` mutation did not name the entry directory: `{message}`"
-        );
-        assert!(
-            message.contains("runtime reconciliation"),
-            "`{field}` mutation did not route reconciliation: `{message}`"
+        .expect("corrupt cache metadata is quarantined and regenerated");
+        assert_eq!(
+            worker.synthesis_count(),
+            3 + index,
+            "`{field}` metadata was rejected from reuse"
         );
     }
 
@@ -1794,23 +2204,12 @@ fn t4_e0_cache_metadata_mismatch_is_rejected() {
         serde_json::to_vec_pretty(&unknown_field).expect("serialize unknown cache field"),
     )
     .expect("write cache artifact with unknown field");
-    let error = build_preview(
+    build_preview(
         build_request(&walking_skeleton_fixture(), workspace.path()),
         &worker,
     )
-    .expect_err("an unknown artifact field must be rejected");
-    // `deny_unknown_fields` rejects this before any field is read, so it is a
-    // parse failure and not an incompatible-metadata one.
-    let BuildError::Cache(CacheError::UnusableCacheEntry { fault, .. }) = &error else {
-        panic!("an unknown artifact field produced the wrong variant: `{error}`");
-    };
-    assert!(
-        matches!(**fault, CacheEntryFault::UnparseableArtifact { .. }),
-        "an unknown artifact field produced the wrong fault: `{fault}`"
-    );
-    assert!(error.to_string().contains("runtime reconciliation"));
-
-    assert_eq!(worker.synthesis_count(), 2);
+    .expect("an unknown artifact field is quarantined and regenerated");
+    assert_eq!(worker.synthesis_count(), 7);
 }
 
 #[test]
