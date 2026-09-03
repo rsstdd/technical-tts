@@ -25,17 +25,15 @@
 //! Some documents are described more narrowly than their eventual scope, and
 //! each says so on its own type rather than here: the verification record
 //! carries the identity and not yet the findings
-//! ([`study_tts_core::VerificationIdentityRecord`]), and the job snapshot is
-//! the provisional E0 progress record rather than the E2 state machine
-//! ([`study_tts_core::ProvisionalJobSnapshot`]).
+//! ([`study_tts_core::VerificationIdentityRecord`]). The job document is the
+//! E2 state machine ([`study_tts_core::JobDocument`]).
 
 use serde_json::Value;
 use study_tts_core::{
-    AuthoredLesson, LESSON_SCHEMA_STEM, LESSON_SCHEMA_VERSION, PLAN_SCHEMA_STEM,
-    PLAN_SCHEMA_VERSION, PROVISIONAL_JOB_SCHEMA_VERSION, ProvisionalJobSnapshot, RenderPlan,
-    SchemaVersion, TAKES_SCHEMA_STEM, TAKES_SCHEMA_VERSION, TakesDocument,
-    VERIFICATION_SCHEMA_STEM, VERIFICATION_SCHEMA_VERSION, VerificationIdentityRecord,
-    schema_file_name, schema_uri,
+    AuthoredLesson, JOB_SCHEMA_VERSION, JobDocument, LESSON_SCHEMA_STEM, LESSON_SCHEMA_VERSION,
+    PLAN_SCHEMA_STEM, PLAN_SCHEMA_VERSION, RenderPlan, SchemaVersion, TAKES_SCHEMA_STEM,
+    TAKES_SCHEMA_VERSION, TakesDocument, VERIFICATION_SCHEMA_STEM, VERIFICATION_SCHEMA_VERSION,
+    VerificationIdentityRecord, schema_file_name, schema_uri,
 };
 
 use crate::worker_protocol::WorkerFrame;
@@ -135,7 +133,7 @@ pub const PUBLISHED_SCHEMAS: [PublishedSchema; 7] = [
     PublishedSchema {
         stem: "job",
         version: JOB_SCHEMA_VERSION,
-        generate: || schema_of::<ProvisionalJobSnapshot>(),
+        generate: || schema_of::<JobDocument>(),
     },
     PublishedSchema {
         stem: TAKES_SCHEMA_STEM,
@@ -159,15 +157,6 @@ pub const PUBLISHED_SCHEMAS: [PublishedSchema; 7] = [
     },
 ];
 
-/// Version of the published job-state schema.
-///
-/// `0.1` rather than `1.0`, and deliberately: the record is the provisional E0
-/// snapshot that `PROVISIONAL_JOB_SCHEMA_VERSION` labels
-/// `e0.job-state.0.1`, and ADR-0001 §12.4 assigns the real state machine to
-/// E2-S1. Publishing it as `1.0` would claim a stability E2-S1 is going to
-/// break.
-pub const JOB_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(0, 1);
-
 /// Version of the published manifest schema.
 ///
 /// `1.0`, following the `1.0-skeleton` label `crate::manifest` writes: a
@@ -177,11 +166,10 @@ pub const JOB_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(0, 1);
 /// §Change classes calls a **Breaking contract** and answers with a major
 /// increment.
 ///
-/// The document keeps its `-skeleton` suffix for the reason
-/// [`JOB_SCHEMA_VERSION`] gives about its own: E2-S3 and E2-S4 will break this
-/// manifest again, so the label must not claim a stability they are going to
-/// take away. The major says the change was breaking; the suffix says the
-/// layout is still provisional.
+/// The document keeps its `-skeleton` suffix because E2-S3 and E2-S4 will
+/// break this manifest again, so the label must not claim a stability they
+/// are going to take away. The major says the change was breaking; the suffix
+/// says the layout is still provisional.
 pub const MANIFEST_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(1, 0);
 
 /// Version of the published worker-protocol schema.
@@ -191,16 +179,6 @@ pub const MANIFEST_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(1, 0);
 /// version rather than counting separately: a schema describing frames this
 /// build no longer sends would be a published description of nothing.
 pub const WORKER_PROTOCOL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(2, 0);
-
-// The job snapshot's two version spellings must not drift: one labels the
-// record on disk, the other names its published schema.
-const _: () = assert!(
-    matches!(
-        PROVISIONAL_JOB_SCHEMA_VERSION.as_bytes(),
-        b"e0.job-state.0.1"
-    ),
-    "the published job schema version must follow PROVISIONAL_JOB_SCHEMA_VERSION"
-);
 
 /// Generates the schema for one document type.
 fn schema_of<T: schemars::JsonSchema>() -> Value {

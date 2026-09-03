@@ -241,12 +241,20 @@ struct OwnedProcess {
     pidfd: rustix::fd::OwnedFd,
 }
 
+/// One process as `/proc/<pid>/stat` describes it.
+///
+/// Shared with `locking`, which records and verifies job ownership by the
+/// same identity containment uses here: a PID *and* its start ticks, so a
+/// reused PID is never mistaken for the process that recorded it.
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug)]
-struct ProcessRecord {
+pub(crate) struct ProcessRecord {
     pid: i32,
-    parent_pid: i32,
-    start_time_ticks: u64,
+    /// The parent, which is what a test uses as a live process that is
+    /// guaranteed not to be itself.
+    pub(crate) parent_pid: i32,
+    /// Start time in clock ticks since boot, `/proc/<pid>/stat` field 22.
+    pub(crate) start_time_ticks: u64,
     /// Whether the process has exited and is only waiting to be reaped.
     ///
     /// Recorded because identity cannot answer it: a zombie keeps its `/proc`
@@ -922,9 +930,15 @@ fn child_process_ids(parent_pid: i32) -> io::Result<Vec<i32>> {
     Ok(children)
 }
 
+/// Reads one process's `/proc` record, or `None` when no such process exists.
 #[cfg(target_os = "linux")]
-fn read_process_record(pid: i32) -> Option<ProcessRecord> {
+pub(crate) fn read_process_record(pid: i32) -> Option<ProcessRecord> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_process_record(pid, &stat)
+}
+
+#[cfg(target_os = "linux")]
+fn parse_process_record(pid: i32, stat: &str) -> Option<ProcessRecord> {
     let fields = stat
         .rsplit_once(") ")?
         .1
@@ -941,8 +955,14 @@ fn read_process_record(pid: i32) -> Option<ProcessRecord> {
     })
 }
 
+/// Whether the process that recorded this identity is still running.
+///
+/// A zombie is not live. That is right for containment, whose comment on
+/// [`ProcessRecord::is_zombie`] explains it, and right for job ownership for
+/// a different reason: a zombie has closed every descriptor, so it cannot be
+/// holding the advisory lock its record describes.
 #[cfg(target_os = "linux")]
-fn process_identity_is_live(pid: i32, start_time_ticks: u64) -> bool {
+pub(crate) fn process_identity_is_live(pid: i32, start_time_ticks: u64) -> bool {
     read_process_record(pid)
         .is_some_and(|process| process.start_time_ticks == start_time_ticks && !process.is_zombie)
 }
@@ -1384,6 +1404,21 @@ mod tests {
                 if matches!(*primary, ToolError::ToolTimedOut { timeout_ms: 20, .. })
                     && matches!(*cleanup, ToolError::ToolTerminationSignalFailed { .. })
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn t1_e0_linux_process_start_parser_ignores_spaces_and_parentheses_in_command() {
+        let mut fields = vec!["S".to_owned(), "1".to_owned()];
+        fields.extend((5..=21).map(|field| field.to_string()));
+        fields.push("987654".to_owned());
+        let stat = format!("7 (command with ) spaces) {}", fields.join(" "));
+
+        let record = super::parse_process_record(7, &stat).expect("the stat line parses");
+
+        assert_eq!(record.start_time_ticks, 987_654);
+        assert_eq!(record.parent_pid, 1);
+        assert!(!record.is_zombie);
     }
 
     #[cfg(target_os = "linux")]

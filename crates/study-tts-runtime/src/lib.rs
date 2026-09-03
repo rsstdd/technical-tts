@@ -14,6 +14,7 @@ mod distinct_map;
 mod durable;
 mod error;
 mod export;
+mod job_events;
 mod job_repository;
 mod locking;
 mod managed;
@@ -54,9 +55,7 @@ pub use error::{
     VoiceProfileError, WorkerBundleError, WorkerLockfileErrorReason, WorkerLockfileLocus,
     WorkerRequirementFault,
 };
-pub use job_repository::{
-    FileSystemJobRepository, JOB_STATE_CONTRACT_VERSION, JobOwnership, JobRepository,
-};
+pub use job_repository::{FileSystemJobRepository, JobOwnership, JobRepository};
 pub use model_gate::{
     DECLARED_MODEL_ARTIFACTS, DeclaredArtifact, PINNED_MODEL_REVISION, ProvenModel,
     model_artifacts_hash, verify_model_artifacts,
@@ -67,12 +66,13 @@ pub use package_port::{
     PreparedPackageWriter,
 };
 pub use pipeline::{
-    BuildRequest, BuildResult, PreviewServiceBundle, build_preview, build_preview_with_services,
-    load_lesson, publish, validate_m4a_output, validate_production_manifest,
+    BuildRequest, BuildResult, PreviewServiceBundle, ResumeRequest, build_preview,
+    build_preview_with_services, load_lesson, publish, resume_preview,
+    resume_preview_with_services, validate_m4a_output, validate_production_manifest,
 };
 pub use schemas::{
-    JOB_SCHEMA_VERSION, MANIFEST_SCHEMA_VERSION, PUBLISHED_SCHEMAS, PublishedSchema,
-    SCHEMA_DIRECTORY, WORKER_PROTOCOL_SCHEMA_VERSION,
+    MANIFEST_SCHEMA_VERSION, PUBLISHED_SCHEMAS, PublishedSchema, SCHEMA_DIRECTORY,
+    WORKER_PROTOCOL_SCHEMA_VERSION,
 };
 pub use synthesis::{
     BackendDescriptor, BackendError, BackendValidationError, DriftedIdentity, SynthesisReport,

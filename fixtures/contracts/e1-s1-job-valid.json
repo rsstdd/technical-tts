@@ -1,10 +1,22 @@
 {
-  "schema_version": "e0.job-state.0.1",
+  "schema_version": "1.0",
   "job_id": "e0-s0-walking-skeleton",
+  "build_attempt": 1,
+  "state": "rendered",
+  "last_successful_state": "rendered",
+  "abandoned_attempt": null,
+  "lesson_blake3": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "plan_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-  "stage": "package_selected",
-  "selected_package": {
+  "segments": {
+    "seg-0001": {
+      "cache_key": "1111111111111111111111111111111111111111111111111111111111111111",
+      "audio_blake3": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  },
+  "preview_package": {
     "package_id": "9999999999999999999999999999999999999999999999999999999999999999",
-    "manifest_blake3": "8888888888888888888888888888888888888888888888888888888888888888"
-  }
+    "manifest_blake3": "9999999999999999999999999999999999999999999999999999999999999999"
+  },
+  "release_status": "private_preview",
+  "application_version": "0.1.0"
 }

@@ -399,6 +399,8 @@ stateDiagram-v2
     Published --> [*]
 ```
 
+The states and edges above are mirrored by `JobState` and `JobState::may_transition_to` in `crates/study-tts-core/src/job.rs`, which name this section in return, and are pinned edge for edge by `t1_e2_illegal_state_transition_is_refused`. The two must agree, and changing either requires an ADR amendment rather than an edit. The table is scoped to one build attempt: no edge leaves a finished attempt, so a rebuild or a resume opens the next attempt through `JobDocument::open_attempt` and retains the previous one as `AbandonedAttempt` (§12.7 step 5) rather than transitioning. `QualityChecked → Published` is in the table because it is in the diagram; `JobDocument::transition` refuses it for a private preview through `ReleaseError::PrivateProfileCannotClaimProduction`, so the edge exists and the release status is what forbids taking it.
+
 ## 7. Rust architecture
 
 ### 7.1 Workspace structure
@@ -840,6 +842,8 @@ For every JSON state change:
 
 Only one Rust process may own a job. A per-job lock file contains process identity and creation metadata; stale-lock recovery verifies that the owner is gone before taking ownership. The owner may have multiple in-flight segments, but it serializes authoritative job-document replacement and cache publication. Recovery guarantees apply only to the qualified WSL2 Linux filesystem, not DrvFS mounts.
 
+Steps 1–4 are `durable::write_json_atomically` in `crates/study-tts-runtime/src/durable.rs`, whose ordering `t4_e0_durable_json_replacement_flushes_file_then_rename_then_parent` asserts. Step 5 is `job_events::append_event` in `crates/study-tts-runtime/src/job_events.rs`, called by `job_repository::replace_document` only after the replacement returned; `t4_e2_interrupt_before_rename_preserves_prior_state` asserts the absence of an event for a state that was never reached. The lock paragraph is `locking::acquire_job_lock` in `crates/study-tts-runtime/src/locking.rs`: a record left on a free lock is verified against `/proc` before it is replaced, `t4_e2_live_lock_is_refused` and `t4_e2_verified_stale_lock_is_recoverable` pin both outcomes, and the record is cleared on release so its presence means the owner died. Each of those modules names this section in return; the two sides must agree, and changing either requires an ADR amendment rather than an edit.
+
 ### 12.4 Job document
 
 `job.json` contains:
@@ -853,6 +857,8 @@ Only one Rust process may own a job. A per-job lock file contains process identi
 - final output identities;
 - timestamps and application version;
 - failure classification and safe recovery action.
+
+`JobDocument` in `crates/study-tts-core/src/job.rs` is this document at `1.0` and names this section in return. It carries job and build identity (`job_id`, `build_attempt`, `abandoned_attempt`), state and `last_successful_state`, the lesson and plan hashes, segment cache keys and audio digests, the selected preview package as the separate private-preview completion, the release status, and the application version. The remaining rows are deferred to the story that produces them, and `SchemaVersion::accepted_by` admits each as a compatible extension: attempts, synthesis base keys, and selected takes to E2-S2; verification keys, token diffs, and adjudications to E4; failure classification and safe recovery action to E5; worker and model identities, which every recorded cache key already fixes, when E5-S2 pools workers. Timestamps live on each line of `events.ndjson` rather than on the document. The two must agree, and changing either requires an ADR amendment rather than an edit.
 
 ### 12.5 Synthesis and verification identities
 
@@ -917,6 +923,14 @@ On `resume`:
 8. reuse valid verification evidence and regenerate only missing or stale results;
 9. preserve `NeedsReview` findings until accepted or invalidated by a text, voice, or take change;
 10. rebuild final outputs if any selected segment or timeline identity changed.
+
+`JobRepository::validate_preview_selection` in
+`crates/study-tts-runtime/src/job_repository.rs` enforces steps 3–4 at the job-state boundary:
+after the package layer reconciles its journal, a preview completion already recorded in
+`job.json` must name the package selected by `current.json`, and the validated package manifest
+must name the job's recorded plan. The absence of a completion accepts a selected package because
+publication may have become durable before the job update. The records must agree, and changing
+either requires an ADR amendment rather than an edit.
 
 The absence of SQLite is deliberate. Atomic documents are sufficient because one process owns one local job and job history does not require queries.
 

@@ -74,32 +74,21 @@ External work does not consume the engineering work-in-progress slot. Missing ex
 
 Calendar targets are planning ranges, not promises. Reforecast after G0 using measured model performance, environment findings, and resolved voice availability.
 
-**2026-08-26 G0 reforecast:** E0-S3 measured a worst single-worker CPU RTF of `14.9804`
-and a 53,947.516-second 60-minute projection on the constrained WSL2 allocation. Both remain
-failed measurements. Accepted ADR-0002 waives those failures only as blockers to development
-progression, so E0-S3 closes through an approved deviation and E0-S4 may begin. Overall G0 remains
-open until E0-S4 supplies the required provisional contract baseline. M2 remains conditionally
-three weeks and M3 eleven weeks after overall G0 closure; these durations are planning ranges,
-not active calendar promises. Full-box performance must pass the unchanged targets before G3
-acceptance.
+**G0 reforecast, 2026-08-26.** E0-S3 measured a worst single-worker CPU RTF of `14.9804` and a
+53,947.516-second 60-minute projection on the constrained WSL2 allocation. Both are failed
+measurements and remain so; `ADR-0001-D002` waives only their blocking effect on development
+progression. M2 stays conditionally three weeks and M3 eleven weeks after overall G0 closure, as
+planning ranges rather than calendar promises. Full-box performance must pass the unchanged
+targets before G3 acceptance.
 
-**2026-09-02 backend-uplift reforecast:** the governed backend moved from `torch==2.6.0+cpu` to
-`torch==2.10.0+cpu` with `setuptools` raised to `81.0.0`, remediating eight of ten Dependabot
-advisories and moving the worker-bundle identity to
-`d87aee58cc06d10dc0310c15225c60f9064bf2d17b53c3929bcdb803a98ca703`. **No calendar moves.** A
-same-machine A/B improved every performance measure by 7–14% and regressed none, but it did not lift
-either failed ADR-0002 measurement: the `<= 6.0` RTF outcome is decided by utterance length rather
-than by the backend — both versions fail on a 3-second utterance and both pass on a 14-second
-one — so a single RTF figure is not a schedule input unless the utterance length is stated beside
-it. `torch` is a speech-affecting worker input, so ADR-0002 §Expiry condition 2 is triggered and the
-waiver is re-earned rather than carried; the randomized listening review was supplied on 2026-09-02
-and the requalification accepted the same day. M2 therefore remains conditionally three weeks and M3
-eleven weeks after overall G0 closure, unchanged, and full-box performance qualification before G3
-acceptance is untouched. Two advisories remain applicable to the installed versions —
-`GHSA-rrmf-rvhw-rf47` needs `torch 2.13.0` and `GHSA-h35f-9h28-mq5c` needs `setuptools 83.0.0`,
-which the documented `pkg_resources` runtime cap blocks — and both are carried as residual
-obligations owed before release candidate rather than as schedule inputs. Evidence:
-`evidence/gates/g0/e0-s3/e0-s3-g0-requalification-torch-2-10-0-v1.md`.
+**Backend uplift, 2026-09-02.** The governed backend moved to `torch==2.10.0+cpu` with
+`setuptools` at `81.0.0`, taking the worker-bundle identity to
+`d87aee58cc06d10dc0310c15225c60f9064bf2d17b53c3929bcdb803a98ca703`. `torch` is a speech-affecting
+worker input, so ADR-0002 §Expiry condition 2 triggered and the waiver was re-earned rather than
+carried. **No calendar moves**, and neither failed measurement lifted. Evidence, including why a
+single RTF figure is not a schedule input unless the utterance length is stated beside it:
+`evidence/gates/g0/e0-s3/e0-s3-g0-requalification-torch-2-10-0-v1.md`. Residual advisory
+obligations are recorded under E0-S3 §Open.
 
 ### 2.4 Capability matrix
 
@@ -191,26 +180,35 @@ flowchart LR
 
 The arrows define prerequisites, not a requirement to serialize independent tracks. After E2, E3, E4-S0, and the E5 work that does not require verification may be interleaved or assigned to additional engineers. Owner-facing evidence may run ahead whenever it does not require unfinished behavior.
 
-## EPIC E0 — Walking Skeleton, Product Contract, Rights, and Feasibility
+## EPIC E0 — Walking Skeleton, Product Contract, Rights, and Feasibility — Complete
 
 **Goal:** establish the end-to-end seam, then eliminate risks capable of invalidating the schedule before substantial implementation.
 
-### Story E0-S0 — Minimal walking skeleton
+Epic issue #1, closed. Each story keeps its identifiers, contractual test and evidence names,
+cited task numbering, and acceptance statement; satisfied readiness conditions and executed
+sequencing are dropped.
 
-**Definition of ready:** the existing four-crate workspace builds and FFmpeg is available in WSL2.
+### Story E0-S0 — Minimal walking skeleton — Complete
 
-**Tasks**
+Issue #2, closed. Gate G0a. Proof: the tests below, kept green as a required CI check.
 
-1. Replace placeholder flow with provisional boundaries for lesson load, plan, fake synthesis, cache, PCM assembly, export, and manifest.
-2. Implement a deterministic fake worker that returns a generated tone.
-3. Process a two-segment fixture through cached WAV, Rust PCM assembly, real FFmpeg M4A, and a minimal manifest.
-4. Run the skeleton in CI with no model or network requirement.
-5. Record the integration order and keep the skeleton green through every later story.
-6. Reject unsafe lesson and segment IDs and verify canonical managed-directory containment before output writes.
-7. Pull forward the ADR-0001 §12.3 durability foundation without claiming the E2 job system: sibling staging, file and directory synchronization, atomic no-replace directory publication, atomic JSON replacement, provisional lesson locks, and bounded cache-key locks.
-8. Publish cache entries as complete directory transactions and preserve abandoned or invalid attempts in collision-free quarantine.
-9. Build previews under `jobs/<lesson-id>/staging/<transaction>/`, move complete packages to immutable `previews/<lesson-id>/packages/<manifest-blake3>/`, and select one generation only through atomically replaced `previews/<lesson-id>/current.json`.
-10. Reconcile the strict internal provisional publication journal after interruption, preserve legacy flat E0 previews, and refuse corrupt authoritative records rather than overwrite them.
+**Delivered**
+
+- Lesson load, plan, deterministic fake-tone synthesis, cache, Rust PCM assembly, FFmpeg export,
+  and manifest wired as real process boundaries; a two-segment fixture reaches M4A in CI with no
+  model and no network.
+- Unsafe lesson and segment IDs refused, and managed-directory containment canonicalized before
+  any output write.
+- The ADR-0001 §12.3 durability foundation, without claiming the E2 job system: sibling staging,
+  file and directory synchronization, atomic no-replace directory publication, atomic JSON
+  replacement, provisional lesson locks, bounded cache-key locks.
+- Cache entries published as whole directory transactions; failed attempts quarantined
+  collision-free.
+- Previews staged per transaction, packages immutable under their manifest digest, one generation
+  selected only through an atomically replaced `current.json`.
+- Interrupted publication journals reconciled, legacy flat previews preserved, corrupt
+  authoritative records refused rather than overwritten.
+- Integration order owned by `docs/architecture/WALKING-SKELETON.md`.
 
 **Tests**
 
@@ -269,19 +267,26 @@ The arrows define prerequisites, not a requirement to serialize independent trac
 
 **Acceptance:** the real process boundaries execute end to end with fakes. MP3, chapters, captions, full provenance, and hardened conditioning remain G1 work rather than day-two scope.
 
-### Story E0-S1 — MVP contract and governance
+### Story E0-S1 — MVP contract and governance — Complete
 
-**Definition of ready:** ADR-0001 is accepted and the project owner is named.
+Issue #3, closed. Gate G0a. Evidence: the three `evidence_e0_*` records below, under
+`evidence/gates/g0a/e0-s1/`.
 
-**Tasks**
+**Delivered**
 
-1. Define private-preview and production-release profiles and their permitted state transitions.
-2. Check in the milestone capability matrix and assign one owner and approver to every gate.
-3. Define evidence locations, retention, approval records, and escalation deadlines.
-4. Establish definition of ready, definition of done, change control, and ADR-deviation handling.
-5. Create the ADR requirement-to-story-to-test/evidence traceability matrix.
-6. Record every open question with its decision deadline and owner.
-7. Ratify the descope ladder before schedule pressure exists.
+Each artifact is owned by the document beside it and is not restated here.
+
+- Release profiles and their permitted transitions — `docs/governance/RELEASE-PROFILES.md`.
+- Capability matrix, one owner and approver per gate —
+  `docs/governance/MILESTONE-CAPABILITY-MATRIX.md`.
+- Evidence locations, retention, approval, and escalation — `evidence/README.md` and
+  `docs/governance/ROUTING-TABLES.md`.
+- ADR requirement to story to test/evidence traceability —
+  `docs/governance/TRACEABILITY-MATRIX.md`.
+- Open questions with gate deadlines, and the ratified descope ladder —
+  `docs/governance/RISK-OPEN-QUESTIONS-DESCOPE.md`, which owns both; §7 and §9 duplicate it.
+- Definition of ready and done, change control, and deviation handling — §3.4,
+  `docs/operations/DEVELOPMENT-WORKFLOW.md`, `docs/adr/deviations/`.
 
 **Tests and evidence**
 
@@ -294,11 +299,12 @@ The arrows define prerequisites, not a requirement to serialize independent trac
 
 **Acceptance:** no ADR-0001 production requirement lacks a delivering story and a validating test or evidence record.
 
-### Story E0-S2 — Voice, content, model, and legal prerequisites
+### Story E0-S2 — Voice, content, model, and legal prerequisites — Complete
 
-**Definition of ready:** intended use and distribution scope are documented.
+Issue #4, closed. Gate G0. Evidence: the two `_v3` records below, plus the per-artifact records
+under `evidence/rights/`.
 
-**Tasks**
+**Tasks** — verbatim; tasks 3 and 5 are cited elsewhere.
 
 1. Record the Chatterbox code and model-weight licenses and confirm permitted use.
 2. Record Nadia and Tom as unavailable and `Review required`; select the acquired owner-recorded
@@ -327,24 +333,27 @@ remain `Review required` and are not E0-S2 or E0-S3 prerequisites. The product r
 classification and scope; it does not encode a universal legal conclusion about all third-party
 material.
 
-### Story E0-S3 — Reference environment and real-model spike
+### Story E0-S3 — Reference environment and real-model spike — Complete
 
-**Definition of ready:** reference machine access and the lawful selected test voice are
-available.
+Issue #5, closed through the ADR-0002 waiver. Gate G0. Evidence:
+`e0-s3-g0-qualification-decision-v3`
+(Accepted, in force), `evidence_e0_fixed_seed_synthesis_determinism_is_characterized_v2`,
+`e0-s3-g0-requalification-torch-2-10-0-v1` (Accepted 2026-09-02).
 
-**Tasks**
+**Delivered**
 
-1. Record WSL2 version, Ubuntu version, CPU topology, RAM, storage, Python, FFmpeg, ffprobe, GCC, and CMake.
-2. Confirm the repository, model, environment, cache, and job roots are on the WSL2 Linux filesystem.
-3. Perform a real Chatterbox render through a disposable adapter using the exact selected
-   `owner-fallback-v1` profile; do not claim Nadia, Tom, or two-speaker qualification.
-4. Measure model load time, peak RAM, single-worker RTF, output media format, and offline behavior.
-5. Render identical fixed-seed input ten times and record byte hashes, duration variance, acoustic-similarity measurements, and listener findings.
-6. Record that cache reuse is first-valid-artifact-wins and that byte-identical reconstruction requires the retained artifact or archived segment bundle regardless of measured determinism.
-7. Verify `hound` against worker, cache, assembled, and FFmpeg-produced float WAV variants; use the bounded ADR-approved fallback if necessary.
-8. Record worker-output and FFmpeg conversion identities.
-9. Name a backup reference machine before M3 or record explicit single-machine risk and recovery time.
-10. Reforecast M2 and M3 using the measured results.
+- Reference environment recorded, with repository, model, environment, cache, and job roots
+  confirmed on the WSL2 Linux filesystem.
+- A real Chatterbox render through a disposable adapter on the selected `owner-fallback-v1`
+  profile only; no Nadia, Tom, or two-speaker qualification was claimed.
+- Load time, peak RAM, single-worker RTF, media format, and offline behavior measured; ten
+  fixed-seed renders characterized for hashes, duration variance, similarity, and listener
+  findings.
+- Recorded that cache reuse is first-valid-artifact-wins, and that byte-identical reconstruction
+  needs the retained artifact or an archived bundle whatever determinism measures.
+- `hound` verified against worker, cache, assembled, and FFmpeg float WAV variants; worker-output
+  and FFmpeg conversion identities recorded.
+- M2 and M3 reforecast — §2.3 carries both reforecasts.
 
 **Tests and evidence**
 
@@ -363,17 +372,28 @@ ADR-0002 accepts the 2026-08-25 constrained-environment performance results only
 progression, so E0-S3 closes through an approved deviation and E0-S4 may begin. The failed
 measurements remain evidence; the waiver expires before G3 acceptance.
 
-### Story E0-S4 — Provisional seams and contract baseline
+**Open**
 
-**Definition of ready:** E0-S0 is green and E0-S3 has produced real-worker observations.
+- No qualified backup reference machine exists. `OQ-06` accepts single-machine risk with an
+  eight-working-hour rebuild-and-rerun target, owed before M3.
+- Two advisories remain applicable: `GHSA-rrmf-rvhw-rf47` needs `torch 2.13.0`, and
+  `GHSA-h35f-9h28-mq5c` needs `setuptools 83.0.0`, which the documented `pkg_resources` runtime
+  cap blocks. Both owed before release candidate.
 
-**Tasks**
+### Story E0-S4 — Provisional seams and contract baseline — Complete
 
-1. Baseline versioned provisional contracts for `TtsExecutor`, worker frames, cache publication, package writing, and job state.
-2. Publish fake implementations and deterministic fixtures for every seam.
-3. Assign each track a module or directory boundary and shared contract suite.
-4. Define the amendment procedure and affected-test mapping.
-5. Defer the interface freeze until G1, after the real worker and real package path pass the same contracts.
+Issue #6, closed. Gate G0. Evidence: `e0-s4-provisional-contract-baseline-v2`. Contract record:
+`docs/architecture/PROVISIONAL-CONTRACT-BASELINE.md`, superseded at G1 by `G1-FREEZE-CHARTER.md`.
+
+**Delivered**
+
+- Versioned provisional contracts for `TtsExecutor`, worker frames, cache publication, package
+  writing, and job state, each with a published fake and deterministic fixtures.
+- A module boundary and shared contract suite per track.
+- The amendment procedure and affected-test mapping, owned by
+  `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md`.
+- The freeze deferred to G1, after the real worker and real package path passed the same
+  contracts.
 
 **Tests**
 
@@ -383,15 +403,21 @@ measurements remain evidence; the waiver expires before G3 acceptance.
 
 **Acceptance:** every track can proceed against a versioned fake without claiming that unproved week-one interfaces are permanent.
 
-## EPIC E1 — Tested Vertical Slice
+## EPIC E1 — Tested Vertical Slice — Complete
 
 **Goal:** pass real content through every architectural boundary before expanding features.
 
-### Story E1-S1 — Workspace, CI, and contract baseline
+Epic issue #7, closed. G1 was accepted on 2026-09-02 by `evidence/gates/g1/g1-gate-review-v1.md`,
+which records the four G1 conjuncts, the two supporting evidence rows ADR-0001 §17.5 and the
+E1-S3 qualification criteria require, and the job-repository parity gap that closed last.
 
-**Depends on:** E0.
+### Story E1-S1 — Workspace, CI, and contract baseline — Complete
 
-**Tasks**
+Issue #8, closed. Gate G1. Evidence: `e1-s1-provisional-contract-baseline-v15`. Interface record:
+`E1-S1-INTERFACE-CHANGE-001`.
+
+**Tasks** — verbatim; tasks 3, 4, and 6 are cited by `crates/study-tts-runtime/src/schemas.rs` and
+`crates/study-tts-core`.
 
 1. Replace the existing four-crate placeholder code with the tested contract baseline and retain the committed `Cargo.lock`.
 2. Create the locked Python worker environment and record the lock-generation procedure.
@@ -415,11 +441,13 @@ measurements remain evidence; the waiver expires before G3 acceptance.
 - `t4_e1_fake_worker_passes_shared_protocol_contract`
 - `t4_e1_pr_suite_performs_no_model_download`
 
-### Story E1-S2 — Minimal canonical lesson workflow
+### Story E1-S2 — Minimal canonical lesson workflow — Complete
 
-**Depends on:** E1-S1.
+Issue #9, closed. Gate G1. Evidence: `e1-s2-canonical-lesson-workflow-v1`, with
+`e1-s2-evidence-provenance-reconciliation-v3` in force. Interface records:
+`E1-S2-INTERFACE-CHANGE-001` through `-003`.
 
-**Tasks**
+**Tasks** — verbatim; tasks 1 and 4 are cited by `crates/study-tts-core/src/{lesson,plan}.rs`.
 
 1. Accept reviewed canonical lesson JSON with hand-authored `spoken_text`.
 2. Validate schema version, segment IDs, roles, styles, review state, and voice references.
@@ -435,11 +463,14 @@ measurements remain evidence; the waiver expires before G3 acceptance.
 - `t2_e1_unicode_and_protected_terms_survive_round_trip`
 - `t2_e1_plan_is_stable_for_identical_lesson_input`
 
-### Story E1-S3 — Single-worker synthesis and validated cache
+### Story E1-S3 — Single-worker synthesis and validated cache — Complete
 
-**Depends on:** E1-S1, E1-S2, and E0-S4. **Track:** T-WORKER.
+Issue #10, closed. Gate G1. Evidence: `e1-s3-single-worker-synthesis-and-validated-cache-v1`.
+Interface records: `E1-S3-INTERFACE-CHANGE-001` through `-005`. Deviations: `ADR-0001-D006`,
+`ADR-0001-D007`, `ADR-0001-D008`.
 
-**Tasks**
+**Tasks** — verbatim; tasks 3, 4, 7, and 8 are cited by `crates/study-tts-runtime` and quoted by
+`e1-s3-delivery-plan-ramp-correction-reconciliation-v1`.
 
 1. Implement the ADR `TtsExecutor` interface with capacity one.
 2. Start one persistent Chatterbox worker and load the model once per worker lifetime.
@@ -461,11 +492,19 @@ measurements remain evidence; the waiver expires before G3 acceptance.
 - `t5_e1_model_load_occurs_once_per_worker_lifetime`
 - `t5_e1_worker_bundle_hash_matches_when_all_declared_bundle_inputs_match`
 
-### Story E1-S4 — Minimal package generation
+**Open**
 
-**Depends on:** E0-S4 for fixture development; integrates with E1-S3 before G1 acceptance. **Track:** T-AUDIO.
+- `ADR-0001-D008`: a descendant calling `setsid()` between enumeration and its parent's exit is in
+  no process group this build owns. Closes in E5-S4.
+- `ADR-0001-D007`: edge conditioning runs against a provisional silence threshold until ADR-0003
+  is accepted.
 
-**Tasks**
+### Story E1-S4 — Minimal package generation — Complete
+
+Issue #11, closed. Gate G1. Evidence: `e1-s4-minimal-package-generation-v1`. Interface record:
+`E1-S4-INTERFACE-CHANGE-001`. Deviations: `ADR-0001-D009`, `ADR-0001-D010`.
+
+**Tasks** — verbatim; task 4 is cited by `crates/study-tts-runtime`.
 
 1. Build the edit-decision list using checked sample arithmetic and artifact checksums.
 2. Assemble canonical PCM and exact silence in Rust.
@@ -485,16 +524,23 @@ measurements remain evidence; the waiver expires before G3 acceptance.
 - `t4_e1_manifest_checksums_match_every_output`
 - `t4_e1_lossy_output_is_never_source_for_another_export`
 
-### Story E1-S5 — Canonical JSON authoring ergonomics
+**Open**
 
-**Depends on:** E1-S1 and E1-S2. **Track:** T-CLI.
+- `ADR-0001-D009`: `lesson.mp3` encodes against a provisional `libmp3lame`/`128k` profile until
+  ADR-0003 is accepted. The profile is pinned, hashed, and recorded in every manifest.
 
-**Tasks**
+### Story E1-S5 — Canonical JSON authoring ergonomics — Complete
 
-1. Implement `study-tts lesson new` to scaffold a valid lesson with `$schema`, stable IDs, roles, styles, and review fields.
-2. Implement `study-tts lesson validate` with field-path diagnostics and nonzero failure status.
-3. Document the scaffold, edit, validate, and preview loop.
-4. Add one reviewed worked example.
+Issue #12, closed. Gate G1. Evidence: `e1-s5-canonical-json-authoring-v1`. Interface records:
+`E1-S5-INTERFACE-CHANGE-001` and `-002`. Amendment: `ADR-0001-D011`.
+
+**Delivered**
+
+- `study-tts lesson new` scaffolds a valid lesson with `$schema`, stable IDs, roles, styles, and
+  review fields; `study-tts lesson validate` reports field-path diagnostics and a nonzero status.
+  These two are the whole published lesson surface; E2-S5 owns the rest of the CLI.
+- The scaffold, edit, validate, preview loop and one reviewed worked example —
+  `docs/operations/AUTHORING.md`.
 
 **Tests**
 
@@ -532,6 +578,43 @@ The E0-S0 skeleton already supplies the shared durable-filesystem primitives, pr
 - `t4_e2_resume_regenerates_only_missing_or_invalid_segments`
 - `t4_e2_no_op_rebuild_produces_identical_manifest`
 - `t4_e2_corrupt_job_state_is_not_overwritten`
+- `t4_e2_a_released_job_lock_leaves_no_owner_record`
+- `t4_e2_failed_stale_takeover_leaves_no_live_owner_record`
+- `t4_e2_appended_events_are_one_line_each_in_order`
+- `t4_e2_a_partial_trailing_line_is_refused_and_preserved`
+- `t4_e2_a_complete_malformed_event_line_is_refused_and_preserved`
+- `t1_e2_illegal_state_transition_is_refused`
+- `t4_e2_illegal_state_replacement_preserves_prior_state`
+- `t1_e2_private_preview_cannot_transition_to_published`
+- `t4_e2_private_preview_cannot_be_persisted_as_published`
+- `t1_e2_a_new_build_attempt_is_not_a_transition`
+- `t1_e2_returning_to_planned_clears_preview_completion`
+- `t1_e2_rendering_is_complete_only_from_rendered_onward`
+- `t4_e2_unsupported_job_record_version_is_refused_without_migration`
+- `t1_e2_a_preview_package_before_rendering_is_refused`
+- `t1_e2_a_preview_package_identity_must_agree_with_its_manifest`
+- `t1_e2_a_failed_post_render_attempt_retains_preview_completion`
+- `t1_e2_last_successful_state_must_explain_the_current_state`
+- `t1_e2_abandoned_attempt_must_immediately_precede_the_current_attempt`
+- `t1_e2_attempt_overflow_is_refused`
+- `t4_e2_a_partial_event_log_refuses_state_replacement`
+- `t4_e2_replacement_must_name_the_document_on_disk_as_its_predecessor`
+- `t4_e2_initial_job_document_cannot_skip_planning`
+- `t4_e2_a_partial_event_log_refuses_job_load`
+- `t4_e2_job_document_size_is_bounded_before_decoding`
+- `t1_e2_job_document_segment_count_is_bounded`
+- `t4_e2_retained_plan_segment_count_is_bounded`
+- `t3_e2_published_job_schema_bounds_segment_count`
+- `t4_e2_job_lock_record_size_is_bounded_before_decoding`
+- `t4_e2_event_log_limits_are_enforced_before_append`
+- `t4_e2_job_directory_holds_validated_lesson_and_plan`
+- `t4_e2_resume_refuses_a_retained_lesson_for_another_job`
+- `t4_e2_resume_refuses_a_malformed_retained_plan`
+- `t4_e2_resume_refuses_a_retained_plan_with_a_stale_hash`
+- `t4_e2_resume_refuses_a_retained_plan_for_another_job`
+- `t4_e2_resume_refuses_a_plan_hash_that_disagrees_with_job_state`
+- `t4_e2_resume_refuses_a_job_package_that_disagrees_with_selected_output`
+- `t4_e2_resume_refuses_a_selected_package_for_a_different_job_plan`
 
 ### Story E2-S2 — Takes, retakes, and cache retention
 
@@ -1175,11 +1258,15 @@ Never cut TDD, atomic state, checksum validation, path containment, offline rend
 
 ## 10. Open questions and decision deadlines
 
-### Before G0
+### Before G0 — closed
 
-1. Which lawful test voice and source content will be used for qualification?
-2. Is the intended output private only, distributable, or public?
-3. Which reference machine and CPU path define the performance gate?
+All three are resolved as `OQ-04`, `OQ-05`, and `OQ-06` in
+`docs/governance/RISK-OPEN-QUESTIONS-DESCOPE.md`, which owns every open question: the lawful voice
+is `owner-fallback-v1` under `rights-voice-owner-fallback-v2`, selected for version 1 by
+`ADR-0001-D003`; intended use is private, with publication and distribution rights recorded
+separately and still owed before G3; and the performance gate was measured on constrained
+development environment `reference-wsl2-d9d550f06b783405`, with the full-box deployment
+configuration not yet named.
 
 ### Before M2
 

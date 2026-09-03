@@ -1,0 +1,266 @@
+{
+  "$defs": {
+    "AbandonedAttempt": {
+      "additionalProperties": false,
+      "description": "The attempt a resume or rebuild left behind, ADR-0001 §12.7 step 5.",
+      "properties": {
+        "build_attempt": {
+          "description": "The attempt number that was abandoned.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/JobState",
+          "description": "The state that attempt had reached."
+        }
+      },
+      "required": [
+        "build_attempt",
+        "state"
+      ],
+      "type": "object"
+    },
+    "AudioDigest": {
+      "description": "BLAKE3 over a cached audio artifact's bytes, as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "CacheKey": {
+      "description": "BLAKE3 over the canonical serialization of every speech-affecting input (ADR-0001 12.5), as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "JobState": {
+      "description": "One state of the ADR-0001 §6.4 job state machine.",
+      "oneOf": [
+        {
+          "const": "created",
+          "description": "A build attempt has been opened for the job.",
+          "type": "string"
+        },
+        {
+          "const": "validated",
+          "description": "The lesson document passed validation.",
+          "type": "string"
+        },
+        {
+          "const": "planned",
+          "description": "A deterministic render plan exists for the validated lesson.",
+          "type": "string"
+        },
+        {
+          "const": "rendering",
+          "description": "Segments are being synthesized or reused from the cache.",
+          "type": "string"
+        },
+        {
+          "const": "rendered",
+          "description": "Every required segment is a valid cached artifact.",
+          "type": "string"
+        },
+        {
+          "const": "verifying",
+          "description": "ASR verification is running over the rendered segments.",
+          "type": "string"
+        },
+        {
+          "const": "verified",
+          "description": "Every selected segment passed verification or was accepted.",
+          "type": "string"
+        },
+        {
+          "const": "needs_review",
+          "description": "Verification found a mismatch, an uncalibrated term, or a quality\nfinding.",
+          "type": "string"
+        },
+        {
+          "const": "assembling",
+          "description": "Final outputs are being assembled from verified segments.",
+          "type": "string"
+        },
+        {
+          "const": "quality_checked",
+          "description": "The assembled outputs passed the quality profile.",
+          "type": "string"
+        },
+        {
+          "const": "published",
+          "description": "The outputs were published as a production release.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "The attempt failed and records why.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "The user cancelled the attempt.",
+          "type": "string"
+        }
+      ]
+    },
+    "LessonDigest": {
+      "description": "BLAKE3 over the retained lesson document's bytes, as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "ManifestDigest": {
+      "description": "BLAKE3 over an immutable package manifest's bytes, as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "PlanHash": {
+      "description": "BLAKE3 over the canonical serialization of a render plan's resolved segments, as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "ReleaseStatus": {
+      "description": "What an artifact claims to be.",
+      "oneOf": [
+        {
+          "const": "private_preview",
+          "description": "Rendered and structurally valid, but not verified, approved, or\nreleasable.",
+          "type": "string"
+        },
+        {
+          "const": "production_release",
+          "description": "Every gate in `docs/governance/RELEASE-PROFILES.md` §3 has a passing\nevidence record.",
+          "type": "string"
+        }
+      ]
+    },
+    "SegmentStatus": {
+      "additionalProperties": false,
+      "description": "What a rendered segment resolved to.",
+      "properties": {
+        "audio_blake3": {
+          "$ref": "#/$defs/AudioDigest",
+          "description": "Digest of the validated audio in that cache entry."
+        },
+        "cache_key": {
+          "$ref": "#/$defs/CacheKey",
+          "description": "The synthesis identity the segment was rendered or reused under."
+        }
+      },
+      "required": [
+        "cache_key",
+        "audio_blake3"
+      ],
+      "type": "object"
+    },
+    "SelectedPackageIdentity": {
+      "additionalProperties": false,
+      "description": "Immutable package identity retained as the private-preview completion.\n\nThe two fields carry one value today. `study_tts_runtime::package_port`\nnames a package directory by the BLAKE3 of the `manifest.json` inside it, so\nthe identity that resolves the directory and the identity that verifies the\nmanifest are the same digest, and nothing in this type holds them equal — a\nreader that needs them to agree must compare them. Kept at `1.0` so the\n`0.1` shape and the `preview::PublishedPackage` it mirrors stay readable\nside by side; collapsing it is a later compatible move once E2-S3 decides\nwhat a package identity is.",
+      "properties": {
+        "manifest_blake3": {
+          "$ref": "#/$defs/ManifestDigest",
+          "description": "BLAKE3 digest of the selected package manifest."
+        },
+        "package_id": {
+          "$ref": "#/$defs/ManifestDigest",
+          "description": "Content identity naming the immutable package directory."
+        }
+      },
+      "required": [
+        "package_id",
+        "manifest_blake3"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://schemas.study-tts.example/job-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The authoritative `job.json`, ADR-0001 §12.4, replaced atomically by\n`study_tts_runtime::job_repository`.",
+  "properties": {
+    "abandoned_attempt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AbandonedAttempt"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The attempt this one superseded, if any."
+    },
+    "application_version": {
+      "description": "The `study-tts-core` version that wrote this document.",
+      "type": "string"
+    },
+    "build_attempt": {
+      "description": "Build identity within the job; starts at one and grows by one per\nrebuild or resume.",
+      "format": "uint32",
+      "maximum": 4294967295,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "job_id": {
+      "description": "Job identity: the validated lesson identifier.",
+      "type": "string"
+    },
+    "last_successful_state": {
+      "$ref": "#/$defs/JobState",
+      "description": "Most recent successful state reached before a failure or cancellation."
+    },
+    "lesson_blake3": {
+      "$ref": "#/$defs/LessonDigest",
+      "description": "Checksum of the retained `lesson.json`."
+    },
+    "plan_hash": {
+      "$ref": "#/$defs/PlanHash",
+      "description": "Identity of the retained `plan.json`."
+    },
+    "preview_package": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SelectedPackageIdentity"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The private-preview completion, recorded only once rendering is done."
+    },
+    "release_status": {
+      "$ref": "#/$defs/ReleaseStatus",
+      "description": "What the outputs of this attempt may claim to be."
+    },
+    "schema_version": {
+      "description": "Layout version, read before anything else is trusted.",
+      "enum": [
+        "1.0"
+      ],
+      "type": "string"
+    },
+    "segments": {
+      "additionalProperties": {
+        "$ref": "#/$defs/SegmentStatus"
+      },
+      "description": "Every rendered segment by identifier; ordered so the document is\nbyte-stable across rebuilds.",
+      "maxProperties": 4096,
+      "type": "object"
+    },
+    "state": {
+      "$ref": "#/$defs/JobState",
+      "description": "Where this attempt is in the ADR-0001 §6.4 machine."
+    }
+  },
+  "required": [
+    "schema_version",
+    "job_id",
+    "build_attempt",
+    "state",
+    "last_successful_state",
+    "lesson_blake3",
+    "plan_hash",
+    "segments",
+    "release_status",
+    "application_version"
+  ],
+  "title": "JobDocument",
+  "type": "object"
+}

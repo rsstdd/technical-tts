@@ -15,8 +15,8 @@ The required order is fixed because each stage consumes a validated artifact fro
 3. Construct and validate every backend request, including contract version and capacity, before any tool or durable work.
 4. Resolve and preflight FFmpeg and ffprobe through the package adapter, recording each resolved executable and version in a prepared package writer.
 5. Canonicalize the workspace, create managed cache, job, quarantine, and preview roots, and verify containment.
-6. Acquire `jobs/<lesson-id>/build.lock`, whose strict provisional record carries PID, Linux process-start identity, and creation metadata; refuse a live owner before reconciliation or output work.
-7. Atomically write the minimal strict `jobs/<lesson-id>/job.json`, then reconcile the strict provisional `publication.json` journal and validate any authoritative `current.json` without overwriting corrupt state.
+6. Acquire `jobs/<lesson-id>/build.lock`, whose strict record carries PID, Linux process-start identity, and creation metadata; refuse a live owner — holding the lock, or named by a record on a free lock and still running — before reconciliation or output work, and clear the record on release.
+7. Strictly load `job.json` and every `events.ndjson` line; reconcile the provisional `publication.json` journal and validate `current.json`; require any preview completion in the job document to name that selected package; retain `lesson.json` and `plan.json`; then atomically replace the strict `job.json` and append its event only after the replacement is durable. Corrupt authoritative state is preserved rather than overwritten.
 8. Resolve each cache key under its bounded cross-process key lock. A miss writes and validates `audio.wav` plus `artifact.json` in one sibling staging directory, flushes both files and the directory, renames the directory without replacement, and flushes the shard directory. Abandoned attempts move to collision-free quarantine.
 9. Recheck an immutable current package for the same plan, tool identities, and path-normalized FFmpeg and ffprobe argument-profile identities; a no-op rebuild returns it without assembly or encoding.
 10. Refuse cached artifacts that do not match the plan order or resolve beneath the managed cache, then concatenate cached PCM and declared silence in Rust into a transaction-local `lesson.wav` beneath `jobs/<lesson-id>/staging/<transaction>/`.
@@ -54,9 +54,9 @@ flowchart LR
 | Synthesis port | `study-tts-runtime::TtsExecutor` | E1-S3 real worker parity, then G1 freeze |
 | Deterministic tone implementation | `study-tts-testkit::FakeTtsExecutor` (`DeterministicToneWorker` test alias) | Shared with the real-worker contract suite at E1-S3 |
 | Durable filesystem primitives | `study-tts-runtime::durable` | Extended, not replaced, by E2-S1 job state and E5 containment |
-| Provisional lesson and cache-key locks | `study-tts-runtime::locking` | Replaced by approved job identity and integrated executor ownership in E2-S1/E5 |
+| Lesson job and cache-key locks | `study-tts-runtime::locking` | E2-S1 made the recorded owner a decision input: a record on a free lock is verified against `/proc` before it is replaced, and is cleared on release. Integrated executor ownership remains E5 |
 | Cache validation and atomic directory publication | `study-tts-runtime` | Extended with production worker artifacts and verification in E1-S3/E2-S1 |
-| Minimal job snapshot and repository | `study-tts-core::ProvisionalJobSnapshot`; `study-tts-runtime::JobRepository` | Replaced by the complete E2-S1 state machine and recovery semantics |
+| Job document and repository | `study-tts-core::JobDocument`, `JobState`; `study-tts-runtime::JobRepository` | Replaced at E2-S1 by the ADR-0001 §6.4 state machine scoped to one build attempt, the §12.4 document at `1.0`, `events.ndjson`, retained `lesson.json`/`plan.json`, and `resume_preview`; E4-S4 and E5 extend recovery |
 | Package writing and immutable selection | `study-tts-runtime::PackageWriter` | Extended in E1-S4/E2-S3; real-path parity required before G1 |
 | PCM concatenation and silence | `study-tts-runtime` | Extended in E1-S4 and E2-S3 |
 | FFmpeg and ffprobe invocation | `study-tts-runtime` | Extended in E1-S4 with an MP3 encode, a master and MP3 probe, and an encoder-inventory preflight, without changing the pinned M4A and ffprobe arguments, the preflight-before-work rule, provenance, or the no-shell rule |
@@ -91,6 +91,11 @@ bounded alike.
 | --- | ---: |
 | Canonical lesson JSON | 16 MiB UTF-8 bytes |
 | Segments per lesson | 4,096 |
+| Authoritative `job.json` | 16 MiB UTF-8 bytes |
+| Retained `plan.json` | 32 MiB UTF-8 bytes |
+| One job-lock record | 4 KiB UTF-8 bytes |
+| One job-event line | 4 KiB UTF-8 bytes |
+| One job-event log | 8 MiB UTF-8 bytes |
 | Learning objectives per lesson | 64 |
 | One learning objective | 4 KiB UTF-8 bytes |
 | References per lesson source record | 256 |
@@ -132,6 +137,14 @@ file that grows after preflight remains bounded. Oversized input returns
 `LessonError::LessonJsonTooLarge`; a special file returns
 `IoError::LessonNotRegularFile`. Both refusals precede planning, tool
 inspection, workspace creation, and synthesis.
+
+The E2-S1 durable-state values mirror `MAX_JOB_JSON_BYTES` and
+`MAX_RETAINED_PLAN_JSON_BYTES` in `crates/study-tts-runtime/src/job_repository.rs`,
+`MAX_JOB_LOCK_BYTES` in `locking.rs`, and `MAX_JOB_EVENT_LINE_BYTES` and
+`MAX_JOB_EVENT_LOG_BYTES` in `job_events.rs`, which name this section in return. The job and
+plan readers apply their byte ceilings before Serde and separately reject more than the lesson's
+4,096 segments. The event boundary caps both one NDJSON message and aggregate log growth before
+append, so repeated attempts remain a bounded failure rather than unbounded durable state.
 
 The two worker-frame values mirror `MAX_JSON_NESTING_DEPTH` and
 `MAX_JSON_NUMBER_DIGITS` in `worker/study_tts_worker/protocol.py`, which name
@@ -183,6 +196,12 @@ names:
   `t1_e0_lesson_json_byte_limit_accepts_the_boundary_and_precedes_parsing`.
 - Segment-count boundary:
   `t1_e0_segment_count_limit_accepts_the_boundary_and_rejects_one_more`.
+- E2-S1 durable-state byte and collection boundaries:
+  `t4_e2_job_document_size_is_bounded_before_decoding`,
+  `t1_e2_job_document_segment_count_is_bounded`,
+  `t4_e2_retained_plan_segment_count_is_bounded`,
+  `t4_e2_job_lock_record_size_is_bounded_before_decoding`, and
+  `t4_e2_event_log_limits_are_enforced_before_append`.
 - Per-field UTF-8 byte boundaries:
   `t1_e0_spoken_text_limit_counts_utf8_bytes`,
   `t1_e0_display_text_limit_counts_utf8_bytes`, and
@@ -245,7 +264,7 @@ them to `study-tts-testkit` would widen production visibility solely for the
 test harness; the tests still exercise real filesystem and `/bin/sh` process
 boundaries and retain their T4 names and budget.
 
-The word provisional is material. Lock, journal, and selection records use distinct internal `0.1-skeleton-*` versions with unknown-field rejection, and none can be mistaken for the complete job, manifest, or publication schemas accepted in ADR-0001. Later stories may version or replace these contracts, but they must preserve this test path or update it in the same change so the end-to-end integration order remains executable.
+The word provisional remains material for the internal lock, journal, and selection records: they use distinct `0.1-skeleton-*` versions with unknown-field rejection and cannot be mistaken for published documents. The job document is no longer among them: E2-S1 moved it to published `job` `1.0` and refuses the former provisional snapshot. Later stories may version or replace the remaining internal records, but they must preserve this test path or update it in the same change so the end-to-end integration order remains executable.
 
 The lesson fixture is no longer among them. E1-S1 published the lesson schema and moved the fixture to `1.1`, so `0.1-skeleton` is now refused as a malformed version rather than accepted as an old one; [`E1-S1-INTERFACE-CHANGE-001.md`](E1-S1-INTERFACE-CHANGE-001.md) records why the increment was a major followed by a minor. E1-S2 repeated that shape twice. First to `2.x`, where `2.0` made `speakers` required and `2.1` added the optional `editorial` flag; [`E1-S2-INTERFACE-CHANGE-001.md`](E1-S2-INTERFACE-CHANGE-001.md) records that increment, the `SYNTHESIS_IDENTITY_VERSION` move to `e1-s2-v1` that resolving voice references forced, and the required `voice_conditioning_hash` on `SynthesisRequest` that came with it. Then to `3.x`, published at `schemas/lesson-v3.schema.json`, where `3.0` closed the `role` and `style` vocabularies, bounded a recall prompt's pause to ADR-0001 §13.2's range, and refuses a `speakers` object binding one name twice, and `3.1` added the optional `learning_objectives` and `source` records; [`E1-S2-INTERFACE-CHANGE-002.md`](E1-S2-INTERFACE-CHANGE-002.md) records that increment, and is `Accepted`, signed 2026-08-30. Every `1.x` and `2.x` document is now refused as a different major.
 

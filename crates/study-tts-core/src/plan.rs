@@ -5,18 +5,15 @@
 //! as a path component. Parsing at the boundary is what makes the cache's
 //! prefix slice total rather than usually correct.
 //!
-//! Plans are serialized and never read back. ADR-0001 §12.2 puts persisted
-//! plans at E2, where a versioned fail-closed loader gives a parse boundary
-//! something to mean. They carry their document version regardless: a plan is
-//! written to disk as `plan.json` and a document with no version is a document
-//! that cannot be refused later, so the loader E2 adds would arrive at files
-//! that never said what they were.
+//! Plans are serialized during a build and read back during E2 recovery through
+//! the runtime's versioned, fail-closed retained-plan boundary.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    CanonicalValue, DeliveryStyle, SchemaVersion, ValidatedLesson, canonical_digest,
+    CanonicalValue, DeliveryStyle, MAX_LESSON_SEGMENTS, SchemaVersion, ValidatedLesson,
+    canonical_digest,
     digest::{BLAKE3_HEX_LENGTH, blake3_newtype, json_schema_as_string},
     identity::{SynthesisContext, synthesis_digest},
 };
@@ -146,13 +143,12 @@ json_schema_as_string!(
 ///
 /// Parseable because it is read back: `manifest.json` records it and
 /// `study-tts-runtime`'s package reconciliation compares the recorded value
-/// against the plan the current build derived, and a job snapshot carries it
-/// across a restart. A recorded value that is not a digest at all has to be
-/// reported as malformed rather than as a mismatch — the first sends an
-/// operator to the record, the second sends them looking for a lesson change
-/// that never happened. `plan.json` itself is still not persisted; ADR-0001
-/// §12.2 puts that at E2, and this boundary is the manifest's rather than that
-/// file's.
+/// against the plan the current build derived, and both `plan.json` and
+/// `job.json` carry it across a restart. A recorded value that is not a digest
+/// at all has to be reported as malformed rather than as a mismatch — the
+/// first sends an operator to the record, the second sends them looking for a
+/// lesson change that never happened. The retained-plan loader also derives
+/// the hash again from the recorded segments before trusting it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct PlanHash(String);
@@ -187,20 +183,17 @@ json_schema_as_string!(
 /// A lesson resolved into exactly what will be synthesized, derived
 /// deterministically from it.
 ///
-/// Produced only by [`RenderPlan::for_lesson`] and never read back, so it does
-/// not derive `Deserialize`. Adding one now would publish an unversioned parse
-/// boundary that accepts unknown fields and that no caller exercises; ADR-0001
-/// §12.2 puts persisted plans at E2, and the loader that story needs is where a
-/// fail-closed boundary belongs.
-#[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
+/// Produced by [`RenderPlan::for_lesson`] and read back only through the
+/// version-gated retained-plan loader in `study_tts_runtime::job_repository`.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct RenderPlan {
     /// Layout version of this document.
     ///
     /// First field because it is the first thing a reader of `plan.json` needs
-    /// and the first thing the E2 loader will read. Typed rather than authored
-    /// text, unlike a lesson's: nothing hand-writes a plan, so there is no
-    /// authoring mistake to report against the original spelling.
+    /// and the first thing the retained-plan loader reads. Typed rather than
+    /// authored text, unlike a lesson's: nothing hand-writes a plan, so there
+    /// is no authoring mistake to report against the original spelling.
     ///
     /// Outside [`RenderPlan::plan_hash`] on purpose. That hash names the
     /// segments to be synthesized, and a document layout is not one of them: a
@@ -214,6 +207,7 @@ pub struct RenderPlan {
     /// same plan.
     pub plan_hash: PlanHash,
     /// The segments to synthesize, in speaking order.
+    #[schemars(length(max = MAX_LESSON_SEGMENTS))]
     pub segments: Vec<PlannedSegment>,
 }
 
@@ -226,12 +220,11 @@ pub struct RenderPlan {
 /// metadata — role, citations, review state — reaches neither, because nothing
 /// downstream of planning reads it.
 ///
-/// Serialized, never deserialized, for the reason given on [`RenderPlan`].
 /// `plan_hash` is derived separately by `plan_digest`, which keeps serde
 /// document-layout details out of the identity — and which destructures this
 /// type without `..`, so a field added here stops compiling until somebody has
 /// decided whether it belongs in the plan's identity.
-#[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct PlannedSegment {
     /// Identity of the segment within its lesson.
@@ -353,6 +346,12 @@ pub enum PlanError {
 pub const BASE_TAKE: u32 = 0;
 
 impl RenderPlan {
+    /// Recomputes this plan's identity from its resolved segments.
+    #[must_use]
+    pub fn derived_hash(&self) -> PlanHash {
+        plan_digest(&self.segments).into()
+    }
+
     /// Derives the plan for a lesson under a given synthesis context.
     ///
     /// Deterministic: the same lesson and the same context always produce the

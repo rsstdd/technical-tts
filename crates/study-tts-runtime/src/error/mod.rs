@@ -158,6 +158,22 @@ impl From<ReleaseError> for BuildError {
     }
 }
 
+// A job document refuses a move either because the state machine has no such
+// edge or because the release status forbids it; each keeps its own category.
+impl From<study_tts_core::JobStateError> for BuildError {
+    fn from(error: study_tts_core::JobStateError) -> Self {
+        match error {
+            study_tts_core::JobStateError::IllegalTransition { job_id, from, to } => {
+                DurableStateError::IllegalJobTransition { job_id, from, to }.into()
+            }
+            study_tts_core::JobStateError::AttemptOverflow { job_id } => {
+                DurableStateError::JobAttemptOverflow { job_id }.into()
+            }
+            study_tts_core::JobStateError::Release(error) => error.into(),
+        }
+    }
+}
+
 impl From<DurableStateError> for BuildError {
     fn from(error: DurableStateError) -> Self {
         Self::DurableState(Box::new(error))
@@ -268,7 +284,9 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    use study_tts_core::{LessonDiagnostic, LessonError, ReleaseError, ReleaseStatus, VoiceError};
+    use study_tts_core::{
+        JobState, LessonDiagnostic, LessonError, ReleaseError, ReleaseStatus, VoiceError,
+    };
 
     use crate::worker_bundle::PythonRuntimeIdentity;
 
@@ -618,7 +636,9 @@ mod tests {
 
     fn expected_durable_state_remedy(error: &DurableStateError) -> Expected {
         match error {
-            DurableStateError::LiveJobLock { .. } => Expected::Unrouted,
+            DurableStateError::LiveJobLock { .. } | DurableStateError::NoJobToResume { .. } => {
+                Expected::Unrouted
+            }
             DurableStateError::CacheLockTimeout { .. } => Expected::Rowless {
                 owner: RemedyOwner::Runtime,
                 action: "preserve attempts and inspect the cache-key owner before retrying",
@@ -630,8 +650,26 @@ mod tests {
             DurableStateError::MalformedJobLock { .. }
             | DurableStateError::IncompatibleJobLock { .. }
             | DurableStateError::MalformedJobSnapshot { .. }
+            | DurableStateError::MalformedJobEventLog { .. }
+            | DurableStateError::DurableRecordTooLarge { .. }
+            | DurableStateError::JobEventLineTooLarge { .. }
             | DurableStateError::JobSnapshotIdentityMismatch { .. }
+            | DurableStateError::JobSnapshotSegmentCountExceeded { .. }
+            | DurableStateError::JobSnapshotAttemptMismatch { .. }
+            | DurableStateError::JobReplacementPredecessorMismatch { .. }
+            | DurableStateError::JobSnapshotLastSuccessfulStateMismatch { .. }
             | DurableStateError::JobSnapshotSelectionMismatch { .. }
+            | DurableStateError::JobSnapshotPackageIdentityMismatch { .. }
+            | DurableStateError::JobPreviewSelectionMismatch { .. }
+            | DurableStateError::IllegalJobTransition { .. }
+            | DurableStateError::JobAttemptOverflow { .. }
+            | DurableStateError::RetainedLessonMismatch { .. }
+            | DurableStateError::RetainedLessonIdentityMismatch { .. }
+            | DurableStateError::MalformedRetainedPlan { .. }
+            | DurableStateError::RetainedPlanIdentityMismatch { .. }
+            | DurableStateError::RetainedPlanHashMismatch { .. }
+            | DurableStateError::RetainedPlanSegmentCountExceeded { .. }
+            | DurableStateError::JobPlanHashMismatch { .. }
             | DurableStateError::MalformedPublicationJournal { .. }
             | DurableStateError::MalformedCurrentPreview { .. }
             | DurableStateError::UnsupportedDurableRecord { .. }
@@ -1207,8 +1245,8 @@ mod tests {
 
         let live_lock = DurableStateError::LiveJobLock {
             path: PathBuf::from("build.lock"),
-            pid: 7,
-            process_start: 11,
+            pid: Some(7),
+            process_start: Some(11),
         };
         assert_durable_state_remedy(live_lock);
 
@@ -1249,14 +1287,82 @@ mod tests {
                 path: PathBuf::from("jobs/lesson/job.json"),
                 source: json_error(),
             },
+            DurableStateError::MalformedJobEventLog {
+                path: PathBuf::from("jobs/lesson/events.ndjson"),
+            },
             DurableStateError::JobSnapshotIdentityMismatch {
                 path: PathBuf::from("jobs/lesson/job.json"),
                 recorded: "other-lesson".to_owned(),
                 required: "lesson".to_owned(),
             },
+            DurableStateError::JobSnapshotAttemptMismatch {
+                path: PathBuf::from("jobs/lesson/job.json"),
+                build_attempt: 2,
+                abandoned_attempt: None,
+            },
+            DurableStateError::JobReplacementPredecessorMismatch {
+                path: PathBuf::from("jobs/lesson/job.json"),
+                current_attempt: 2,
+                current_state: JobState::Rendering,
+                replacement_attempt: 3,
+                abandoned_attempt: Some(2),
+                abandoned_state: Some(JobState::Planned),
+            },
+            DurableStateError::JobSnapshotLastSuccessfulStateMismatch {
+                path: PathBuf::from("jobs/lesson/job.json"),
+                state: "Failed".to_owned(),
+                last_successful_state: "Created".to_owned(),
+            },
             DurableStateError::JobSnapshotSelectionMismatch {
                 path: PathBuf::from("jobs/lesson/job.json"),
-                stage: "published".to_owned(),
+                state: "Rendering".to_owned(),
+            },
+            DurableStateError::JobSnapshotPackageIdentityMismatch {
+                path: PathBuf::from("jobs/lesson/job.json"),
+                package_id: "a".repeat(64),
+                manifest_blake3: "b".repeat(64),
+            },
+            DurableStateError::JobPreviewSelectionMismatch {
+                job_id: "lesson".to_owned(),
+                recorded: "a".repeat(64),
+                selected: Some("b".repeat(64)),
+            },
+            DurableStateError::IllegalJobTransition {
+                job_id: "lesson".to_owned(),
+                from: JobState::Created,
+                to: JobState::Rendered,
+            },
+            DurableStateError::JobAttemptOverflow {
+                job_id: "lesson".to_owned(),
+            },
+            DurableStateError::RetainedLessonMismatch {
+                path: PathBuf::from("jobs/lesson/lesson.json"),
+                recorded: "a".repeat(64),
+                actual: "b".repeat(64),
+            },
+            DurableStateError::RetainedLessonIdentityMismatch {
+                path: PathBuf::from("jobs/lesson/lesson.json"),
+                required: "lesson".to_owned(),
+                actual: "other-lesson".to_owned(),
+            },
+            DurableStateError::MalformedRetainedPlan {
+                path: PathBuf::from("jobs/lesson/plan.json"),
+                source: json_error(),
+            },
+            DurableStateError::RetainedPlanIdentityMismatch {
+                path: PathBuf::from("jobs/lesson/plan.json"),
+                required: "lesson".to_owned(),
+                actual: "other-lesson".to_owned(),
+            },
+            DurableStateError::RetainedPlanHashMismatch {
+                path: PathBuf::from("jobs/lesson/plan.json"),
+                recorded: "a".repeat(64),
+                actual: "b".repeat(64),
+            },
+            DurableStateError::JobPlanHashMismatch {
+                path: PathBuf::from("jobs/lesson/plan.json"),
+                job_recorded: "a".repeat(64),
+                plan_recorded: "b".repeat(64),
             },
             DurableStateError::MalformedPublicationJournal {
                 path: PathBuf::from("previews/lesson/publication.json"),
