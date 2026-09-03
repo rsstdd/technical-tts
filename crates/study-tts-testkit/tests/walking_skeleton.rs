@@ -1159,11 +1159,18 @@ fn t4_e2_resume_refuses_a_retained_plan_for_another_job() {
     assert_eq!(worker.synthesis_count(), 2);
 }
 
-#[test]
-fn t4_e2_resume_refuses_a_plan_hash_that_disagrees_with_job_state() {
-    let (workspace, _result, worker) = run_skeleton();
+/// Leaves `plan.json` naming a plan `job.json` does not, self-consistently.
+///
+/// This is the durable state an attempt interrupted between `retain_inputs`
+/// and its first `Planned` record leaves whenever the re-derived plan differs
+/// from the recorded one, which
+/// `docs/architecture/E2-S1-INTERFACE-CHANGE-001.md` §Limits records as an
+/// open window. Reached by editing the retained plan rather than by injecting
+/// that interruption, because the interruption reaches it only through a
+/// changed executor descriptor or voice conditioning, and what resume reads is
+/// this state either way.
+fn diverge_retained_plan(workspace: &Path) {
     let plan = workspace
-        .path()
         .join("jobs")
         .join(SKELETON_JOB_ID)
         .join("plan.json");
@@ -1177,6 +1184,12 @@ fn t4_e2_resume_refuses_a_plan_hash_that_disagrees_with_job_state() {
         serde_json::to_vec_pretty(&retained).expect("serialize self-consistent plan"),
     )
     .expect("write self-consistent plan");
+}
+
+#[test]
+fn t4_e2_resume_refuses_a_plan_hash_that_disagrees_with_job_state() {
+    let (workspace, _result, worker) = run_skeleton();
+    diverge_retained_plan(workspace.path());
 
     let error = resume_preview(resume_request(workspace.path()), &worker)
         .expect_err("a retained plan whose identity disagrees with job state must be refused");
@@ -1187,6 +1200,57 @@ fn t4_e2_resume_refuses_a_plan_hash_that_disagrees_with_job_state() {
             if matches!(**state, DurableStateError::JobPlanHashMismatch { .. })
     ));
     assert_eq!(worker.synthesis_count(), 2);
+}
+
+#[test]
+fn t4_e2_a_fresh_build_restores_a_retained_plan_that_disagrees_with_job_state() {
+    let (workspace, first, worker) = run_skeleton();
+    let manifest_before = std::fs::read(&first.manifest).expect("read the selected manifest");
+    diverge_retained_plan(workspace.path());
+    let refused = resume_preview(resume_request(workspace.path()), &worker)
+        .expect_err("resume must refuse the disagreement rather than reconcile it");
+    assert!(matches!(
+        refused,
+        BuildError::DurableState(ref state)
+            if matches!(**state, DurableStateError::JobPlanHashMismatch { .. })
+    ));
+
+    let rebuilt = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect("a fresh build is the recovery for a disagreement resume refuses");
+
+    let retained: RenderPlan = serde_json::from_slice(
+        &std::fs::read(
+            workspace
+                .path()
+                .join("jobs")
+                .join(SKELETON_JOB_ID)
+                .join("plan.json"),
+        )
+        .expect("read the restored plan"),
+    )
+    .expect("parse the restored plan");
+    let document = read_job_document(workspace.path());
+    assert_eq!(
+        document["plan_hash"]
+            .as_str()
+            .expect("a recorded plan hash"),
+        retained.plan_hash.as_str(),
+        "the fresh build leaves job.json and plan.json naming one plan"
+    );
+    assert_eq!(
+        worker.synthesis_count(),
+        2,
+        "the recovery reuses published audio rather than resynthesizing it"
+    );
+    assert_eq!(rebuilt.package_dir, first.package_dir);
+    assert_eq!(
+        std::fs::read(&rebuilt.manifest).expect("read the restored manifest"),
+        manifest_before,
+        "no artifact of the refused attempt is lost or rewritten"
+    );
 }
 
 #[test]

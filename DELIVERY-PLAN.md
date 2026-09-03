@@ -614,6 +614,7 @@ The E0-S0 skeleton already supplies the shared durable-filesystem primitives, pr
 - `t4_e2_resume_refuses_a_retained_plan_with_a_stale_hash`
 - `t4_e2_resume_refuses_a_retained_plan_for_another_job`
 - `t4_e2_resume_refuses_a_plan_hash_that_disagrees_with_job_state`
+- `t4_e2_a_fresh_build_restores_a_retained_plan_that_disagrees_with_job_state`
 - `t4_e2_resume_refuses_a_job_package_that_disagrees_with_selected_output`
 - `t4_e2_resume_refuses_a_selected_package_for_a_different_job_plan`
 

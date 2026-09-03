@@ -148,7 +148,7 @@ the charter's own derivation rule required and which had been missing.
 - Rollback procedure: revert the change set. A `1.0` document is then refused by the `0.1` reader
   as `UnsupportedDurableRecord` in the same way; the runtime owner must reconcile the incompatible
   record before an older build can revalidate independent artifacts.
-- Compatibility evidence: the seven issue-named E2-S1 tests pass, plus the thirty-eight supporting names
+- Compatibility evidence: the seven issue-named E2-S1 tests pass, plus the thirty-nine supporting names
   listed beside them under `DELIVERY-PLAN.md` §Story E2-S1; every pre-existing `t4_e0_*`/`t4_e1_*`
   test passes. The two shared-contract tests are updated to exercise the new repository surface, as
   §Impact records. Two names are retired, neither of them a `DELIVERY-PLAN.md` contract.
@@ -163,13 +163,14 @@ the charter's own derivation rule required and which had been missing.
   `Failed`, where the retired test covered a single provisional advance, and a post-render failure
   deliberately keeps one by `t1_e2_a_failed_post_render_attempt_retains_preview_completion`.
   Keeping either retired name would duplicate behavior the new document already proves.
-- Mapped tests and qualification rerun: `cargo test --workspace --all-targets --locked` — 498
+- Mapped tests and qualification rerun: `cargo test --workspace --all-targets --locked` — 499
   passed; `error_documentation`, `schemas`, and `provisional_contracts` suites included. The
   count moved from the 497 recorded at acceptance by
   `t4_e2_a_full_event_log_refuses_state_replacement`, added with the event-log preflight
-  in PR #75 after this record was signed; no other result changed.
+  in PR #75, and by `t4_e2_a_fresh_build_restores_a_retained_plan_that_disagrees_with_job_state`,
+  which pins the recovery the §Limits window below relies on; no other result changed.
 - Walking skeleton result: `cargo test --offline -p study-tts-testkit --test walking_skeleton
-  --locked` — 55 passed.
+  --locked` — 56 passed.
 
 ## Limits this change does not close
 
@@ -179,8 +180,9 @@ the charter's own derivation rule required and which had been missing.
   differs from the recorded one — which needs a changed executor descriptor or voice
   conditioning, since the lesson bytes are checksum-verified identical. The next resume
   refuses with `JobPlanHashMismatch` and a fresh build restores agreement; no artifact is
-  lost. Ordering cannot close it, only a single staged publication of both files, which no
-  story owns yet.
+  lost, which `t4_e2_a_fresh_build_restores_a_retained_plan_that_disagrees_with_job_state`
+  pins. Ordering cannot close the window, only a single staged publication of both files,
+  which no story owns yet.
 - **Verification, takes, and approval reconciliation** (§12.7 steps 8–9) have no producer until
   E4, E2-S2, and E2-S6. `JobState` carries their states; nothing enters them.
 - **`Failed` and `Cancelled` have no writer.** A refused build propagates its error and leaves
