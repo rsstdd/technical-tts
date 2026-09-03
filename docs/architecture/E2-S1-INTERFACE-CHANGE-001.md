@@ -66,7 +66,7 @@ Publishing a field nothing writes would freeze a shape nothing has exercised.
 | Method | Change |
 |---|---|
 | `load` | returns `Option<JobDocument>`; refuses a `0.1` record as `UnsupportedDurableRecord` before the strict parse, so an old record is reported as unsupported rather than as malformed; also strictly parses every `events.ndjson` line and checks its job identity so resume parses authoritative state before reconciliation |
-| `replace` | takes `&JobDocument`; refuses a replacement that skips an ADR state edge or does not name the current attempt as its exact predecessor, then appends a `StateDurable` event **after** the atomic replacement returns |
+| `replace` | takes `&JobDocument`; refuses a replacement that skips an ADR state edge or does not name the current attempt as its exact predecessor, validates the event log and the pending event's size **before** the replacement so a torn or full log refuses while `job.json` still holds its prior bytes, then appends a `StateDurable` event **after** the atomic replacement returns |
 | `retain_inputs` | new: writes `lesson.json` (exact validated bytes) and `plan.json` beside the document (ADR §12.1) |
 | `retained_lesson` | new: reads `lesson.json` back through the same bounded reader the build used |
 | `retained_plan` | new: strictly parses and version-gates `plan.json`, checks its job identity, and recomputes its plan hash before resume compares it with `job.json` |
@@ -163,13 +163,24 @@ the charter's own derivation rule required and which had been missing.
   `Failed`, where the retired test covered a single provisional advance, and a post-render failure
   deliberately keeps one by `t1_e2_a_failed_post_render_attempt_retains_preview_completion`.
   Keeping either retired name would duplicate behavior the new document already proves.
-- Mapped tests and qualification rerun: `cargo test --workspace --all-targets --locked` — 497
-  passed; `error_documentation`, `schemas`, and `provisional_contracts` suites included.
+- Mapped tests and qualification rerun: `cargo test --workspace --all-targets --locked` — 498
+  passed; `error_documentation`, `schemas`, and `provisional_contracts` suites included. The
+  count moved from the 497 recorded at acceptance by
+  `t4_e2_a_full_event_log_refuses_state_replacement`, added with the event-log preflight
+  in PR #75 after this record was signed; no other result changed.
 - Walking skeleton result: `cargo test --offline -p study-tts-testkit --test walking_skeleton
   --locked` — 55 passed.
 
 ## Limits this change does not close
 
+- **`plan.json` and `job.json` are published separately.** `retain_inputs` replaces the
+  retained plan before the attempt's first `Planned` document records its hash, so an attempt
+  interrupted between them leaves the two naming different plans whenever the re-derived plan
+  differs from the recorded one — which needs a changed executor descriptor or voice
+  conditioning, since the lesson bytes are checksum-verified identical. The next resume
+  refuses with `JobPlanHashMismatch` and a fresh build restores agreement; no artifact is
+  lost. Ordering cannot close it, only a single staged publication of both files, which no
+  story owns yet.
 - **Verification, takes, and approval reconciliation** (§12.7 steps 8–9) have no producer until
   E4, E2-S2, and E2-S6. `JobState` carries their states; nothing enters them.
 - **`Failed` and `Cancelled` have no writer.** A refused build propagates its error and leaves
