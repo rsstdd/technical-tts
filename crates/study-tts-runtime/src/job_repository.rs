@@ -135,8 +135,10 @@ pub trait JobRepository: Send + Sync {
     /// [`DurableStateError::RetainedPlanSegmentCountExceeded`],
     /// [`DurableStateError::DurableRecordTooLarge`], or
     /// [`DurableStateError::UnsupportedDurableRecord`] when the plan cannot be
-    /// trusted; [`BuildError::ManagedPath`] or [`BuildError::Io`] when its path
-    /// cannot be safely located or read.
+    /// trusted; [`PlanError::BaseTakeKeyMismatch`] or
+    /// [`PlanError::RetakeUsesBaseKey`] when its recorded selection is
+    /// inconsistent; [`BuildError::ManagedPath`] or [`BuildError::Io`] when
+    /// its path cannot be safely located or read.
     fn retained_plan(
         &self,
         workspace: &Path,

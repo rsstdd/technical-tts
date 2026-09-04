@@ -179,8 +179,9 @@ pub(crate) fn roots(workspace: &Path, lesson_id: &str) -> Result<PreviewRoots, B
 ///
 /// # Errors
 ///
-/// [`crate::ManagedPathError::ManagedPathEscape`] for a planted link,
-/// otherwise [`crate::IoError::FileSystem`].
+/// [`DurableStateError::MissingPackageManifest`] when an immutable package has
+/// no manifest, [`crate::ManagedPathError::ManagedPathEscape`] for a planted
+/// link, otherwise [`crate::IoError::FileSystem`].
 pub(crate) fn published_manifests(workspace: &Path) -> Result<Vec<PathBuf>, BuildError> {
     let previews = managed::directory_candidate(workspace, "previews")?;
     let mut manifests = Vec::new();
@@ -197,6 +198,11 @@ pub(crate) fn published_manifests(workspace: &Path) -> Result<Vec<PathBuf>, Buil
             let manifest_path = managed::leaf(&generation, manifest::MANIFEST_NAME)?;
             if manifest_path.is_file() {
                 manifests.push(manifest_path);
+            } else {
+                return Err(DurableStateError::MissingPackageManifest {
+                    path: manifest_path,
+                }
+                .into());
             }
         }
     }
@@ -819,6 +825,30 @@ mod tests {
         durable::{OsDurableFileSystem, TracingFileSystem},
         export::{ToolExecution, ToolProfile},
     };
+
+    #[test]
+    fn t4_e2_a_published_package_without_a_manifest_refuses_retention() {
+        let workspace = TempDir::new().expect("create preview workspace");
+        let generation = workspace.path().join("previews/lesson/packages/generation");
+        fs::create_dir_all(&generation).expect("create incomplete published package");
+        let manifest_path = generation.join(manifest::MANIFEST_NAME);
+
+        let error = published_manifests(workspace.path())
+            .expect_err("an immutable package without its manifest must not be skipped");
+
+        assert!(
+            matches!(
+                &error,
+                BuildError::DurableState(error)
+                    if matches!(
+                        error.as_ref(),
+                        DurableStateError::MissingPackageManifest { path }
+                            if path == &manifest_path
+                    )
+            ),
+            "expected a missing-package-manifest refusal, got {error}"
+        );
+    }
 
     #[test]
     fn t4_e0_package_publication_flushes_files_before_the_directory_rename() {

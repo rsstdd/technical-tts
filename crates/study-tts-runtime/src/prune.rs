@@ -13,11 +13,12 @@
 //! # Compatibility limitation
 //!
 //! Every published manifest is a retention root, and a root this build cannot
-//! decode is an error rather than an empty contribution. A workspace holding
-//! **one** package written before `manifest` `2.0` therefore refuses retention
-//! reporting for the **whole workspace**, not merely for that lesson, until it
-//! is rebuilt. `docs/operations/UPGRADE-RUNBOOK.md` §Known compatibility
-//! limitations records that for operators and names this module.
+//! decode is an error rather than an empty contribution. The legacy decoders
+//! read `0.1-skeleton` and `0.2-skeleton`, but a workspace holding **one**
+//! `1.0-skeleton` package refuses retention reporting for the **whole
+//! workspace**, not merely for that lesson, until it is rebuilt.
+//! `docs/operations/UPGRADE-RUNBOOK.md` §Known compatibility limitations
+//! records that for operators and names this module.
 //!
 //! Softening it to a skip is the one change that must not be made here:
 //! treating an unreadable root as "references nothing" reports live artifacts
@@ -66,11 +67,11 @@ pub fn live_cache_keys(
     workspace: &Path,
     accepted_takes: &[ValidatedTakes],
 ) -> Result<BTreeSet<CacheKey>, BuildError> {
-    let mut live: BTreeSet<CacheKey> = accepted_takes
-        .iter()
-        .flat_map(ValidatedTakes::selections)
-        .map(|selection| selection.selected_cache_key.clone())
-        .collect();
+    let mut live = BTreeSet::new();
+    for selection in accepted_takes.iter().flat_map(ValidatedTakes::selections) {
+        live.insert(selection.selected_cache_key.clone());
+        live.insert(selection.synthesis_base_key.clone());
+    }
 
     for manifest_path in preview::published_manifests(workspace)? {
         live.extend(manifest::referenced_cache_keys(&manifest_path)?);

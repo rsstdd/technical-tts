@@ -695,6 +695,7 @@ mod tests {
             | DurableStateError::PublicationJournalLessonMismatch { .. }
             | DurableStateError::InvalidCurrentPackageReference { .. }
             | DurableStateError::MissingPackageDirectory { .. }
+            | DurableStateError::MissingPackageManifest { .. }
             | DurableStateError::MalformedPackageManifest { .. }
             | DurableStateError::UnsupportedPackageManifest { .. }
             | DurableStateError::PackageReleaseStatusMismatch { .. }
@@ -1409,6 +1410,9 @@ mod tests {
                 reference: "../escape".to_owned(),
             },
             DurableStateError::MissingPackageDirectory {
+                path: PathBuf::from("previews/lesson/packages/manifest.json"),
+            },
+            DurableStateError::MissingPackageManifest {
                 path: PathBuf::from("previews/lesson/packages/manifest.json"),
             },
             DurableStateError::MalformedPackageManifest {

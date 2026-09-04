@@ -482,6 +482,17 @@ pub enum DurableStateError {
         path: PathBuf,
     },
 
+    /// An immutable package has no manifest describing its cache roots.
+    #[error(
+        "immutable package manifest `{}` is missing; preserve the package for runtime \
+         reconciliation",
+        path.display()
+    )]
+    MissingPackageManifest {
+        /// Manifest the immutable package must contain.
+        path: PathBuf,
+    },
+
     /// A package manifest is not valid strict JSON for this build.
     #[error(
         "package manifest `{}` is malformed ({source}); preserve the package for runtime \
@@ -774,6 +785,7 @@ impl DurableStateError {
             | Self::PublicationJournalLessonMismatch { .. }
             | Self::InvalidCurrentPackageReference { .. }
             | Self::MissingPackageDirectory { .. }
+            | Self::MissingPackageManifest { .. }
             | Self::MalformedPackageManifest { .. }
             | Self::UnsupportedPackageManifest { .. }
             | Self::PackageReleaseStatusMismatch { .. }

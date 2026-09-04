@@ -228,6 +228,10 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// voice gate above returned no conditioning artifact for a speaker some
 /// segment names. The lesson is valid in that case, which is why the refusal
 /// is its own category rather than a lesson diagnostic.
+/// [`study_tts_core::PlanError::UnplannedRetake`] refuses a request naming no
+/// segment in the base plan, and
+/// [`study_tts_core::PlanError::RetakeUsesSelectedTake`] refuses one that does
+/// not select a different performance.
 /// [`study_tts_core::PlanError::BaseTakeKeyMismatch`] and
 /// [`study_tts_core::PlanError::RetakeUsesBaseKey`] cannot be returned here:
 /// both are raised by [`RenderPlan::verify_recorded_selection`] on a plan read
@@ -257,9 +261,11 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// is not the one its take derives. Once a segment resolves,
 /// [`study_tts_core::TakesError::ApprovedAudioMismatch`] refuses a cache entry
 /// holding audio other than the audio the selection approved.
-/// [`study_tts_core::TakesError::PlanIsNotBaseTakes`] cannot be returned here:
-/// it reports a caller reconciling against an already-selected plan, and this
-/// module reconciles only against the plan it derived at take zero.
+/// [`study_tts_core::TakesError::PlanIsNotBaseTakes`] and
+/// [`study_tts_core::TakesError::SelectedPlanMismatch`] cannot be returned
+/// here: both report a caller offering the wrong plan, and this module
+/// reconciles only against the plan it derived at take zero and verifies only
+/// against the plan the same lesson derives at the reconciled takes.
 ///
 /// Tool work returns [`crate::ToolError::MissingTool`],
 /// [`crate::ToolError::InspectTool`], [`crate::ToolError::ToolProbeFailed`],
@@ -356,6 +362,7 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`crate::DurableStateError::PublicationJournalLessonMismatch`],
 /// [`crate::DurableStateError::InvalidCurrentPackageReference`],
 /// [`crate::DurableStateError::MissingPackageDirectory`],
+/// [`crate::DurableStateError::MissingPackageManifest`],
 /// [`crate::DurableStateError::MalformedPackageManifest`], including when a
 /// recorded digest is not one and its value object refuses it during parsing,
 /// [`crate::DurableStateError::UnsupportedPackageManifest`],
@@ -752,7 +759,7 @@ fn render_attempt(
 /// is legitimate only on the path that *establishes* a plan; a resume
 /// continues one, and recovers its selection from the plan it already retained
 /// rather than from a file that may have moved since. See
-/// [`TakeSelection::Recovered`], which states the invariant.
+/// [`TakeSelection::recovered`], which states the invariant.
 #[derive(Clone, Copy, Debug)]
 enum TakesInput<'a> {
     /// The `<lesson-stem>.takes.json` sibling ADR-0001 §12.1 puts beside an
@@ -807,7 +814,7 @@ fn select_plan(
         return Ok(RenderPlan::for_lesson_with_takes(
             lesson,
             context,
-            &TakeSelection::implicit().with_retakes(retakes),
+            &TakeSelection::implicit().with_retakes(&base, retakes)?,
         )?);
     };
 
@@ -827,7 +834,7 @@ fn select_plan(
     Ok(RenderPlan::for_lesson_with_takes(
         lesson,
         context,
-        &TakeSelection::explicit(&applied).with_retakes(retakes),
+        &TakeSelection::explicit(&applied).with_retakes(&base, retakes)?,
     )?)
 }
 

@@ -16,7 +16,7 @@ use std::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use study_tts_core::{
-    CacheKey, JobState, LessonError, MAX_LESSON_JSON_BYTES, ReleaseError, RenderPlan,
+    CacheKey, JobState, LessonError, MAX_LESSON_JSON_BYTES, PlanError, ReleaseError, RenderPlan,
 };
 use study_tts_runtime::{
     BackendDescriptor, BackendError, BuildError, BuildRequest, DurableStateError,
@@ -2659,6 +2659,51 @@ fn t4_e2_retake_changes_only_selected_segment_identity() {
     assert_eq!(after[1]["synthesis_base_key"], before[1]["cache_key"]);
 }
 
+/// T4, AC5: a retake request that names no planned segment is refused, and is
+/// refused before anything is synthesized.
+///
+/// The refusal itself is `study_tts_core`'s, and
+/// `t1_e2_invalid_retake_requests_are_rejected` holds it there. What this adds
+/// is the property that unit test cannot see: the build reaches the refusal on
+/// the *planning* path, so a mistyped request costs no synthesis and leaves no
+/// package. Before the check existed the request resolved against nothing, and
+/// this build returned a package identical to a plain render — three
+/// syntheses and a success the operator would have read as a retake.
+///
+/// `synthesis_count` is the ordering evidence. A check placed after synthesis
+/// would still refuse, and would still report the same error, but the counter
+/// would read three.
+#[test]
+fn t4_e2_a_retake_naming_no_planned_segment_is_refused_before_synthesis() {
+    let root = TempDir::new().expect("create an isolated retake root");
+    let lesson = three_segment_lesson(root.path());
+    let workspace = root.path().join("workspace");
+    let worker = DeterministicToneWorker::default();
+
+    let mut mistyped = build_request(&lesson, &workspace);
+    mistyped.retakes = std::collections::BTreeMap::from([("seg-9999".to_owned(), 1)]);
+    let error = build_preview(mistyped, &worker)
+        .expect_err("a retake naming no planned segment must be refused");
+
+    assert!(
+        matches!(
+            &error,
+            BuildError::Plan(PlanError::UnplannedRetake { segment_id })
+                if segment_id == "seg-9999"
+        ),
+        "expected an unplanned-retake refusal, got {error}"
+    );
+    assert_eq!(
+        worker.synthesis_count(),
+        0,
+        "the request is refused while planning, so no segment may be synthesized"
+    );
+    assert!(
+        !workspace.join("previews").exists(),
+        "a refused retake must publish no package"
+    );
+}
+
 /// T4, AC5c: ADR-0001 §11.4 retains the prior artifact across a retake.
 #[test]
 fn t4_e2_prior_take_is_never_overwritten() {
@@ -3049,6 +3094,58 @@ fn t4_e2_selected_artifact_survives_prune() {
 
     let cache_root = workspace.join("cache");
     let before = fingerprint_cache(&cache_root);
+
+    let accepted_only = root.path().join("accepted-only");
+    copy_tree(&cache_root, &accepted_only.join("cache"));
+    let accepted_live =
+        study_tts_runtime::live_cache_keys(&accepted_only, std::slice::from_ref(&accepted))
+            .expect("an accepted takes file is a complete retention root");
+    assert!(
+        accepted_live.contains(&superseded),
+        "the accepted retake's synthesis base key must remain live without a manifest"
+    );
+    assert!(
+        accepted_live.contains(&selected[1]),
+        "the accepted retake's selected cache key must remain live"
+    );
+    assert!(
+        study_tts_runtime::prune_candidates(&accepted_only, std::slice::from_ref(&accepted),)
+            .expect("accepted takes produce a retention report")
+            .is_empty(),
+        "accepted base and selected keys must not become prune candidates"
+    );
+
+    let manifest_only = root.path().join("manifest-only");
+    copy_tree(&cache_root, &manifest_only.join("cache"));
+    let generation = replaced
+        .package_dir
+        .file_name()
+        .expect("a published package has a generation directory");
+    copy_tree(
+        &replaced.package_dir,
+        &manifest_only
+            .join("previews")
+            .join(THREE_SEGMENT_JOB_ID)
+            .join("packages")
+            .join(generation),
+    );
+    let manifest_live = study_tts_runtime::live_cache_keys(&manifest_only, &[])
+        .expect("a current manifest is a complete retention root");
+    assert!(
+        manifest_live.contains(&superseded),
+        "the retake manifest's synthesis base key must remain live without a takes file"
+    );
+    assert!(
+        manifest_live.contains(&selected[1]),
+        "the retake manifest's selected cache key must remain live"
+    );
+    assert!(
+        study_tts_runtime::prune_candidates(&manifest_only, &[])
+            .expect("a published manifest produces a retention report")
+            .is_empty(),
+        "manifest base and selected keys must not become prune candidates"
+    );
+
     let live = study_tts_runtime::live_cache_keys(&workspace, std::slice::from_ref(&accepted))
         .expect("a retention report reads a workspace this build just wrote");
 

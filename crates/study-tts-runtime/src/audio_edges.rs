@@ -282,6 +282,16 @@ fn speaking_rate(frames: usize, characters: usize) -> f32 {
 }
 
 /// `numerator / denominator`, or zero where the denominator is.
+///
+/// Zero is the only denominator that has to be guarded, and that is an argument
+/// rather than an assumption. Both ratios divide measurements of a *speech*
+/// region, and [`speech_of`] returns an empty slice for a side whose every
+/// frame is below [`SilenceThreshold`] — so a wholly silent side arrives as an
+/// exact `0.0` rather than as a denormal. Any non-empty region contains a frame
+/// whose RMS exceeded that threshold, which floors the region's own RMS far
+/// above the `2.9e-39` a unit numerator would need to overflow `f32`. Widening
+/// the region without that floor would reintroduce the case, which is why the
+/// reasoning is recorded next to the guard rather than left to be rederived.
 fn ratio(numerator: f32, denominator: f32) -> f32 {
     if denominator == 0.0 {
         return 0.0;

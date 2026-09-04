@@ -372,11 +372,7 @@ impl PlannedSegment {
     }
 }
 
-/// Why a validated lesson could not be planned.
-///
-/// One variant, because planning has exactly one precondition its input type
-/// cannot express: [`ValidatedLesson`] guarantees every segment names a
-/// declared speaker, but not that the caller resolved that speaker's voice.
+/// Why a validated lesson or take selection could not be planned.
 #[derive(Debug, Error)]
 pub enum PlanError {
     /// A segment's speaker has no resolved voice-conditioning artifact.
@@ -395,6 +391,26 @@ pub enum PlanError {
         segment_id: String,
         /// Speaker the segment names.
         speaker: String,
+    },
+    /// A retake request names no segment in the base plan.
+    #[error(
+        "retake request names segment `{segment_id}`, which the base plan does not carry; the \
+         caller must request an alternate performance of a planned segment"
+    )]
+    UnplannedRetake {
+        /// Segment the request names.
+        segment_id: String,
+    },
+    /// A retake request repeats the segment's currently selected take.
+    #[error(
+        "retake request for segment `{segment_id}` repeats its selected take {take}; an alternate \
+         performance must use a different take"
+    )]
+    RetakeUsesSelectedTake {
+        /// Segment the request names.
+        segment_id: String,
+        /// Take already selected for the segment.
+        take: u32,
     },
     /// A retained segment at take zero records a base key other than its own
     /// cache key.
@@ -697,12 +713,40 @@ impl<'a> TakeSelection<'a> {
     /// accepted, so it must not inherit an earlier document's authority to back
     /// a production release. Accepting the candidate into a takes file is what
     /// makes the next build explicit again.
-    #[must_use]
-    pub fn with_retakes(mut self, retakes: &'a BTreeMap<String, u32>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`PlanError::UnplannedRetake`] when a request names no segment in
+    /// `base`, or [`PlanError::RetakeUsesSelectedTake`] when it asks for the
+    /// take already selected for that segment.
+    pub fn with_retakes(
+        mut self,
+        base: &RenderPlan,
+        retakes: &'a BTreeMap<String, u32>,
+    ) -> Result<Self, PlanError> {
         if retakes.is_empty() {
-            return self;
+            return Ok(self);
         }
         for (segment_id, take) in retakes {
+            if !base
+                .segments
+                .iter()
+                .any(|segment| segment.id == *segment_id)
+            {
+                return Err(PlanError::UnplannedRetake {
+                    segment_id: segment_id.clone(),
+                });
+            }
+            let selected_take = self
+                .resolved
+                .get(segment_id.as_str())
+                .map_or(BASE_TAKE, |selection| selection.take);
+            if *take == selected_take {
+                return Err(PlanError::RetakeUsesSelectedTake {
+                    segment_id: segment_id.clone(),
+                    take: *take,
+                });
+            }
             self.resolved.insert(
                 segment_id.as_str(),
                 ResolvedTake {
@@ -712,7 +756,7 @@ impl<'a> TakeSelection<'a> {
             );
         }
         self.source = TakeSelectionSource::Implicit;
-        self
+        Ok(self)
     }
 
     /// Where this selection came from, as the plan records it.
@@ -915,6 +959,34 @@ mod tests {
             retake.verify_recorded_selection(),
             Err(PlanError::RetakeUsesBaseKey { segment_id, take })
                 if segment_id == "seg-0002" && take == BASE_TAKE + 1
+        ));
+    }
+
+    #[test]
+    fn t1_e2_invalid_retake_requests_are_rejected() {
+        let lesson = fixture_lesson();
+        let base = RenderPlan::for_lesson(&lesson, &sample_context())
+            .expect("the fixture context resolves every speaker");
+        let unknown = BTreeMap::from([("seg-9999".to_owned(), BASE_TAKE + 1)]);
+
+        let error = TakeSelection::implicit()
+            .with_retakes(&base, &unknown)
+            .expect_err("a retake must name a segment in the base plan");
+
+        assert!(matches!(
+            error,
+            PlanError::UnplannedRetake { segment_id } if segment_id == "seg-9999"
+        ));
+
+        let unchanged = BTreeMap::from([("seg-0001".to_owned(), BASE_TAKE)]);
+        let error = TakeSelection::implicit()
+            .with_retakes(&base, &unchanged)
+            .expect_err("a retake must request a different take");
+
+        assert!(matches!(
+            error,
+            PlanError::RetakeUsesSelectedTake { segment_id, take }
+                if segment_id == "seg-0001" && take == BASE_TAKE
         ));
     }
 

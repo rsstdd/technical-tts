@@ -626,9 +626,10 @@ struct PackageRecord {
 #[derive(Debug)]
 struct RecordedSegment {
     segment_id: String,
-    /// The entry this segment was assembled from, which
-    /// [`referenced_cache_keys`] reports as a retention root.
+    /// The entry this segment was assembled from.
     cache_key: CacheKey,
+    /// The take-zero entry from which the selected take was derived.
+    synthesis_base_key: CacheKey,
     frames: u32,
     /// The written positions, for a layout that carries them.
     ///
@@ -693,14 +694,11 @@ impl From<StoredManifest> for PackageRecord {
                 .segments
                 .into_iter()
                 .map(|segment| {
-                    let _ = (
-                        &segment.synthesis_base_key,
-                        &segment.selected_take,
-                        &segment.audio_blake3,
-                    );
+                    let _ = (&segment.selected_take, &segment.audio_blake3);
                     RecordedSegment {
                         segment_id: segment.segment_id,
                         cache_key: segment.cache_key,
+                        synthesis_base_key: segment.synthesis_base_key,
                         frames: segment.frames,
                         written: Some(WrittenPosition {
                             start_frame: segment.start_frame,
@@ -775,9 +773,11 @@ fn legacy_record<T>(
             .into_iter()
             .map(|segment| {
                 let _ = (&segment.audio_blake3, segment.pause_after_ms);
+                let synthesis_base_key = segment.cache_key.clone();
                 RecordedSegment {
                     segment_id: segment.segment_id,
                     cache_key: segment.cache_key,
+                    synthesis_base_key,
                     frames: segment.frames,
                     written: None,
                 }
@@ -914,7 +914,7 @@ pub(crate) fn referenced_cache_keys(
     Ok(record
         .segments
         .into_iter()
-        .map(|segment| segment.cache_key)
+        .flat_map(|segment| [segment.cache_key, segment.synthesis_base_key])
         .collect())
 }
 

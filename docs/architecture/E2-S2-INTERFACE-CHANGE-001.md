@@ -40,6 +40,16 @@ because the freeze record's identity row is where the decision belongs.
   ADR-0001 §12.2's "repeat the audio checksum for every segment" holds; it is not schema-required
   because a segment planned at take zero with no recorded selection has no approval to state.
 - Unknown-field behavior: unchanged. Both documents keep `deny_unknown_fields`.
+- Layouts read after this change: `0.1-skeleton`, `0.2-skeleton`, and `2.0-skeleton`.
+  `1.0-skeleton` leaves the read set, because a `1.0-skeleton` segment records neither
+  `selected_take` nor `synthesis_base_key` and its own struct would have to be kept to say so.
+  The two older layouts keep their decoders for the reason
+  [`E1-S4-INTERFACE-CHANGE-001.md`](E1-S4-INTERFACE-CHANGE-001.md) §Impact gives — packages in
+  those layouts exist on disk and accepted E1-S1 evidence describes them. That same condition
+  holds for `1.0-skeleton` and is answered differently here; §Implementation consequences records
+  what that costs, rather than leaving it to be discovered. **This supersedes that record's
+  §Three layouts are now read, one is written**, which states the set as it stood on 2026-09-01;
+  that record is otherwise unchanged and stays in force.
 - Wire or Rust representation changed: `RenderPlan`, `PlannedSegment`,
   `manifest::{Manifest, ManifestSegment, StoredManifest, StoredManifestSegment}`, and
   `manifest::ReuseExpectations`. `TakeSelection` and `TakeSelectionSource` are new in
@@ -174,12 +184,51 @@ writes governed output, so it carries publication's durability properties:
   is the counterpart to invariant A-1: recovering selection from a retained plan is the **resume**
   path, and a retake is a new build attempt, which ADR-0001 §6.4 already has the edge for.
 
-### A pre-`2.0` package disables retention reporting for its whole workspace
+### A `1.0-skeleton` package disables retention reporting for its whole workspace
 
 `prune_candidates` treats every published manifest as a retention root, and
-`manifest::referenced_cache_keys` refuses a layout it cannot decode. One package written before
-`manifest` `2.0` therefore refuses retention reporting for the **entire** workspace — not only
-for the lesson that owns it — until that workspace is rebuilt.
+`manifest::referenced_cache_keys` refuses a layout it cannot decode. One `1.0-skeleton` package
+therefore refuses retention reporting for the **entire** workspace — not only for the lesson that
+owns it — until that workspace is rebuilt.
+
+The boundary is that layout and not "before `2.0`": `0.1-skeleton` and `0.2-skeleton` keep their
+decoders, so a workspace holding them reports normally. Those layouts predate the retake, so
+every segment they record is at take zero and its base key is its own cache key, which is what
+`legacy_record` supplies and why they contribute a complete retention root rather than a partial
+one.
+
+**One `1.0-skeleton` package is governed, and this build cannot decode it.** The E1-S4
+qualification output at
+`e1-s4-package-2026-09-01-212639/workspace/previews/e1-s4-three-segment/packages/1579a41d…/` is
+named by path in the accepted `e1-s4-minimal-package-generation-v1` gate record. Retention
+reporting and package reuse against *that* workspace now refuse with
+`DurableStateError::UnsupportedPackageManifest`, and the remedy is the one this record's own
+decision already names: rebuild it.
+
+The evidence itself is unaffected, and that is checkable rather than asserted: the record binds
+its artifacts by SHA-256 of the bytes, so re-verifying it hashes files and never parses the
+manifest through `parse_stored_manifest`. Nothing in the test suite or in CI reads that
+workspace, and `data/` is untracked, so the package is local state rather than repository
+content.
+
+Whether a `1.0-skeleton` decoder is owed anyway is **already decided, not open**. §Approval's
+manifest row is signed against "the `1.0-skeleton` refusal", and `G1-FREEZE-CHARTER.md`'s
+`manifest` / `2.0-skeleton` row states the disposition in the same accepted commit: "a
+`1.0-skeleton` package is refused and rebuilt". The package above is an instance of the
+*rebuilt* half rather than a cost the signers did not price — "rebuilt" presupposes packages
+existing to rebuild.
+
+The asymmetry with E1-S4 §Impact — which kept the `0.1`/`0.2` decoders on the argument that
+packages in those layouts exist and accepted evidence describes them — is real, and stating it
+plainly is better than reasoning it away. A `1.0-skeleton` decoder is feasible on the same terms
+as those two: it would record `take_selection_source: None`, exactly as `legacy_record` does, and
+`validate_package` compares that field with `== Some(expected)`, so such a package could
+contribute a retention root while never being reused. Nothing technical forces the refusal.
+
+It is a decision, priced and signed: a fourth stored-segment decoder, carried for the life of the
+layout, against one rebuild of an untracked qualification package. The signers took the rebuild.
+Recorded here so a later reader finds the trade rather than re-deriving it and mistaking a choice
+for an oversight.
 
 This is a compatibility boundary rather than a defect, and it is fail-closed in the right
 direction: reading an unreadable root as "references nothing" would report live artifacts as
@@ -230,4 +279,5 @@ open question in §Open questions stays open, and this row does not close it.
 
 | Date | Amendment | Approval |
 |---|---|---|
-| 2026-09-04 | §Implementation consequences added, recording the `--retake` qualification surface and the pre-`2.0` retention-reporting boundary. Both were properties of the change as signed; neither is a new decision, and no contract, version, identity, or byte moves. Recorded in place rather than as a successor record, because there is no claim to correct — `E1-S2-INTERFACE-CHANGE-003` exists for that case. | No re-approval sought: §Approval is unchanged |
+| 2026-09-04 | §Version and compatibility gained the layouts-read bullet, which states the read set this change leaves and supersedes `E1-S4-INTERFACE-CHANGE-001` §Three layouts are now read, one is written. §Implementation consequences corrected the retention boundary from "before `manifest` `2.0`" to `1.0-skeleton`, which is what `parse_stored_manifest` refuses; the wider claim was never true, because both older layouts kept their decoders. It also records the one governed `1.0-skeleton` package this build cannot decode, and why refusing it is a priced decision rather than an oversight. An earlier draft of this row opened that as an open question **G-C**; it was withdrawn the same day, because the question was already answered when it was asked — §Approval's manifest row is signed against "the `1.0-skeleton` refusal" and `G1-FREEZE-CHARTER.md` states "refused and rebuilt", both in the accepting commit. Recorded in place rather than as a successor record because this record is not yet in force — it has not merged — so this is authoring rather than amendment of a landed control. | No re-approval sought: the signed disposition is unchanged, and the corrections move no contract, version, identity, or byte |
+| 2026-09-04 | §Implementation consequences added, recording the `--retake` qualification surface and the retention-reporting boundary — stated then as pre-`2.0`, corrected in the row above. Both were properties of the change as signed; neither is a new decision, and no contract, version, identity, or byte moves. Recorded in place rather than as a successor record, because there is no claim to correct — `E1-S2-INTERFACE-CHANGE-003` exists for that case. | No re-approval sought: §Approval is unchanged |

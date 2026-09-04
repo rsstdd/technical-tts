@@ -329,6 +329,24 @@ pub enum TakesError {
         /// Key that take actually derives.
         derived: CacheKey,
     },
+    /// The plan offered for verification is not the one these selections
+    /// reconciled against.
+    ///
+    /// A caller error rather than a document one, and refused rather than
+    /// assumed: [`AppliedSelection::verify_selected_keys`] checks the segments
+    /// the plan lists, so a plan missing a reconciled segment leaves that
+    /// segment's recorded key unverified and an empty plan verifies nothing at
+    /// all. The remedy is this build's, not the reviewer's, which is why the
+    /// message names no document.
+    #[error(
+        "segment `{segment_id}` is described by only one of the reconciled selections and the \
+         plan offered to verify them, so the recorded selected keys cannot all be checked; this \
+         build must verify against the plan it derived from the same lesson at these takes"
+    )]
+    SelectedPlanMismatch {
+        /// First segment either side carries alone.
+        segment_id: String,
+    },
     /// The audio a selection approved is not the audio its cache entry holds.
     ///
     /// ADR-0001 §12.2: "Byte-identical reconstruction additionally requires
@@ -388,19 +406,45 @@ impl AppliedSelection {
     ///
     /// # Errors
     ///
+    /// [`TakesError::SelectedPlanMismatch`] when `selected` does not describe
+    /// exactly the reconciled segments, and
     /// [`TakesError::SelectedCacheKeyMismatch`] when a recorded selected cache
     /// key is not the key its own take derives.
     pub fn verify_selected_keys(&self, selected: &RenderPlan) -> Result<(), TakesError> {
+        // The caller's precondition is checked alongside the document's, in
+        // both directions, because this gate reads only the segments `selected`
+        // lists: a plan short of a reconciled segment would leave that
+        // segment's recorded key unverified and still report success, so the
+        // completeness of the check would belong to the argument rather than to
+        // the selection. `reconcile_with_plan` makes `self.selected` name
+        // exactly the base plan's segments, which is what the two loops compare
+        // against.
         for segment in &selected.segments {
-            let Some(recorded) = self.selected.get(&segment.id) else {
-                continue;
-            };
+            let recorded =
+                self.selected
+                    .get(&segment.id)
+                    .ok_or_else(|| TakesError::SelectedPlanMismatch {
+                        segment_id: segment.id.clone(),
+                    })?;
             if recorded.selected_cache_key != segment.cache_key {
                 return Err(TakesError::SelectedCacheKeyMismatch {
                     segment_id: segment.id.clone(),
                     selected_take: recorded.selected_take,
                     recorded: recorded.selected_cache_key.clone(),
                     derived: segment.cache_key.clone(),
+                });
+            }
+        }
+
+        let verified: BTreeSet<&str> = selected
+            .segments
+            .iter()
+            .map(|segment| segment.id.as_str())
+            .collect();
+        for segment_id in self.selected.keys() {
+            if !verified.contains(segment_id.as_str()) {
+                return Err(TakesError::SelectedPlanMismatch {
+                    segment_id: segment_id.clone(),
                 });
             }
         }
@@ -752,6 +796,62 @@ mod tests {
 
             assert!(expected(&error), "{case}: {error}");
         }
+    }
+
+    /// The gate verifies the segments it reconciled, not the segments the
+    /// caller happens to offer.
+    ///
+    /// `seg-0002` carries the same corruption in both halves. Catching it only
+    /// while the plan lists the segment would make the refusal a property of
+    /// the argument rather than of the recorded selection, which is the shape
+    /// a vacuous gate takes: an empty plan would verify nothing and pass.
+    #[test]
+    fn t1_e2_selected_key_verification_refuses_a_plan_it_did_not_reconcile() {
+        let base = base_plan();
+        let applied = selection_for(&base)
+            .validate()
+            .expect("a document derived from the plan is internally valid")
+            .reconcile_with_plan(&base)
+            .expect("a selection recorded against this plan reconciles with it");
+
+        let mut corrupt = base.clone();
+        corrupt.segments[1].cache_key = key("c");
+
+        assert!(
+            matches!(
+                applied.verify_selected_keys(&corrupt),
+                Err(TakesError::SelectedCacheKeyMismatch { ref segment_id, .. })
+                    if segment_id == "seg-0002"
+            ),
+            "a recorded key the plan does not derive must be refused",
+        );
+
+        corrupt.segments.retain(|segment| segment.id != "seg-0002");
+        let error = applied
+            .verify_selected_keys(&corrupt)
+            .expect_err("a plan omitting a reconciled segment must be refused");
+
+        assert!(
+            matches!(
+                &error,
+                TakesError::SelectedPlanMismatch { segment_id } if segment_id == "seg-0002"
+            ),
+            "expected a mismatched-plan refusal, got {error}",
+        );
+
+        let mut foreign = base;
+        foreign.segments[0].id = "seg-0003".to_owned();
+        let error = applied
+            .verify_selected_keys(&foreign)
+            .expect_err("a plan carrying an unreconciled segment must be refused");
+
+        assert!(
+            matches!(
+                &error,
+                TakesError::SelectedPlanMismatch { segment_id } if segment_id == "seg-0003"
+            ),
+            "expected a mismatched-plan refusal, got {error}",
+        );
     }
 
     #[test]

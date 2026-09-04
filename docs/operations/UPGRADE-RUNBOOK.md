@@ -45,7 +45,7 @@ introduced it and what clears it.
 
 | Limitation | Introduced by | Clears when |
 |---|---|---|
-| **Cache retention reporting refuses a workspace holding any pre-`2.0` package.** `prune_candidates` reads every published manifest as a retention root, and a root it cannot decode is an error rather than an empty contribution — so **one** legacy package disables prune reporting for the **whole** workspace, not just for that lesson. | `E2-S2-INTERFACE-CHANGE-001` (`manifest` `1.0` → `2.0`) | Every lesson in the workspace has been rebuilt, so no `1.0-skeleton` manifest remains beneath `previews/`. |
+| **Cache retention reporting refuses a workspace holding a `1.0-skeleton` package.** `prune_candidates` reads every published manifest as a retention root, and a root it cannot decode is an error rather than an empty contribution. The `0.1-skeleton` and `0.2-skeleton` layouts have legacy decoders, but **one** `1.0-skeleton` package disables prune reporting for the **whole** workspace, not just for that lesson. | `E2-S2-INTERFACE-CHANGE-001` (`manifest` `1.0` → `2.0`) | Every affected lesson has been rebuilt, so no `1.0-skeleton` manifest remains beneath `previews/`. |
 
 The refusal is deliberate and must not be softened into a skip. Treating an unreadable root as
 "references nothing" would report live artifacts as prunable, which is a misleading report today
