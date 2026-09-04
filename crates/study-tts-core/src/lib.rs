@@ -64,7 +64,7 @@ pub use lesson::{
 pub use plan::{
     BASE_TAKE, CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT,
     CANONICAL_SAMPLE_RATE, CacheKey, MalformedCacheKey, MalformedPlanHash, PLAN_SCHEMA_STEM,
-    PLAN_SCHEMA_VERSION, PlanError, PlanHash, PlannedSegment, RenderPlan,
+    PLAN_SCHEMA_VERSION, PlanError, PlanHash, PlannedSegment, RenderPlan, TakeSelection,
 };
 pub use release::{REQUIRED_PRODUCTION_GATES, ReleaseClaim, ReleaseError, ReleaseStatus};
 pub use rights::{SourceClassification, SourceRightsDeclaration};
@@ -73,8 +73,8 @@ pub use schema::{
     SchemaVersionError, schema_file_name, schema_uri,
 };
 pub use takes::{
-    MAX_TAKES_JSON_BYTES, SelectedTake, TAKES_SCHEMA_STEM, TAKES_SCHEMA_VERSION, TakesDocument,
-    TakesError, ValidatedTakes,
+    AppliedSelection, ImplicitTakeSelection, MAX_TAKES_JSON_BYTES, SelectedTake, TAKES_SCHEMA_STEM,
+    TAKES_SCHEMA_VERSION, TakeSelectionSource, TakesDocument, TakesError, ValidatedTakes,
 };
 pub use tool::{MalformedToolProfileHash, ToolProfileHash};
 pub use verification::{

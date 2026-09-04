@@ -22,18 +22,19 @@ use serde::Deserialize;
 use serde_json::Value;
 use study_tts_core::{
     AudioDigest, CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, JobDocument,
-    JobState, LessonDiagnostic, LessonDigest, MAX_LESSON_JSON_BYTES, PlanError, ReleaseClaim,
-    ReleaseStatus, RenderPlan, RightsDecision, SegmentStatus, SourceRightsDeclaration,
-    SynthesisContext, ValidatedLesson, VoiceConditioningHash, VoiceError, VoiceUse,
-    validate_lesson_id,
+    JobState, LessonDiagnostic, LessonDigest, MAX_LESSON_JSON_BYTES, MAX_TAKES_JSON_BYTES,
+    PlanError, ReleaseClaim, ReleaseStatus, RenderPlan, RightsDecision, SegmentStatus,
+    SourceRightsDeclaration, SynthesisContext, TakeSelection, TakeSelectionSource, TakesError,
+    ValidatedLesson, ValidatedTakes, VoiceError, VoiceUse, validate_lesson_id,
 };
 
 use crate::{
-    BackendDescriptor, BackendError, BuildError, CachePublisher, CacheResolveRequest,
-    DurableStateError, FileSystemCachePublisher, FileSystemJobRepository, FileSystemPackageWriter,
-    IoError, JobOwnership, JobRepository, PackagePreflightRequest, PackagePrepareRequest,
+    BackendError, BuildError, CachePublisher, CacheResolveRequest, DurableStateError,
+    FileSystemCachePublisher, FileSystemJobRepository, FileSystemPackageWriter, IoError,
+    JobOwnership, JobRepository, PackagePreflightRequest, PackagePrepareRequest,
     PackageWriteRequest, PackageWriter, PreparedPackageWriter, PublicationError, RightsError,
-    SynthesisRequest, TtsExecutor, export, io_error, tools, voice_gate,
+    SynthesisRequest, TtsExecutor, durable::read_bounded_bytes, export, io_error, managed, tools,
+    voice_gate,
 };
 
 /// Everything one preview build needs, named explicitly rather than read from
@@ -58,6 +59,19 @@ pub struct BuildRequest {
     /// nowhere to resolve one would derive cache keys for voices it never
     /// loaded.
     pub voice_profile_root: PathBuf,
+    /// Segments to render an alternate performance of, and at which take.
+    ///
+    /// The library seam behind ADR-0001 §12.1's `study-tts retake`, whose
+    /// command belongs to E2-S5. Empty for an ordinary build, which is the
+    /// common case and the reason this is a map rather than an option: a
+    /// retake is per segment, and §11.4 requires the segments beside it to keep
+    /// their identity.
+    ///
+    /// A takes document records a selection among takes that *exist*, so it
+    /// cannot request one that does not: `audio_blake3` names audio a reviewer
+    /// listened to. This is the request path, and
+    /// [`TakeSelection::with_retakes`] states what it does to a selection.
+    pub retakes: BTreeMap<String, u32>,
 }
 
 /// What a resume needs that the job directory does not hold.
@@ -214,6 +228,38 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// voice gate above returned no conditioning artifact for a speaker some
 /// segment names. The lesson is valid in that case, which is why the refusal
 /// is its own category rather than a lesson diagnostic.
+/// [`study_tts_core::PlanError::BaseTakeKeyMismatch`] and
+/// [`study_tts_core::PlanError::RetakeUsesBaseKey`] cannot be returned here:
+/// both are raised by [`RenderPlan::verify_recorded_selection`] on a plan read
+/// back from disk, which only [`resume_preview`] does.
+///
+/// Take selection returns the refusals of the `<lesson-stem>.takes.json`
+/// sibling ADR-0001 §12.1 puts beside the lesson.
+/// [`study_tts_core::TakesError::TakesJsonTooLarge`],
+/// [`study_tts_core::TakesError::InvalidJson`],
+/// [`study_tts_core::TakesError::UnsupportedSchema`],
+/// [`study_tts_core::TakesError::UnexpectedSchemaLink`],
+/// [`study_tts_core::TakesError::InvalidLessonId`],
+/// [`study_tts_core::TakesError::InvalidSegmentId`],
+/// [`study_tts_core::TakesError::MissingSelections`],
+/// [`study_tts_core::TakesError::TooManySelections`],
+/// [`study_tts_core::TakesError::DuplicateSelection`],
+/// [`study_tts_core::TakesError::BaseTakeKeyMismatch`], and
+/// [`study_tts_core::TakesError::RetakeUsesBaseKey`] refuse the document on its
+/// own terms. Against the plan it selects,
+/// [`study_tts_core::TakesError::LessonMismatch`] reports selections recorded
+/// for another lesson, [`study_tts_core::TakesError::UnselectedSegment`] a
+/// segment left unapproved, [`study_tts_core::TakesError::UnplannedSelection`]
+/// a selection for a segment the plan does not carry,
+/// [`study_tts_core::TakesError::StaleSynthesisBaseKey`] ADR-0001 §12.2's
+/// refusal of a selection whose base key no longer matches, and
+/// [`study_tts_core::TakesError::SelectedCacheKeyMismatch`] a recorded key that
+/// is not the one its take derives. Once a segment resolves,
+/// [`study_tts_core::TakesError::ApprovedAudioMismatch`] refuses a cache entry
+/// holding audio other than the audio the selection approved.
+/// [`study_tts_core::TakesError::PlanIsNotBaseTakes`] cannot be returned here:
+/// it reports a caller reconciling against an already-selected plan, and this
+/// module reconciles only against the plan it derived at take zero.
 ///
 /// Tool work returns [`crate::ToolError::MissingTool`],
 /// [`crate::ToolError::InspectTool`], [`crate::ToolError::ToolProbeFailed`],
@@ -260,6 +306,12 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`crate::AudioError::AssembledLengthMismatch`], [`IoError::FileSystem`],
 /// [`IoError::AudioAt`], [`IoError::WriteJson`], or
 /// [`BuildError::Synthesis`].
+///
+/// [`crate::CacheError::UnrecognizedCacheEntry`] is not among them. It reports
+/// a directory inside the cache tree that no cache key names, which only
+/// [`crate::prune_candidates`] can find: a build resolves the one entry its
+/// plan derives rather than enumerating the tree, so it never looks at a
+/// directory it did not name.
 ///
 /// [`IoError::DestinationExists`] is not among them either. A build claims
 /// names inside a workspace it owns, where losing a publication race is
@@ -370,6 +422,10 @@ pub fn build_preview_with_services(
     let gated = gate(
         lesson,
         lesson_bytes,
+        TakesInput::SiblingOf {
+            lesson_path: &request.lesson_path,
+            retakes: &request.retakes,
+        },
         &request.voice_profile_root,
         &request.ffmpeg_executable,
         &request.ffprobe_executable,
@@ -490,9 +546,15 @@ pub fn resume_preview_with_services(
         }
         .into());
     }
+    // Invariant A-1: the retained plan is this job's authoritative statement of
+    // what it renders, so resume recovers its selection from there and performs
+    // no sibling-takes discovery. `JobDocument::open_attempt` compares no plan
+    // hashes, so a rediscovering resume would degrade a retake to take zero
+    // with nothing reporting it.
     let gated = gate(
         lesson,
         lesson_bytes,
+        TakesInput::Retained(&retained_plan),
         &request.voice_profile_root,
         &request.ffmpeg_executable,
         &request.ffprobe_executable,
@@ -517,6 +579,7 @@ struct GatedBuild {
 fn gate(
     lesson: ValidatedLesson,
     lesson_bytes: Vec<u8>,
+    takes: TakesInput<'_>,
     voice_profile_root: &Path,
     ffmpeg_executable: &Path,
     ffprobe_executable: &Path,
@@ -530,8 +593,13 @@ fn gate(
         voice_gate::resolve_speakers(voice_profile_root, &lesson, VoiceUse::PrivateSynthesis)?;
 
     let descriptor = services.executor.descriptor();
-    let (plan, synthesis_requests) =
-        plan_requests(&lesson, &descriptor, voice_conditioning_hashes)?;
+    let context =
+        descriptor.synthesis_context(lesson.language().clone(), voice_conditioning_hashes);
+    // Selection precedes executor validation and tool preflight, so a stale
+    // takes file is refused before anything observable happens — the same
+    // reason the voice gate precedes planning.
+    let plan = select_plan(&lesson, &context, takes)?;
+    let synthesis_requests = synthesis_requests(&plan, &context)?;
     for synthesis_request in &synthesis_requests {
         services.executor.validate(synthesis_request)?;
     }
@@ -621,6 +689,20 @@ fn render_attempt(
                 value: cached.audio_blake3().to_owned(),
             }
         })?;
+        // Invariant I-3: the plan records the approved checksum for audit and
+        // keeps it out of `plan_hash`, so this comparison against the resolved
+        // artifact is the verification it is recorded under. A segment planned
+        // without a recorded selection has no approval to contradict.
+        if let Some(approved) = &segment.audio_blake3
+            && approved != &audio_blake3
+        {
+            return Err(boxed_takes(TakesError::ApprovedAudioMismatch {
+                segment_id: segment.id.clone(),
+                cache_key: cached.cache_key().clone(),
+                recorded: approved.clone(),
+                actual: audio_blake3,
+            }));
+        }
         // The §6.4 self-loop: one segment completed, and the document says so
         // durably before the next begins.
         document = document.transition(JobState::Rendering)?.with_segment(
@@ -664,22 +746,123 @@ fn render_attempt(
     })
 }
 
-/// Derives the plan and the backend requests for one validated lesson.
+/// Where the takes one build plans at come from.
 ///
-/// Pure: no filesystem, no process, no clock. That is what lets the ordering
-/// guarantees above be asserted without a workspace — an unreviewed lesson
-/// never reaches here, and nothing display-only can leave here, because
-/// [`RenderPlan`] is the only thing this reads.
-fn plan_requests(
+/// The two variants are not interchangeable, and that is the point. Discovery
+/// is legitimate only on the path that *establishes* a plan; a resume
+/// continues one, and recovers its selection from the plan it already retained
+/// rather than from a file that may have moved since. See
+/// [`TakeSelection::Recovered`], which states the invariant.
+#[derive(Clone, Copy, Debug)]
+enum TakesInput<'a> {
+    /// The `<lesson-stem>.takes.json` sibling ADR-0001 §12.1 puts beside an
+    /// authored lesson, if one is there, plus any alternate performance the
+    /// request asked for.
+    SiblingOf {
+        /// The lesson being built, whose stem names the sibling.
+        lesson_path: &'a Path,
+        /// The §11.4 alternate performances this build requests.
+        retakes: &'a BTreeMap<String, u32>,
+    },
+    /// The selection a retained `plan.json` already established.
+    Retained(&'a RenderPlan),
+}
+
+/// Derives the plan this build renders, at the takes `takes` names.
+///
+/// Applies a selection to a derived plan rather than deriving the two
+/// together, because ADR-0001 §12.2's `synthesis_base_key` only exists once a
+/// base plan has been derived: the base plan is what a recorded base key is
+/// compared against, and every planned segment's cache key *is* that segment's
+/// base key exactly while nothing has been selected.
+///
+/// # Errors
+///
+/// [`PlanError::UnresolvedSpeaker`]; the [`TakesError`] refusals
+/// [`ValidatedTakes::from_json`] and [`ValidatedTakes::reconcile_with_plan`]
+/// raise; [`crate::DurableStateError::DurableRecordTooLarge`] for an oversized
+/// takes file; [`crate::ManagedPathError`] when the sibling is a symlink or
+/// not a regular file; and [`IoError::FileSystem`] when it cannot be read.
+fn select_plan(
     lesson: &ValidatedLesson,
-    descriptor: &BackendDescriptor,
-    voice_conditioning_hashes: BTreeMap<String, VoiceConditioningHash>,
-) -> Result<(RenderPlan, Vec<SynthesisRequest>), BuildError> {
-    let context =
-        descriptor.synthesis_context(lesson.language().clone(), voice_conditioning_hashes);
-    let plan = RenderPlan::for_lesson(lesson, &context)?;
-    let requests = synthesis_requests(&plan, &context)?;
-    Ok((plan, requests))
+    context: &SynthesisContext,
+    takes: TakesInput<'_>,
+) -> Result<RenderPlan, BuildError> {
+    let (lesson_path, retakes) = match takes {
+        TakesInput::Retained(retained) => {
+            return Ok(RenderPlan::for_lesson_with_takes(
+                lesson,
+                context,
+                &TakeSelection::recovered(retained),
+            )?);
+        }
+        TakesInput::SiblingOf {
+            lesson_path,
+            retakes,
+        } => (lesson_path, retakes),
+    };
+
+    let base = RenderPlan::for_lesson(lesson, context)?;
+    let Some(document) = read_sibling_takes(lesson_path)? else {
+        return Ok(RenderPlan::for_lesson_with_takes(
+            lesson,
+            context,
+            &TakeSelection::implicit().with_retakes(retakes),
+        )?);
+    };
+
+    let applied = document.reconcile_with_plan(&base).map_err(boxed_takes)?;
+    // Verified against the plan the *document alone* derives, before any
+    // requested performance is layered on: a retake deliberately moves a
+    // segment off its recorded selection, so checking the recorded keys
+    // against the retaken plan would report the request as a mismatch.
+    let selected =
+        RenderPlan::for_lesson_with_takes(lesson, context, &TakeSelection::explicit(&applied))?;
+    applied
+        .verify_selected_keys(&selected)
+        .map_err(boxed_takes)?;
+    if retakes.is_empty() {
+        return Ok(selected);
+    }
+    Ok(RenderPlan::for_lesson_with_takes(
+        lesson,
+        context,
+        &TakeSelection::explicit(&applied).with_retakes(retakes),
+    )?)
+}
+
+/// Reads the takes document beside a lesson, when the author recorded one.
+///
+/// Resolved through [`managed::leaf`] rather than joined lexically: a
+/// validated file name still follows a symlink, and a build that read its
+/// selection through one would apply approvals from a document outside the
+/// directory the operator named.
+///
+/// # Errors
+///
+/// As [`select_plan`], excluding the planning and reconciliation refusals.
+fn read_sibling_takes(lesson_path: &Path) -> Result<Option<ValidatedTakes>, BuildError> {
+    let (Some(directory), Some(stem)) = (lesson_path.parent(), lesson_path.file_stem()) else {
+        return Ok(None);
+    };
+    let Some(stem) = stem.to_str() else {
+        return Ok(None);
+    };
+
+    let sibling = managed::leaf(directory, &format!("{stem}.takes.json"))?;
+    if !sibling.exists() {
+        return Ok(None);
+    }
+
+    let bytes = read_bounded_bytes(&sibling, MAX_TAKES_JSON_BYTES)?;
+    ValidatedTakes::from_json(&bytes)
+        .map(Some)
+        .map_err(boxed_takes)
+}
+
+/// Boxes a takes refusal, for the reason [`BuildError::Takes`] records.
+fn boxed_takes(error: TakesError) -> BuildError {
+    BuildError::Takes(Box::new(error))
 }
 
 /// Maps each planned segment onto the backend request that must reproduce its
@@ -982,6 +1165,13 @@ struct ProductionManifest {
     /// than a string carried past every gate that would have consulted it.
     release_status: ReleaseStatus,
     lesson_id: String,
+    /// Optional so an older manifest is refused for what it claims rather than
+    /// for its shape: `deny_unknown_fields` above means a required field would
+    /// make every manifest written before this one fail to parse, and
+    /// `MalformedProductionManifest` is not the refusal such a document has
+    /// earned. Absent is read as [`TakeSelectionSource::Implicit`], which is
+    /// the fail-closed reading.
+    take_selection_source: Option<TakeSelectionSource>,
     content_rights: Option<Value>,
     voice_profiles: Option<Value>,
 }
@@ -1074,7 +1264,10 @@ fn require_declarations<'de, T: Deserialize<'de>>(
 /// [`RightsError::MissingVoiceProfileDeclaration`],
 /// [`RightsError::EmptyManifestIdentifier`], or
 /// [`study_tts_core::VoiceError::ProfileNotApproved`] for what it claims about
-/// its sources and voices. A manifest that clears all of those is refused with
+/// its sources and voices. A manifest that clears those is then refused with
+/// [`PublicationError::ImplicitTakeSelection`] when it records a generated
+/// take selection, or records nothing about one, per ADR-0001 §12.2. A
+/// manifest that clears all of them is refused with
 /// [`PublicationError::ProductionGatesUnavailable`], because the gates it
 /// would have to satisfy do not exist yet.
 pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
@@ -1156,6 +1349,20 @@ pub fn validate_production_manifest(bytes: &[u8]) -> Result<(), BuildError> {
         }
     }
 
+    // After what the manifest claims about its sources and voices, and before
+    // the terminal refusal, so this reports selection rather than shadowing a
+    // rights finding or being shadowed by the catch-all. The order matters
+    // both ways: ahead of the rights checks it would answer every rights
+    // question with a selection complaint.
+    let selection = manifest
+        .take_selection_source
+        .unwrap_or(TakeSelectionSource::Implicit);
+    selection
+        .production()
+        .map_err(|_| PublicationError::ImplicitTakeSelection {
+            declared: selection.name(),
+        })?;
+
     Err(PublicationError::ProductionGatesUnavailable.into())
 }
 
@@ -1176,7 +1383,7 @@ mod tests {
         ValidatedLesson, VoiceConditioningHash,
     };
 
-    use super::{block_on, plan_requests, read_lesson_from_reader, synthesis_requests};
+    use super::{block_on, read_lesson_from_reader, synthesis_requests};
     use crate::BuildError;
 
     struct PendingThenReady {
@@ -1290,12 +1497,18 @@ mod tests {
 
     /// The plan and requests a document produces once it is accepted.
     ///
-    /// Pure by construction: [`plan_requests`] reaches no filesystem and starts
-    /// no process, which is what lets the two ordering tests below be T1.
+    /// Pure by construction: planning and [`synthesis_requests`] reach no
+    /// filesystem and start no process, which is what lets the two ordering
+    /// tests below be T1. Selection is deliberately not exercised here — it is
+    /// the one part of the gate that reads a file, and
+    /// `t4_e2_a_stale_takes_file_is_refused_before_any_synthesis` observes it.
     fn requests_for(document: &[u8]) -> Result<Vec<crate::SynthesisRequest>, BuildError> {
         let lesson = ValidatedLesson::from_json(DOCUMENT, document)?;
         let descriptor = crate::synthesis::sample_descriptor();
-        Ok(plan_requests(&lesson, &descriptor, sample_conditioning())?.1)
+        let context =
+            descriptor.synthesis_context(lesson.language().clone(), sample_conditioning());
+        let plan = RenderPlan::for_lesson(&lesson, &context)?;
+        Ok(synthesis_requests(&plan, &context)?)
     }
 
     #[test]
@@ -1319,7 +1532,7 @@ mod tests {
         );
 
         // The refusal precedes the worker because no `SynthesisRequest` exists
-        // to send one: `plan_requests` accepts only a `ValidatedLesson`, and
+        // to send one: planning accepts only a `ValidatedLesson`, and
         // validation is what did not return. Correcting the one field the
         // document is wrong about is what proves it — a lesson refused for
         // some unrelated reason would still be refused here.

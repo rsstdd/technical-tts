@@ -418,6 +418,59 @@ fn accepts_takes(bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// T3, AC8: every recorded field survives the round trip a takes file makes on
+/// its way from a reviewer's editor into a build.
+///
+/// The expectation is the fixture's literal values rather than a second read of
+/// the first parse. A comparison against another derivation would agree with a
+/// serializer that dropped the same field on both sides, which is exactly the
+/// loss this test exists to catch.
+#[test]
+fn t3_e2_takes_file_round_trips_without_selection_loss() {
+    let path = repository_root().join("fixtures/contracts/e1-s1-takes-valid.json");
+    let authored = fs::read(&path).expect("the valid takes fixture is readable");
+
+    let parsed = study_tts_core::ValidatedTakes::from_json(&authored)
+        .expect("the published takes example is accepted");
+    let reserialized = serde_json::to_vec(&study_tts_core::TakesDocument {
+        schema: Some(schema_uri(
+            study_tts_core::TAKES_SCHEMA_STEM,
+            study_tts_core::TAKES_SCHEMA_VERSION.major(),
+        )),
+        schema_version: study_tts_core::TAKES_SCHEMA_VERSION.to_string(),
+        lesson_id: parsed.lesson_id().to_owned(),
+        selections: parsed.selections().to_vec(),
+    })
+    .expect("a validated takes document serializes");
+
+    let round_tripped = study_tts_core::ValidatedTakes::from_json(&reserialized)
+        .expect("a document this build wrote is a document this build reads");
+
+    assert_eq!(round_tripped.lesson_id(), "e0-s0-walking-skeleton");
+    assert_eq!(round_tripped.selections().len(), 1);
+
+    let selection = &round_tripped.selections()[0];
+    assert_eq!(selection.segment_id, "seg-0001");
+    assert_eq!(selection.synthesis_base_key.as_str(), &"a".repeat(64));
+    assert_eq!(selection.selected_take, 2);
+    assert_eq!(selection.selected_cache_key.as_str(), &"b".repeat(64));
+    assert_eq!(
+        selection.audio_blake3.as_str(),
+        "44f9d464e3afe71cf25f86f2c63cab242b539b25a7d9ebc3dd9382cb6a7e6367"
+    );
+
+    // The published schema must accept what this build writes, or an author's
+    // editor and the build disagree about the document the build produced.
+    validate_against_schema(
+        &read_json(&schema_directory().join(study_tts_core::schema_file_name(
+            study_tts_core::TAKES_SCHEMA_STEM,
+            study_tts_core::TAKES_SCHEMA_VERSION.major(),
+        ))),
+        &serde_json::from_slice::<Value>(&reserialized).expect("the rewritten document is JSON"),
+    )
+    .expect("the rewritten takes document satisfies its published schema");
+}
+
 fn accepts_verification(bytes: &[u8]) -> Result<(), String> {
     let record: study_tts_core::VerificationIdentityRecord =
         serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
@@ -857,7 +910,7 @@ fn t3_e1_every_published_schema_claims_the_uri_its_documents_name() {
 /// agree with any schema it was handed, including one that grew a required
 /// field nobody meant to add — which is the change this table exists to make
 /// impossible to land quietly.
-const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 43] = [
+const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 44] = [
     (
         "job 1.0",
         "/",
@@ -923,23 +976,36 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 43] = [
         ],
     ),
     (
-        "manifest 1.0",
+        "manifest 2.0",
         "/",
         &[
             "artifacts",
+            "join_continuity",
             "lesson_id",
             "plan_hash",
             "release_status",
             "schema_version",
             "segments",
+            "take_selection_source",
             "text_renderer_version",
             "tools",
             "total_frames",
         ],
     ),
-    ("manifest 1.0", "/$defs/StoredArtifact", &["blake3", "path"]),
+    ("manifest 2.0", "/$defs/StoredArtifact", &["blake3", "path"]),
     (
-        "manifest 1.0",
+        "manifest 2.0",
+        "/$defs/StoredJoin",
+        &[
+            "calibration_source",
+            "earlier_segment_id",
+            "later_segment_id",
+            "loudness_ratio",
+            "rate_ratio",
+        ],
+    ),
+    (
+        "manifest 2.0",
         "/$defs/StoredArtifacts",
         &[
             "captions",
@@ -951,12 +1017,12 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 43] = [
         ],
     ),
     (
-        "manifest 1.0",
+        "manifest 2.0",
         "/$defs/StoredExecution",
         &["argument_profile_blake3", "arguments", "tool"],
     ),
     (
-        "manifest 1.0",
+        "manifest 2.0",
         "/$defs/StoredManifestSegment",
         &[
             "audio_blake3",
@@ -965,26 +1031,34 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 43] = [
             "pause_after_ms",
             "pause_frames",
             "segment_id",
+            "selected_take",
             "start_frame",
+            "synthesis_base_key",
         ],
     ),
     (
-        "manifest 1.0",
+        "manifest 2.0",
         "/$defs/StoredToolIdentity",
         &["resolved_executable", "version"],
     ),
     (
-        "manifest 1.0",
+        "manifest 2.0",
         "/$defs/StoredTools",
         &["executions", "ffmpeg", "ffprobe"],
     ),
     (
-        "plan 3.0",
+        "plan 4.0",
         "/",
-        &["lesson_id", "plan_hash", "schema_version", "segments"],
+        &[
+            "lesson_id",
+            "plan_hash",
+            "schema_version",
+            "segments",
+            "take_selection_source",
+        ],
     ),
     (
-        "plan 3.0",
+        "plan 4.0",
         "/$defs/PlannedSegment",
         &[
             "cache_key",
@@ -994,6 +1068,7 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 43] = [
             "speaker",
             "spoken_text",
             "style",
+            "synthesis_base_key",
             "take",
             "voice_profile",
         ],

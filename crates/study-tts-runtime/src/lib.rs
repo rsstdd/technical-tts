@@ -24,6 +24,7 @@ mod package_port;
 mod pipeline;
 mod preview;
 mod process;
+mod prune;
 mod schemas;
 mod synthesis;
 mod timeline;
@@ -37,9 +38,9 @@ mod worker_launcher;
 mod worker_protocol;
 
 pub use audio_edges::{
-    CalibrationSource, EdgeConditioning, MAX_SEGMENT_AUDIO_MS, MAX_TRANSITION_RAMP_MS,
-    ProvisionalCalibration, REQUIRED_EDGE_SILENCE_MS, SilenceThreshold, condition_edges,
-    measure_edge_silence, samples_for,
+    CalibrationSource, EdgeConditioning, JoinContinuity, JoinSide, MAX_SEGMENT_AUDIO_MS,
+    MAX_TRANSITION_RAMP_MS, ProvisionalCalibration, REQUIRED_EDGE_SILENCE_MS, SilenceThreshold,
+    assess_join, condition_edges, measure_edge_silence, samples_for,
 };
 pub use authoring::{SCAFFOLD_VOICE_PROFILE, scaffold_lesson};
 pub use cache::ValidatedCachedArtifact;
@@ -70,6 +71,7 @@ pub use pipeline::{
     build_preview_with_services, load_lesson, publish, resume_preview,
     resume_preview_with_services, validate_m4a_output, validate_production_manifest,
 };
+pub use prune::{PruneCandidate, live_cache_keys, prune_candidates};
 pub use schemas::{
     MANIFEST_SCHEMA_VERSION, PUBLISHED_SCHEMAS, PublishedSchema, SCHEMA_DIRECTORY,
     WORKER_PROTOCOL_SCHEMA_VERSION,

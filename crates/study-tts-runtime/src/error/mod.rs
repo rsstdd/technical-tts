@@ -29,7 +29,7 @@
 
 use std::{io, path::PathBuf};
 
-use study_tts_core::{LessonDiagnostic, PlanError, ReleaseError, VoiceError};
+use study_tts_core::{LessonDiagnostic, PlanError, ReleaseError, TakesError, VoiceError};
 use thiserror::Error;
 
 use crate::BackendError;
@@ -77,6 +77,14 @@ pub enum BuildError {
     /// lesson boundary already returns the box, so this is not a second one.
     #[error(transparent)]
     Lesson(#[from] Box<LessonDiagnostic>),
+    /// A takes document was unusable, or disagreed with the plan it selects.
+    ///
+    /// Boxed for the reason [`BuildError::Lesson`] is: the base-key refusal
+    /// carries a segment identity and both keys, and holding those inline
+    /// would grow every `BuildError` in the workspace past the baseline
+    /// `t1_e0_build_error_does_not_grow_during_category_refactor` holds.
+    #[error(transparent)]
+    Takes(Box<TakesError>),
     /// Render planning refused a lesson whose voices were not resolved.
     ///
     /// Named rather than folded into [`BuildError::Lesson`]: the lesson is
@@ -131,10 +139,15 @@ impl BuildError {
             // `error::model_artifacts` records: the Failure routing table
             // establishes no owner for it, so the owner is named in the
             // message instead of invented here.
+            // `Takes` joins these for the same reason: §Failure routing
+            // establishes no owner for a selection document, so each refusal
+            // names the reviewer who recorded it in its own message rather
+            // than claiming a row that does not exist.
             Self::Io(_)
             | Self::Lesson(_)
             | Self::Plan(_)
             | Self::Synthesis(_)
+            | Self::Takes(_)
             | Self::ModelArtifacts(_) => None,
             Self::Voice(error) => voice_remedy(error),
             Self::VoiceProfile(error) => error.remedy(),
@@ -471,7 +484,8 @@ mod tests {
                 action: "read the quarantined attempt and correct the worker that staged an \
                          unexpected file",
             },
-            CacheError::PackageArtifactCountMismatch { .. }
+            CacheError::UnrecognizedCacheEntry { .. }
+            | CacheError::PackageArtifactCountMismatch { .. }
             | CacheError::PackageArtifactPlanMismatch { .. } => Expected::Governed {
                 row: "State or checksum corruption",
                 action: "preserve the cache and run runtime reconciliation",
@@ -505,8 +519,12 @@ mod tests {
             // No §Failure routing row describes a manifest claiming a status
             // it did not earn. "Production publication" is a §Decision routing
             // row, which names a decider rather than a remedy owner.
+            // `ImplicitTakeSelection` is rowless for a related reason: the
+            // nearest row, "Human review finding", names an owner this enum
+            // has no variant for.
             PublicationError::Release(ReleaseError::PrivateProfileCannotClaimProduction)
             | PublicationError::MalformedProductionManifest { .. }
+            | PublicationError::ImplicitTakeSelection { .. }
             | PublicationError::ManifestNotProductionRelease { .. } => Expected::Rowless {
                 owner: RemedyOwner::ProjectOwner,
                 action: "publish a corrected manifest from a build that earned production status",

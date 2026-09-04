@@ -33,7 +33,8 @@ The root `AGENTS.md` governs the whole repository; this file adds the rules and 
 | Lesson schema, validation, and located diagnostics | `study-tts-core/src/lesson.rs` |
 | Declared voice resolution into the synthesis key | `study-tts-runtime/src/voice_gate.rs` |
 | BCP 47 language tag, checked and case-normalized | `study-tts-core/src/language.rs` |
-| Explicit take selection document | `study-tts-core/src/takes.rs` |
+| Explicit take selection document, and its reconciliation with a plan | `study-tts-core/src/takes.rs` |
+| Cache retention roots and the prune report | `study-tts-runtime/src/prune.rs` ↔ `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Enforcement (must agree) |
 | Render planning and cache identity | `study-tts-core/src/plan.rs` |
 | Canonical bytes every identity is hashed from | `study-tts-core/src/canonical.rs` |
 | Synthesis-key inputs and worker-bundle identity type | `study-tts-core/src/identity.rs` |

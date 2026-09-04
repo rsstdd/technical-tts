@@ -472,9 +472,30 @@ pub fn write_voice_profile_root(root: &Path, profile_ids: &[&str]) -> PathBuf {
 /// The voice profiles the committed lesson fixtures declare.
 ///
 /// Named here rather than repeated per test so a fixture gaining a speaker is
-/// one edit. Mirrors the `speakers` blocks in `fixtures/lessons/`.
-pub const FIXTURE_VOICE_PROFILES: [&str; 2] =
-    ["synthetic-test-voice-v1", "synthetic-test-voice-v2"];
+/// one edit. Mirrors the `speakers` blocks in `fixtures/lessons/`, all of them:
+/// `e1-s4-three-segment.json` binds `owner-fallback-v1`, and while that was
+/// missing here every test driving that lesson had to write its own root.
+///
+/// A **set**, and nothing may depend on its order. Two consumers read it and
+/// both want the same set for the same reason:
+///
+/// - [`write_voice_profile_root`] writes one synthetic profile directory per
+///   entry, so a fixture lesson can resolve every speaker it declares.
+/// - `fake-ndjson-worker` advertises them as its `voices` capability, which
+///   `study_tts_runtime`'s executor *enforces* — a request naming a profile
+///   outside the advertised list is refused as `UndeclaredVoiceProfile`. The
+///   fake synthesizes a deterministic tone for any voice, so it can serve every
+///   entry, and an entry missing here is a fixture lesson the fake cannot be
+///   driven with at all.
+///
+/// Those two readings coincide deliberately: this is "the voices the test rig
+/// supports", and a profile on disk the fake refused to speak would be a rig
+/// disagreeing with itself.
+pub const FIXTURE_VOICE_PROFILES: [&str; 3] = [
+    "owner-fallback-v1",
+    "synthetic-test-voice-v1",
+    "synthetic-test-voice-v2",
+];
 
 /// Hashes a fixture file so the record written beside it agrees with its
 /// bytes.

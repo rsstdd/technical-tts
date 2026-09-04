@@ -10,6 +10,21 @@
       "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
       "type": "string"
     },
+    "CalibrationSource": {
+      "description": "Where a threshold's value came from.\n\nThe distinction exists because this build applies a threshold ADR-0003 has\nnot frozen. A number with no provenance attached is one that gets copied\ninto a production path by the next person who needs a threshold.\n\nSerialized because a cache entry records the calibration its conditioning\nwas produced under: without it, an entry conditioned against the provisional\nthreshold is indistinguishable from one conditioned against the frozen value\nADR-0003 will publish. No `#[serde(other)]`: a calibration this build does\nnot know is a parse error, never a silent default.",
+      "oneOf": [
+        {
+          "const": "provisional",
+          "description": "Chosen for preview use while ADR-0003 is Proposed and its value Pending.",
+          "type": "string"
+        },
+        {
+          "const": "frozen",
+          "description": "Frozen by an accepted ADR-0003 calibration table.",
+          "type": "string"
+        }
+      ]
+    },
     "PlanHash": {
       "description": "BLAKE3 over the canonical serialization of a render plan's resolved segments, as 64 lowercase hexadecimal characters.",
       "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
@@ -116,6 +131,44 @@
       ],
       "type": "object"
     },
+    "StoredJoin": {
+      "additionalProperties": false,
+      "description": "A measured comparison of the two segments meeting at one join.\n\nADR-0001 §11.4: \"After a mid-lesson retake, automated loudness and\nspeaking-rate comparisons plus a listening check evaluate both joins.\" This\nis the automated half, and it is deliberately only the measurement.\n\nNothing here is a verdict. ADR-0003 owns the join-discontinuity threshold\nand the loudness target, it is **Proposed**, and both rows of its\ncalibration table read `Pending`; a `Proposed` ADR authorizes nothing, so a\npass or fail derived here would be an unratified threshold on a production\npath. [`JoinContinuity::production`] is what keeps that from happening by\nbeing passed along.",
+      "properties": {
+        "calibration_source": {
+          "$ref": "#/$defs/CalibrationSource",
+          "description": "Where the interpretation of these numbers would have to come from."
+        },
+        "earlier_segment_id": {
+          "type": "string"
+        },
+        "later_segment_id": {
+          "type": "string"
+        },
+        "loudness_ratio": {
+          "description": "The later segment's speech level over the earlier segment's.\n\nPublished as non-negative and finite, which is what [`assess_join`]\nguarantees and nothing narrower: a plausible range for this ratio is\nprecisely what ADR-0003's `Pending` calibration table has not settled,\nso a tighter published bound would be that unratified threshold wearing\na schema.",
+          "format": "float",
+          "maximum": 3.4028235e+38,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "rate_ratio": {
+          "description": "The later segment's speaking rate over the earlier segment's.\n\nBounded on the same terms, and for the same reason, as\n[`JoinContinuity::loudness_ratio`].",
+          "format": "float",
+          "maximum": 3.4028235e+38,
+          "minimum": 0.0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "earlier_segment_id",
+        "later_segment_id",
+        "loudness_ratio",
+        "rate_ratio",
+        "calibration_source"
+      ],
+      "type": "object"
+    },
     "StoredManifestSegment": {
       "additionalProperties": false,
       "properties": {
@@ -146,16 +199,27 @@
         "segment_id": {
           "type": "string"
         },
+        "selected_take": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
         "start_frame": {
           "format": "uint64",
           "maximum": 18446744073709551615,
           "minimum": 0,
           "type": "integer"
+        },
+        "synthesis_base_key": {
+          "$ref": "#/$defs/CacheKey"
         }
       },
       "required": [
         "segment_id",
         "cache_key",
+        "selected_take",
+        "synthesis_base_key",
         "audio_blake3",
         "frames",
         "pause_after_ms",
@@ -203,19 +267,41 @@
       ],
       "type": "object"
     },
+    "TakeSelectionSource": {
+      "description": "Whether a build's take selection was recorded by a reviewer or generated.\n\nADR-0001 §12.2 makes take zero the synthesis default but requires \"an\nexplicit versioned takes file even when every selection remains zero\" for a\nproduction release. Carrying that provenance as a value rather than\nre-deriving it later is what stops a generated selection reaching a\nproduction path by being passed along until nobody remembers where it came\nfrom — the shape `study_tts_runtime::SilenceThreshold` already uses for the\nsame reason.",
+      "oneOf": [
+        {
+          "const": "implicit",
+          "description": "No takes document was present, so every segment was planned at take\nzero. Permitted for a private preview and refused for production.",
+          "type": "string"
+        },
+        {
+          "const": "explicit",
+          "description": "A validated takes document selected every segment.",
+          "type": "string"
+        }
+      ]
+    },
     "ToolProfileHash": {
       "description": "BLAKE3 over an external tool's path-normalized argument profile, as 64 lowercase hexadecimal characters.",
       "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
       "type": "string"
     }
   },
-  "$id": "https://schemas.study-tts.example/manifest-v1.schema.json",
+  "$id": "https://schemas.study-tts.example/manifest-v2.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "Strict owned shape used when an immutable package is reconciled or reused.",
   "properties": {
     "artifacts": {
       "$ref": "#/$defs/StoredArtifacts"
+    },
+    "join_continuity": {
+      "description": "The measured joins, empty where the build replaced nothing. Read back\nso the strict parse accounts for the whole document; nothing decides\nreuse on it, because ADR-0003 has not frozen what the numbers mean.",
+      "items": {
+        "$ref": "#/$defs/StoredJoin"
+      },
+      "type": "array"
     },
     "lesson_id": {
       "type": "string"
@@ -227,7 +313,7 @@
       "$ref": "#/$defs/ReleaseStatus"
     },
     "schema_version": {
-      "const": "1.0-skeleton",
+      "const": "2.0-skeleton",
       "type": "string"
     },
     "segments": {
@@ -235,6 +321,10 @@
         "$ref": "#/$defs/StoredManifestSegment"
       },
       "type": "array"
+    },
+    "take_selection_source": {
+      "$ref": "#/$defs/TakeSelectionSource",
+      "description": "Whether the take selection this package was built at was recorded by a\nreviewer or generated. A package whose value differs from this build's\nis rebuilt rather than reused."
     },
     "text_renderer_version": {
       "description": "Identity of the rules that produced the transcript, captions, and\nchapters. A package whose value differs from this build's is rebuilt\nrather than reused.",
@@ -255,9 +345,11 @@
     "release_status",
     "lesson_id",
     "plan_hash",
+    "take_selection_source",
     "text_renderer_version",
     "total_frames",
     "segments",
+    "join_continuity",
     "artifacts",
     "tools"
   ],

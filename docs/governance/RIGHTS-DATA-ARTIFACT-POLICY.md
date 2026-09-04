@@ -70,6 +70,7 @@ Each blocking rule above that has an executable protocol is enforced by a named 
 | Every profile beneath a governed voice root is gated before a worker may deserialize any of them, not only the profile a request names | `t1_e1_a_revoked_profile_the_request_never_names_refuses_the_root` |
 | A profile directory whose name is not UTF-8 refuses the whole governed root, because the worker reads that name through `surrogateescape` and would still load it | `t1_e1_a_profile_name_that_is_not_utf8_refuses_the_root` |
 | The protocol fake is never told where a governed root is, so no configuration this build makes can start a worker over one that was never gated | `t1_e1_the_protocol_fake_cannot_be_handed_a_governed_root` |
+| A synthesis-cache entry referenced by an accepted takes file or a published manifest is never offered as a prune candidate | `t4_e2_selected_artifact_survives_prune`, computed by `crates/study-tts-runtime/src/prune.rs`, which names this table in return |
 
 ## Revocation and incident handling
 

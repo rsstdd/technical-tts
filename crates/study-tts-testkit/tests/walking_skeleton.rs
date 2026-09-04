@@ -125,6 +125,7 @@ fn build_request_with_voices(
         ffmpeg_executable: "ffmpeg".into(),
         ffprobe_executable: "ffprobe".into(),
         voice_profile_root: voice_profile_root.to_path_buf(),
+        retakes: std::collections::BTreeMap::new(),
     }
 }
 
@@ -168,6 +169,68 @@ fn run_skeleton() -> (
     .expect("walking skeleton should build");
 
     (workspace, result, worker)
+}
+
+/// The job identity of the three-segment lesson the take tests build.
+const THREE_SEGMENT_JOB_ID: &str = "e1-s4-three-segment";
+
+/// The three-segment lesson, copied so a sibling takes file can be written
+/// beside it.
+///
+/// ADR-0001 §12.1 puts `<lesson-stem>.takes.json` next to the lesson, and
+/// `fixtures/` is committed: a test that wrote its selection there would leave
+/// the repository dirty and let one case see another's document.
+fn three_segment_lesson(root: &Path) -> std::path::PathBuf {
+    let destination = root.join("lesson.json");
+    std::fs::copy(
+        repository_root().join("fixtures/lessons/e1-s4-three-segment.json"),
+        &destination,
+    )
+    .expect("copy the three-segment fixture beside a writable directory");
+    destination
+}
+
+/// The manifest segments of a completed build, in written order.
+fn manifest_segments(result: &study_tts_runtime::BuildResult) -> Vec<Value> {
+    read_manifest(result)["segments"]
+        .as_array()
+        .expect("a manifest records an array of segments")
+        .clone()
+}
+
+/// A takes document selecting take zero for every segment of `result`.
+///
+/// Built from what the build actually wrote, the way ADR-0001 §12.2's
+/// `study-tts takes accept` records "an accepted cache artifact without
+/// changing it" — never from a second derivation of the keys.
+fn accepted_takes(result: &study_tts_runtime::BuildResult, lesson_id: &str) -> Value {
+    let selections: Vec<Value> = manifest_segments(result)
+        .iter()
+        .map(|segment| {
+            serde_json::json!({
+                "segment_id": segment["segment_id"],
+                "synthesis_base_key": segment["synthesis_base_key"],
+                "selected_take": segment["selected_take"],
+                "selected_cache_key": segment["cache_key"],
+                "audio_blake3": segment["audio_blake3"],
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "schema_version": "1.0",
+        "lesson_id": lesson_id,
+        "selections": selections,
+    })
+}
+
+/// Writes a takes document to the sibling path a lesson's stem names.
+fn write_sibling_takes(lesson_path: &Path, document: &Value) {
+    let sibling = lesson_path.with_extension("takes.json");
+    std::fs::write(
+        &sibling,
+        serde_json::to_vec_pretty(document).expect("serialize the takes document"),
+    )
+    .expect("write the sibling takes document");
 }
 
 fn write_lesson_with_id(root: &Path, file_name: &str, lesson_id: &str) -> std::path::PathBuf {
@@ -334,7 +397,7 @@ fn t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest() {
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(&result.manifest).expect("read minimal manifest"))
             .expect("parse minimal manifest");
-    assert_eq!(manifest["schema_version"], "1.0-skeleton");
+    assert_eq!(manifest["schema_version"], "2.0-skeleton");
     assert_eq!(manifest["release_status"], "private_preview");
     assert_eq!(manifest["lesson_id"], "e0-s0-walking-skeleton");
     assert_eq!(manifest["segments"].as_array().map(Vec::len), Some(2));
@@ -429,7 +492,13 @@ fn t4_e1_the_published_manifest_schema_describes_what_a_package_writes() {
         &std::fs::read(
             repository_root()
                 .join(study_tts_runtime::SCHEMA_DIRECTORY)
-                .join("manifest-v1.schema.json"),
+                // Named from the version rather than spelled out, so a
+                // manifest major move reaches this test as a schema
+                // disagreement rather than as a missing file.
+                .join(study_tts_core::schema_file_name(
+                    "manifest",
+                    study_tts_runtime::MANIFEST_SCHEMA_VERSION.major(),
+                )),
         )
         .expect("the published manifest schema is readable"),
     )
@@ -2295,7 +2364,7 @@ fn t4_e0_private_preview_cannot_enter_production_publication() {
         Err(BuildError::Publication(
             PublicationError::UnsupportedProductionManifest { ref version }
         ))
-            if version == "1.0-skeleton"
+            if version == "2.0-skeleton"
     ));
 }
 
@@ -2534,4 +2603,537 @@ fn t4_e0_multi_stream_output_is_rejected() {
         ),
         "a two-stream export produced `{error}`"
     );
+}
+
+/// T4, AC5b: ADR-0001 §11.4's alternate performance moves one segment's
+/// identity and leaves its neighbours where they were.
+///
+/// The retake is *requested* rather than selected. A takes document records a
+/// selection among takes that exist — its `audio_blake3` names audio a reviewer
+/// listened to — so it cannot ask for one that has never been rendered.
+#[test]
+fn t4_e2_retake_changes_only_selected_segment_identity() {
+    let root = TempDir::new().expect("create an isolated retake root");
+    let lesson = three_segment_lesson(root.path());
+    let workspace = root.path().join("workspace");
+    let worker = DeterministicToneWorker::default();
+
+    let first = build_preview(build_request(&lesson, &workspace), &worker)
+        .expect("the three-segment lesson builds");
+    assert_eq!(worker.synthesis_count(), 3);
+    let before = manifest_segments(&first);
+
+    let mut retaken = build_request(&lesson, &workspace);
+    retaken.retakes = std::collections::BTreeMap::from([("seg-0002".to_owned(), 1)]);
+    let second = build_preview(retaken, &worker).expect("the requested retake builds");
+
+    assert_eq!(
+        worker.synthesis_count(),
+        4,
+        "a retake of one segment must synthesize exactly one more segment"
+    );
+
+    let after = manifest_segments(&second);
+    assert_eq!(after.len(), 3);
+    for index in [0, 2] {
+        assert_eq!(
+            (
+                &after[index]["cache_key"],
+                &after[index]["audio_blake3"],
+                &after[index]["selected_take"],
+            ),
+            (
+                &before[index]["cache_key"],
+                &before[index]["audio_blake3"],
+                &before[index]["selected_take"],
+            ),
+            "segment {index} neighbours the retake and must keep its identity"
+        );
+    }
+
+    assert_eq!(after[1]["selected_take"], 1);
+    assert_ne!(after[1]["cache_key"], before[1]["cache_key"]);
+    assert_ne!(after[1]["audio_blake3"], before[1]["audio_blake3"]);
+    // §13.2's base key is the segment's take-zero identity whatever take is
+    // selected, so it is what a reviewer reads to see which take was replaced.
+    assert_eq!(after[1]["synthesis_base_key"], before[1]["cache_key"]);
+}
+
+/// T4, AC5c: ADR-0001 §11.4 retains the prior artifact across a retake.
+#[test]
+fn t4_e2_prior_take_is_never_overwritten() {
+    let root = TempDir::new().expect("create an isolated retake root");
+    let lesson = three_segment_lesson(root.path());
+    let workspace = root.path().join("workspace");
+    let worker = DeterministicToneWorker::default();
+
+    let first = build_preview(build_request(&lesson, &workspace), &worker)
+        .expect("the three-segment lesson builds");
+    let before = manifest_segments(&first);
+    let superseded: CacheKey = before[1]["cache_key"]
+        .as_str()
+        .expect("a manifest records a cache key")
+        .parse()
+        .expect("the recorded key is a cache key");
+
+    let cache_root = workspace.join("cache");
+    let entry = find_cache_entry_dir(&cache_root, &superseded);
+    let audio = std::fs::read(entry.join("audio.wav")).expect("read the take-zero audio");
+    let artifact = std::fs::read(entry.join("artifact.json")).expect("read the take-zero record");
+
+    let mut retaken = build_request(&lesson, &workspace);
+    retaken.retakes = std::collections::BTreeMap::from([("seg-0002".to_owned(), 1)]);
+    build_preview(retaken, &worker).expect("the requested retake builds");
+
+    assert!(
+        entry.is_dir(),
+        "the superseded take's entry must survive the retake that replaced it"
+    );
+    assert_eq!(
+        std::fs::read(entry.join("audio.wav")).expect("re-read the take-zero audio"),
+        audio,
+        "a retake must not rewrite the audio of the take it replaced"
+    );
+    assert_eq!(
+        std::fs::read(entry.join("artifact.json")).expect("re-read the take-zero record"),
+        artifact
+    );
+}
+
+/// T4: ADR-0001 §12.2's stale-base-key refusal precedes every observable step.
+///
+/// Ordering is asserted rather than assumed, per the module contract: the
+/// request also names an encoder that does not exist, so a selection checked
+/// after tool preflight would report the missing tool instead.
+#[test]
+fn t4_e2_a_stale_takes_file_is_refused_before_any_synthesis() {
+    let root = TempDir::new().expect("create an isolated selection root");
+    let lesson = three_segment_lesson(root.path());
+    let workspace = root.path().join("workspace");
+    let worker = DeterministicToneWorker::default();
+
+    let stale = "a".repeat(64);
+    let selections: Vec<Value> = ["seg-0001", "seg-0002", "seg-0003"]
+        .iter()
+        .map(|segment_id| {
+            serde_json::json!({
+                "segment_id": segment_id,
+                "synthesis_base_key": stale,
+                "selected_take": 0,
+                "selected_cache_key": stale,
+                "audio_blake3": stale,
+            })
+        })
+        .collect();
+    write_sibling_takes(
+        &lesson,
+        &serde_json::json!({
+            "schema_version": "1.0",
+            "lesson_id": THREE_SEGMENT_JOB_ID,
+            "selections": selections,
+        }),
+    );
+
+    let mut request = build_request(&lesson, &workspace);
+    request.ffmpeg_executable = root.path().join("no-such-encoder");
+
+    let error = build_preview(request, &worker)
+        .expect_err("a selection recorded against another plan must be refused");
+
+    assert!(
+        matches!(
+            &error,
+            BuildError::Takes(refusal)
+                if matches!(
+                    **refusal,
+                    study_tts_core::TakesError::StaleSynthesisBaseKey { ref segment_id, .. }
+                        if segment_id == "seg-0001"
+                )
+        ),
+        "expected the stale-base-key refusal ahead of the missing encoder, got {error}"
+    );
+    assert_eq!(worker.synthesis_count(), 0);
+}
+
+/// T4, AC2/AC3: an accepted takes document makes the build's selection
+/// explicit, and the published manifest records which it was.
+#[test]
+fn t4_e2_an_accepted_takes_file_makes_the_selection_explicit() {
+    let root = TempDir::new().expect("create an isolated selection root");
+    let lesson = three_segment_lesson(root.path());
+    let workspace = root.path().join("workspace");
+    let worker = DeterministicToneWorker::default();
+
+    let first = build_preview(build_request(&lesson, &workspace), &worker)
+        .expect("the three-segment lesson builds");
+    assert_eq!(read_manifest(&first)["take_selection_source"], "implicit");
+
+    write_sibling_takes(&lesson, &accepted_takes(&first, THREE_SEGMENT_JOB_ID));
+    let accepted = build_preview(build_request(&lesson, &workspace), &worker)
+        .expect("a build reading its own accepted selection succeeds");
+
+    assert_eq!(
+        read_manifest(&accepted)["take_selection_source"],
+        "explicit"
+    );
+    assert_eq!(
+        worker.synthesis_count(),
+        3,
+        "ratifying takes that were already rendered must synthesize nothing"
+    );
+    // Invariant I-4: the audio and the plan identity are unchanged, and the
+    // package is still not reused, because the manifest a production claim
+    // would be gated on is a different document.
+    assert_eq!(
+        manifest_segments(&accepted)
+            .iter()
+            .map(|segment| segment["cache_key"].clone())
+            .collect::<Vec<_>>(),
+        manifest_segments(&first)
+            .iter()
+            .map(|segment| segment["cache_key"].clone())
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        read_manifest(&accepted)["plan_hash"],
+        read_manifest(&first)["plan_hash"],
+        "ratifying a selection is a governance act, not a rendering change"
+    );
+    assert_ne!(
+        accepted.package_dir, first.package_dir,
+        "the package records the provenance, so it must not be reused across it"
+    );
+}
+
+/// T4: invariant A-1 — a resumed job keeps the selection its retained plan
+/// established.
+///
+/// The failure this guards is silent rather than loud:
+/// `JobDocument::open_attempt` compares no plan hashes, so a resume that
+/// rediscovered its selection would record take zero as authoritative with
+/// nothing reporting it.
+#[test]
+fn t4_e2_a_resumed_retake_keeps_its_selected_take() {
+    let root = TempDir::new().expect("create an isolated resume root");
+    let lesson = three_segment_lesson(root.path());
+    let workspace = root.path().join("workspace");
+    let worker = DeterministicToneWorker::default();
+
+    build_preview(build_request(&lesson, &workspace), &worker).expect("the base build succeeds");
+    let mut retaken = build_request(&lesson, &workspace);
+    retaken.retakes = std::collections::BTreeMap::from([("seg-0002".to_owned(), 1)]);
+    let performed = build_preview(retaken, &worker).expect("the requested retake builds");
+    let after_retake = manifest_segments(&performed);
+    let synthesized = worker.synthesis_count();
+
+    // Deleting the sibling is not the point — there never was one — but the
+    // lesson is: a resume reads it back from `jobs/<id>/lesson.json`, so a
+    // rediscovering resume has nowhere to look and would fall back to take
+    // zero. The retained plan is the authority, and this proves it is used.
+    let resumed = resume_preview(
+        ResumeRequest {
+            job_id: THREE_SEGMENT_JOB_ID.to_owned(),
+            workspace: workspace.clone(),
+            ffmpeg_executable: "ffmpeg".into(),
+            ffprobe_executable: "ffprobe".into(),
+            voice_profile_root: build_request(&lesson, &workspace).voice_profile_root,
+        },
+        &worker,
+    )
+    .expect("a completed job resumes");
+
+    assert_eq!(manifest_segments(&resumed), after_retake);
+    assert_eq!(
+        read_manifest(&resumed)["plan_hash"],
+        read_manifest(&performed)["plan_hash"]
+    );
+    assert_eq!(
+        worker.synthesis_count(),
+        synthesized,
+        "a resume that kept its selection re-synthesizes nothing"
+    );
+}
+
+/// T4, AC2/AC3: ADR-0001 §12.2 requires an explicit versioned takes file for a
+/// production release "even when every selection remains zero".
+///
+/// Asserted in both directions on the exact variant. `is_err()` would pass
+/// against the terminal `ProductionGatesUnavailable` this build already
+/// returns for every clean manifest, and would keep passing if the selection
+/// check were deleted.
+///
+/// The manifest is constructed at `PRODUCTION_MANIFEST_VERSION` rather than
+/// built: `validate_production_manifest` gates a hypothetical production
+/// manifest shape at `"1.0"`, and what a preview build writes is
+/// `"2.0-skeleton"`, which
+/// `t4_e0_private_preview_cannot_enter_production_publication` pins as refused
+/// for its version before any selection is read.
+#[test]
+fn t4_e2_production_rejects_implicit_take_selection() {
+    let manifest = |selection: Option<&str>| {
+        let mut document = serde_json::json!({
+            "schema_version": "1.0",
+            "release_status": "production_release",
+            "lesson_id": "e0-s2-rights",
+            "content_rights": [{
+                "source_id": "source-a",
+                "classification": "owner_authored",
+                "rights_record_id": "rights-source-a",
+            }],
+            "voice_profiles": [{
+                "profile_id": "owner-fallback-v1",
+                "approval": "approved",
+                "rights_record_id": "rights-voice-owner-fallback-v1",
+            }],
+        });
+        if let Some(selection) = selection {
+            document["take_selection_source"] = Value::String(selection.to_owned());
+        }
+        serde_json::to_vec(&document).expect("serialize the production manifest")
+    };
+
+    for (case, declared) in [
+        ("a manifest that records nothing about its selection", None),
+        (
+            "a manifest recording a generated selection",
+            Some("implicit"),
+        ),
+    ] {
+        let error = validate_production_manifest(&manifest(declared))
+            .expect_err("a production claim without a reviewed selection must be refused");
+
+        assert!(
+            matches!(
+                error,
+                BuildError::Publication(PublicationError::ImplicitTakeSelection {
+                    declared: "implicit"
+                })
+            ),
+            "{case}: {error}"
+        );
+    }
+
+    // The positive half: the same manifest declaring a reviewed selection gets
+    // past this check and is refused only by the gates that do not exist yet.
+    // Without it the assertions above would also pass against a blanket denial.
+    let error = validate_production_manifest(&manifest(Some("explicit")))
+        .expect_err("production gates do not exist in this phase");
+
+    assert!(
+        matches!(
+            error,
+            BuildError::Publication(PublicationError::ProductionGatesUnavailable)
+        ),
+        "a reviewed selection must reach the gate refusal, got {error}"
+    );
+}
+
+/// T4, AC6: ADR-0001 §11.4 evaluates *both* joins of a mid-lesson replacement.
+///
+/// The middle segment of three is retaken, so "both" is real: a replacement at
+/// either end would have one neighbour and the test would silently assert half
+/// of what it claims.
+///
+/// The assertion is that the joins were measured and that nothing claims to
+/// have judged them. ADR-0003 owns the join-discontinuity threshold, is
+/// `Proposed`, and records the value as `Pending`; a verdict here would be an
+/// unratified threshold on a path that leads to production.
+#[test]
+fn t4_e2_both_retake_joins_are_assessed() {
+    let root = TempDir::new().expect("create an isolated continuity root");
+    let lesson = three_segment_lesson(root.path());
+    let workspace = root.path().join("workspace");
+    let worker = DeterministicToneWorker::default();
+
+    let plain = build_preview(build_request(&lesson, &workspace), &worker)
+        .expect("the three-segment lesson builds");
+    assert_eq!(
+        read_manifest(&plain)["join_continuity"],
+        serde_json::json!([]),
+        "a build that replaced nothing has no replacement joins to assess"
+    );
+
+    let mut retaken = build_request(&lesson, &workspace);
+    retaken.retakes = std::collections::BTreeMap::from([("seg-0002".to_owned(), 1)]);
+    let replaced = build_preview(retaken, &worker).expect("the requested retake builds");
+
+    let joins = read_manifest(&replaced)["join_continuity"]
+        .as_array()
+        .expect("the manifest records an array of joins")
+        .clone();
+
+    assert_eq!(
+        joins
+            .iter()
+            .map(|join| (
+                join["earlier_segment_id"].clone(),
+                join["later_segment_id"].clone()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                Value::String("seg-0001".to_owned()),
+                Value::String("seg-0002".to_owned())
+            ),
+            (
+                Value::String("seg-0002".to_owned()),
+                Value::String("seg-0003".to_owned())
+            ),
+        ],
+        "a mid-lesson replacement must be assessed at the join before it and the join after it"
+    );
+
+    for join in &joins {
+        assert_eq!(
+            join["calibration_source"], "provisional",
+            "ADR-0003 is Proposed and its thresholds are Pending, so no measurement here may \
+             claim a frozen calibration"
+        );
+        for measure in ["loudness_ratio", "rate_ratio"] {
+            let value = join[measure]
+                .as_f64()
+                .unwrap_or_else(|| panic!("`{measure}` must be recorded as a number"));
+            assert!(value.is_finite(), "`{measure}` must be finite, got {value}");
+        }
+        assert!(
+            join.get("verdict").is_none() && join.get("passed").is_none(),
+            "a provisional measurement must not be published as a judgement: {join}"
+        );
+    }
+}
+
+/// T4, AC7: ADR-0001 §12.2 — "Cache pruning treats every artifact referenced by
+/// an accepted takes file or published manifest as live."
+///
+/// Both root kinds are exercised. Note what the retake does *not* orphan: the
+/// superseded take-zero entry stays live because the package generation that
+/// selected it is still published, which is §12.2 working as written rather
+/// than an oversight — a published manifest is a root whether or not it is the
+/// current one.
+///
+/// Non-vacuity is proved directly rather than assumed. The same cache under a
+/// workspace with no roots at all reports every entry, so the empty candidate
+/// list above is about reachability and not about a walker that finds nothing.
+#[test]
+fn t4_e2_selected_artifact_survives_prune() {
+    let root = TempDir::new().expect("create an isolated retention root");
+    let lesson = three_segment_lesson(root.path());
+    let workspace = root.path().join("workspace");
+    let worker = DeterministicToneWorker::default();
+
+    let first = build_preview(build_request(&lesson, &workspace), &worker)
+        .expect("the three-segment lesson builds");
+    let superseded: CacheKey = manifest_segments(&first)[1]["cache_key"]
+        .as_str()
+        .expect("a manifest records a cache key")
+        .parse()
+        .expect("the recorded key is a cache key");
+
+    let mut retaken = build_request(&lesson, &workspace);
+    retaken.retakes = std::collections::BTreeMap::from([("seg-0002".to_owned(), 1)]);
+    let replaced = build_preview(retaken, &worker).expect("the requested retake builds");
+
+    // The reviewer accepts what the retake produced. Every key it names is a
+    // retention root, whatever the published manifests say.
+    let accepted = study_tts_core::ValidatedTakes::from_json(
+        &serde_json::to_vec(&accepted_takes(&replaced, THREE_SEGMENT_JOB_ID))
+            .expect("serialize the accepted takes document"),
+    )
+    .expect("a document written from a build's own manifest is valid");
+    let selected: Vec<CacheKey> = accepted
+        .selections()
+        .iter()
+        .map(|selection| selection.selected_cache_key.clone())
+        .collect();
+    assert_eq!(selected.len(), 3);
+
+    let cache_root = workspace.join("cache");
+    let before = fingerprint_cache(&cache_root);
+    let live = study_tts_runtime::live_cache_keys(&workspace, std::slice::from_ref(&accepted))
+        .expect("a retention report reads a workspace this build just wrote");
+
+    for key in &selected {
+        assert!(
+            live.contains(key),
+            "`{key}` is named by the accepted takes file and must be live"
+        );
+    }
+    assert!(
+        live.contains(&superseded),
+        "the superseded take is still named by the generation that selected it"
+    );
+
+    let candidates =
+        study_tts_runtime::prune_candidates(&workspace, std::slice::from_ref(&accepted))
+            .expect("a retention report reads a workspace this build just wrote");
+    assert!(
+        candidates.is_empty(),
+        "every entry is named by an accepted takes file or a published manifest, so none may be \
+         offered as a candidate: {candidates:?}"
+    );
+
+    // The same cache with no roots at all. Every entry is a candidate here,
+    // which is what makes the empty list above evidence of reachability rather
+    // than of a walker that enumerates nothing.
+    let rootless = root.path().join("rootless");
+    copy_tree(&cache_root, &rootless.join("cache"));
+    let unreferenced = study_tts_runtime::prune_candidates(&rootless, &[])
+        .expect("a workspace that published nothing is readable");
+
+    assert_eq!(
+        unreferenced.len(),
+        4,
+        "three segments plus the retake were rendered, and with no roots every one is a candidate"
+    );
+    assert!(
+        unreferenced
+            .iter()
+            .any(|candidate| candidate.cache_key == superseded)
+    );
+
+    assert_eq!(
+        fingerprint_cache(&cache_root),
+        before,
+        "a retention report must not change the state it describes"
+    );
+}
+
+/// Copies a directory tree, for building a second workspace over one cache.
+fn copy_tree(source: &Path, destination: &Path) {
+    std::fs::create_dir_all(destination).expect("create the copied directory");
+    for entry in std::fs::read_dir(source).expect("read the directory being copied") {
+        let entry = entry.expect("read a directory entry");
+        let target = destination.join(entry.file_name());
+        if entry.file_type().expect("read an entry type").is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("copy a file");
+        }
+    }
+}
+
+/// Every file under a cache root, by path and bytes.
+///
+/// Read back after a report to prove the report changed nothing: a walker that
+/// created a missing shard, or a candidate list that deleted what it listed,
+/// would move this fingerprint.
+fn fingerprint_cache(cache_root: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut found = Vec::new();
+    let mut pending = vec![cache_root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries {
+            let entry = entry.expect("read a cache directory entry");
+            if entry.file_type().expect("read a cache entry type").is_dir() {
+                pending.push(entry.path());
+            } else {
+                let bytes = std::fs::read(entry.path()).expect("read a cache file");
+                found.push((entry.path(), bytes));
+            }
+        }
+    }
+    found.sort();
+    found
 }

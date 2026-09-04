@@ -34,6 +34,22 @@ pub enum CacheError {
         fault: Box<CacheEntryFault>,
     },
 
+    /// A directory inside the cache tree is not named by a cache key.
+    ///
+    /// Refused rather than skipped, because the two safe readings disagree:
+    /// treating it as absent would hide it from reconciliation, and treating it
+    /// as an entry would offer something this build never wrote to a prune
+    /// command that will one day delete what it is offered.
+    #[error(
+        "`{entry_dir}` is inside the synthesis cache but is not named by a cache key; the cache \
+         is content addressed, so the runtime owner must run reconciliation and move the \
+         directory to quarantine rather than let a retention report reason about it"
+    )]
+    UnrecognizedCacheEntry {
+        /// The directory runtime reconciliation must inspect.
+        entry_dir: PathBuf,
+    },
+
     /// A worker left a file in the staging transaction beside its audio.
     ///
     /// The stage *becomes* the published entry — ADR-0001 §12.6 renames it into
@@ -115,7 +131,8 @@ impl CacheError {
                  file",
                 Some("Worker protocol or containment failure"),
             )),
-            Self::PackageArtifactCountMismatch { .. }
+            Self::UnrecognizedCacheEntry { .. }
+            | Self::PackageArtifactCountMismatch { .. }
             | Self::PackageArtifactPlanMismatch { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::Runtime,
                 "preserve the cache and run runtime reconciliation",

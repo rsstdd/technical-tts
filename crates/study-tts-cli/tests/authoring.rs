@@ -89,6 +89,7 @@ fn t4_e1_scaffolded_lesson_renders_through_the_walking_skeleton() {
             ffmpeg_executable: "ffmpeg".into(),
             ffprobe_executable: "ffprobe".into(),
             voice_profile_root,
+            retakes: std::collections::BTreeMap::new(),
         },
         &DeterministicToneWorker::default(),
     )

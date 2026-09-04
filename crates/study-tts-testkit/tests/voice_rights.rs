@@ -30,20 +30,51 @@ fn request_without_ffmpeg(workspace: &Path, voice_profile_root: &Path) -> BuildR
         ffmpeg_executable: "study-tts-missing-ffmpeg".into(),
         ffprobe_executable: "study-tts-missing-ffprobe".into(),
         voice_profile_root: voice_profile_root.to_path_buf(),
+        retakes: std::collections::BTreeMap::new(),
     }
 }
 
-/// Installs a voice-profile root whose first-resolved profile carries `spec`.
+/// The profile the walking-skeleton lesson's speaker binds, and therefore the
+/// only one a refusal in these tests can be attributed to.
 ///
-/// The walking-skeleton lesson's first speaker names
-/// `FIXTURE_VOICE_PROFILES[0]`, so a refusal is attributable to `spec` rather
-/// than to whichever profile the gate happened to reach first; the rest are
-/// written healthy so they refuse nothing. Returns the profile directory under
-/// test, which the record-integrity tests below then damage.
+/// Named rather than taken from `FIXTURE_VOICE_PROFILES[0]`. That constant is a
+/// *set* of every profile the fixtures declare, and reading a position out of
+/// it made "which profile gets spoiled" depend on how the array happened to be
+/// sorted: adding `owner-fallback-v1` to it silently moved the damage onto a
+/// profile this lesson never names, and six refusals here stopped happening
+/// while every assertion still looked correct.
+const PROFILE_UNDER_TEST: &str = "synthetic-test-voice-v1";
+
+/// Every fixture profile except the one deliberately under test.
+///
+/// The other half of keying by identity: a caller that wants a root missing or
+/// spoiling exactly one profile writes *these* and then damages that one, so
+/// the set can gain a member without moving what gets damaged.
+fn healthy_profiles() -> Vec<&'static str> {
+    FIXTURE_VOICE_PROFILES
+        .into_iter()
+        .filter(|profile_id| *profile_id != PROFILE_UNDER_TEST)
+        .collect()
+}
+
+/// Installs a voice-profile root in which exactly `PROFILE_UNDER_TEST` carries
+/// `spec`.
+///
+/// Every other fixture profile is written healthy, so it refuses nothing and a
+/// refusal is attributable to `spec`. Selection is by identity rather than by
+/// position, so a fixture gaining a speaker cannot change what is damaged.
+/// Returns the profile directory under test, which the record-integrity tests
+/// below then damage further.
 fn root_with(workspace: &Path, spec: &VoiceProfileFixtureSpec) -> (PathBuf, PathBuf) {
+    assert!(
+        FIXTURE_VOICE_PROFILES.contains(&PROFILE_UNDER_TEST),
+        "`{PROFILE_UNDER_TEST}` must be one of the fixture profiles, or these tests damage a \
+         profile no lesson resolves and every refusal below stops being raised"
+    );
+
     let root = workspace.join("voices");
-    let under_test = write_voice_profile_fixture(&root.join(FIXTURE_VOICE_PROFILES[0]), spec);
-    write_voice_profile_root(&root, &FIXTURE_VOICE_PROFILES[1..]);
+    let under_test = write_voice_profile_fixture(&root.join(PROFILE_UNDER_TEST), spec);
+    write_voice_profile_root(&root, &healthy_profiles());
     (root, under_test)
 }
 
@@ -60,11 +91,17 @@ fn refused_build(spec: &VoiceProfileFixtureSpec) -> (BuildError, DeterministicTo
 /// A manifest whose voices are declared and approved, so a test varying
 /// `content_rights` is not refused for the section it is not exercising. Tests
 /// that exercise `voice_profiles` overwrite the key.
+///
+/// It declares an explicit take selection for the same reason: ADR-0001 §12.2's
+/// refusal runs after the rights checks and before the terminal one, so a
+/// manifest that said nothing about its selection would reach that refusal
+/// instead of the gate refusal these tests are about.
 fn production_manifest(content_rights: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "schema_version": "1.0",
         "release_status": "production_release",
         "lesson_id": "e0-s2-rights",
+        "take_selection_source": "explicit",
         "content_rights": content_rights,
         "voice_profiles": [{
             "profile_id": "synthetic-test-voice-v1",
@@ -185,12 +222,15 @@ fn t4_e0_unapproved_voice_profile_cannot_enter_preview_or_production() {
 /// the entry the root holds and the refusal it must produce.
 #[test]
 fn t4_e1_a_declared_profile_that_does_not_resolve_is_refused_as_itself() {
-    let declared = FIXTURE_VOICE_PROFILES[0];
+    // By identity, for the reason `PROFILE_UNDER_TEST` gives: reading position
+    // zero out of a set made this test damage whichever profile happened to
+    // sort first.
+    let declared = PROFILE_UNDER_TEST;
 
     // Absent: the root holds nothing of that name.
     let workspace = TempDir::new().expect("create absent-profile workspace");
     let root = workspace.path().join("voices");
-    write_voice_profile_root(&root, &FIXTURE_VOICE_PROFILES[1..]);
+    write_voice_profile_root(&root, &healthy_profiles());
     let worker = DeterministicToneWorker::default();
     let error = build_preview(request_without_ffmpeg(workspace.path(), &root), &worker)
         .expect_err("a profile the root does not hold must be refused");
@@ -210,7 +250,7 @@ fn t4_e1_a_declared_profile_that_does_not_resolve_is_refused_as_itself() {
     // must not report the profile as missing.
     let workspace = TempDir::new().expect("create not-a-directory workspace");
     let root = workspace.path().join("voices");
-    write_voice_profile_root(&root, &FIXTURE_VOICE_PROFILES[1..]);
+    write_voice_profile_root(&root, &healthy_profiles());
     std::fs::write(root.join(declared), b"not a profile directory")
         .expect("write a file where a profile directory belongs");
     let worker = DeterministicToneWorker::default();
@@ -233,7 +273,7 @@ fn t4_e1_a_declared_profile_that_does_not_resolve_is_refused_as_itself() {
     // voice's audio.
     let workspace = TempDir::new().expect("create mismatched-identity workspace");
     let root = workspace.path().join("voices");
-    write_voice_profile_root(&root, &FIXTURE_VOICE_PROFILES[1..]);
+    write_voice_profile_root(&root, &healthy_profiles());
     write_voice_profile_fixture(
         &root.join(declared),
         &VoiceProfileFixtureSpec {

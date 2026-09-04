@@ -6,15 +6,16 @@
 //! fake, identity effects, and G1 real-path parity requirement.
 
 use std::{
+    collections::{BTreeMap, btree_map::Entry},
     fs,
     io::Write as _,
     path::{Path, PathBuf},
 };
 
-use study_tts_core::{RenderPlan, SelectedPackageIdentity};
+use study_tts_core::{PlannedSegment, RenderPlan, SelectedPackageIdentity};
 
 use crate::{
-    BuildError, CacheError, ManagedPathError, PackageArtifactMismatch, assembly,
+    BuildError, CacheError, ManagedPathError, PackageArtifactMismatch, assembly, audio_edges,
     cache::ValidatedCachedArtifact,
     durable::OsDurableFileSystem,
     export::{self, EncodedFormat, ExportProfiles, PackagedAudio},
@@ -215,7 +216,7 @@ impl PreparedPackageWriter for PreparedFileSystemPackageWriter {
         if let Some(package) = preview::current_for_build(
             &roots,
             request.job_id,
-            &request.plan.plan_hash,
+            request.plan,
             &self.toolchain.ffmpeg,
             &self.toolchain.ffprobe,
             &self.toolchain.profiles,
@@ -310,13 +311,15 @@ impl PreparedPackageWriter for PreparedFileSystemPackageWriter {
             })
             .collect();
 
+        let joins = assess_replacement_joins(request)?;
         let manifest_path = managed::leaf(stage, manifest::MANIFEST_NAME)?;
         manifest::write(
             &filesystem,
             &manifest_path,
             manifest::ManifestRecords {
                 lesson_id: request.job_id,
-                plan_hash: &request.plan.plan_hash,
+                plan: request.plan,
+                joins: &joins,
                 segments: request.cached_artifacts,
                 timeline: &assembled,
                 package_dir: stage,
@@ -458,6 +461,102 @@ fn publication(package: preview::PublishedPackage) -> Result<PackagePublication,
     })
 }
 
+/// Measures both joins of every segment this build rendered at a later take.
+///
+/// ADR-0001 §11.4: "After a mid-lesson retake, automated loudness and
+/// speaking-rate comparisons plus a listening check evaluate both joins." A
+/// segment at the start or end of a lesson has one join rather than two, which
+/// is a fact about the lesson and recorded as such rather than refused. Two
+/// adjacent replacements share the join between them, and it is measured once.
+///
+/// The measurement is recorded and never thresholded. ADR-0003 owns the
+/// join-discontinuity threshold, it is `Proposed`, and its calibration table
+/// records the value as `Pending`.
+///
+/// Planned segments are zipped with cached artifacts rather than indexed by
+/// position: `validate_cached_artifacts` has already refused a list that is not
+/// this plan's, artifact for artifact, and zipping keeps that precondition from
+/// becoming a panic if it is ever weakened.
+///
+/// # Errors
+///
+/// [`crate::IoError::AudioAt`] when a cache entry's audio cannot be opened or
+/// decoded. The entries have already been validated by
+/// `validate_cached_artifacts` and re-hashed by `assembly::assemble`, so a
+/// failure here is a filesystem fault rather than a rejected entry.
+fn assess_replacement_joins<'a>(
+    request: &'a PackageWriteRequest<'a>,
+) -> Result<Vec<manifest::RecordedJoin<'a>>, BuildError> {
+    let paired: Vec<(&PlannedSegment, &ValidatedCachedArtifact)> = request
+        .plan
+        .segments
+        .iter()
+        .zip(request.cached_artifacts)
+        .collect();
+    if paired
+        .iter()
+        .all(|(segment, _)| segment.take == study_tts_core::BASE_TAKE)
+    {
+        return Ok(Vec::new());
+    }
+
+    // Read once per segment rather than once per join, because the segment
+    // between two replacements is a side of both. Each entry is bounded by
+    // `audio_edges::MAX_SEGMENT_AUDIO_MS`, which cache acceptance has already
+    // held it to.
+    let mut samples: BTreeMap<usize, Vec<f32>> = BTreeMap::new();
+    for (index, window) in paired.windows(2).enumerate() {
+        if let [(earlier, _), (later, _)] = window
+            && (earlier.take != study_tts_core::BASE_TAKE
+                || later.take != study_tts_core::BASE_TAKE)
+        {
+            for position in [index, index + 1] {
+                if let Entry::Vacant(slot) = samples.entry(position)
+                    && let Some((_, artifact)) = paired.get(position)
+                {
+                    slot.insert(read_segment_samples(artifact)?);
+                }
+            }
+        }
+    }
+
+    let side = |position: usize, segment: &PlannedSegment| {
+        samples.get(&position).map(|samples| audio_edges::JoinSide {
+            samples,
+            sample_rate: study_tts_core::CANONICAL_SAMPLE_RATE,
+            characters: segment.spoken_text.chars().count(),
+        })
+    };
+    let mut recorded = Vec::new();
+    for (index, window) in paired.windows(2).enumerate() {
+        if let [(earlier, _), (later, _)] = window
+            && let (Some(earlier_side), Some(later_side)) =
+                (side(index, earlier), side(index + 1, later))
+        {
+            recorded.push(manifest::RecordedJoin {
+                earlier_segment_id: &earlier.id,
+                later_segment_id: &later.id,
+                continuity: audio_edges::assess_join(&earlier_side, &later_side),
+            });
+        }
+    }
+    Ok(recorded)
+}
+
+/// Reads one validated cache entry's canonical samples.
+///
+/// # Errors
+///
+/// [`crate::IoError::AudioAt`] when the entry cannot be opened or decoded.
+fn read_segment_samples(segment: &ValidatedCachedArtifact) -> Result<Vec<f32>, BuildError> {
+    let mut reader = hound::WavReader::open(segment.audio_path())
+        .map_err(|error| crate::audio_error(segment.audio_path(), error))?;
+    reader
+        .samples::<f32>()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| crate::audio_error(segment.audio_path(), error))
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
@@ -495,7 +594,7 @@ mod tests {
     }
 
     fn artifact(
-        segment: &study_tts_core::PlannedSegment,
+        segment: &PlannedSegment,
         entry_dir: PathBuf,
         audio_path: PathBuf,
     ) -> ValidatedCachedArtifact {
@@ -549,6 +648,7 @@ mod tests {
                 schema_version: study_tts_core::PLAN_SCHEMA_VERSION,
                 lesson_id: plan.lesson_id.clone(),
                 plan_hash: plan.plan_hash.clone(),
+                take_selection_source: plan.take_selection_source,
                 segments: vec![plan.segments[0].clone()],
             },
             cached_artifacts: &[artifact],
@@ -575,6 +675,7 @@ mod tests {
             schema_version: study_tts_core::PLAN_SCHEMA_VERSION,
             lesson_id: plan.lesson_id.clone(),
             plan_hash: plan.plan_hash.clone(),
+            take_selection_source: plan.take_selection_source,
             segments: vec![plan.segments[0].clone()],
         };
 
@@ -606,6 +707,7 @@ mod tests {
             schema_version: study_tts_core::PLAN_SCHEMA_VERSION,
             lesson_id: plan.lesson_id.clone(),
             plan_hash: plan.plan_hash.clone(),
+            take_selection_source: plan.take_selection_source,
             segments: vec![plan.segments[0].clone()],
         };
 

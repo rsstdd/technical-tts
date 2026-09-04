@@ -38,3 +38,16 @@ Use this runbook for Rust/Python dependencies, Chatterbox, model/tokenizer/codec
 
 Restore declarations and lockfiles, verify prior checksums, and reopen prior manifests without claiming compatibility for artifacts created under the failed identity. Never rewrite an old cache entry or verification result under a new identity.
 
+## Known compatibility limitations
+
+Standing limitations a persisted-format move has left behind. Each names the change that
+introduced it and what clears it.
+
+| Limitation | Introduced by | Clears when |
+|---|---|---|
+| **Cache retention reporting refuses a workspace holding any pre-`2.0` package.** `prune_candidates` reads every published manifest as a retention root, and a root it cannot decode is an error rather than an empty contribution — so **one** legacy package disables prune reporting for the **whole** workspace, not just for that lesson. | `E2-S2-INTERFACE-CHANGE-001` (`manifest` `1.0` → `2.0`) | Every lesson in the workspace has been rebuilt, so no `1.0-skeleton` manifest remains beneath `previews/`. |
+
+The refusal is deliberate and must not be softened into a skip. Treating an unreadable root as
+"references nothing" would report live artifacts as prunable, which is a misleading report today
+and data loss once E2-S5 makes prune destructive. `crates/study-tts-runtime/src/prune.rs` names
+this section in return.

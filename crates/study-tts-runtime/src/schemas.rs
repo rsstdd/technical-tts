@@ -170,7 +170,13 @@ pub const PUBLISHED_SCHEMAS: [PublishedSchema; 7] = [
 /// break this manifest again, so the label must not claim a stability they
 /// are going to take away. The major says the change was breaking; the suffix
 /// says the layout is still provisional.
-pub const MANIFEST_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(1, 0);
+///
+/// `2.0`, following `2.0-skeleton`, carries ADR-0001 §12.2's selection record:
+/// every segment repeats its selected take and synthesis base key, and the
+/// document records whether its selection was reviewed or generated. Required
+/// fields, so **Breaking contract** again, recorded in
+/// `docs/architecture/E2-S2-INTERFACE-CHANGE-001.md`.
+pub const MANIFEST_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(2, 0);
 
 /// Version of the published worker-protocol schema.
 ///

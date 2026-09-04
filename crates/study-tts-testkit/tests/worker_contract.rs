@@ -624,6 +624,7 @@ fn t4_e1_pr_suite_performs_no_model_download() {
             ffmpeg_executable: "ffmpeg".into(),
             ffprobe_executable: "ffprobe".into(),
             voice_profile_root,
+            retakes: BTreeMap::new(),
         },
         &executor,
     )
