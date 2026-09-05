@@ -6,15 +6,20 @@
 //! that could disagree with the build it describes is worse than no manifest,
 //! because `validate_production_manifest` gates on what it says.
 
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use study_tts_core::{
-    AudioDigest, CANONICAL_SAMPLE_RATE, CacheKey, PlanHash, ReleaseStatus, ToolProfileHash,
+    AudioDigest, CANONICAL_SAMPLE_RATE, CacheKey, PlanHash, ReleaseStatus, RenderPlan,
+    TakeSelectionSource, ToolProfileHash,
 };
 
 use crate::{
     BuildError, DurableStateError,
+    audio_edges::JoinContinuity,
     cache::{ValidatedCachedArtifact, hash_file},
     durable::{DurableFileSystem, write_json_atomically},
     export::{ExportProfiles, ToolExecution},
@@ -45,7 +50,7 @@ use crate::{
 /// `docs/architecture/WALKING-SKELETON.md` names both constants in its
 /// provisional package-manifest paragraph, and records why reconciliation still
 /// reads the legacy layouts and why only the current one is published.
-const CURRENT_MANIFEST_LAYOUT_VERSION: &str = "1.0-skeleton";
+const CURRENT_MANIFEST_LAYOUT_VERSION: &str = "2.0-skeleton";
 
 /// Milliseconds in one second, for checking a declared pause against frames.
 const MILLISECONDS_PER_SECOND: u64 = 1_000;
@@ -120,9 +125,11 @@ struct Manifest<'a> {
     release_status: ReleaseStatus,
     lesson_id: &'a str,
     plan_hash: &'a PlanHash,
+    take_selection_source: TakeSelectionSource,
     text_renderer_version: &'static str,
     total_frames: u64,
     segments: Vec<ManifestSegment<'a>>,
+    join_continuity: &'a [RecordedJoin<'a>],
     artifacts: Artifacts,
     tools: Tools<'a>,
 }
@@ -137,11 +144,30 @@ struct Manifest<'a> {
 struct ManifestSegment<'a> {
     segment_id: &'a str,
     cache_key: &'a CacheKey,
+    selected_take: u32,
+    synthesis_base_key: &'a CacheKey,
     audio_blake3: &'a str,
     frames: u32,
     pause_after_ms: u32,
     start_frame: u64,
     pause_frames: u64,
+}
+
+/// One join between two segments, and what was measured across it.
+///
+/// ADR-0001 §11.4 asks for loudness and speaking-rate comparisons at both
+/// joins of a mid-lesson retake. Recorded per join rather than per segment
+/// because a join belongs to the pair that meets there: the segment before a
+/// replacement and the segment after it are each half of a different join.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(crate) struct RecordedJoin<'a> {
+    /// The segment that ends at this join.
+    pub earlier_segment_id: &'a str,
+    /// The segment that begins at it.
+    pub later_segment_id: &'a str,
+    /// What the comparison measured, and under which calibration.
+    #[serde(flatten)]
+    pub continuity: JoinContinuity,
 }
 
 /// The six files a build leaves in its preview directory.
@@ -250,14 +276,24 @@ pub(crate) struct ReuseExpectations<'a> {
     pub profiles: &'a ExportProfiles,
     /// Identity of the rules this build would render the text documents by.
     pub text_renderer_version: &'a str,
+    /// Whether this build's take selection was recorded or generated.
+    ///
+    /// Here rather than in [`crate::PlanHash`] because of what it changes:
+    /// ratifying the take zero a build already rendered produces byte-identical
+    /// audio under an unchanged plan identity, but a *different manifest*, and
+    /// a production claim is gated on what that manifest records. Reusing the
+    /// implicitly-built package would offer a manifest this build never wrote.
+    /// The same shape `text_renderer_version` sits here for.
+    pub take_selection_source: TakeSelectionSource,
 }
 
 /// Completed build data from which the minimal manifest is derived.
 pub(crate) struct ManifestRecords<'a> {
     /// Validated lesson identity.
     pub lesson_id: &'a str,
-    /// Deterministic plan identity.
-    pub plan_hash: &'a PlanHash,
+    /// The plan this build rendered, which carries the identity and the
+    /// ADR-0001 §12.2 selection values the manifest repeats.
+    pub plan: &'a RenderPlan,
     /// Selected validated cache segments.
     pub segments: &'a [ValidatedCachedArtifact],
     /// Where each segment was written, in exact frames.
@@ -266,6 +302,9 @@ pub(crate) struct ManifestRecords<'a> {
     pub package_dir: &'a Path,
     /// Tool identities and executed arguments.
     pub tools: ToolRecords<'a>,
+    /// The joins ADR-0001 §11.4 asks a replacement to be assessed at, empty
+    /// where this build replaced nothing.
+    pub joins: &'a [RecordedJoin<'a>],
 }
 
 /// Writes `manifest.json` for a completed build.
@@ -303,19 +342,29 @@ pub(crate) fn write(
         // and this field is what `validate_production_manifest` gates on.
         release_status: ReleaseStatus::PrivatePreview,
         lesson_id: records.lesson_id,
-        plan_hash: records.plan_hash,
+        plan_hash: &records.plan.plan_hash,
+        take_selection_source: records.plan.take_selection_source,
         // The constant `timeline` renders from, never a literal: a second
         // spelling here could claim a generation that never produced the
         // documents beside it.
         text_renderer_version: TEXT_RENDERER_VERSION,
         total_frames: records.timeline.total_frames,
+        join_continuity: records.joins,
         segments: records
             .segments
             .iter()
+            .zip(&records.plan.segments)
             .zip(&records.timeline.segments)
-            .map(|(segment, written)| ManifestSegment {
+            .map(|((segment, planned), written)| ManifestSegment {
                 segment_id: &segment.segment_id,
                 cache_key: &segment.cache_key,
+                // ADR-0001 §12.2's selected take, and §13.2's base key beside
+                // it. Read from the plan the build rendered rather than
+                // restated: `validate_cached_artifacts` has already refused an
+                // artifact list that is not this plan's, position for
+                // position.
+                selected_take: planned.take,
+                synthesis_base_key: &planned.synthesis_base_key,
                 audio_blake3: &segment.audio_blake3,
                 frames: segment.frames,
                 pause_after_ms: segment.pause_after_ms,
@@ -403,14 +452,31 @@ struct StoredManifest {
     release_status: ReleaseStatus,
     lesson_id: String,
     plan_hash: PlanHash,
+    /// Whether the take selection this package was built at was recorded by a
+    /// reviewer or generated. A package whose value differs from this build's
+    /// is rebuilt rather than reused.
+    take_selection_source: TakeSelectionSource,
     /// Identity of the rules that produced the transcript, captions, and
     /// chapters. A package whose value differs from this build's is rebuilt
     /// rather than reused.
     text_renderer_version: String,
     total_frames: u64,
     segments: Vec<StoredManifestSegment>,
+    /// The measured joins, empty where the build replaced nothing. Read back
+    /// so the strict parse accounts for the whole document; nothing decides
+    /// reuse on it, because ADR-0003 has not frozen what the numbers mean.
+    join_continuity: Vec<StoredJoin>,
     artifacts: StoredArtifacts,
     tools: StoredTools,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+struct StoredJoin {
+    earlier_segment_id: String,
+    later_segment_id: String,
+    #[serde(flatten)]
+    continuity: JoinContinuity,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -418,6 +484,8 @@ struct StoredManifest {
 struct StoredManifestSegment {
     segment_id: String,
     cache_key: CacheKey,
+    selected_take: u32,
+    synthesis_base_key: CacheKey,
     audio_blake3: AudioDigest,
     frames: u32,
     pause_after_ms: u32,
@@ -546,6 +614,8 @@ struct PackageRecord {
     /// `None` for a layout written before the renderer was versioned, which is
     /// therefore never a matching generation.
     text_renderer_version: Option<String>,
+    /// The recorded take provenance, for a layout that carries one.
+    take_selection_source: Option<TakeSelectionSource>,
     segments: Vec<RecordedSegment>,
     artifacts: Vec<RecordedArtifact>,
     ffmpeg: StoredToolIdentity,
@@ -556,6 +626,10 @@ struct PackageRecord {
 #[derive(Debug)]
 struct RecordedSegment {
     segment_id: String,
+    /// The entry this segment was assembled from.
+    cache_key: CacheKey,
+    /// The take-zero entry from which the selected take was derived.
+    synthesis_base_key: CacheKey,
     frames: u32,
     /// The written positions, for a layout that carries them.
     ///
@@ -597,20 +671,34 @@ impl From<StoredManifest> for PackageRecord {
         // strict parse above already said everything there is to say about
         // each of them.
         let _ = &manifest.schema_version;
+        // The joins are read for the same reason and kept out of
+        // `PackageRecord`: ADR-0003 has not frozen what the numbers mean, so
+        // nothing may decide anything on them yet, and a record field nothing
+        // reads would invite one to.
+        for join in &manifest.join_continuity {
+            let _ = (
+                &join.earlier_segment_id,
+                &join.later_segment_id,
+                &join.continuity,
+            );
+        }
         let artifacts = manifest.artifacts;
         Self {
             release_status: manifest.release_status,
             lesson_id: manifest.lesson_id,
             plan_hash: manifest.plan_hash,
             text_renderer_version: Some(manifest.text_renderer_version),
+            take_selection_source: Some(manifest.take_selection_source),
             total_frames: Some(manifest.total_frames),
             segments: manifest
                 .segments
                 .into_iter()
                 .map(|segment| {
-                    let _ = (&segment.cache_key, &segment.audio_blake3);
+                    let _ = (&segment.selected_take, &segment.audio_blake3);
                     RecordedSegment {
                         segment_id: segment.segment_id,
+                        cache_key: segment.cache_key,
+                        synthesis_base_key: segment.synthesis_base_key,
                         frames: segment.frames,
                         written: Some(WrittenPosition {
                             start_frame: segment.start_frame,
@@ -676,6 +764,7 @@ fn legacy_record<T>(
         // Predates the versioned renderer, and predates the text documents
         // themselves, so it can never be a matching generation.
         text_renderer_version: None,
+        take_selection_source: None,
         // The historical layouts record no written boundary and no master
         // length, so there is nothing here to check for self-agreement.
         total_frames: None,
@@ -683,13 +772,12 @@ fn legacy_record<T>(
             .segments
             .into_iter()
             .map(|segment| {
-                let _ = (
-                    &segment.cache_key,
-                    &segment.audio_blake3,
-                    segment.pause_after_ms,
-                );
+                let _ = (&segment.audio_blake3, segment.pause_after_ms);
+                let synthesis_base_key = segment.cache_key.clone();
                 RecordedSegment {
                     segment_id: segment.segment_id,
+                    cache_key: segment.cache_key,
+                    synthesis_base_key,
                     frames: segment.frames,
                     written: None,
                 }
@@ -797,8 +885,37 @@ pub(crate) fn validate_package(
         // this build would produce it with.
         tools_match(&manifest, &expected)
             && manifest.text_renderer_version.as_deref() == Some(expected.text_renderer_version)
+            && manifest.take_selection_source == Some(expected.take_selection_source)
     });
     Ok(plan_matches && reusable)
+}
+
+/// Every cache entry the published package at `manifest_path` was assembled
+/// from.
+///
+/// ADR-0001 §12.2: "Cache pruning treats every artifact referenced by an
+/// accepted takes file or published manifest as live." This is the published
+/// half of that set, read through the same layout dispatch
+/// [`validate_package`] uses so a package readable by one and opaque to the
+/// other cannot exist.
+///
+/// # Errors
+///
+/// [`DurableStateError::UnsupportedPackageManifest`] for a layout this build
+/// cannot decode, [`DurableStateError::MalformedPackageManifest`] for one it
+/// cannot parse, otherwise [`crate::IoError::FileSystem`].
+pub(crate) fn referenced_cache_keys(
+    manifest_path: &Path,
+) -> Result<BTreeSet<CacheKey>, BuildError> {
+    let bytes =
+        std::fs::read(manifest_path).map_err(|error| crate::io_error(manifest_path, error))?;
+    let version: StoredManifestVersion = parse_manifest(&bytes, manifest_path)?;
+    let record = parse_stored_manifest(&bytes, manifest_path, &version.schema_version)?;
+    Ok(record
+        .segments
+        .into_iter()
+        .flat_map(|segment| [segment.cache_key, segment.synthesis_base_key])
+        .collect())
 }
 
 /// Decodes a stored manifest under the layout its `schema_version` names.
@@ -1012,10 +1129,51 @@ mod tests {
 
     use super::*;
     use crate::{
+        CalibrationSource,
         durable::OsDurableFileSystem,
         export::{self, ToolProfile},
         timeline::WrittenSegment,
     };
+
+    /// An unknown key inside the flattened continuity is refused.
+    ///
+    /// Pins which attribute does the work, because the answer is not the one
+    /// serde's own documentation leads a reader to expect. Both structs carry
+    /// `deny_unknown_fields`, and only `StoredJoin`'s has any effect here:
+    /// removing it accepts `verdict`, while removing [`JoinContinuity`]'s
+    /// changes nothing, because a flattened struct is handed only the keys the
+    /// outer one did not claim and never sees the document's leftovers. Serde
+    /// documents this combination as unsupported, so the standing risk is a
+    /// later reader treating the outer attribute as inert and moving the guard
+    /// inward — which would look tidier, compile, and open the boundary.
+    #[test]
+    fn t1_e2_an_unknown_field_inside_a_flattened_join_is_refused() {
+        const ACCEPTED: &str = r#"{"earlier_segment_id":"seg-0001",
+            "later_segment_id":"seg-0002","loudness_ratio":1.0495234,
+            "rate_ratio":1.2639548,"calibration_source":"provisional"}"#;
+
+        let join: StoredJoin =
+            serde_json::from_str(ACCEPTED).expect("a join this build writes must parse");
+        assert_eq!(join.earlier_segment_id, "seg-0001");
+        assert_eq!(
+            join.continuity.calibration_source,
+            CalibrationSource::Provisional
+        );
+
+        // Placed after the recognized keys, so it reaches the flattened
+        // continuity rather than being refused as an outer field.
+        let with_extra = ACCEPTED.replace(
+            r#""calibration_source":"provisional""#,
+            r#""calibration_source":"provisional","verdict":"pass""#,
+        );
+        let error = serde_json::from_str::<StoredJoin>(&with_extra)
+            .expect_err("an unknown key inside the flattened continuity must be refused");
+
+        assert!(
+            error.to_string().contains("verdict"),
+            "the refusal must name the field it rejected, got {error}"
+        );
+    }
 
     fn cached_segment(audio_blake3: String) -> ValidatedCachedArtifact {
         ValidatedCachedArtifact {
@@ -1029,6 +1187,36 @@ mod tests {
             audio_blake3,
             frames: 1,
             pause_after_ms: 0,
+        }
+    }
+
+    /// The one-segment plan the fixture manifests below are written from.
+    ///
+    /// Matches `cached_segment` position for position, which is the alignment
+    /// `validate_cached_artifacts` enforces on the real path.
+    fn one_segment_plan(plan_hash: &PlanHash) -> RenderPlan {
+        let cache_key: CacheKey = "a"
+            .repeat(CacheKey::LENGTH)
+            .parse()
+            .expect("valid cache key");
+        RenderPlan {
+            schema_version: study_tts_core::PLAN_SCHEMA_VERSION,
+            lesson_id: "lesson".to_owned(),
+            plan_hash: plan_hash.clone(),
+            take_selection_source: TakeSelectionSource::Implicit,
+            segments: vec![study_tts_core::PlannedSegment {
+                id: "segment".to_owned(),
+                speaker: "nadia".to_owned(),
+                voice_profile: "nadia-v1".to_owned(),
+                display_text: "Segment.".to_owned(),
+                spoken_text: "Segment.".to_owned(),
+                style: study_tts_core::DeliveryStyle::Calm,
+                pause_after_ms: 0,
+                take: study_tts_core::BASE_TAKE,
+                cache_key: cache_key.clone(),
+                synthesis_base_key: cache_key,
+                audio_blake3: None,
+            }],
         }
     }
 
@@ -1102,7 +1290,8 @@ mod tests {
             &package.join(MANIFEST_NAME),
             ManifestRecords {
                 lesson_id: "lesson",
-                plan_hash: &plan_hash,
+                plan: &one_segment_plan(&plan_hash),
+                joins: &[],
                 segments: std::slice::from_ref(&segment),
                 timeline: &one_segment_timeline(),
                 package_dir: package,
@@ -1192,6 +1381,7 @@ mod tests {
             ffprobe,
             profiles,
             text_renderer_version: TEXT_RENDERER_VERSION,
+            take_selection_source: TakeSelectionSource::Implicit,
         }
     }
 

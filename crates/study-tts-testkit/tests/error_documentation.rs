@@ -49,6 +49,7 @@ const CONTRACTS: [Contract; 5] = [
         errors: &[
             ("LessonError", LESSON),
             ("PlanError", "crates/study-tts-core/src/plan.rs"),
+            ("TakesError", "crates/study-tts-core/src/takes.rs"),
             ("VoiceError", "crates/study-tts-core/src/voice.rs"),
             (
                 "VoiceProfileError",

@@ -193,6 +193,8 @@ fn render_takes(
     for (index, line) in script.lines.iter().enumerate() {
         let mut segment = planned_segment(index, line, &script.style, voice)?;
         segment.cache_key = context.key_for(&segment);
+        // Take zero, so the segment's base key is its own key.
+        segment.synthesis_base_key = segment.cache_key.clone();
         let synthesis = request(voice, index, &line.text, &script.style, &segment)?;
 
         // Through the cache, not around it. Edge conditioning under
@@ -250,6 +252,10 @@ fn planned_segment(
         // placeholder that reached the cache would be refused by the identity
         // gate rather than published.
         cache_key: "0".repeat(64).parse()?,
+        synthesis_base_key: "0".repeat(64).parse()?,
+        // Nothing here is a selection; this instrument renders, it does not
+        // approve.
+        audio_blake3: None,
     })
 }
 

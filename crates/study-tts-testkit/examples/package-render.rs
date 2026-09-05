@@ -21,7 +21,7 @@
 //! `--output-root` the operator names and nothing is copied into the
 //! repository, per `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`.
 
-use std::{error::Error, path::PathBuf};
+use std::{collections::BTreeMap, error::Error, path::PathBuf};
 
 use study_tts_core::VoiceUse;
 use study_tts_runtime::{
@@ -51,6 +51,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ffmpeg_executable: PathBuf::from("ffmpeg"),
             ffprobe_executable: PathBuf::from("ffprobe"),
             voice_profile_root: configuration.voice_root.clone(),
+            retakes: configuration.retakes.clone(),
         },
         &executor,
     )?;
@@ -86,6 +87,7 @@ struct Configuration {
     voice_root: PathBuf,
     lesson: PathBuf,
     workspace: PathBuf,
+    retakes: BTreeMap<String, u32>,
 }
 
 impl Configuration {
@@ -94,12 +96,22 @@ impl Configuration {
     /// No defaults, for the reason `listening-render` gives: a default governed
     /// path would put one into a committed file, and a default output root
     /// would let a rerun overwrite the package a review was taken against.
+    ///
+    /// `--retake <segment-id>=<take>` renders ADR-0001 §11.4's alternate
+    /// performance, and is the one case where an *existing* output root is
+    /// required rather than refused: a retake is a second build into the
+    /// workspace that already holds the take it replaces, which is the only
+    /// place §11.4's "retains the prior artifact" and its two joins can be
+    /// observed. It overwrites nothing — a package is addressed by its manifest
+    /// digest and published no-replace, so the earlier generation stays exactly
+    /// where the review that took it will look.
     fn from_arguments() -> Result<Self, Box<dyn Error>> {
         let mut bundle_root = None;
         let mut model_root = None;
         let mut voice_root = None;
         let mut lesson = None;
         let mut output_root = None;
+        let mut retakes = BTreeMap::new();
 
         let mut arguments = std::env::args().skip(1);
         while let Some(flag) = arguments.next() {
@@ -112,13 +124,22 @@ impl Configuration {
                 "--voice-root" => voice_root = Some(PathBuf::from(value)),
                 "--lesson" => lesson = Some(PathBuf::from(value)),
                 "--output-root" => output_root = Some(PathBuf::from(value)),
+                "--retake" => {
+                    let (segment_id, take) = value.split_once('=').ok_or_else(|| {
+                        format!("`--retake` takes `<segment-id>=<take>`, got `{value}`")
+                    })?;
+                    retakes.insert(segment_id.to_owned(), take.parse::<u32>()?);
+                }
                 unknown => return Err(format!("unknown argument `{unknown}`").into()),
             }
         }
 
         let output_root: PathBuf = output_root.ok_or("--output-root is required")?;
-        if output_root.exists() {
+        if retakes.is_empty() && output_root.exists() {
             return Err("--output-root must not exist; a rerender takes a new root".into());
+        }
+        if !retakes.is_empty() && !output_root.exists() {
+            return Err("--retake continues an existing --output-root; render it first".into());
         }
         // Absolute from here on: every path below is handed to the worker,
         // whose working directory is the bundle's import root rather than this
@@ -129,6 +150,7 @@ impl Configuration {
             voice_root: std::path::absolute(voice_root.ok_or("--voice-root is required")?)?,
             lesson: std::path::absolute(lesson.ok_or("--lesson is required")?)?,
             workspace: std::path::absolute(output_root.join("workspace"))?,
+            retakes,
         };
         std::fs::create_dir_all(&configuration.workspace)?;
         Ok(configuration)

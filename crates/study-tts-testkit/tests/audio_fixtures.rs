@@ -66,8 +66,12 @@ fn segment() -> PlannedSegment {
         // Replaced below; a hand-written key would be refused by the identity
         // gate before the audio gate this test is about could run.
         cache_key: "0".repeat(64).parse().expect("a digest of zeros parses"),
+        synthesis_base_key: "0".repeat(64).parse().expect("a digest of zeros parses"),
+        audio_blake3: None,
     };
     planned.cache_key = context().key_for(&planned);
+    // Take zero, so the segment's base key is its own key.
+    planned.synthesis_base_key = planned.cache_key.clone();
     planned
 }
 

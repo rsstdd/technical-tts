@@ -42,6 +42,26 @@ pub enum PublicationError {
         declared: ReleaseStatus,
     },
 
+    /// The manifest records a take selection nobody reviewed.
+    ///
+    /// ADR-0001 §12.2 requires an explicit versioned takes file for a
+    /// production release "even when every selection remains zero", and this is
+    /// the published half of that rule: `study_tts_core::TakeSelectionSource`
+    /// carries the distinction through a build, and this refuses a manifest
+    /// that records the generated one. An absent field is read as generated,
+    /// because a manifest that says nothing about how it was selected has not
+    /// shown that anyone selected it.
+    #[error(
+        "production release is refused: the manifest records take selection `{declared}`, and \
+         ADR-0001 §12.2 requires an explicit versioned takes file even when every selection \
+         remains zero; the project owner must accept a takes file for this build and publish a \
+         manifest from the build that read it"
+    )]
+    ImplicitTakeSelection {
+        /// What the manifest recorded, or `implicit` where it recorded nothing.
+        declared: &'static str,
+    },
+
     /// Production gates are not available in this walking-skeleton phase.
     #[error(
         "production release is refused: manifest acceptance is unavailable before the \
@@ -66,8 +86,14 @@ impl PublicationError {
             // "Production publication" until the routing rows were mechanized:
             // that is a §Decision routing row, which names who decides a
             // publication rather than who repairs a refused one.
+            // `ImplicitTakeSelection` joins them for the same reason. The
+            // nearest §Failure routing row, "Human review finding", names a
+            // human-review owner this enum has no variant for, and inventing
+            // one to carry a row that does not describe this refusal would be
+            // worse than naming the owner in the message.
             Self::Release(ReleaseError::PrivateProfileCannotClaimProduction)
             | Self::MalformedProductionManifest { .. }
+            | Self::ImplicitTakeSelection { .. }
             | Self::ManifestNotProductionRelease { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::ProjectOwner,
                 "publish a corrected manifest from a build that earned production status",

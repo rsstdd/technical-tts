@@ -78,7 +78,7 @@ pub const MAX_SEGMENT_AUDIO_MS: u32 = 10 * 60 * 1_000;
 /// threshold is indistinguishable from one conditioned against the frozen value
 /// ADR-0003 will publish. No `#[serde(other)]`: a calibration this build does
 /// not know is a parse error, never a silent default.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub enum CalibrationSource {
     /// Chosen for preview use while ADR-0003 is Proposed and its value Pending.
@@ -159,6 +159,144 @@ impl SilenceThreshold {
             CalibrationSource::Provisional => Err(ProvisionalCalibration),
         }
     }
+}
+
+/// One side of a join, as the segment that meets there was rendered.
+#[derive(Clone, Copy, Debug)]
+pub struct JoinSide<'a> {
+    /// The segment's canonical samples.
+    pub samples: &'a [f32],
+    /// Rate those samples were rendered at.
+    pub sample_rate: u32,
+    /// Characters of spoken text the segment was rendered from.
+    pub characters: usize,
+}
+
+/// A measured comparison of the two segments meeting at one join.
+///
+/// ADR-0001 §11.4: "After a mid-lesson retake, automated loudness and
+/// speaking-rate comparisons plus a listening check evaluate both joins." This
+/// is the automated half, and it is deliberately only the measurement.
+///
+/// Nothing here is a verdict. ADR-0003 owns the join-discontinuity threshold
+/// and the loudness target, it is **Proposed**, and both rows of its
+/// calibration table read `Pending`; a `Proposed` ADR authorizes nothing, so a
+/// pass or fail derived here would be an unratified threshold on a production
+/// path. [`JoinContinuity::production`] is what keeps that from happening by
+/// being passed along.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct JoinContinuity {
+    /// The later segment's speech level over the earlier segment's.
+    ///
+    /// Published as non-negative and finite, which is what [`assess_join`]
+    /// guarantees and nothing narrower: a plausible range for this ratio is
+    /// precisely what ADR-0003's `Pending` calibration table has not settled,
+    /// so a tighter published bound would be that unratified threshold wearing
+    /// a schema.
+    #[schemars(range(min = 0.0, max = 3.402_823_5e38))]
+    pub loudness_ratio: f32,
+    /// The later segment's speaking rate over the earlier segment's.
+    ///
+    /// Bounded on the same terms, and for the same reason, as
+    /// [`JoinContinuity::loudness_ratio`].
+    #[schemars(range(min = 0.0, max = 3.402_823_5e38))]
+    pub rate_ratio: f32,
+    /// Where the interpretation of these numbers would have to come from.
+    pub calibration_source: CalibrationSource,
+}
+
+/// Measures the two segments meeting at one join against each other.
+///
+/// Loudness is the RMS of each side's *speech* — the samples left once the
+/// measured edge silence is excluded — rather than of a fixed window, so no
+/// window length has to be invented while ADR-0003's calibration table is
+/// `Pending`. Speaking rate is speech frames per character of spoken text, a
+/// **provisional proxy**: no ratified document in this repository defines a
+/// speaking-rate measure, and `docs/architecture/E2-S2-INTERFACE-CHANGE-001.md`
+/// §Open questions records that for the audio owner.
+///
+/// A ratio whose denominator is zero is reported as `0.0`. That is a
+/// correctness constraint rather than a preference: JSON has no infinity, so a
+/// non-finite ratio is a manifest `serde_json` cannot write at all.
+#[must_use]
+pub fn assess_join(earlier: &JoinSide<'_>, later: &JoinSide<'_>) -> JoinContinuity {
+    let earlier_speech = speech_of(earlier);
+    let later_speech = speech_of(later);
+    JoinContinuity {
+        loudness_ratio: ratio(frame_rms(later_speech), frame_rms(earlier_speech)),
+        rate_ratio: ratio(
+            speaking_rate(later_speech.len(), later.characters),
+            speaking_rate(earlier_speech.len(), earlier.characters),
+        ),
+        calibration_source: CalibrationSource::Provisional,
+    }
+}
+
+impl JoinContinuity {
+    /// This comparison, for a caller that requires a calibrated production
+    /// reference.
+    ///
+    /// # Errors
+    ///
+    /// [`ProvisionalCalibration`] while
+    /// [`JoinContinuity::calibration_source`] is
+    /// [`CalibrationSource::Provisional`], which it always is until ADR-0003 is
+    /// accepted. The same rule [`SilenceThreshold::production`] applies, for
+    /// the same reason: ADR-0001 §13.3 says preview references cannot become
+    /// production references without calibration.
+    pub const fn production(&self) -> Result<Self, ProvisionalCalibration> {
+        match self.calibration_source {
+            CalibrationSource::Frozen => Ok(*self),
+            CalibrationSource::Provisional => Err(ProvisionalCalibration),
+        }
+    }
+}
+
+/// The samples of one side that are not its measured edge silence.
+///
+/// Through [`measure_edge_silence`] rather than a second scan, for the reason
+/// that function's own doc gives: two implementations of one measurement stop
+/// agreeing, and a join would then be measured over a region the conditioner
+/// treated as silence.
+fn speech_of<'a>(side: &JoinSide<'a>) -> &'a [f32] {
+    let (leading, trailing) = measure_edge_silence(
+        side.samples,
+        side.sample_rate,
+        SilenceThreshold::provisional(),
+    );
+    side.samples
+        .get(leading..side.samples.len().saturating_sub(trailing))
+        .unwrap_or_default()
+}
+
+/// Speech frames per character of the text they were rendered from.
+fn speaking_rate(frames: usize, characters: usize) -> f32 {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "both counts are bounded by MAX_SEGMENT_AUDIO_MS and the lesson's text \
+                  ceiling, far below f32's exact-integer range"
+    )]
+    let rate = ratio(frames as f32, characters as f32);
+    rate
+}
+
+/// `numerator / denominator`, or zero where the denominator is.
+///
+/// Zero is the only denominator that has to be guarded, and that is an argument
+/// rather than an assumption. Both ratios divide measurements of a *speech*
+/// region, and [`speech_of`] returns an empty slice for a side whose every
+/// frame is below [`SilenceThreshold`] — so a wholly silent side arrives as an
+/// exact `0.0` rather than as a denormal. Any non-empty region contains a frame
+/// whose RMS exceeded that threshold, which floors the region's own RMS far
+/// above the `2.9e-39` a unit numerator would need to overflow `f32`. Widening
+/// the region without that floor would reintroduce the case, which is why the
+/// reasoning is recorded next to the guard rather than left to be rederived.
+fn ratio(numerator: f32, denominator: f32) -> f32 {
+    if denominator == 0.0 {
+        return 0.0;
+    }
+    numerator / denominator
 }
 
 /// A provisional value was asked to serve as a production reference.
@@ -399,6 +537,8 @@ pub fn condition_edges(
 
 #[cfg(test)]
 mod tests {
+    use study_tts_core::CANONICAL_SAMPLE_RATE;
+
     use super::*;
 
     const RATE: u32 = 24_000;
@@ -592,6 +732,85 @@ mod tests {
         assert_eq!(MAX_TRANSITION_RAMP_MS, 5);
         assert_eq!(samples_for(REQUIRED_EDGE_SILENCE_MS, RATE), REQUIRED);
         assert_eq!(samples_for(MAX_TRANSITION_RAMP_MS, RATE), RAMP);
+    }
+
+    #[test]
+    fn t1_e2_a_join_is_measured_against_the_speech_on_each_side() {
+        // Hand-built sides rather than rendered audio: the arithmetic is the
+        // subject, and a reviewer can read each expectation off the inputs.
+        // Every side carries the ADR-0001 §13.4 edge silence a published entry
+        // must have, so the measurement is over speech in both directions.
+        let side = |level: f32, speech_frames: usize, characters: usize| {
+            let silence = samples_for(REQUIRED_EDGE_SILENCE_MS, CANONICAL_SAMPLE_RATE);
+            let mut samples = vec![0.0_f32; silence];
+            samples.extend(std::iter::repeat_n(level, speech_frames));
+            samples.extend(std::iter::repeat_n(0.0_f32, silence));
+            (samples, characters)
+        };
+
+        /// One side of a case: signal level, speech samples, and characters.
+        type Rendered = (f32, usize, usize);
+        /// A case: the earlier side, the later side, and the two ratios the
+        /// pair must measure.
+        type Case = (Rendered, Rendered, f32, f32);
+
+        const CASES: [Case; 3] = [
+            // Identical sides compare as one.
+            ((0.5, 2_400, 10), (0.5, 2_400, 10), 1.0, 1.0),
+            // Twice the level, same rate.
+            ((0.25, 2_400, 10), (0.5, 2_400, 10), 2.0, 1.0),
+            // Same level, half the frames per character: twice as fast.
+            ((0.5, 2_400, 10), (0.5, 2_400, 20), 1.0, 0.5),
+        ];
+
+        for (earlier, later, loudness, rate) in CASES {
+            let (earlier_samples, earlier_characters) = side(earlier.0, earlier.1, earlier.2);
+            let (later_samples, later_characters) = side(later.0, later.1, later.2);
+
+            let measured = assess_join(
+                &JoinSide {
+                    samples: &earlier_samples,
+                    sample_rate: CANONICAL_SAMPLE_RATE,
+                    characters: earlier_characters,
+                },
+                &JoinSide {
+                    samples: &later_samples,
+                    sample_rate: CANONICAL_SAMPLE_RATE,
+                    characters: later_characters,
+                },
+            );
+
+            let case = format!("{earlier:?} then {later:?}");
+            assert!(
+                (measured.loudness_ratio - loudness).abs() < 1e-3,
+                "{case}: loudness {} is not {loudness}",
+                measured.loudness_ratio
+            );
+            assert!(
+                (measured.rate_ratio - rate).abs() < 1e-3,
+                "{case}: rate {} is not {rate}",
+                measured.rate_ratio
+            );
+            assert_eq!(measured.calibration_source, CalibrationSource::Provisional);
+        }
+    }
+
+    #[test]
+    fn t1_e2_a_join_measurement_is_never_a_production_reference() {
+        let silent = JoinSide {
+            samples: &[0.0; 480],
+            sample_rate: CANONICAL_SAMPLE_RATE,
+            characters: 4,
+        };
+
+        let measured = assess_join(&silent, &silent);
+
+        // A side with no measurable speech divides by zero, and JSON has no
+        // infinity: a non-finite ratio is a manifest `serde_json` refuses to
+        // write at all.
+        assert!(measured.loudness_ratio.is_finite());
+        assert!(measured.rate_ratio.is_finite());
+        assert_eq!(measured.production(), Err(ProvisionalCalibration));
     }
 
     #[test]

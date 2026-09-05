@@ -305,6 +305,81 @@ fn entry_path_elements(cache_key: &CacheKey) -> [&str; 3] {
     [SEGMENTS_DIRECTORY, &key[..CACHE_SHARD_WIDTH], key]
 }
 
+/// Every published entry beneath `cache_root`, keyed by the identity it is
+/// filed under.
+///
+/// A reader of [`entry_path_elements`] rather than a second copy of it: each
+/// directory found is parsed back into a [`CacheKey`] and its own path
+/// re-derived from that key, so a shard width that changed would fail here
+/// instead of quietly enumerating nothing.
+///
+/// A cache with no entries yet is an empty map rather than an error, and the
+/// tree is never created: this is a report, and a report must not make the
+/// state it describes.
+///
+/// # Errors
+///
+/// [`CacheError::UnrecognizedCacheEntry`] for a directory the cache did not
+/// name, [`ManagedPathError::ManagedPathEscape`] for a planted link, otherwise
+/// [`IoError::FileSystem`].
+pub(crate) fn published_entries(
+    cache_root: &Path,
+) -> Result<BTreeMap<CacheKey, PathBuf>, BuildError> {
+    let segments = managed::directory_candidate(cache_root, SEGMENTS_DIRECTORY)?;
+    let mut entries = BTreeMap::new();
+    if !segments.is_dir() {
+        return Ok(entries);
+    }
+
+    for shard in read_directories(&segments)? {
+        for entry in read_directories(&shard)? {
+            let unrecognized = || {
+                BuildError::from(CacheError::UnrecognizedCacheEntry {
+                    entry_dir: entry.clone(),
+                })
+            };
+            let key: CacheKey = entry
+                .file_name()
+                .and_then(OsStr::to_str)
+                .ok_or_else(unrecognized)?
+                .parse()
+                .map_err(|_| unrecognized())?;
+            // The layout, checked rather than assumed: a key found under the
+            // wrong shard is a tree this build did not write.
+            if resolve_entry_location(cache_root, &key)?.1 != entry {
+                return Err(unrecognized());
+            }
+            entries.insert(key, entry);
+        }
+    }
+    Ok(entries)
+}
+
+/// The immediate subdirectories of `directory`, in a stable order.
+///
+/// Shared with `preview`, which walks its own published tree the same way.
+///
+/// # Errors
+///
+/// [`IoError::FileSystem`] when the directory or an entry cannot be read.
+pub(crate) fn read_directories(directory: &Path) -> Result<Vec<PathBuf>, BuildError> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(directory).map_err(|error| io_error(directory, error))? {
+        let entry = entry.map_err(|error| io_error(directory, error))?;
+        // `symlink_metadata`, so a link to a directory elsewhere is not walked
+        // into: `managed` refuses one on the resolution path and this is the
+        // enumeration path.
+        let metadata = entry
+            .metadata()
+            .map_err(|error| io_error(entry.path(), error))?;
+        if metadata.is_dir() {
+            found.push(entry.path());
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
 /// Resolves one entry's shard and no-replace destination.
 ///
 /// [`entry_path_elements`] states the layout; this walks it one level at a
@@ -1445,6 +1520,8 @@ mod tests {
             pause_after_ms: 75,
             take: study_tts_core::BASE_TAKE,
             cache_key: key(cache_key),
+            synthesis_base_key: key(cache_key),
+            audio_blake3: None,
         }
     }
 

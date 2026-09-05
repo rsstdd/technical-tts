@@ -255,6 +255,11 @@ mod tests {
                 .repeat(CacheKey::LENGTH)
                 .parse()
                 .expect("a repeated hexadecimal digit is a cache key"),
+            synthesis_base_key: label
+                .repeat(CacheKey::LENGTH)
+                .parse()
+                .expect("a repeated hexadecimal digit is a cache key"),
+            audio_blake3: None,
         }
     }
 

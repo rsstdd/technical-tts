@@ -11,12 +11,12 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use study_tts_core::{ManifestDigest, PlanHash, ToolProfileHash, is_blake3_hex};
+use study_tts_core::{ManifestDigest, PlanHash, RenderPlan, ToolProfileHash, is_blake3_hex};
 use tempfile::Builder;
 
 use crate::{
     BuildError, DurableStateError,
-    cache::hash_file,
+    cache::{self, hash_file},
     durable::{
         DurableFileSystem, RenameOutcome, publish_directory_noreplace, sync_directory_transaction,
         write_json_atomically,
@@ -164,6 +164,51 @@ pub(crate) fn roots(workspace: &Path, lesson_id: &str) -> Result<PreviewRoots, B
     })
 }
 
+/// The manifest of every published package under `workspace`, for every
+/// lesson.
+///
+/// A reader of the layout [`roots`] states rather than a second copy of it:
+/// the same `previews/<lesson>/packages/<generation>` shape, walked instead of
+/// resolved because a retention report is asked about lessons it was not told
+/// the names of.
+///
+/// Nothing is created. A workspace that has published nothing yet reports an
+/// empty list, which is not the same answer as a workspace whose previews are
+/// unreadable — that is an error, because treating unreadable roots as "no
+/// roots" is how live artifacts become prune candidates.
+///
+/// # Errors
+///
+/// [`DurableStateError::MissingPackageManifest`] when an immutable package has
+/// no manifest, [`crate::ManagedPathError::ManagedPathEscape`] for a planted
+/// link, otherwise [`crate::IoError::FileSystem`].
+pub(crate) fn published_manifests(workspace: &Path) -> Result<Vec<PathBuf>, BuildError> {
+    let previews = managed::directory_candidate(workspace, "previews")?;
+    let mut manifests = Vec::new();
+    if !previews.is_dir() {
+        return Ok(manifests);
+    }
+
+    for lesson_dir in cache::read_directories(&previews)? {
+        let packages = managed::directory_candidate(&lesson_dir, PACKAGES_DIRECTORY)?;
+        if !packages.is_dir() {
+            continue;
+        }
+        for generation in cache::read_directories(&packages)? {
+            let manifest_path = managed::leaf(&generation, manifest::MANIFEST_NAME)?;
+            if manifest_path.is_file() {
+                manifests.push(manifest_path);
+            } else {
+                return Err(DurableStateError::MissingPackageManifest {
+                    path: manifest_path,
+                }
+                .into());
+            }
+        }
+    }
+    Ok(manifests)
+}
+
 /// Reconciles the provisional publication journal and validates `current.json`.
 ///
 /// # Errors
@@ -295,7 +340,7 @@ pub(crate) fn current_manifest_digest(
 pub(crate) fn current_for_build(
     roots: &PreviewRoots,
     lesson_id: &str,
-    plan_hash: &PlanHash,
+    plan: &RenderPlan,
     ffmpeg: &ToolIdentity,
     ffprobe: &ToolIdentity,
     profiles: &ExportProfiles,
@@ -306,12 +351,13 @@ pub(crate) fn current_for_build(
     if manifest::validate_package(
         &package.package_dir,
         lesson_id,
-        Some(plan_hash.as_str()),
+        Some(plan.plan_hash.as_str()),
         Some(manifest::ReuseExpectations {
             ffmpeg,
             ffprobe,
             profiles,
             text_renderer_version: timeline::TEXT_RENDERER_VERSION,
+            take_selection_source: plan.take_selection_source,
         }),
     )? {
         return Ok(Some(package));
@@ -781,6 +827,30 @@ mod tests {
     };
 
     #[test]
+    fn t4_e2_a_published_package_without_a_manifest_refuses_retention() {
+        let workspace = TempDir::new().expect("create preview workspace");
+        let generation = workspace.path().join("previews/lesson/packages/generation");
+        fs::create_dir_all(&generation).expect("create incomplete published package");
+        let manifest_path = generation.join(manifest::MANIFEST_NAME);
+
+        let error = published_manifests(workspace.path())
+            .expect_err("an immutable package without its manifest must not be skipped");
+
+        assert!(
+            matches!(
+                &error,
+                BuildError::DurableState(error)
+                    if matches!(
+                        error.as_ref(),
+                        DurableStateError::MissingPackageManifest { path }
+                            if path == &manifest_path
+                    )
+            ),
+            "expected a missing-package-manifest refusal, got {error}"
+        );
+    }
+
+    #[test]
     fn t4_e0_package_publication_flushes_files_before_the_directory_rename() {
         let workspace = TempDir::new().expect("create preview workspace");
         let roots = roots(workspace.path(), "lesson").expect("create preview roots");
@@ -825,6 +895,29 @@ mod tests {
             frames: 1,
             pause_after_ms: 0,
         };
+        /// The plan the fixture manifest is written from, matching `segment`.
+        fn one_segment_plan(plan_hash: &PlanHash, segment: &ValidatedCachedArtifact) -> RenderPlan {
+            RenderPlan {
+                schema_version: study_tts_core::PLAN_SCHEMA_VERSION,
+                lesson_id: "lesson".to_owned(),
+                plan_hash: plan_hash.clone(),
+                take_selection_source: study_tts_core::TakeSelectionSource::Implicit,
+                segments: vec![study_tts_core::PlannedSegment {
+                    id: segment.segment_id.clone(),
+                    speaker: "nadia".to_owned(),
+                    voice_profile: "nadia-v1".to_owned(),
+                    display_text: "Segment.".to_owned(),
+                    spoken_text: "Segment.".to_owned(),
+                    style: study_tts_core::DeliveryStyle::Calm,
+                    pause_after_ms: 0,
+                    take: study_tts_core::BASE_TAKE,
+                    cache_key: segment.cache_key.clone(),
+                    synthesis_base_key: segment.cache_key.clone(),
+                    audio_blake3: None,
+                }],
+            }
+        }
+
         let executions: Vec<(manifest::RecordedTool, ToolExecution)> = profiles
             .identities()
             .into_iter()
@@ -850,7 +943,8 @@ mod tests {
             &manifest_path,
             manifest::ManifestRecords {
                 lesson_id: "lesson",
-                plan_hash: &plan_hash,
+                plan: &one_segment_plan(&plan_hash, &segment),
+                joins: &[],
                 segments: std::slice::from_ref(&segment),
                 timeline: &timeline::Timeline {
                     segments: vec![timeline::WrittenSegment {

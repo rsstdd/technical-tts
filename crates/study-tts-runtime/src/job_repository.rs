@@ -135,8 +135,10 @@ pub trait JobRepository: Send + Sync {
     /// [`DurableStateError::RetainedPlanSegmentCountExceeded`],
     /// [`DurableStateError::DurableRecordTooLarge`], or
     /// [`DurableStateError::UnsupportedDurableRecord`] when the plan cannot be
-    /// trusted; [`BuildError::ManagedPath`] or [`BuildError::Io`] when its path
-    /// cannot be safely located or read.
+    /// trusted; [`PlanError::BaseTakeKeyMismatch`] or
+    /// [`PlanError::RetakeUsesBaseKey`] when its recorded selection is
+    /// inconsistent; [`BuildError::ManagedPath`] or [`BuildError::Io`] when
+    /// its path cannot be safely located or read.
     fn retained_plan(
         &self,
         workspace: &Path,
@@ -336,6 +338,12 @@ fn load_retained_plan(path: &Path, job_id: &str) -> Result<RenderPlan, BuildErro
         }
         .into());
     }
+    // The hash above covers the identity fields and deliberately not the two
+    // selection fields ADR-0001 §12.2 has the plan record for audit. This is
+    // the verification those are recorded under instead, and it is why they
+    // can stay outside the identity — see
+    // `RenderPlan::verify_recorded_selection`.
+    plan.verify_recorded_selection()?;
     Ok(plan)
 }
 
@@ -544,7 +552,7 @@ mod tests {
     use study_tts_core::{
         CacheKey, DeliveryStyle, JobDocument, JobState, MAX_LESSON_SEGMENTS, ManifestDigest,
         PLAN_SCHEMA_VERSION, PlannedSegment, ReleaseError, RenderPlan, SegmentStatus,
-        SelectedPackageIdentity,
+        SelectedPackageIdentity, TakeSelectionSource,
     };
     use tempfile::TempDir;
 
@@ -951,11 +959,14 @@ mod tests {
             pause_after_ms: 0,
             take: 0,
             cache_key: "e".repeat(CacheKey::LENGTH).parse().expect("cache key"),
+            synthesis_base_key: "e".repeat(CacheKey::LENGTH).parse().expect("base key"),
+            audio_blake3: None,
         };
         let plan = RenderPlan {
             schema_version: PLAN_SCHEMA_VERSION,
             lesson_id: JOB_ID.to_owned(),
             plan_hash: "f".repeat(64).parse().expect("plan hash"),
+            take_selection_source: TakeSelectionSource::Implicit,
             segments: vec![segment; MAX_LESSON_SEGMENTS + 1],
         };
         std::fs::write(
