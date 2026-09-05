@@ -177,7 +177,8 @@ It becomes load-bearing at the publication and distribution definition that `DEL
 §11 owes before G3, and the norm to apply already exists — `docs/operations/REFERENCE-ENVIRONMENT.md`
 keeps raw absolute paths in the private record and redacts them from the committed one. E2-S4 owns
 run-report redaction for M2 (`docs/governance/MILESTONE-CAPABILITY-MATRIX.md`), but that is the run
-report, not the package manifest, so **no story currently owns this** and it needs one.
+report, not the package manifest, so no story owned this when the session was taken. Filed as
+issue #82.
 
 ## Approval
 
@@ -198,6 +199,12 @@ Date/time: 2026-09-05, 21:07 CEST (UTC+02:00)
 
 Signature/identity, date, and rationale:
 
-**Awaiting the project owner's signature.** The findings, the disposition, and the environment
-above are entered from the reviewer's own account of the session. The signature line is the
-reviewer's act and is deliberately not filled on their behalf.
+**rsstdd, project owner, 2026-09-05.** I listened to the preview package on the date and equipment
+named above and found no content, pronunciation, voice, join, or continuation defect. I approve it
+for private preview only. I did not judge loudness, because the playback environment cannot resolve
+level drift, and I have recorded that as `not reachable` rather than as a clean result. I accept the
+manifest absolute-path finding as owed before publication rather than as a bar to private use.
+
+*Entered by the engineering assistant at the reviewer's explicit direction on 2026-09-05, from the
+reviewer's own account of the session. The record is `Proposed`, so the reviewer may amend this line
+in place; that would be forbidden only once the record is accepted.*
