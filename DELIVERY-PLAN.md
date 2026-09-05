@@ -554,9 +554,10 @@ Issue #12, closed. Gate G1. Evidence: `e1-s5-canonical-json-authoring-v1`. Inter
 
 **Goal:** make the vertical slice safe for repeated personal use.
 
-### Story E2-S1 — Atomic job state and recovery
+### Story E2-S1 — Atomic job state and recovery — Complete
 
-**Depends on:** E1.
+Issue #14, closed. Gate M2/G3. Evidence: none; acceptance is the named tests below. Interface
+record: `E2-S1-INTERFACE-CHANGE-001`.
 
 **Tasks**
 
@@ -618,9 +619,12 @@ The E0-S0 skeleton already supplies the shared durable-filesystem primitives, pr
 - `t4_e2_resume_refuses_a_job_package_that_disagrees_with_selected_output`
 - `t4_e2_resume_refuses_a_selected_package_for_a_different_job_plan`
 
-### Story E2-S2 — Takes, retakes, and cache retention
+### Story E2-S2 — Takes, retakes, and cache retention — Complete
 
-**Depends on:** E2-S1.
+Issue #15, closed. Gate M2/G3. Evidence: `e2-s2-retake-listening-review-v1`, listening taken
+2026-09-05 and approved for private preview; `Proposed` and awaiting signature, and acceptable
+only at M2 against the five-minute lesson that criterion names. Interface record:
+`E2-S2-INTERFACE-CHANGE-001`.
 
 **Tasks**
 
@@ -1270,12 +1274,15 @@ separately and still owed before G3; and the performance gate was measured on co
 development environment `reference-wsl2-d9d550f06b783405`, with the full-box deployment
 configuration not yet named.
 
-### Before M2
+### Before M2 — closed
 
-1. Who owns human review when the project owner is unavailable?
-2. What cache budget applies to private preview?
-3. Where are private previews written and backed up?
-4. Is a second engineer available for any independently schedulable track?
+All four are recorded as `OQ-11` through `OQ-14` in
+`docs/governance/RISK-OPEN-QUESTIONS-DESCOPE.md`, which owns every open question: human review has
+no deputy, so a gate needing a listening judgment waits for the project owner and `OQ-10` stays
+unassigned; private preview carries no cache budget, and reclamation remains an explicit operator
+prune that E2-S5 will own; previews are written beneath the workspace `previews/` root and are not
+backed up, because a lost preview is reproducible from its lesson and cache; and no second engineer
+is available, so every track is serial and the `Solo schedule overload` risk row prices the result.
 
 ### Before G3
 

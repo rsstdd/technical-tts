@@ -1,22 +1,26 @@
 # E2-S2 — Retake human listening review
 
 - Status: Proposed
-- Governing story/gate: `DELIVERY-PLAN.md` E2-S2; gate G1
+- Governing story/gate: `DELIVERY-PLAN.md` E2-S2; gate M2/G3
 - Hypothesis or decision: ADR-0001 §11.4's human listening obligation over a requested
   alternate performance and the joins either side of it
 - Owner: Engineering owner, with the listener representative
 - Date/time and timezone: material rendered 2026-09-04, local (UTC+00:00 as recorded by the
-  reference environment); **no listening has been taken**
+  reference environment); listening taken 2026-09-05, 21:07 CEST (UTC+02:00)
 - Environment ID: `docs/operations/REFERENCE-ENVIRONMENT.md`
 
 Opened at the story's implementation, per `evidence/README.md` §Accepting a record at its gate.
 Every field below that a machine can derive is filled from the rendered material and verified
-against it. The reviewer identity, the playback environment, the findings table, and the
-disposition are the human half and are deliberately blank: a populated template is not a review,
-and this record makes no listening claim.
+against it. The listening session was taken on 2026-09-05 and its findings are recorded below.
 
-**Read §What this material cannot arbitrate before scheduling the session.** The retake
-generation is byte-identical to the base generation, so listening to both is listening to one.
+Status remains `Proposed`. A story keeps one record, accumulating findings as they are made, and
+is accepted once at the gate it serves against the bytes that gate approved. This record's gate is
+M2, whose acceptance criterion names a **five-minute canonical lesson**; this material is the
+three-segment, 14.96-second `e1-s4-three-segment` lesson. So the findings below stand, and the
+acceptance they support is not yet available to grant.
+
+**§What this material cannot arbitrate governed the session.** The retake generation is
+byte-identical to the base generation, so listening to both was listening to one.
 
 ## Listening material
 
@@ -95,9 +99,9 @@ The cause is in the source and is a property of the design rather than of this r
 So the joins recorded above are measurements of real segment boundaries, but not of a boundary
 between *different* performances: both sides of each join are the same audio in both generations.
 
-**What this record can therefore discharge, once taken:** the package review for these bytes.
-Nobody has listened to this package; `E1-S5` recorded that the E1-S4 listening does not transfer,
-and these bytes differ from those again.
+**What this record therefore discharges:** the package review for these bytes, at the reach of
+the playback environment named below. `E1-S5` recorded that the E1-S4 listening does not transfer,
+and these bytes differ from those again, so this session is the first over this package.
 
 **What it cannot discharge:** any claim that human listening has verified a *retake* join. That
 needs material in which the replacement differs from what it replaced, which this build cannot
@@ -114,32 +118,86 @@ To be completed by the reviewer. Criteria are fixed before listening, for the re
 `e0-s3-g0-qualification-report-v1.md` gives about its own: criteria chosen after hearing the audio
 are criteria chosen to fit it.
 
+### What the playback environment could not reach
+
+The session was taken on built-in laptop speakers. Per
+`docs/operations/PREVIEW-REVIEW-CHECKLIST.md` §What this checklist cannot arbitrate, that
+environment does not resolve low-frequency content, encoder artifacts, or fine level drift.
+Naming it is what makes the limit legible rather than silently absorbed into a clean result.
+
+So **Loudness reads `not reachable`, not `none`**. `none` asserts that the reviewer listened and
+nothing was there, which these speakers cannot support for level matching between segments. Joins
+stay answerable, because a click, truncation, or overlap is audible on any playback; it is level
+matching across a boundary that is not. A later session on headphones or monitors can close the
+Loudness column without re-taking the rest.
+
+The `lesson.mp3` encoder-artifact criterion the standing checklist carries is unreachable for the
+same reason and was not judged.
+
 | Segment | Audio checksum | Content | Pronunciation | Voice | Joins | Loudness | Continuation | Disposition |
 |---|---|---|---|---|---|---|---|---|
-| `seg-0001` | `1c27cc71f4fdec13f3cf41eed7521f2b2a3b26b70a36b5634deb58febc76f097` | | | | | | | |
-| `seg-0002` | `7c5722ce53c39e0af4689393b12737fda888467336960cb4d3eeb1cbdd240de9` | | | | | | | |
-| `seg-0003` | `8e3b822e98a3e72e249b991ea02c299f2012f6b2b1844b039ef1693c8e53d10a` | | | | | | | |
+| `seg-0001` | `1c27cc71f4fdec13f3cf41eed7521f2b2a3b26b70a36b5634deb58febc76f097` | none | none | none | none | not reachable | none | `accept` |
+| `seg-0002` | `7c5722ce53c39e0af4689393b12737fda888467336960cb4d3eeb1cbdd240de9` | none | none | none | none | not reachable | none | `accept` |
+| `seg-0003` | `8e3b822e98a3e72e249b991ea02c299f2012f6b2b1844b039ef1693c8e53d10a` | none | none | none | none | not reachable | none | `accept` |
 
 ## Package review
 
-- [ ] Segment order and completeness are correct.
-- [ ] Chapters and captions align with the audio.
-- [ ] WAV, M4A, and MP3 play correctly.
-- [ ] No source or diagnostic data leaks into metadata.
-- [ ] Every finding has a disposition.
+- [x] Segment order and completeness are correct.
+- [x] Chapters and captions align with the audio.
+- [x] WAV, M4A, and MP3 play correctly.
+- [ ] No source or diagnostic data leaks into metadata. — **finding, see below**
+- [x] Every finding has a disposition.
+
+Chapter boundaries were also checked mechanically: `chapters.ffmetadata` ends at frame 359 040 at
+`TIMEBASE=1/24000`, which is 14.96 s and agrees with the recorded master duration. The three
+chapter titles are the lesson's own spoken text, which is what alignment means here.
+
+### Finding — the manifest records absolute host paths
+
+`manifest.json` embeds the operator's home directory and the full staging layout in
+`tools.executions[].arguments[]`, in both generations. Seven such arguments in the base manifest,
+of the form:
+
+    /home/<user>/…/workspace/jobs/e1-s4-three-segment/staging/<job digest>/lesson.wav
+
+The container metadata is clean: `lesson.wav`, `lesson.m4a`, `lesson.mp3`, and
+`chapters.ffmetadata` carry no source text, diagnostic data, or voice-reference path, and the only
+tag beyond the stream defaults is `encoder=Lavf60.16.100`. The finding is confined to the manifest.
+
+Recording the exact tool invocation is deliberate and is what the package is for. The argument
+*vector* is the provenance; the staging directory it happened to run in is not, and it carries a
+username and a private filesystem layout that a consumer of the package has no use for.
+
+**Disposition: accepted for private preview, recorded as owed before publication.** Nothing is
+violated today. `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` requires redacted paths *in the
+repository*, and this manifest lives under the gitignored governed root, never committed. The
+package is private and stays on the machine that produced it.
+
+It becomes load-bearing at the publication and distribution definition that `DELIVERY-PLAN.md`
+§11 owes before G3, and the norm to apply already exists — `docs/operations/REFERENCE-ENVIRONMENT.md`
+keeps raw absolute paths in the private record and redacts them from the committed one. E2-S4 owns
+run-report redaction for M2 (`docs/governance/MILESTONE-CAPABILITY-MATRIX.md`), but that is the run
+report, not the package manifest, so **no story currently owns this** and it needs one.
 
 ## Approval
 
-- [ ] Approved for private preview
+- [x] Approved for private preview
 - [ ] Approved for the stated production scope
 - [ ] Rejected; correction required
 
-Reviewer identity and role:
+Production scope was not available to grant and was not considered. It requires an explicit
+accepted takes selection, and both generations record `take_selection_source: implicit`.
 
-Playback environment and equipment:
+Reviewer identity and role: project owner, signing as the human review authority
+(`DELIVERY-PLAN.md` §11 — human review is the private-MVP correctness authority)
 
-Date/time:
+Playback environment and equipment: built-in laptop speakers, WSL2/Ubuntu reference workstation.
+See §What the playback environment could not reach.
+
+Date/time: 2026-09-05, 21:07 CEST (UTC+02:00)
 
 Signature/identity, date, and rationale:
 
-**Unsigned. No disposition has been entered, and none is implied by the material above.**
+**Awaiting the project owner's signature.** The findings, the disposition, and the environment
+above are entered from the reviewer's own account of the session. The signature line is the
+reviewer's act and is deliberately not filled on their behalf.

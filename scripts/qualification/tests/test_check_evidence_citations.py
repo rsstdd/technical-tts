@@ -175,6 +175,10 @@ class EndToEndCitationTests(unittest.TestCase):
             ["git", "init", "-q"],
             ["git", "config", "user.email", "t@example.com"],
             ["git", "config", "user.name", "t"],
+            # A developer with `commit.gpgsign` set globally would otherwise be
+            # asked to sign this throwaway fixture, and the commit fails with no
+            # pinentry. CI has no key and never saw it.
+            ["git", "config", "commit.gpgsign", "false"],
             ["git", "add", "-A"],
             ["git", "commit", "-qm", "seed"],
         ):
