@@ -16,6 +16,10 @@ Unresolved answers remain explicit. `TBD` does not authorize a default that expa
 | OQ-08 | What release signing mechanism and key custody apply? | Project owner | Before G3 | Blocks M3 release process | TBD |
 | OQ-09 | Is watermarking required by model terms, voice terms, or distribution policy? | Rights approver | Before G3 | Blocks final audio profile | TBD |
 | OQ-10 | Who is the independent listener representative? | Project owner | Before G1 listening approval | Blocks independent listening gates | Unassigned |
+| OQ-11 | Who owns human review when the project owner is unavailable? | Project owner | Before M2 | Blocks every gate needing a listening judgment | Resolved: no deputy; review waits for the project owner. `OQ-10` stays unassigned, and the accepted risk is that an unavailable owner stops acceptance rather than review passing to someone unnamed |
+| OQ-12 | What cache budget applies to private preview? | Engineering owner | Before M2 | Bounds cache growth and the destructive prune E2-S5 owns | Resolved: none; the cache is unbounded and reclamation is an explicit operator prune. E2-S2 ships prune as report-only, and E2-S5 inherits no byte ceiling from this answer |
+| OQ-13 | Where are private previews written and backed up? | Engineering owner | Before M2 | Sets recovery expectations for preview output | Resolved: written beneath the workspace `previews/<lesson>/packages/<generation>` root; not backed up. A lost preview is reproducible from its lesson and cache, so the exposure is time, consistent with `OQ-06`'s accepted single-machine risk |
+| OQ-14 | Is a second engineer available for any independently schedulable track? | Project owner | Before M2 | Changes schedule parallelism and the M2 candidate date | Resolved: no; the project is solo and every track is serial. The T-CLI track stays separable in principle but is not independently scheduled, which is the condition the `Solo schedule overload` risk row already prices |
 
 ## Risk register
 
