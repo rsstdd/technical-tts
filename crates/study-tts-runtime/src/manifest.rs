@@ -1129,10 +1129,51 @@ mod tests {
 
     use super::*;
     use crate::{
+        CalibrationSource,
         durable::OsDurableFileSystem,
         export::{self, ToolProfile},
         timeline::WrittenSegment,
     };
+
+    /// An unknown key inside the flattened continuity is refused.
+    ///
+    /// Pins which attribute does the work, because the answer is not the one
+    /// serde's own documentation leads a reader to expect. Both structs carry
+    /// `deny_unknown_fields`, and only `StoredJoin`'s has any effect here:
+    /// removing it accepts `verdict`, while removing [`JoinContinuity`]'s
+    /// changes nothing, because a flattened struct is handed only the keys the
+    /// outer one did not claim and never sees the document's leftovers. Serde
+    /// documents this combination as unsupported, so the standing risk is a
+    /// later reader treating the outer attribute as inert and moving the guard
+    /// inward — which would look tidier, compile, and open the boundary.
+    #[test]
+    fn t1_e2_an_unknown_field_inside_a_flattened_join_is_refused() {
+        const ACCEPTED: &str = r#"{"earlier_segment_id":"seg-0001",
+            "later_segment_id":"seg-0002","loudness_ratio":1.0495234,
+            "rate_ratio":1.2639548,"calibration_source":"provisional"}"#;
+
+        let join: StoredJoin =
+            serde_json::from_str(ACCEPTED).expect("a join this build writes must parse");
+        assert_eq!(join.earlier_segment_id, "seg-0001");
+        assert_eq!(
+            join.continuity.calibration_source,
+            CalibrationSource::Provisional
+        );
+
+        // Placed after the recognized keys, so it reaches the flattened
+        // continuity rather than being refused as an outer field.
+        let with_extra = ACCEPTED.replace(
+            r#""calibration_source":"provisional""#,
+            r#""calibration_source":"provisional","verdict":"pass""#,
+        );
+        let error = serde_json::from_str::<StoredJoin>(&with_extra)
+            .expect_err("an unknown key inside the flattened continuity must be refused");
+
+        assert!(
+            error.to_string().contains("verdict"),
+            "the refusal must name the field it rejected, got {error}"
+        );
+    }
 
     fn cached_segment(audio_blake3: String) -> ValidatedCachedArtifact {
         ValidatedCachedArtifact {

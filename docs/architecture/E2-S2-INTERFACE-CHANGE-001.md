@@ -64,9 +64,21 @@ between:
 
 - §12.2 is normative for both documents, so the plan gains the audio checksum it lacked and the
   manifest gains the selected take it lacked. The other two values were already present in each.
-- §13.2's base key is carried on the **plan** only, which is the document that *is* the
-  edit-decision list this build produces. Putting it on the manifest as well would record the
-  same derived value twice with no second reader.
+- §13.2's base key is carried on **both** documents, for two different readers. On the plan it is
+  the edit decision itself: the plan is the edit-decision list §13.2 describes, and I-2 keeps the
+  key derived rather than authored. On the published manifest it is what retention reporting
+  reads — `prune_candidates` treats a published manifest as a live root, and
+  `manifest::referenced_cache_keys` contributes each segment's selected key *and* its base key, so
+  a superseded take's artifact stays live for as long as a package referencing it stands. Without
+  the field the manifest cannot name that artifact, and prune would offer it as a candidate.
+
+  An earlier draft of this bullet said the base key was carried on the plan only, and that a
+  manifest copy would record "the same derived value twice with no second reader". That was
+  already inconsistent with §Version and compatibility above, which has recorded the manifest's
+  `synthesis_base_key` since this record was signed; the field was never absent, and retention
+  reporting is the second reader the sentence said did not exist. Corrected here rather than
+  argued away — no field moves, and the G-A resolution about which fields `plan.json` carries is
+  unchanged.
 
 One major move for each document rather than two.
 
@@ -279,5 +291,5 @@ open question in §Open questions stays open, and this row does not close it.
 
 | Date | Amendment | Approval |
 |---|---|---|
-| 2026-09-04 | §Version and compatibility gained the layouts-read bullet, which states the read set this change leaves and supersedes `E1-S4-INTERFACE-CHANGE-001` §Three layouts are now read, one is written. §Implementation consequences corrected the retention boundary from "before `manifest` `2.0`" to `1.0-skeleton`, which is what `parse_stored_manifest` refuses; the wider claim was never true, because both older layouts kept their decoders. It also records the one governed `1.0-skeleton` package this build cannot decode, and why refusing it is a priced decision rather than an oversight. An earlier draft of this row opened that as an open question **G-C**; it was withdrawn the same day, because the question was already answered when it was asked — §Approval's manifest row is signed against "the `1.0-skeleton` refusal" and `G1-FREEZE-CHARTER.md` states "refused and rebuilt", both in the accepting commit. Recorded in place rather than as a successor record because this record is not yet in force — it has not merged — so this is authoring rather than amendment of a landed control. | No re-approval sought: the signed disposition is unchanged, and the corrections move no contract, version, identity, or byte |
+| 2026-09-04 | §Version and compatibility gained the layouts-read bullet, which states the read set this change leaves and supersedes `E1-S4-INTERFACE-CHANGE-001` §Three layouts are now read, one is written. §Implementation consequences corrected the retention boundary from "before `manifest` `2.0`" to `1.0-skeleton`, which is what `parse_stored_manifest` refuses; the wider claim was never true, because both older layouts kept their decoders. It also records the one governed `1.0-skeleton` package this build cannot decode, and why refusing it is a priced decision rather than an oversight. §G-A's base-key bullet is corrected: it claimed the key was carried on the plan only and that a manifest copy would have "no second reader", which contradicted §Version and compatibility in the same document and is falsified by `referenced_cache_keys`, the reader retention reporting uses. The G-A field-set resolution itself is unchanged. An earlier draft of this row opened that as an open question **G-C**; it was withdrawn the same day, because the question was already answered when it was asked — §Approval's manifest row is signed against "the `1.0-skeleton` refusal" and `G1-FREEZE-CHARTER.md` states "refused and rebuilt", both in the accepting commit. Recorded in place rather than as a successor record because this record is not yet in force — it has not merged — so this is authoring rather than amendment of a landed control. | No re-approval sought: the signed disposition is unchanged, and the corrections move no contract, version, identity, or byte |
 | 2026-09-04 | §Implementation consequences added, recording the `--retake` qualification surface and the retention-reporting boundary — stated then as pre-`2.0`, corrected in the row above. Both were properties of the change as signed; neither is a new decision, and no contract, version, identity, or byte moves. Recorded in place rather than as a successor record, because there is no claim to correct — `E1-S2-INTERFACE-CHANGE-003` exists for that case. | No re-approval sought: §Approval is unchanged |
