@@ -115,6 +115,22 @@ const PROVISIONAL_TRUE_PEAK_CEILING_DBTP: &str = "-1.0";
 /// number with no better provenance than the filter's own.
 const PROVISIONAL_LOUDNESS_RANGE_LU: &str = "7.0";
 
+/// Which of the two passes a filter graph is being assembled for.
+///
+/// A closed pair rather than a string fragment the caller appends. The settings
+/// are colon-separated, so a caller composing its own tail has to remember a
+/// separator the compiler cannot check — `"linear=true"` without one silently
+/// yields `linear=trueprint_format=json`, a filter FFmpeg only rejects at run
+/// time. [`loudnorm_filter`] joins the parts instead, which makes that
+/// unrepresentable rather than documented.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LoudnessPass {
+    /// Measure the input and write no audio.
+    Measure,
+    /// Normalize against what [`LoudnessPass::Measure`] reported.
+    Apply,
+}
+
 /// The loudness filter graph, with the shared targets written once.
 ///
 /// Assembled rather than written out as a literal, unlike the encode profiles:
@@ -122,12 +138,24 @@ const PROVISIONAL_LOUDNESS_RANGE_LU: &str = "7.0";
 /// produces, whereas here the two passes must carry *identical* targets or the
 /// second pass normalizes to a level the first never measured against. A
 /// duplicated literal is exactly how those two would drift apart.
-fn loudnorm_filter(trailing: &str) -> String {
-    format!(
-        "loudnorm=I={PROVISIONAL_LOUDNESS_TARGET_LUFS}:\
-         TP={PROVISIONAL_TRUE_PEAK_CEILING_DBTP}:\
-         LRA={PROVISIONAL_LOUDNESS_RANGE_LU}:{trailing}print_format=json"
-    )
+fn loudnorm_filter(pass: LoudnessPass) -> String {
+    let mut settings = vec![
+        format!("I={PROVISIONAL_LOUDNESS_TARGET_LUFS}"),
+        format!("TP={PROVISIONAL_TRUE_PEAK_CEILING_DBTP}"),
+        format!("LRA={PROVISIONAL_LOUDNESS_RANGE_LU}"),
+    ];
+    // Exhaustive rather than a comparison against one variant: a third pass
+    // added later would otherwise take the measurement arm silently, which is
+    // the class of mistake this enum exists to prevent.
+    match pass {
+        LoudnessPass::Measure => {}
+        LoudnessPass::Apply => {
+            settings.push(MEASURED_LOUDNESS_ARGUMENT.to_owned());
+            settings.push("linear=true".to_owned());
+        }
+    }
+    settings.push("print_format=json".to_owned());
+    format!("loudnorm={}", settings.join(":"))
 }
 
 /// The measurement pass: analyze the master and write no audio.
@@ -151,7 +179,7 @@ fn loudnorm_measure_arguments() -> Vec<String> {
         "-i".to_owned(),
         INPUT_PATH_ARGUMENT.to_owned(),
         "-af".to_owned(),
-        loudnorm_filter(""),
+        loudnorm_filter(LoudnessPass::Measure),
         "-f".to_owned(),
         "null".to_owned(),
         "-".to_owned(),
@@ -183,7 +211,7 @@ fn loudnorm_apply_arguments() -> Vec<String> {
         "-i".to_owned(),
         INPUT_PATH_ARGUMENT.to_owned(),
         "-af".to_owned(),
-        loudnorm_filter(&format!("{MEASURED_LOUDNESS_ARGUMENT}:linear=true:")),
+        loudnorm_filter(LoudnessPass::Apply),
         "-ar".to_owned(),
         CANONICAL_SAMPLE_RATE.to_string(),
         "-ac".to_owned(),
@@ -687,6 +715,28 @@ pub(crate) fn probe(
 /// rather than by prefix so `linear_and_something` could never pass.
 const LINEAR_NORMALIZATION: &str = "linear";
 
+/// Where the normalized master is written before it replaces the assembled one.
+///
+/// A fixed name rather than a randomized temporary, and that is a provenance
+/// decision rather than a style one. The executed arguments are recorded in
+/// `manifest.json`, and the manifest's digest is what names the package
+/// directory — so a random component here would make two builds of identical
+/// input produce different package identities. Recording the destination
+/// instead would be worse: it would record a path FFmpeg was never given.
+///
+/// Safe as a constant because it lives in the package transaction's own stage
+/// directory, which `preview::start_transaction` creates fresh and quarantines
+/// if one is already there, so exactly one normalization ever writes it.
+///
+/// The encode path still stages under randomized names; issue #82 owns that,
+/// and until it lands the manifest is not yet reproducible as a whole.
+///
+/// The stem only. The extension is given to `Builder` as a suffix rather than
+/// carried here, so it stays last in the filename even if the random component
+/// ever returns — FFmpeg infers the output container from the extension, and a
+/// name with the extension in its middle is one FFmpeg refuses to write at all.
+const NORMALIZED_MASTER_STAGING_STEM: &str = "lesson-normalized";
+
 /// What FFmpeg's loudness filter reported about one pass.
 ///
 /// The second deserialization boundary in this workspace without
@@ -718,10 +768,10 @@ struct LoudnessReport {
 }
 
 impl LoudnessReport {
-    /// This measurement, as the filter arguments the second pass consumes.
+    /// This measurement, as the filter settings the second pass consumes.
     ///
-    /// Trailing separator included, because the placeholder it replaces sits
-    /// mid-filter between the targets and `linear=true`.
+    /// No leading or trailing separator: [`loudnorm_filter`] joins the settings
+    /// it assembles, so a separator here would double one of its.
     fn measured_arguments(&self) -> String {
         let Self {
             input_i,
@@ -805,9 +855,16 @@ pub(crate) fn normalize_master(
         .ok_or_else(|| ManagedPathError::UnrootedDestination {
             path: master_wav.to_path_buf(),
         })?;
+    // Through `Builder` with its randomness switched off rather than a bare
+    // path, so the file keeps both properties `encode` relies on. `tempfile`
+    // creates it `0600` — which is where a package's file mode comes from, as
+    // `package_port::PACKAGE_FILE_MODE` records — and the guard removes a
+    // partial normalization on every early return below, because FFmpeg opens
+    // its output before it can discover it cannot finish.
     let staged = Builder::new()
-        .prefix("lesson-")
+        .prefix(NORMALIZED_MASTER_STAGING_STEM)
         .suffix(".wav")
+        .rand_bytes(0)
         .tempfile_in(parent)
         .map_err(|error| io_error(parent, error))?
         .into_temp_path();
@@ -1257,6 +1314,87 @@ mod tests {
     // Bounds the `deny_unknown_fields` exception recorded on `ProbeResponse`:
     // the parser may ignore what ffprobe adds, but nothing it fails to read
     // may become an acceptance.
+    #[test]
+    fn t1_e2_loudness_leniency_cannot_accept_an_unreported_normalization() {
+        // The counterpart of the probe-leniency test above, for the other
+        // lenient boundary. `LoudnessReport` omits
+        // `deny_unknown_fields` so an FFmpeg release that adds a field does not
+        // stop every build, and the argument for that is only sound while the
+        // leniency can *refuse* but never *accept*. Every case below is a
+        // report this build must not read as a successful linear result.
+        // Every measurement the second pass needs, so each case below differs
+        // from a readable report in exactly one way.
+        const MEASURED: &str = concat!(
+            r#""input_i":"-27.85","input_tp":"-9.61","input_lra":"5.20","#,
+            r#""input_thresh":"-38.10","target_offset":"0.02""#
+        );
+        let no_type = format!("{{{MEASURED}}}");
+        let renamed = format!(r#"{{{MEASURED},"normalisation_type":"linear"}}"#);
+        let refused = [
+            ("no report at all", "size=N/A time=00:00:14.96"),
+            ("a report missing normalization_type", no_type.as_str()),
+            ("a renamed normalization_type", renamed.as_str()),
+            (
+                "a report missing a measurement",
+                r#"{"input_i":"-27.85","normalization_type":"linear"}"#,
+            ),
+            ("a closing brace before its opening one", "} {"),
+        ];
+
+        for (case, stderr) in refused {
+            let refusal = loudness_report(stderr.as_bytes(), ToolOperation::LoudnessNormalize)
+                .expect_err(case);
+
+            assert!(
+                matches!(refusal, ToolError::UnreadableLoudnessReport { .. }),
+                "{case}: refused as {refusal:?} rather than an unreadable report"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e2_a_complete_report_is_read_and_carries_its_normalization() {
+        // The other half: leniency that refused everything would also satisfy
+        // the test above, so the accepted shape is pinned beside the refusals.
+        // Carries the filter tag FFmpeg prints before the object, and an
+        // `output_i` this build does not read, because both are present in
+        // real output and neither may prevent a read.
+        const STDERR: &str = concat!(
+            r#"[Parsed_loudnorm_0 @ 0x1] {"input_i":"-27.85","#,
+            r#""input_tp":"-9.61","input_lra":"5.20","input_thresh":"-38.10","#,
+            r#""output_i":"-16.02","target_offset":"0.02","#,
+            r#""normalization_type":"linear"}"#
+        );
+
+        let report = loudness_report(STDERR.as_bytes(), ToolOperation::LoudnessNormalize)
+            .expect("a complete report is readable");
+
+        assert_eq!(report.normalization_type, LINEAR_NORMALIZATION);
+        assert_eq!(
+            report.measured_arguments(),
+            concat!(
+                "measured_I=-27.85:measured_TP=-9.61:measured_LRA=5.20:",
+                "measured_thresh=-38.10:offset=0.02"
+            )
+        );
+    }
+
+    #[test]
+    fn t1_e2_the_loudness_filter_carries_the_deviation_values() {
+        // Read against `ADR-0001-D012`'s constant table, not against the
+        // assembler: this string is hashed into the argument-profile identity
+        // that names every package directory, so an edit here moves package
+        // identity for every lesson.
+        assert_eq!(
+            loudnorm_filter(LoudnessPass::Measure),
+            "loudnorm=I=-16.0:TP=-1.0:LRA=7.0:print_format=json"
+        );
+        assert_eq!(
+            loudnorm_filter(LoudnessPass::Apply),
+            "loudnorm=I=-16.0:TP=-1.0:LRA=7.0:{measured_loudness}:linear=true:print_format=json"
+        );
+    }
+
     #[test]
     fn t1_e0_probe_leniency_cannot_accept_an_unverified_stream() {
         let m4a = Path::new("/lesson.m4a");

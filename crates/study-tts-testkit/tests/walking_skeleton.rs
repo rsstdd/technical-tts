@@ -950,6 +950,44 @@ fn t4_e2_loudnorm_requires_linear_result() {
 }
 
 #[test]
+fn t4_e2_the_normalization_pass_stages_under_a_fixed_name() {
+    // The executed arguments reach `manifest.json`, and the manifest's digest
+    // is what names the package directory — so a randomized staging name would
+    // make two builds of identical input produce different package identities.
+    // The fixed name is what keeps the recorded arguments both truthful and
+    // reproducible, and deleting the `rand_bytes(0)` that produces it would
+    // otherwise leave every test green.
+    //
+    // Spelled out rather than imported: the constant is private to
+    // `study-tts-runtime`, and a golden a reviewer reads against the source is
+    // the point of pinning it from outside.
+    let (_workspace, result, _worker) = run_skeleton();
+    let manifest = read_manifest(&result);
+    let executions = manifest["tools"]["executions"]
+        .as_array()
+        .expect("the manifest records every execution");
+
+    let staged: Vec<&str> = executions
+        .iter()
+        .filter_map(|execution| execution["arguments"].as_array())
+        .flatten()
+        .filter_map(|argument| argument.as_str())
+        .filter(|argument| argument.contains("lesson-normalized"))
+        .collect();
+
+    assert_eq!(
+        staged.len(),
+        1,
+        "exactly one recorded argument stages the normalized master, found {staged:?}"
+    );
+    assert!(
+        staged[0].ends_with("/lesson-normalized.wav"),
+        "the normalization pass must stage under its fixed name, found `{}`",
+        staged[0]
+    );
+}
+
+#[test]
 fn t4_e0_skeleton_runs_without_model_artifacts() {
     let workspace = TempDir::new().expect("create isolated no-model workspace");
     let worker = DeterministicToneWorker::default();

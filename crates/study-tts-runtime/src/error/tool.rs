@@ -332,8 +332,8 @@ pub enum ToolError {
     /// recording — which is the property the normalization exists to give.
     #[error(
         "FFmpeg normalized the master as `{normalization_type}` where `linear` was required; \
-         the audio owner should record this as a human review finding rather than ship a \
-         master whose gain moves under the audio"
+         the human-review owner should record the finding and retake or accept it with \
+         authority rather than ship a master whose gain moves under the audio"
     )]
     LoudnessNotLinear {
         /// What FFmpeg reported it actually did.
