@@ -251,6 +251,15 @@ pub enum RemedyOwner {
     WorkerRuntime,
     /// The named gate owner controls corrective release-gate work.
     GateOwner,
+    /// The human-review owner decides a quality finding the build cannot.
+    ///
+    /// Distinct from [`RemedyOwner::AudioRuntime`] because the remedy differs
+    /// in kind: an audio-runtime refusal is corrected by changing a setting,
+    /// whereas a review finding is recorded and then retaken or accepted with
+    /// authority. `docs/governance/ROUTING-TABLES.md` §Failure routing gives
+    /// the `Human review finding` row to this owner and blocks production
+    /// until it is resolved.
+    HumanReview,
 }
 
 fn voice_remedy(error: &VoiceError) -> Option<RemedyAdvice> {
@@ -348,15 +357,17 @@ mod tests {
     // How the document's Owner column spells each `RemedyOwner`. This half is
     // code's to state, because only the enum can say which prose it answers to.
     // A row owned by anybody else resolves to no variant and fails the refusal
-    // that claimed it: `Core`, `Verification`, and `Human-review owner` own
-    // rows no refusal routes to, and giving one of them advice is a decision
-    // that starts with a new variant here.
-    const OWNER_SPELLINGS: [(&str, RemedyOwner); 5] = [
+    // that claimed it: `Core` and `Verification` own rows no refusal routes to,
+    // and giving one of them advice is a decision that starts with a new
+    // variant here. `Human-review owner` was in that list until E2-S3 routed
+    // the first refusal to it, which is the decision this spelling records.
+    const OWNER_SPELLINGS: [(&str, RemedyOwner); 6] = [
         ("Project owner", RemedyOwner::ProjectOwner),
         ("Runtime", RemedyOwner::Runtime),
         ("Audio/runtime", RemedyOwner::AudioRuntime),
         ("Worker/runtime", RemedyOwner::WorkerRuntime),
         ("Gate owner", RemedyOwner::GateOwner),
+        ("Human-review owner", RemedyOwner::HumanReview),
     ];
 
     /// What a refusal is expected to hand an operator.
@@ -560,7 +571,13 @@ mod tests {
 
     fn expected_tool_remedy(error: &ToolError) -> Expected {
         match error {
+            ToolError::LoudnessNotLinear { .. } => Expected::Governed {
+                row: "Human review finding",
+                action: "record the finding and retake or accept it with authority",
+            },
             ToolError::UnreadableProbeResponse { .. }
+            | ToolError::UnreadableLoudnessReport { .. }
+            | ToolError::LoudnessChangedLength { .. }
             | ToolError::UnexpectedEncodedStreamCount { .. }
             | ToolError::UnexpectedEncodedStream { .. } => Expected::Governed {
                 row: "Invalid or over-range audio",
@@ -751,6 +768,8 @@ mod tests {
             ToolOperation::Mp3Encode,
             ToolOperation::Mp3Validation,
             ToolOperation::MasterWavValidation,
+            ToolOperation::LoudnessMeasure,
+            ToolOperation::LoudnessNormalize,
             ToolOperation::WorkerSession,
         ] {
             let expected_label = match operation {
@@ -761,6 +780,8 @@ mod tests {
                 ToolOperation::Mp3Encode => "MP3 encode",
                 ToolOperation::Mp3Validation => "MP3 validation",
                 ToolOperation::MasterWavValidation => "master WAV validation",
+                ToolOperation::LoudnessMeasure => "loudness measurement",
+                ToolOperation::LoudnessNormalize => "loudness normalization",
                 ToolOperation::WorkerSession => "worker session",
             };
 
@@ -1173,6 +1194,20 @@ mod tests {
         assert_expected_remedy(error.into(), expected);
 
         for error in [
+            // The loudness refusals are first because one of them is the only
+            // `RemedyOwner::HumanReview` mapping there is: without a sample,
+            // `governed_owner("Human review finding")` never runs and the row
+            // could be renamed in the document with nothing reporting it.
+            ToolError::LoudnessNotLinear {
+                normalization_type: "dynamic".to_owned(),
+            },
+            ToolError::UnreadableLoudnessReport {
+                operation: ToolOperation::LoudnessMeasure,
+            },
+            ToolError::LoudnessChangedLength {
+                expected: 359_040,
+                produced: 359_041,
+            },
             ToolError::UnreadableProbeResponse {
                 path: PathBuf::from("lesson.m4a"),
                 source: json_error(),

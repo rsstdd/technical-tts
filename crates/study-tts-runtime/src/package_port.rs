@@ -237,6 +237,20 @@ impl PreparedPackageWriter for PreparedFileSystemPackageWriter {
         let master_wav = managed::leaf(stage, manifest::MASTER_WAV_NAME)?;
         let assembled = assembly::assemble(request.cached_artifacts, &master_wav)?;
 
+        // Normalized before the master is probed and before either encode, so
+        // the bytes ffprobe validates and the bytes both lossy outputs derive
+        // from are the published ones. ADR-0001 §13.5 has M4A and MP3 derive
+        // independently from the master, which is what makes normalizing the
+        // master once the whole loudness decision rather than three.
+        //
+        // The references are provisional under `ADR-0001-D012`.
+        let normalization = export::normalize_master(
+            &self.toolchain.ffmpeg,
+            &self.toolchain.profiles,
+            &master_wav,
+            assembled.total_frames,
+        )?;
+
         // Written before the encodes, so a package that reaches the encoder has
         // its whole text surface already staged. All three are ordinary files
         // inside the staged directory: the transaction is the atomicity unit,
@@ -264,11 +278,16 @@ impl PreparedPackageWriter for PreparedFileSystemPackageWriter {
         // Both exports are derived from `master_wav` and never from each other,
         // which is ADR-0001 §13.5's rule that a lossy output is never the
         // source of another export.
-        let mut performed = Vec::with_capacity(6);
+        let mut performed = Vec::with_capacity(8);
         performed.push((
             RecordedTool::Ffmpeg,
             self.toolchain.encoder_preflight.clone(),
         ));
+        performed.extend(
+            normalization
+                .into_iter()
+                .map(|execution| (RecordedTool::Ffmpeg, execution)),
+        );
         performed.push((
             RecordedTool::Ffprobe,
             export::probe(

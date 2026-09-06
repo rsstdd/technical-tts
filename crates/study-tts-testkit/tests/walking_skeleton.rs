@@ -22,8 +22,9 @@ use study_tts_runtime::{
     BackendDescriptor, BackendError, BuildError, BuildRequest, DurableStateError,
     FileSystemCachePublisher, FileSystemPackageWriter, IoError, ManagedPathError,
     PreviewServiceBundle, PublicationError, ResumeRequest, SynthesisReport, SynthesisRequest,
-    ToolError, TtsExecutor, build_preview, build_preview_with_services, load_lesson, publish,
-    resume_preview, validate_m4a_output, validate_production_manifest,
+    ToolError, TtsExecutor, build_preview, build_preview_with_services, load_lesson,
+    normalize_master_output, publish, resume_preview, validate_m4a_output,
+    validate_production_manifest,
 };
 use study_tts_testkit::{
     DeterministicToneWorker, FIXTURE_VOICE_PROFILES, InterruptingJobRepository,
@@ -885,9 +886,104 @@ fn t4_e1_lossy_output_is_never_source_for_another_export() {
             "every export must be encoded from the canonical master, not from `{input}`"
         );
     }
+    // Four FFmpeg runs read the master: the two loudness passes E2-S3 added,
+    // then the M4A and MP3 encodes. The count is asserted as well as the input
+    // because the loop above passes vacuously on a build that encoded nothing,
+    // and dropping an export is exactly the regression it exists to catch.
     assert_eq!(
-        encodes, 2,
-        "both lossy exports must be encoded, each from the master"
+        encodes, 4,
+        "the master must be measured, normalized, and then encoded to both lossy formats"
+    );
+}
+
+/// Writes a master whose loudness cannot be corrected by one gain change.
+///
+/// Quiet speech-level content carrying a single full-scale sample. Reaching the
+/// `-16 LUFS` target needs roughly +30 dB, and the peak already sits at 0 dBFS,
+/// so no single gain reaches the target without breaching the `-1.0 dBTP`
+/// ceiling.
+/// FFmpeg answers that by falling back to a moving gain, which is the condition
+/// under test — induced from the audio rather than by stubbing FFmpeg, so what
+/// is proven is the real filter's behavior and not this test's model of it.
+fn write_uncorrectable_master(path: &Path, frames: usize) -> u64 {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 24_000,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut writer = hound::WavWriter::create(path, spec).expect("create uncorrectable master");
+    for frame in 0..frames {
+        // A quiet tone, so the integrated loudness sits far below the target.
+        let quiet = if frame % 2 == 0 { 0.003 } else { -0.003 };
+        // One full-scale sample, placed past the loudness gate's initial
+        // window so it is measured as the true peak of content that is
+        // otherwise far too quiet.
+        let sample = if frame == frames / 2 { 1.0 } else { quiet };
+        writer.write_sample(sample).expect("write master sample");
+    }
+    writer.finalize().expect("finalize uncorrectable master");
+    frames as u64
+}
+
+#[test]
+fn t4_e2_loudnorm_requires_linear_result() {
+    let workspace = TempDir::new().expect("create isolated loudness workspace");
+    let master = workspace.path().join("lesson.wav");
+    // Three seconds, so the filter has enough content to integrate over; the
+    // loudness gate ignores a window shorter than its own.
+    let frames = write_uncorrectable_master(&master, 24_000 * 3);
+
+    let failure = normalize_master_output(Path::new("ffmpeg"), &master, frames)
+        .expect_err("a master that cannot be corrected by one gain change must be refused");
+
+    let BuildError::Tool(error) = failure else {
+        panic!("loudness normalization must refuse through a tool error, got {failure:?}");
+    };
+    let ToolError::LoudnessNotLinear { normalization_type } = error else {
+        panic!("the refusal must name the non-linear result, got {error:?}");
+    };
+    assert_ne!(
+        normalization_type, "linear",
+        "the refusal must carry what FFmpeg reported it actually did"
+    );
+}
+
+#[test]
+fn t4_e2_the_normalization_pass_stages_under_a_fixed_name() {
+    // The executed arguments reach `manifest.json`, and the manifest's digest
+    // is what names the package directory — so a randomized staging name would
+    // make two builds of identical input produce different package identities.
+    // The fixed name is what keeps the recorded arguments both truthful and
+    // reproducible, and deleting the `rand_bytes(0)` that produces it would
+    // otherwise leave every test green.
+    //
+    // Spelled out rather than imported: the constant is private to
+    // `study-tts-runtime`, and a golden a reviewer reads against the source is
+    // the point of pinning it from outside.
+    let (_workspace, result, _worker) = run_skeleton();
+    let manifest = read_manifest(&result);
+    let executions = manifest["tools"]["executions"]
+        .as_array()
+        .expect("the manifest records every execution");
+
+    let staged: Vec<&str> = executions
+        .iter()
+        .filter_map(|execution| execution["arguments"].as_array())
+        .flatten()
+        .filter_map(|argument| argument.as_str())
+        .filter(|argument| argument.contains("lesson-normalized"))
+        .collect();
+
+    assert_eq!(
+        staged.len(),
+        1,
+        "exactly one recorded argument stages the normalized master, found {staged:?}"
+    );
+    assert!(
+        staged[0].ends_with("/lesson-normalized.wav"),
+        "the normalization pass must stage under its fixed name, found `{}`",
+        staged[0]
     );
 }
 

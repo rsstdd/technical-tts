@@ -35,6 +35,10 @@ pub enum ToolOperation {
     Mp3Validation,
     /// Validate the canonical master WAV.
     MasterWavValidation,
+    /// Measure the assembled master's loudness without writing audio.
+    LoudnessMeasure,
+    /// Normalize the assembled master against that measurement.
+    LoudnessNormalize,
     /// Run one persistent speech worker for a lifetime of requests.
     WorkerSession,
 }
@@ -49,6 +53,8 @@ impl fmt::Display for ToolOperation {
             Self::Mp3Encode => formatter.write_str("MP3 encode"),
             Self::Mp3Validation => formatter.write_str("MP3 validation"),
             Self::MasterWavValidation => formatter.write_str("master WAV validation"),
+            Self::LoudnessMeasure => formatter.write_str("loudness measurement"),
+            Self::LoudnessNormalize => formatter.write_str("loudness normalization"),
             Self::WorkerSession => formatter.write_str("worker session"),
         }
     }
@@ -303,6 +309,56 @@ pub enum ToolError {
         stderr: String,
     },
 
+    /// FFmpeg's loudness filter printed no report this build could read.
+    ///
+    /// The report is how the second pass learns what the first measured, so an
+    /// unreadable one is not a diagnostic that can be skipped: continuing would
+    /// normalize against nothing.
+    #[error(
+        "FFmpeg's loudness filter printed no readable JSON report for the {operation}; \
+         the audio owner should reconcile the pinned filter arguments with the FFmpeg build \
+         in use, because a report this build cannot read is a filter it cannot drive"
+    )]
+    UnreadableLoudnessReport {
+        /// Which of the two passes failed to report.
+        operation: ToolOperation,
+    },
+
+    /// FFmpeg normalized the master dynamically when linear was required.
+    ///
+    /// `ADR-0001-D012` permits normalizing against provisional references; it
+    /// does not permit a moving gain. A dynamically normalized master is one
+    /// whose level changes under the audio, so its segments stop reading as one
+    /// recording — which is the property the normalization exists to give.
+    #[error(
+        "FFmpeg normalized the master as `{normalization_type}` where `linear` was required; \
+         the human-review owner should record the finding and retake or accept it with \
+         authority rather than ship a master whose gain moves under the audio"
+    )]
+    LoudnessNotLinear {
+        /// What FFmpeg reported it actually did.
+        normalization_type: String,
+    },
+
+    /// Loudness normalization changed the master's length.
+    ///
+    /// A gain change must not move a frame. The manifest's `total_frames`, the
+    /// captions, and the chapters are all computed from the assembled timeline
+    /// before this runs, so a master that came back a different length would
+    /// leave every one of them describing audio that no longer exists.
+    #[error(
+        "loudness normalization returned {produced} frames where the assembled master had \
+         {expected}; the audio owner must reconcile the pinned loudness filter arguments, \
+         because a gain change that moves frames invalidates the timeline already written \
+         beside it"
+    )]
+    LoudnessChangedLength {
+        /// Frames the assembled master carried.
+        expected: u64,
+        /// Frames normalization returned.
+        produced: u64,
+    },
+
     /// FFmpeg could not be launched.
     #[error("could not start FFmpeg `{executable}`: {source}")]
     StartFfmpeg {
@@ -424,7 +480,19 @@ impl ToolError {
             // quarantine and no retry can add an encoder to an FFmpeg build.
             // It is an environment failure, like `MissingTool` beside it, and
             // its own message already names the remedy.
+            // A non-linear result is the one tool failure here that is a
+            // judgment about the audio rather than about the tool, so it routes
+            // to the human-review row rather than to the audio runtime: the
+            // remedy is to record a finding and decide, not to correct a
+            // setting.
+            Self::LoudnessNotLinear { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::HumanReview,
+                "record the finding and retake or accept it with authority",
+                Some("Human review finding"),
+            )),
             Self::UnreadableProbeResponse { .. }
+            | Self::UnreadableLoudnessReport { .. }
+            | Self::LoudnessChangedLength { .. }
             | Self::UnexpectedEncodedStreamCount { .. }
             | Self::UnexpectedEncodedStream { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::AudioRuntime,

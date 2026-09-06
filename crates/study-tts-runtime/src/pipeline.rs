@@ -295,6 +295,15 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`crate::ToolError::UnexpectedEncodedStreamCount`], or
 /// [`crate::ToolError::UnexpectedEncodedStream`].
 ///
+/// Loudness normalization returns
+/// [`crate::ToolError::UnreadableLoudnessReport`] when FFmpeg's filter prints
+/// no summary this build can read,
+/// [`crate::ToolError::LoudnessChangedLength`] when the normalized master is a
+/// different length from the assembled one, and
+/// [`crate::ToolError::LoudnessNotLinear`] when FFmpeg fell back to a moving
+/// gain — the one refusal here routed to the human-review owner, because it is
+/// a judgment about the audio rather than a correction to a setting.
+///
 /// Managed state and audio return
 /// [`crate::ManagedPathError::ManagedPathEscape`],
 /// [`crate::ManagedPathError::UnrootedDestination`],
@@ -1120,6 +1129,41 @@ pub fn validate_m4a_output(ffprobe_executable: &Path, m4a: &Path) -> Result<(), 
     let ffprobe = tools::inspect("ffprobe", ffprobe_executable)?;
     let profiles = export::export_profiles();
     export::probe(&ffprobe, &profiles.ffprobe, export::PackagedAudio::M4a, m4a).map(|_| ())
+}
+
+/// Normalizes one canonical master in place, at this build's provisional
+/// loudness references.
+///
+/// Published for the same reason as [`validate_m4a_output`]: the requirement is
+/// that FFmpeg produce a *linear* result, and the only honest way to prove a
+/// refusal is to hand a real FFmpeg audio it cannot normalize linearly.
+/// `t4_e2_loudnorm_requires_linear_result` is that test, and a seam it can
+/// reach is what keeps the proof from being an assertion about this module's
+/// own arithmetic.
+///
+/// The references are provisional under `ADR-0001-D012` in
+/// `docs/adr/deviations/`, and cannot become production references; nothing
+/// measured here is a calibrated value.
+///
+/// # Errors
+///
+/// [`crate::ToolError::MissingTool`] or [`crate::ToolError::InspectTool`] when
+/// FFmpeg cannot be resolved; [`crate::ToolError::StartFfmpeg`] when it cannot
+/// be launched; the supervision variants [`build_preview`] documents;
+/// [`crate::ToolError::Ffmpeg`] when either pass exits non-zero;
+/// [`crate::ToolError::UnreadableLoudnessReport`] when a pass prints no
+/// readable summary; [`crate::ToolError::LoudnessChangedLength`] when the
+/// result is a different length from the input; and
+/// [`crate::ToolError::LoudnessNotLinear`] when FFmpeg fell back to a moving
+/// gain, which routes to the human-review owner.
+pub fn normalize_master_output(
+    ffmpeg_executable: &Path,
+    master_wav: &Path,
+    expected_frames: u64,
+) -> Result<(), BuildError> {
+    let ffmpeg = tools::inspect("ffmpeg", ffmpeg_executable)?;
+    let profiles = export::export_profiles();
+    export::normalize_master(&ffmpeg, &profiles, master_wav, expected_frames).map(|_| ())
 }
 
 /// Refuses publication for the E0-S0 skeleton.
