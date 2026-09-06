@@ -1,0 +1,472 @@
+{
+  "$schema": "https://schemas.study-tts.example/lesson-v3.schema.json",
+  "schema_version": "3.1",
+  "lesson_id": "m2-durable-publication",
+  "title": "Durable Publication on a Crashing Machine",
+  "language": "en",
+  "learning_objectives": [
+    "Distinguish durability from atomicity and say which one fsync provides",
+    "State the four-step publication order and why each step precedes the next",
+    "Explain why the containing directory must be synchronized after the rename",
+    "Choose between the replacing and non-replacing rename for a given destination",
+    "Name what each crash window leaves behind and why none of them leaves a mixture"
+  ],
+  "source": {
+    "content_hash": "3e823e37110dfebdd5eedc3e2494f8310a94c2b1e7846510c5712e6165bb0ec9",
+    "references": [
+      "docs/adr/ADR-0001-production-rust-study-guide-tts.md",
+      "crates/study-tts-runtime/src/durable.rs"
+    ]
+  },
+  "speakers": {
+    "instructor": {
+      "voice_profile": "owner-fallback-v1"
+    }
+  },
+  "segments": [
+    {
+      "id": "seg-0001",
+      "speaker": "instructor",
+      "role": "problem",
+      "source_refs": [
+        "block-001"
+      ],
+      "display_text": "A program writes a file, and the machine loses power mid-write. What comes back is neither the old version nor the new one. It is torn, and every later step will trust it anyway.",
+      "spoken_text": "A program writes a file, and the machine loses power mid-write. What comes back is neither the old version nor the new one. It is torn, and every later step will trust it anyway.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 700,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0002",
+      "speaker": "instructor",
+      "role": "prerequisite",
+      "source_refs": [
+        "block-002"
+      ],
+      "display_text": "Start with what a successful write promises. The kernel copies your bytes into the page cache and returns. The device sees them later. A crash in between loses bytes you thought you had written.",
+      "spoken_text": "Start with what a successful write promises. The kernel copies your bytes into the page cache and returns. The device sees them later. A crash in between loses bytes you thought you had written.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0003",
+      "speaker": "instructor",
+      "role": "prerequisite",
+      "source_refs": [
+        "block-003"
+      ],
+      "display_text": "Order is not promised either. A filesystem may make a later write durable before an earlier one, so a crash can leave a state you never passed through.",
+      "spoken_text": "Order is not promised either. A filesystem may make a later write durable before an earlier one, so a crash can leave a state you never passed through.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 700,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0004",
+      "speaker": "instructor",
+      "role": "definition",
+      "source_refs": [
+        "block-004"
+      ],
+      "display_text": "Two words carry the whole lesson. A byte is durable when it survives a power loss with no further help from the program that wrote it.",
+      "spoken_text": "Two words carry the whole lesson. A byte is durable when it survives a power loss with no further help from the program that wrote it.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0005",
+      "speaker": "instructor",
+      "role": "definition",
+      "source_refs": [
+        "block-005"
+      ],
+      "display_text": "A change is atomic when every reader sees all of it or none. Durability is about surviving a crash; atomicity is about what a reader can observe.",
+      "spoken_text": "A change is atomic when every reader sees all of it or none. Durability is about surviving a crash; atomicity is about what a reader can observe.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 800,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0006",
+      "speaker": "instructor",
+      "role": "recall_prompt",
+      "source_refs": [
+        "block-005",
+        "block-006"
+      ],
+      "display_text": "So, a question to sit with. If you call fsync and it returns, which of those two properties have you bought?",
+      "spoken_text": "So, a question to sit with. If you call fsync and it returns, which of those two properties have you bought?",
+      "style": "calm_explanatory",
+      "pause_after_ms": 2500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0007",
+      "speaker": "instructor",
+      "role": "answer",
+      "source_refs": [
+        "block-006"
+      ],
+      "display_text": "Durability, and only durability. The bytes are on the device. A reader can still open that file and find content complete but wrong for its name.",
+      "spoken_text": "Durability, and only durability. The bytes are on the device. A reader can still open that file and find content complete but wrong for its name.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 700,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0008",
+      "speaker": "instructor",
+      "role": "explanation",
+      "source_refs": [
+        "block-006"
+      ],
+      "display_text": "Torn content and torn visibility are different failures. fsync answers the first and says nothing about the second: the name is separate from the bytes.",
+      "spoken_text": "Torn content and torn visibility are different failures. fsync answers the first and says nothing about the second: the name is separate from the bytes.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0009",
+      "speaker": "instructor",
+      "role": "explanation",
+      "source_refs": [
+        "block-007"
+      ],
+      "display_text": "The answer to the second is rename. Within a single filesystem, rename swaps one directory entry for another in a single metadata operation.",
+      "spoken_text": "The answer to the second is rename. Within a single filesystem, rename swaps one directory entry for another in a single metadata operation.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0010",
+      "speaker": "instructor",
+      "role": "why_it_works",
+      "source_refs": [
+        "block-007"
+      ],
+      "display_text": "That is why rename, not the write, is the commit point. A reader resolves the name to the old file or the new one, never to something half written.",
+      "spoken_text": "That is why rename, not the write, is the commit point. A reader resolves the name to the old file or the new one, never to something half written.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 800,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0011",
+      "speaker": "instructor",
+      "role": "explanation",
+      "source_refs": [
+        "block-008"
+      ],
+      "display_text": "So publication is four steps in one order. Serialize into a temporary file beside the destination. Synchronize that file. Rename it over the destination. Synchronize the containing directory.",
+      "spoken_text": "So publication is four steps in one order. Serialize into a temporary file beside the destination. Synchronize that file. Rename it over the destination. Synchronize the containing directory.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0012",
+      "speaker": "instructor",
+      "role": "pseudocode",
+      "source_refs": [
+        "block-008"
+      ],
+      "display_text": "Said as steps: write the staging file; synchronize it; rename it over the destination; synchronize that directory; append the event. The order is the whole thing.",
+      "spoken_text": "Said as steps: write the staging file; synchronize it; rename it over the destination; synchronize that directory; append the event. The order is the whole thing.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 900,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0013",
+      "speaker": "instructor",
+      "role": "why_it_works",
+      "source_refs": [
+        "block-009"
+      ],
+      "display_text": "The file is synchronized first because the rename is what makes it reachable under the real name. Rename first, and the name resolves to content the device may not hold.",
+      "spoken_text": "The file is synchronized first because the rename is what makes it reachable under the real name. Rename first, and the name resolves to content the device may not hold.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 700,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0014",
+      "speaker": "instructor",
+      "role": "plausible_error",
+      "source_refs": [
+        "block-010"
+      ],
+      "display_text": "Here is the mistake almost everyone makes. The rename returned, so the new version is in place and the work is done.",
+      "spoken_text": "Here is the mistake almost everyone makes. The rename returned, so the new version is in place and the work is done.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 700,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0015",
+      "speaker": "instructor",
+      "role": "correction",
+      "source_refs": [
+        "block-010"
+      ],
+      "display_text": "It is not. A rename changes a directory, and a directory is data the kernel can hold in memory. Atomic, yes. Durable, not yet.",
+      "spoken_text": "It is not. A rename changes a directory, and a directory is data the kernel can hold in memory. Atomic, yes. Durable, not yet.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0016",
+      "speaker": "instructor",
+      "role": "recall_prompt",
+      "source_refs": [
+        "block-010"
+      ],
+      "display_text": "What exactly is still at risk after the rename returns and before you synchronize the directory?",
+      "spoken_text": "What exactly is still at risk after the rename returns and before you synchronize the directory?",
+      "style": "calm_explanatory",
+      "pause_after_ms": 2500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0017",
+      "speaker": "instructor",
+      "role": "answer",
+      "source_refs": [
+        "block-010"
+      ],
+      "display_text": "The directory entry. A crash there leaves the old name in place, with the new file complete on the device but referred to by nothing.",
+      "spoken_text": "The directory entry. A crash there leaves the old name in place, with the new file complete on the device but referred to by nothing.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 800,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0018",
+      "speaker": "instructor",
+      "role": "explanation",
+      "source_refs": [
+        "block-010"
+      ],
+      "display_text": "That is why the fourth step exists. Synchronizing the containing directory is what makes the new name itself survive.",
+      "spoken_text": "That is why the fourth step exists. Synchronizing the containing directory is what makes the new name itself survive.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0019",
+      "speaker": "instructor",
+      "role": "challenge",
+      "source_refs": [
+        "block-011"
+      ],
+      "display_text": "You might object that this scatters temporary files everywhere, and that a crash before the rename leaves garbage on disk.",
+      "spoken_text": "You might object that this scatters temporary files everywhere, and that a crash before the rename leaves garbage on disk.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0020",
+      "speaker": "instructor",
+      "role": "clarification",
+      "source_refs": [
+        "block-011"
+      ],
+      "display_text": "To be precise about what it leaves: a staging file no authoritative name refers to. The destination still holds the previous complete version.",
+      "spoken_text": "To be precise about what it leaves: a staging file no authoritative name refers to. The destination still holds the previous complete version.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0021",
+      "speaker": "instructor",
+      "role": "correction",
+      "source_refs": [
+        "block-011"
+      ],
+      "display_text": "So it is a recoverable outcome, not corruption. Inspect that file or discard it; nothing reading the destination was affected.",
+      "spoken_text": "So it is a recoverable outcome, not corruption. Inspect that file or discard it; nothing reading the destination was affected.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 800,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0022",
+      "speaker": "instructor",
+      "role": "why_it_works",
+      "source_refs": [
+        "block-011"
+      ],
+      "display_text": "It also explains why staging happens in the destination's own directory. A rename across filesystems is a copy, and a copy is not atomic.",
+      "spoken_text": "It also explains why staging happens in the destination's own directory. A rename across filesystems is a copy, and a copy is not atomic.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 700,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0023",
+      "speaker": "instructor",
+      "role": "definition",
+      "source_refs": [
+        "block-012"
+      ],
+      "display_text": "One more distinction. Rename has a variant that refuses to replace anything: it publishes only if the destination name is still free.",
+      "spoken_text": "One more distinction. Rename has a variant that refuses to replace anything: it publishes only if the destination name is still free.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0024",
+      "speaker": "instructor",
+      "role": "explanation",
+      "source_refs": [
+        "block-012"
+      ],
+      "display_text": "Which one you want depends on what the name means. A cache entry is content addressed, so its name already claims what it holds; publish it once, never replace it.",
+      "spoken_text": "Which one you want depends on what the name means. A cache entry is content addressed, so its name already claims what it holds; publish it once, never replace it.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0025",
+      "speaker": "instructor",
+      "role": "example",
+      "source_refs": [
+        "block-012"
+      ],
+      "display_text": "A job document is the opposite. It is authoritative state that legitimately moves forward, so replacing it is correct, each replacement a four-step publication.",
+      "spoken_text": "A job document is the opposite. It is authoritative state that legitimately moves forward, so replacing it is correct, each replacement a four-step publication.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 800,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0026",
+      "speaker": "instructor",
+      "role": "recall_prompt",
+      "source_refs": [
+        "block-012"
+      ],
+      "display_text": "Cache entry or job document: which one do you publish with the refusing form of rename, and why?",
+      "spoken_text": "Cache entry or job document: which one do you publish with the refusing form of rename, and why?",
+      "style": "calm_explanatory",
+      "pause_after_ms": 2500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0027",
+      "speaker": "instructor",
+      "role": "answer",
+      "source_refs": [
+        "block-012"
+      ],
+      "display_text": "The cache entry. Its name is a claim about its bytes, so an overwrite changes what a reader already trusts under that name.",
+      "spoken_text": "The cache entry. Its name is a claim about its bytes, so an overwrite changes what a reader already trusts under that name.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 800,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0028",
+      "speaker": "instructor",
+      "role": "explanation",
+      "source_refs": [
+        "block-013"
+      ],
+      "display_text": "One step is left, and it comes last. The event recording the change is appended after the authoritative state is durable, never before.",
+      "spoken_text": "One step is left, and it comes last. The event recording the change is appended after the authoritative state is durable, never before.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0029",
+      "speaker": "instructor",
+      "role": "why_it_works",
+      "source_refs": [
+        "block-013"
+      ],
+      "display_text": "An event describing a state the system never reached is worse than no event, because recovery reads that log to decide what happened.",
+      "spoken_text": "An event describing a state the system never reached is worse than no event, because recovery reads that log to decide what happened.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 800,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0030",
+      "speaker": "instructor",
+      "role": "example",
+      "source_refs": [
+        "block-014"
+      ],
+      "display_text": "Walk the crash windows. Before the file is synchronized, the destination is unchanged. Between that and the rename, still unchanged, with a staging file left over.",
+      "spoken_text": "Walk the crash windows. Before the file is synchronized, the destination is unchanged. Between that and the rename, still unchanged, with a staging file left over.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 500,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0031",
+      "speaker": "instructor",
+      "role": "example",
+      "source_refs": [
+        "block-014"
+      ],
+      "display_text": "Between the rename and the directory synchronization, the old version or the new one, both whole. After it, the new version, durable. No window yields a mixture.",
+      "spoken_text": "Between the rename and the directory synchronization, the old version or the new one, both whole. After it, the new version, durable. No window yields a mixture.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 800,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0032",
+      "speaker": "instructor",
+      "role": "synthesis",
+      "source_refs": [
+        "block-015",
+        "block-017"
+      ],
+      "display_text": "That whole discipline rests on one assumption worth saying aloud: rename is atomic within a single filesystem. The destination and its staging file must live on the same one, and the guarantee does not carry to a mount that emulates it.",
+      "spoken_text": "That whole discipline rests on one assumption worth saying aloud: rename is atomic within a single filesystem. The destination and its staging file must live on the same one, and the guarantee does not carry to a mount that emulates it.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 700,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0033",
+      "speaker": "instructor",
+      "role": "compressed_rule",
+      "source_refs": [
+        "block-016"
+      ],
+      "display_text": "Compressed to one line: stage beside the destination, synchronize the file, rename, synchronize the directory, then log.",
+      "spoken_text": "Compressed to one line: stage beside the destination, synchronize the file, rename, synchronize the directory, then log.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 900,
+      "review_status": "approved"
+    },
+    {
+      "id": "seg-0034",
+      "speaker": "instructor",
+      "role": "recap",
+      "source_refs": [
+        "block-017"
+      ],
+      "display_text": "What that buys you is this. A machine that dies at an arbitrary instant comes back holding one of exactly two reviewed states. Nothing is left to repair.",
+      "spoken_text": "What that buys you is this. A machine that dies at an arbitrary instant comes back holding one of exactly two reviewed states. Nothing is left to repair.",
+      "style": "calm_explanatory",
+      "pause_after_ms": 600,
+      "review_status": "approved"
+    }
+  ]
+}
