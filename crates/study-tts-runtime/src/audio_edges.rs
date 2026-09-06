@@ -24,6 +24,21 @@
 //!
 //! The geometry — 5 ms frames, 10 ms of edge silence, a ramp no longer than
 //! 5 ms — is fixed by ADR-0001 itself and is not provisional.
+//!
+//! # Why the join verdict carries one too
+//!
+//! ADR-0001 §11.4 requires an automated loudness and speaking-rate comparison
+//! at a retake join, but delegates the *discontinuity threshold* to ADR-0003,
+//! which records it as `Pending` alongside the silence threshold. E2-S3 is the
+//! story that owes the verdict, and ADR-0003 declares `Depends on: E2-S3`, so
+//! waiting for the calibration is a deadlock rather than a slower path.
+//!
+//! `ADR-0001-D012-provisional-loudness-and-discontinuity.md` in
+//! `docs/adr/deviations/` records that decision and names
+//! [`PROVISIONAL_MAX_JOIN_RATIO`] in return. The same containment applies:
+//! [`JoinContinuity::production`] still refuses to hand these measurements to
+//! anything asking for a calibrated reference, and the verdict below refuses
+//! broken audio without claiming the audio it passes is good.
 
 use std::f32::consts::PI;
 
@@ -184,6 +199,13 @@ pub struct JoinSide<'a> {
 /// pass or fail derived here would be an unratified threshold on a production
 /// path. [`JoinContinuity::production`] is what keeps that from happening by
 /// being passed along.
+//
+// The `ADR-0001-D012` reading this type permits is documented on
+// [`JoinContinuity::provisional_tolerance`] and in the module header, not
+// here: `schemars` publishes every `///` line on this struct into
+// `schemas/manifest-v2.schema.json` as a `description`, so prose about an
+// internal Rust API would become part of the manifest's published contract
+// and move the schema's bytes for a comment.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct JoinContinuity {
@@ -233,7 +255,72 @@ pub fn assess_join(earlier: &JoinSide<'_>, later: &JoinSide<'_>) -> JoinContinui
     }
 }
 
+/// The widest fold-change either measured ratio may show at a join.
+///
+/// Provisional and preview-grade. `ADR-0001-D012` under `docs/adr/deviations/`
+/// authorizes this value and names this constant; ADR-0003's calibration table
+/// owns the frozen one.
+///
+/// One constant rather than an upper and a lower bound, because a fold-change
+/// is the same quantity in either direction: the band is this value and its
+/// reciprocal, so the two halves cannot drift apart. Deliberately loose — a
+/// provisional threshold exists to refuse a segment rendered at half its
+/// neighbour's level or twice its speaking rate, not to express a standard
+/// nobody has calibrated. A tight bound here would fail joins a listener would
+/// accept and would look ratified while doing it.
+const PROVISIONAL_MAX_JOIN_RATIO: f32 = 2.0;
+
+/// What the provisional band says about one measured join.
+///
+/// Three outcomes rather than a `bool`, because a zero ratio is neither inside
+/// the band nor outside it. [`assess_join`] reports `0.0` where a side carried
+/// no speech to measure, and collapsing that into either answer is a silent
+/// wrong one: `false` refuses a lesson for a pause it was authored to contain,
+/// `true` claims a comparison that never happened.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JoinTolerance {
+    /// Both ratios lie within [`PROVISIONAL_MAX_JOIN_RATIO`] of parity.
+    Within,
+    /// A ratio lies outside it. A finding for human review, not a refusal:
+    /// `docs/governance/ROUTING-TABLES.md` §Failure routing routes a human
+    /// review finding to the human-review owner and blocks production until it
+    /// is resolved, which is a different remedy from quarantining a segment.
+    Outside,
+    /// A side carried no speech, so the ratios compare nothing.
+    ///
+    /// Passed to the listening check rather than refused. ADR-0001 §11.4
+    /// requires that check *alongside* this comparison, so the ambiguous case
+    /// has a reviewer already; refusing here would block a wholly silent
+    /// segment that [`condition_edges`] is explicitly written to allow.
+    NotComparable,
+}
+
 impl JoinContinuity {
+    /// This join read against the provisional band.
+    ///
+    /// The only interpretation `ADR-0001-D012` permits of these measurements.
+    /// It is not [`JoinContinuity::production`] and does not become it: a
+    /// caller wanting a calibrated reference still gets
+    /// [`ProvisionalCalibration`].
+    #[must_use]
+    pub fn provisional_tolerance(&self) -> JoinTolerance {
+        let ratios = [self.loudness_ratio, self.rate_ratio];
+        // Exact equality is the intent: `assess_join` returns a literal
+        // `0.0` as its not-measurable sentinel, never a value that rounded to
+        // one.
+        if ratios.contains(&0.0) {
+            return JoinTolerance::NotComparable;
+        }
+        let floor = 1.0 / PROVISIONAL_MAX_JOIN_RATIO;
+        if ratios
+            .iter()
+            .all(|ratio| (floor..=PROVISIONAL_MAX_JOIN_RATIO).contains(ratio))
+        {
+            return JoinTolerance::Within;
+        }
+        JoinTolerance::Outside
+    }
+
     /// This comparison, for a caller that requires a calibrated production
     /// reference.
     ///
@@ -811,6 +898,63 @@ mod tests {
         assert!(measured.loudness_ratio.is_finite());
         assert!(measured.rate_ratio.is_finite());
         assert_eq!(measured.production(), Err(ProvisionalCalibration));
+    }
+
+    #[test]
+    fn t1_e2_discontinuity_threshold_is_enforced() {
+        // Read against `ADR-0001-D012`, which sets the band at
+        // PROVISIONAL_MAX_JOIN_RATIO and its reciprocal, inclusive. The table
+        // is the record's statement, not a second copy of the predicate: a
+        // reviewer checks these numbers against the deviation, and both band
+        // edges appear so widening either one fails here.
+        const CASES: [(f32, f32, JoinTolerance); 7] = [
+            (1.0, 1.0, JoinTolerance::Within),
+            (2.0, 1.0, JoinTolerance::Within),
+            (1.0, 0.5, JoinTolerance::Within),
+            (2.5, 1.0, JoinTolerance::Outside),
+            (1.0, 0.4, JoinTolerance::Outside),
+            (0.0, 1.0, JoinTolerance::NotComparable),
+            (1.0, 0.0, JoinTolerance::NotComparable),
+        ];
+
+        for (loudness_ratio, rate_ratio, expected) in CASES {
+            let measured = JoinContinuity {
+                loudness_ratio,
+                rate_ratio,
+                calibration_source: CalibrationSource::Provisional,
+            };
+
+            assert_eq!(
+                measured.provisional_tolerance(),
+                expected,
+                "loudness {loudness_ratio}, rate {rate_ratio}"
+            );
+        }
+    }
+
+    #[test]
+    fn t1_e2_the_join_band_is_symmetric_about_parity() {
+        // The band is one constant and its reciprocal, so a ratio and its
+        // inverse must land on the same verdict. A separate upper and lower
+        // bound would pass the table above while failing this.
+        for ratio in [1.5, 2.0, 2.5, 4.0] {
+            let wide = JoinContinuity {
+                loudness_ratio: ratio,
+                rate_ratio: 1.0,
+                calibration_source: CalibrationSource::Provisional,
+            };
+            let narrow = JoinContinuity {
+                loudness_ratio: 1.0 / ratio,
+                rate_ratio: 1.0,
+                calibration_source: CalibrationSource::Provisional,
+            };
+
+            assert_eq!(
+                wide.provisional_tolerance(),
+                narrow.provisional_tolerance(),
+                "ratio {ratio} and its inverse disagree"
+            );
+        }
     }
 
     #[test]

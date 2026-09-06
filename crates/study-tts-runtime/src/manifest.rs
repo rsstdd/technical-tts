@@ -1016,13 +1016,34 @@ fn validate_artifact(
 /// against the wrong binary — a package missing half its verification would
 /// have compared equal and been reused as complete.
 fn expected_executions(profiles: &ExportProfiles) -> Vec<(RecordedTool, &ToolProfileHash)> {
-    let probe = profiles.ffprobe.identity();
+    // Destructured with no `..`, for the reason `ExportProfiles::identities`
+    // gives about itself: a profile added to that struct becomes a compile
+    // error here rather than a silently absent row. The length check in
+    // `validate_package` catches an omission only after a package has been
+    // written and refused for reuse; this catches it at the point the profile
+    // is added.
+    let ExportProfiles {
+        ffmpeg_m4a,
+        ffmpeg_mp3,
+        ffmpeg_encoders,
+        ffmpeg_loudnorm_measure,
+        ffmpeg_loudnorm_apply,
+        ffprobe,
+    } = profiles;
+    let probe = ffprobe.identity();
+    // In the order `package_port::write` performs them, because reuse compares
+    // position by position. The two loudness passes sit between the encoder
+    // preflight and the master probe: the master is normalized before anything
+    // validates or encodes it, so what ffprobe checks and what both lossy
+    // outputs derive from are the published bytes.
     vec![
-        (RecordedTool::Ffmpeg, profiles.ffmpeg_encoders.identity()),
+        (RecordedTool::Ffmpeg, ffmpeg_encoders.identity()),
+        (RecordedTool::Ffmpeg, ffmpeg_loudnorm_measure.identity()),
+        (RecordedTool::Ffmpeg, ffmpeg_loudnorm_apply.identity()),
         (RecordedTool::Ffprobe, probe),
-        (RecordedTool::Ffmpeg, profiles.ffmpeg_m4a.identity()),
+        (RecordedTool::Ffmpeg, ffmpeg_m4a.identity()),
         (RecordedTool::Ffprobe, probe),
-        (RecordedTool::Ffmpeg, profiles.ffmpeg_mp3.identity()),
+        (RecordedTool::Ffmpeg, ffmpeg_mp3.identity()),
         (RecordedTool::Ffprobe, probe),
     ]
 }

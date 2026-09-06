@@ -16,11 +16,11 @@
 use std::{ffi::OsString, path::Path, process::Command};
 
 use serde::{Deserialize, Serialize};
-use study_tts_core::{CANONICAL_CHANNELS, ToolProfileHash};
+use study_tts_core::{CANONICAL_CHANNELS, CANONICAL_SAMPLE_RATE, ToolProfileHash};
 use tempfile::Builder;
 
 use crate::{
-    BuildError, ManagedPathError, ToolError, ToolInvocation, ToolOperation, io_error,
+    BuildError, ManagedPathError, ToolError, ToolInvocation, ToolOperation, audio_error, io_error,
     process::{self, CommandRunError, FFMPEG_ENCODE_POLICY, FFPROBE_POLICY, VERSION_PROBE_POLICY},
     tools::ToolIdentity,
 };
@@ -80,6 +80,103 @@ const REQUIRED_STREAMS: usize = 1;
 
 const INPUT_PATH_ARGUMENT: &str = "{input_path}";
 const OUTPUT_PATH_ARGUMENT: &str = "{output_path}";
+
+/// Placeholder for the measurements the first loudness pass produced.
+///
+/// Substituted *inside* an argument rather than replacing a whole one, which is
+/// the only substring placeholder here and is deliberate: FFmpeg takes a filter
+/// graph as a single `-af` argument, so the targets and the measurements share
+/// one token. Keeping the targets literal in the profile is what puts them in
+/// the hashed identity; keeping the measurements behind this placeholder is
+/// what keeps them out of it. They are this lesson's data, not a setting, and a
+/// profile digest that moved per lesson would make package reuse impossible.
+const MEASURED_LOUDNESS_ARGUMENT: &str = "{measured_loudness}";
+
+/// Provisional integrated-loudness target for the master, in LUFS.
+///
+/// `ADR-0001-D012` under `docs/adr/deviations/` authorizes this value and names
+/// this constant; ADR-0003's calibration table owns the frozen one.
+const PROVISIONAL_LOUDNESS_TARGET_LUFS: &str = "-16.0";
+
+/// Provisional true-peak ceiling for the master, in dBTP.
+///
+/// Authorized by `ADR-0001-D012` on the same terms. The headroom is for the
+/// lossy encodes specifically: `lesson.m4a` and `lesson.mp3` derive from this
+/// master, and inter-sample peaks inaudible in float PCM clip once encoded.
+const PROVISIONAL_TRUE_PEAK_CEILING_DBTP: &str = "-1.0";
+
+/// Provisional loudness-range target, in LU.
+///
+/// Authorized by `ADR-0001-D012` on the same terms. FFmpeg's own default, kept
+/// rather than chosen: a range target this build invented would be a second
+/// uncalibrated number with no better provenance than the filter's.
+const PROVISIONAL_LOUDNESS_RANGE_LU: &str = "11.0";
+
+/// The loudness filter graph, with the shared targets written once.
+///
+/// Assembled rather than written out as a literal, unlike the encode profiles:
+/// there the two lists differ and each is read against the manifest it
+/// produces, whereas here the two passes must carry *identical* targets or the
+/// second pass normalizes to a level the first never measured against. A
+/// duplicated literal is exactly how those two would drift apart.
+fn loudnorm_filter(trailing: &str) -> String {
+    format!(
+        "loudnorm=I={PROVISIONAL_LOUDNESS_TARGET_LUFS}:\
+         TP={PROVISIONAL_TRUE_PEAK_CEILING_DBTP}:\
+         LRA={PROVISIONAL_LOUDNESS_RANGE_LU}:{trailing}print_format=json"
+    )
+}
+
+/// The measurement pass: analyze the master and write no audio.
+///
+/// `-f null -` because this pass exists for the JSON it prints to stderr; an
+/// output file here would be a dynamically normalized master written before
+/// anything has checked whether linear normalization is possible.
+fn loudnorm_measure_arguments() -> Vec<String> {
+    vec![
+        "-nostdin".to_owned(),
+        "-hide_banner".to_owned(),
+        "-i".to_owned(),
+        INPUT_PATH_ARGUMENT.to_owned(),
+        "-af".to_owned(),
+        loudnorm_filter(""),
+        "-f".to_owned(),
+        "null".to_owned(),
+        "-".to_owned(),
+    ]
+}
+
+/// The application pass: normalize the master against what pass one measured.
+///
+/// `linear=true` requests a single gain change over the whole master rather
+/// than a moving one. FFmpeg falls back to dynamic normalization when the
+/// measurements make linear impossible, and reports which it used;
+/// [`NormalizationOutcome`] is where that report is checked, because a master
+/// whose gain moves under the audio is one whose segments no longer read as one
+/// recording.
+///
+/// The output is written at the canonical master format explicitly. The filter
+/// chain would otherwise resample to a default FFmpeg chooses, and a master
+/// that changed rate or sample format here would be refused downstream by the
+/// same canonical checks that admitted it.
+fn loudnorm_apply_arguments() -> Vec<String> {
+    vec![
+        "-nostdin".to_owned(),
+        "-hide_banner".to_owned(),
+        "-y".to_owned(),
+        "-i".to_owned(),
+        INPUT_PATH_ARGUMENT.to_owned(),
+        "-af".to_owned(),
+        loudnorm_filter(&format!("{MEASURED_LOUDNESS_ARGUMENT}:linear=true:")),
+        "-ar".to_owned(),
+        CANONICAL_SAMPLE_RATE.to_string(),
+        "-ac".to_owned(),
+        REQUIRED_CHANNELS.to_string(),
+        "-c:a".to_owned(),
+        MASTER_WAV_CODEC.to_owned(),
+        OUTPUT_PATH_ARGUMENT.to_owned(),
+    ]
+}
 
 const FFMPEG_M4A_ARGUMENT_PROFILE: &[&str] = &[
     "-nostdin",
@@ -219,6 +316,10 @@ pub(crate) struct ExportProfiles {
     pub ffmpeg_mp3: ToolProfile,
     /// Encoder-inventory preflight argument identity.
     pub ffmpeg_encoders: ToolProfile,
+    /// Loudness measurement-pass argument identity.
+    pub ffmpeg_loudnorm_measure: ToolProfile,
+    /// Loudness application-pass argument identity.
+    pub ffmpeg_loudnorm_apply: ToolProfile,
     /// Probe argument identity.
     pub ffprobe: ToolProfile,
 }
@@ -235,17 +336,21 @@ impl ExportProfiles {
     /// profile added to this struct then fails to compile here instead of
     /// being quietly absent from both the reuse comparison and the transaction
     /// identity, which is the one failure this list exists to prevent.
-    pub(crate) fn identities(&self) -> [&ToolProfileHash; 4] {
+    pub(crate) fn identities(&self) -> [&ToolProfileHash; 6] {
         let Self {
             ffmpeg_m4a,
             ffmpeg_mp3,
             ffmpeg_encoders,
+            ffmpeg_loudnorm_measure,
+            ffmpeg_loudnorm_apply,
             ffprobe,
         } = self;
         [
             ffmpeg_m4a.identity(),
             ffmpeg_mp3.identity(),
             ffmpeg_encoders.identity(),
+            ffmpeg_loudnorm_measure.identity(),
+            ffmpeg_loudnorm_apply.identity(),
             ffprobe.identity(),
         ]
     }
@@ -354,10 +459,21 @@ struct ProfileIdentity<'a> {
 impl ToolProfile {
     /// Derives an identity from a path-normalized argument sequence.
     pub(crate) fn new(tool: &str, arguments: &[&str]) -> Self {
-        let normalized_arguments = arguments
-            .iter()
-            .map(|argument| (*argument).to_owned())
-            .collect::<Vec<_>>();
+        Self::owned(
+            tool,
+            arguments
+                .iter()
+                .map(|argument| (*argument).to_owned())
+                .collect(),
+        )
+    }
+
+    /// [`ToolProfile::new`] for a sequence assembled rather than written out.
+    ///
+    /// The loudness profiles share their targets through
+    /// [`loudnorm_filter`], so they arrive owned; hashing them through the same
+    /// function is what keeps one identity rule for every profile.
+    pub(crate) fn owned(tool: &str, normalized_arguments: Vec<String>) -> Self {
         let bytes = serde_json::to_vec(&ProfileIdentity {
             identity_version: "0.1-skeleton-tool-profile",
             tool,
@@ -383,6 +499,8 @@ pub(crate) fn export_profiles() -> ExportProfiles {
         ffmpeg_m4a: ToolProfile::new("ffmpeg", FFMPEG_M4A_ARGUMENT_PROFILE),
         ffmpeg_mp3: ToolProfile::new("ffmpeg", FFMPEG_MP3_ARGUMENT_PROFILE),
         ffmpeg_encoders: ToolProfile::new("ffmpeg", FFMPEG_ENCODERS_ARGUMENT_PROFILE),
+        ffmpeg_loudnorm_measure: ToolProfile::owned("ffmpeg", loudnorm_measure_arguments()),
+        ffmpeg_loudnorm_apply: ToolProfile::owned("ffmpeg", loudnorm_apply_arguments()),
         ffprobe: ToolProfile::new("ffprobe", FFPROBE_ARGUMENT_PROFILE),
     }
 }
@@ -547,6 +665,215 @@ pub(crate) fn probe(
     })
 }
 
+/// What FFmpeg reports when it normalized with a single gain change.
+///
+/// The one value [`normalize_master`] accepts. Compared as a whole string
+/// rather than by prefix so `linear_and_something` could never pass.
+const LINEAR_NORMALIZATION: &str = "linear";
+
+/// What FFmpeg's loudness filter reported about one pass.
+///
+/// The second deserialization boundary in this workspace without
+/// `deny_unknown_fields`, and it does not inherit [`ProbeResponse`]'s
+/// exemption — it argues its own, on the same terms. This is a diagnostic
+/// summary printed by a tool whose version `tools.rs` records rather than pins,
+/// not a format this project defines; a release that adds a field would
+/// otherwise stop every build while reporting a master that normalized
+/// correctly.
+///
+/// The leniency can only refuse, never accept. Every field is
+/// absent-or-wrong rather than defaulted, so a renamed or withdrawn one reaches
+/// [`ToolError::UnreadableLoudnessReport`] instead of a pass — and an absent
+/// `normalization_type` in particular cannot become a silent `linear`.
+///
+/// FFmpeg prints these numbers as JSON *strings*, not numbers, and they are
+/// kept as strings deliberately: they are carried back into the second pass's
+/// arguments verbatim, so parsing them to `f64` and formatting them again would
+/// introduce a rounding step between what was measured and what is normalized
+/// against, for no reader that needs the numeric value.
+#[derive(Debug, Deserialize)]
+struct LoudnessReport {
+    input_i: String,
+    input_tp: String,
+    input_lra: String,
+    input_thresh: String,
+    target_offset: String,
+    normalization_type: String,
+}
+
+impl LoudnessReport {
+    /// This measurement, as the filter arguments the second pass consumes.
+    ///
+    /// Trailing separator included, because the placeholder it replaces sits
+    /// mid-filter between the targets and `linear=true`.
+    fn measured_arguments(&self) -> String {
+        let Self {
+            input_i,
+            input_tp,
+            input_lra,
+            input_thresh,
+            target_offset,
+            normalization_type: _,
+        } = self;
+        format!(
+            "measured_I={input_i}:measured_TP={input_tp}:measured_LRA={input_lra}:\
+             measured_thresh={input_thresh}:offset={target_offset}"
+        )
+    }
+}
+
+/// Reads the JSON summary FFmpeg's loudness filter prints to standard error.
+///
+/// The summary is the last brace-delimited span of the stream: `-hide_banner`
+/// suppresses the build description, the object is flat, and the filter prints
+/// it after the encode finishes. Scanning from the end rather than the start is
+/// what keeps a warning FFmpeg emitted earlier from being parsed as the report.
+///
+/// # Errors
+///
+/// [`ToolError::UnreadableLoudnessReport`] when no such span exists or it does
+/// not carry every field, which routes the audio owner to the pinned filter
+/// arguments rather than to the audio.
+fn loudness_report(stderr: &[u8], operation: ToolOperation) -> Result<LoudnessReport, ToolError> {
+    let text = String::from_utf8_lossy(stderr);
+    text.rfind('{')
+        .zip(text.rfind('}'))
+        .filter(|(start, end)| start < end)
+        .and_then(|(start, end)| text.get(start..=end))
+        .and_then(|json| serde_json::from_str(json).ok())
+        .ok_or(ToolError::UnreadableLoudnessReport { operation })
+}
+
+/// Normalizes the assembled master in place, in two passes.
+///
+/// ADR-0001 §13.3 requires final-package loudness normalization, and §13.5 has
+/// both lossy outputs derive independently from the master — so the master is
+/// what is normalized, and the encodes inherit one loudness decision rather
+/// than making three. This runs after assembly and before either encode.
+///
+/// The references are provisional under `ADR-0001-D012`; see
+/// [`PROVISIONAL_LOUDNESS_TARGET_LUFS`].
+///
+/// Normalized through a staged file beside the master and renamed over it,
+/// rather than in place: FFmpeg cannot read and write one path, and a failure
+/// partway through an in-place rewrite would leave a master that is neither the
+/// assembled audio nor the normalized audio.
+///
+/// # Errors
+///
+/// [`ToolError::StartFfmpeg`] when the binary cannot be launched; the same
+/// supervision variants [`encode`] documents; [`ToolError::Ffmpeg`] when either
+/// pass exits non-zero; [`ToolError::UnreadableLoudnessReport`] when either
+/// pass prints no readable summary; [`ToolError::LoudnessNotLinear`] when
+/// FFmpeg fell back to a moving gain, which routes to the human-review owner
+/// per `docs/governance/ROUTING-TABLES.md`;
+/// [`ToolError::LoudnessChangedLength`] when the returned master is a different
+/// length from the assembled one; otherwise [`crate::IoError::FileSystem`].
+pub(crate) fn normalize_master(
+    ffmpeg: &ToolIdentity,
+    profiles: &ExportProfiles,
+    master_wav: &Path,
+    expected_frames: u64,
+) -> Result<Vec<ToolExecution>, BuildError> {
+    let measure_arguments =
+        materialize_arguments(&profiles.ffmpeg_loudnorm_measure, master_wav, None);
+    let measured = run_loudness_pass(
+        ffmpeg,
+        &measure_arguments,
+        ToolOperation::LoudnessMeasure,
+        master_wav,
+    )?;
+
+    let parent = master_wav
+        .parent()
+        .ok_or_else(|| ManagedPathError::UnrootedDestination {
+            path: master_wav.to_path_buf(),
+        })?;
+    let staged = Builder::new()
+        .prefix("lesson-")
+        .suffix(".wav")
+        .tempfile_in(parent)
+        .map_err(|error| io_error(parent, error))?
+        .into_temp_path();
+    let apply_arguments = materialize_measured_arguments(
+        &profiles.ffmpeg_loudnorm_apply,
+        master_wav,
+        &staged,
+        &measured.measured_arguments(),
+    );
+    let applied = run_loudness_pass(
+        ffmpeg,
+        &apply_arguments,
+        ToolOperation::LoudnessNormalize,
+        master_wav,
+    )?;
+    if applied.normalization_type != LINEAR_NORMALIZATION {
+        return Err(ToolError::LoudnessNotLinear {
+            normalization_type: applied.normalization_type,
+        }
+        .into());
+    }
+    // Checked before the rename, so a master that changed length never becomes
+    // the published one. The count is passed in rather than measured from the
+    // input again: the caller already holds the assembled timeline's total, and
+    // that is the number the manifest, captions, and chapters were written
+    // from, so it is the one this has to agree with.
+    let produced = u64::from(
+        hound::WavReader::open(&staged)
+            .map_err(|error| audio_error(&staged, error))?
+            .duration(),
+    );
+    if produced != expected_frames {
+        return Err(ToolError::LoudnessChangedLength {
+            expected: expected_frames,
+            produced,
+        }
+        .into());
+    }
+    staged
+        .persist(master_wav)
+        .map_err(|error| io_error(master_wav, error.error))?;
+
+    Ok(vec![
+        ToolExecution {
+            arguments: display_arguments(&measure_arguments),
+            argument_profile_blake3: profiles.ffmpeg_loudnorm_measure.identity().clone(),
+        },
+        ToolExecution {
+            arguments: display_arguments(&apply_arguments),
+            argument_profile_blake3: profiles.ffmpeg_loudnorm_apply.identity().clone(),
+        },
+    ])
+}
+
+/// Runs one loudness pass and returns what it reported.
+fn run_loudness_pass(
+    ffmpeg: &ToolIdentity,
+    arguments: &[OsString],
+    operation: ToolOperation,
+    master_wav: &Path,
+) -> Result<LoudnessReport, BuildError> {
+    let mut command = Command::new(&ffmpeg.resolved_executable);
+    command.args(arguments);
+    let invocation = ToolInvocation::new("FFmpeg", operation, master_wav);
+    let output =
+        process::run(invocation, command, FFMPEG_ENCODE_POLICY).map_err(|error| match error {
+            CommandRunError::Start(source) => ToolError::StartFfmpeg {
+                executable: ffmpeg.resolved_executable.clone(),
+                source,
+            },
+            CommandRunError::Supervision(error) => error,
+        })?;
+    if !output.status.success() {
+        return Err(ToolError::Ffmpeg {
+            status: output.status.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        }
+        .into());
+    }
+    Ok(loudness_report(&output.stderr, operation)?)
+}
+
 /// Refuses an FFmpeg that cannot encode [`MP3_ENCODER`], before any work runs.
 ///
 /// Asks the binary rather than trusting the platform: FFmpeg is routinely
@@ -693,6 +1020,29 @@ fn materialize_arguments(
                 .as_os_str()
                 .to_owned(),
             argument => OsString::from(argument),
+        })
+        .collect()
+}
+
+/// [`materialize_arguments`] with the measurement placeholder resolved too.
+///
+/// Layered on that function rather than replacing it, so path substitution
+/// keeps one implementation: the loudness pass differs only in carrying a
+/// second placeholder, and a parallel copy is how the two would stop agreeing
+/// about what a path argument looks like.
+fn materialize_measured_arguments(
+    profile: &ToolProfile,
+    input: &Path,
+    output: &Path,
+    measured: &str,
+) -> Vec<OsString> {
+    materialize_arguments(profile, input, Some(output))
+        .into_iter()
+        .map(|argument| match argument.to_str() {
+            Some(text) if text.contains(MEASURED_LOUDNESS_ARGUMENT) => {
+                OsString::from(text.replace(MEASURED_LOUDNESS_ARGUMENT, measured))
+            }
+            _ => argument,
         })
         .collect()
 }
