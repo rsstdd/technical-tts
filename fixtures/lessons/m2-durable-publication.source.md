@@ -76,8 +76,9 @@ and it was not yet durable.
 A crash before the rename leaves a staging file with a name nothing authoritative refers to. That
 is a recoverable outcome rather than corruption: the destination still holds the previous
 complete version, and the staging file can be inspected or discarded without consulting anything
-else. This is the reason staging happens in the destination's own directory — a rename across
-filesystems is a copy, and a copy is not atomic.
+else. This is the reason staging happens in the destination's own directory — `rename(2)` cannot
+cross a filesystem boundary at all. It fails with `EXDEV` rather than copying, and the
+copy-and-delete fallback a caller might reach for in its place is not atomic.
 
 ## block-012 — Publish-once against replace
 

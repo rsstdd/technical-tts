@@ -12,7 +12,7 @@
     "Name what each crash window leaves behind and why none of them leaves a mixture"
   ],
   "source": {
-    "content_hash": "3e823e37110dfebdd5eedc3e2494f8310a94c2b1e7846510c5712e6165bb0ec9",
+    "content_hash": "35ede6cd2ef4558df93f553e4b44c39f0b561f2ee25e4427cbb25dd873d91d81",
     "references": [
       "docs/adr/ADR-0001-production-rust-study-guide-tts.md",
       "crates/study-tts-runtime/src/durable.rs"
@@ -305,8 +305,8 @@
       "source_refs": [
         "block-011"
       ],
-      "display_text": "It also explains why staging happens in the destination's own directory. A rename across filesystems is a copy, and a copy is not atomic.",
-      "spoken_text": "It also explains why staging happens in the destination's own directory. A rename across filesystems is a copy, and a copy is not atomic.",
+      "display_text": "It also explains why staging happens in the destination's own directory. A rename cannot cross a filesystem boundary at all: it fails rather than copying, and a copy-and-delete fallback is not atomic.",
+      "spoken_text": "It also explains why staging happens in the destination's own directory. A rename cannot cross a filesystem boundary at all: it fails rather than copying, and a copy-and-delete fallback is not atomic.",
       "style": "calm_explanatory",
       "pause_after_ms": 700,
       "review_status": "approved"

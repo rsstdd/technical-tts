@@ -4,8 +4,8 @@
 - Owner or rightsholder: Ross Todd (owner-authored repository material)
 - Source URI: `fixtures/lessons/m2-durable-publication.source.md`
 - Exact revision/checksum: SHA-256
-  `a5fc9ba30e806eece1239a591723037d94240f83be5dbbcc5383fc261311101b`, 6,219 bytes; BLAKE3
-  `3e823e37110dfebdd5eedc3e2494f8310a94c2b1e7846510c5712e6165bb0ec9`, which is the value
+  `6a78e19cb84c99a5d81ab147721e8b7a98c74495e5451bddfee606ebfb45ff1a`, 6,338 bytes; BLAKE3
+  `35ede6cd2ef4558df93f553e4b44c39f0b561f2ee25e4427cbb25dd873d91d81`, which is the value
   `fixtures/lessons/m2-durable-publication.json` carries as its `source.content_hash`
 - License or consent document URI/checksum: Not applicable. The document is written for this
   repository from its own governing documents, and quotes none of them
