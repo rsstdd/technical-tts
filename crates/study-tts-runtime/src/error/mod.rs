@@ -1194,6 +1194,20 @@ mod tests {
         assert_expected_remedy(error.into(), expected);
 
         for error in [
+            // The loudness refusals are first because one of them is the only
+            // `RemedyOwner::HumanReview` mapping there is: without a sample,
+            // `governed_owner("Human review finding")` never runs and the row
+            // could be renamed in the document with nothing reporting it.
+            ToolError::LoudnessNotLinear {
+                normalization_type: "dynamic".to_owned(),
+            },
+            ToolError::UnreadableLoudnessReport {
+                operation: ToolOperation::LoudnessMeasure,
+            },
+            ToolError::LoudnessChangedLength {
+                expected: 359_040,
+                produced: 359_041,
+            },
             ToolError::UnreadableProbeResponse {
                 path: PathBuf::from("lesson.m4a"),
                 source: json_error(),

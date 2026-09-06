@@ -30,10 +30,10 @@ ratio is within tolerance when it lies between its reciprocal and itself, so `0.
 constant rather than four bounds, because a fold-change is the same quantity in either direction and
 two separate bounds invite them to drift apart.
 
-The values are deliberately loose. A provisional threshold exists to refuse audio that is obviously
-broken — a segment rendered at half the level of its neighbour, or at twice its speaking rate — not
-to express a quality standard nobody has calibrated. A tight provisional bound would fail joins that
-a listener would accept and would make the threshold look ratified.
+The values are deliberately loose. A provisional band exists to flag audio that is obviously broken
+— a segment rendered at half the level of its neighbour, or at twice its speaking rate — not to
+express a quality standard nobody has calibrated. A tight provisional bound would flag joins a
+listener would accept and would make the threshold look ratified.
 
 `-16 LUFS` and `-1.0 dBTP` are the ordinary spoken-word delivery references. The true-peak ceiling
 carries headroom for the lossy encodes specifically: `lesson.m4a` and `lesson.mp3` derive from the
@@ -84,7 +84,12 @@ E1-S3 built no verdict. The join row was named as visible and left open. This re
 - **Security, rights, and privacy:** No control is waived. Normalization rewrites sample values and
   touches no metadata; the existing `-map_metadata -1` on both encodes is unchanged.
 - **Tests and evidence:** `t1_e2_discontinuity_threshold_is_enforced` proves a join outside the
-  provisional bound is refused rather than recorded silently, and
+  provisional bound is classified as `JoinTolerance::Outside` rather than passing unremarked. It is
+  not a refusal: `docs/governance/ROUTING-TABLES.md` §Failure routing answers a human review finding
+  with "Record finding; retake or accept with authority" and blocks production rather than the
+  build, and a join outside the band still produces preview audio worth listening to. The
+  classification is advisory and its reporting destination is E2-S4's run report, recorded as open
+  question G-A in `docs/architecture/E2-S3-INTERFACE-CHANGE-001.md`. Separately,
   `t4_e2_loudnorm_requires_linear_result` proves a dynamic normalization result is refused. The
   existing `t3_e2_provisional_measurement_cannot_satisfy_production_calibration` already proves a
   provisional value cannot serve as a production reference, and this record adds no exception to it.
@@ -102,8 +107,8 @@ E1-S3 built no verdict. The join row was named as visible and left open. This re
 - It does not permit a measurement taken from this output to become a production reference.
   ADR-0003 §Fixed constraints forbids that, `SilenceThreshold::production` and
   `JoinContinuity::production` make it mechanical, and this record does not soften either.
-- It does not permit the provisional join bound to be reported as a quality verdict. It refuses
-  broken audio; it does not approve the audio it passes.
+- It does not permit the provisional join bound to be reported as a quality verdict. It flags
+  obviously broken audio; it does not approve the audio it passes.
 - It does not reach the M4A codec arguments, which `ADR-0001-D009` §The gap records as an open
   pre-existing gap carrying no permission. ADR-0003's acceptance closes that one.
 
@@ -152,4 +157,10 @@ why the two rows are separate.
 | Role | Name | Decision | Date |
 |---|---|---|---|
 | Engineering owner | Ross Todd | Approve — accept a join band of `2.0` and its reciprocal, a `-16 LUFS` master target, and a `-1.0 dBTP` ceiling as this build's provisional references, and that they are recorded and hashed rather than frozen | 2026-09-05 |
-| Project owner | Ross Todd | Approve — accept a bounded permission, expiring at ADR-0003's acceptance, to normalize and to refuse a join against uncalibrated references inside a `private_preview` package, on the understanding that no measurement taken under it may become a production reference | 2026-09-05 |
+| Project owner | Ross Todd | Approve — accept a bounded permission, expiring at ADR-0003's acceptance, to normalize against uncalibrated references inside a `private_preview` package and to classify a join against them advisorily, on the understanding that no measurement taken under it may become a production reference | 2026-09-05 |
+
+## Amendments
+
+| Date | Amendment | Approval |
+|---|---|---|
+| 2026-09-06 | Corrected §Impact and the project-owner row: both described an out-of-band join as **refused**, which E2-S3 does not do. The implementation classifies it as `JoinTolerance::Outside` and leaves the build to produce preview audio, per the `Human review finding` row of `docs/governance/ROUTING-TABLES.md`. The correction narrows the description of the permission rather than widening it, and no code was written against the earlier wording. Amended in place rather than superseded because nothing had shipped against it and the approver's intent is unchanged; supersession is reserved for a conclusion an approver relied on turning out wrong | Ross Todd, 2026-09-06 |

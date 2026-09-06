@@ -105,12 +105,15 @@ const PROVISIONAL_LOUDNESS_TARGET_LUFS: &str = "-16.0";
 /// master, and inter-sample peaks inaudible in float PCM clip once encoded.
 const PROVISIONAL_TRUE_PEAK_CEILING_DBTP: &str = "-1.0";
 
-/// Provisional loudness-range target, in LU.
+/// Loudness-range target, in LU.
 ///
-/// Authorized by `ADR-0001-D012` on the same terms. FFmpeg's own default, kept
-/// rather than chosen: a range target this build invented would be a second
-/// uncalibrated number with no better provenance than the filter's.
-const PROVISIONAL_LOUDNESS_RANGE_LU: &str = "11.0";
+/// FFmpeg's own default, verified against `ffmpeg -h filter=loudnorm` rather
+/// than recalled: `LRA ... (from 1 to 50) (default 7)`. Kept rather than
+/// chosen, which is why it is the one loudness value `ADR-0001-D012` does not
+/// authorize and does not need to — the record covers the two targets this
+/// build picks, and a range this build invented would be a third uncalibrated
+/// number with no better provenance than the filter's own.
+const PROVISIONAL_LOUDNESS_RANGE_LU: &str = "7.0";
 
 /// The loudness filter graph, with the shared targets written once.
 ///
@@ -132,10 +135,19 @@ fn loudnorm_filter(trailing: &str) -> String {
 /// `-f null -` because this pass exists for the JSON it prints to stderr; an
 /// output file here would be a dynamically normalized master written before
 /// anything has checked whether linear normalization is possible.
+///
+/// `-nostats` rather than the `-loglevel error` the encode profiles carry.
+/// The filter prints its report at FFmpeg's info level, so silencing that level
+/// would silence the report this pass exists to produce. Progress statistics
+/// are the part that can be dropped, and dropping them is what keeps a long
+/// lesson inside the standard-error ceiling `FFMPEG_ENCODE_POLICY` sets —
+/// otherwise a five-minute render reports [`ToolError::ToolOutputOverflow`]
+/// for having talked too much about its own progress.
 fn loudnorm_measure_arguments() -> Vec<String> {
     vec![
         "-nostdin".to_owned(),
         "-hide_banner".to_owned(),
+        "-nostats".to_owned(),
         "-i".to_owned(),
         INPUT_PATH_ARGUMENT.to_owned(),
         "-af".to_owned(),
@@ -159,10 +171,14 @@ fn loudnorm_measure_arguments() -> Vec<String> {
 /// chain would otherwise resample to a default FFmpeg chooses, and a master
 /// that changed rate or sample format here would be refused downstream by the
 /// same canonical checks that admitted it.
+///
+/// `-nostats` for the reason [`loudnorm_measure_arguments`] gives: this pass
+/// reports too, and it runs over the same audio for longer.
 fn loudnorm_apply_arguments() -> Vec<String> {
     vec![
         "-nostdin".to_owned(),
         "-hide_banner".to_owned(),
+        "-nostats".to_owned(),
         "-y".to_owned(),
         "-i".to_owned(),
         INPUT_PATH_ARGUMENT.to_owned(),
