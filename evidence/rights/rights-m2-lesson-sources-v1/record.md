@@ -9,8 +9,8 @@
   `fixtures/lessons/m2-durable-publication.json` carries as its `source.content_hash`
 - License or consent document URI/checksum: Not applicable. The document is written for this
   repository from its own governing documents, and quotes none of them
-- Reviewer: Ross Todd (project owner and source rightsholder) — **not yet signed**
-- Review date: Unsigned; the project owner dates this record when they take the decision below
+- Reviewer: Ross Todd (project owner and source rightsholder)
+- Review date: 2026-09-06
 - Supersedes: Nothing; this is the first record covering M2 acceptance lesson material
 
 ## Classification
@@ -42,19 +42,27 @@
 
 ## Decision
 
-**Unsigned draft.** No box below is checked, so this record classifies nothing yet and the
-material it covers is unresolved under `OQ-05`. The project owner checks one box, dates the
-record, and signs the rationale; nothing else in this file is theirs to rewrite.
+**Signed 2026-09-06.** The material this record covers is classified, and `OQ-05` is resolved
+for both documents.
 
-- [ ] Approved for recorded scope
+- [x] Approved for recorded scope
 - [ ] Restricted
 - [ ] Review required
 - [ ] Prohibited
 
-Drafted rationale, for the project owner to accept or replace: The source document introduces
+Rationale, accepted as drafted — Ross Todd, project owner and source rightsholder, 2026-09-06:
+The source document introduces
 no third-party claim. It restates durability and atomicity rules this repository already fixes
 in `docs/adr/ADR-0001-production-rust-study-guide-tts.md` §12.3 and implements in
 `crates/study-tts-runtime/src/durable.rs`, in words written for this repository, and it quotes
 neither. The lesson is compiled from it and adds no other material, so both carry the one
 classification `OQ-05` requires. Nothing here grants a distribution scope the release profile
 does not already limit to internal owner use.
+
+The decision approves the scope this record states and no wider one: owner-only private use, no
+commercial use, no external publication, and no voice rights. Rendered audio derived from this
+material stays under the governed private-preview output root outside Git, per §Data handling.
+
+*Entered by the engineering assistant at the project owner's explicit direction on 2026-09-06.
+The digests above were re-pinned by commit `c0f373a`, which corrected a `rename(2)`/`EXDEV`
+claim in the source; they name the corrected bytes, and the byte count moved with them.*
