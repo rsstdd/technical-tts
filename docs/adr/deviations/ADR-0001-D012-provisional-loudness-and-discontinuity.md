@@ -22,7 +22,7 @@ Three constants, each of which names this record in return:
 | Constant | Module | Provisional value | ADR-0003 row it stands in for |
 |---|---|---|---|
 | `PROVISIONAL_MAX_JOIN_RATIO` | `crates/study-tts-runtime/src/audio_edges.rs` | `2.0` | Join discontinuity threshold |
-| `PROVISIONAL_LOUDNESS_TARGET_LUFS` | `crates/study-tts-runtime/src/export.rs` | `-16.0` | Master loudness target/range |
+| `PROVISIONAL_LOUDNESS_TARGET_LUFS` | `crates/study-tts-runtime/src/export.rs` | `-27.0` | Master loudness target/range |
 | `PROVISIONAL_TRUE_PEAK_CEILING_DBTP` | `crates/study-tts-runtime/src/export.rs` | `-1.0` | True-peak ceiling |
 
 `PROVISIONAL_MAX_JOIN_RATIO` bounds both ratios `assess_join` already measures, symmetrically: a
@@ -35,7 +35,10 @@ The values are deliberately loose. A provisional band exists to flag audio that 
 express a quality standard nobody has calibrated. A tight provisional bound would flag joins a
 listener would accept and would make the threshold look ratified.
 
-`-16 LUFS` and `-1.0 dBTP` are the ordinary spoken-word delivery references. The true-peak ceiling
+`-1.0 dBTP` is the ordinary spoken-word delivery ceiling. The loudness target is **not** an
+ordinary delivery reference and must not be read as one: `-27 LUFS` is the level this build's voice
+reference permits beneath that ceiling, measured rather than chosen. See §Amendments, 2026-09-06.
+The true-peak ceiling
 carries headroom for the lossy encodes specifically: `lesson.m4a` and `lesson.mp3` derive from the
 master, and inter-sample peaks that are inaudible in float PCM clip once encoded.
 
@@ -156,7 +159,7 @@ why the two rows are separate.
 
 | Role | Name | Decision | Date |
 |---|---|---|---|
-| Engineering owner | Ross Todd | Approve — accept a join band of `2.0` and its reciprocal, a `-16 LUFS` master target, and a `-1.0 dBTP` ceiling as this build's provisional references, and that they are recorded and hashed rather than frozen | 2026-09-05 |
+| Engineering owner | Ross Todd | Approve — accept a join band of `2.0` and its reciprocal, a master loudness target, and a `-1.0 dBTP` ceiling as this build's provisional references, and that they are recorded and hashed rather than frozen. The target was `-16 LUFS` at signing and is `-27 LUFS` since the amendment below | 2026-09-05; target amended 2026-09-06 |
 | Project owner | Ross Todd | Approve — accept a bounded permission, expiring at ADR-0003's acceptance, to normalize against uncalibrated references inside a `private_preview` package and to classify a join against them advisorily, on the understanding that no measurement taken under it may become a production reference | 2026-09-05 |
 
 ## Amendments
@@ -164,3 +167,4 @@ why the two rows are separate.
 | Date | Amendment | Approval |
 |---|---|---|
 | 2026-09-06 | Corrected §Impact and the project-owner row: both described an out-of-band join as **refused**, which E2-S3 does not do. The implementation classifies it as `JoinTolerance::Outside` and leaves the build to produce preview audio, per the `Human review finding` row of `docs/governance/ROUTING-TABLES.md`. The correction narrows the description of the permission rather than widening it, and no code was written against the earlier wording. Amended in place rather than superseded because nothing had shipped against it and the approver's intent is unchanged; supersession is reserved for a conclusion an approver relied on turning out wrong | Ross Todd, 2026-09-06 |
+| 2026-09-06 | **Master loudness target `-16.0` → `-27.0` LUFS.** `-16` was chosen as an ordinary spoken-word reference without measuring what this backend produces, and it is unreachable. The first real render of the M2 acceptance lesson refused with `ToolError::LoudnessNotLinear`: the 34-segment master measures `-34.45 LUFS` integrated against a `-9.92 dBTP` peak, so reaching `-16` needs `+18.45 dB` while the `-1.0 dBTP` ceiling permits only `+8.92 dB`. Applying the full gain was measured directly and lands the peak at `+8.53 dBTP`, above 0 dBFS. The cause is the voice reference: `owner-fallback-v1/reference.wav` is itself `-38.96 LUFS`, and Chatterbox clones level from its conditioning reference, so every synthesis inherits it. Gain staging cannot correct this, because gain preserves crest factor. `-27.0` was verified linear against the real master with `1.57 dB` of peak margin; `-25.0` still falls back to dynamic. **This is a constraint, not a standard** — the remedy is a louder reference, which belongs to ADR-0003's per-voice calibration and E5-S1's frozen references. The ceiling is unchanged | Ross Todd, 2026-09-06 |
