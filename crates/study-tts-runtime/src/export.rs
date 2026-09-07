@@ -96,7 +96,16 @@ const MEASURED_LOUDNESS_ARGUMENT: &str = "{measured_loudness}";
 ///
 /// `ADR-0001-D012` under `docs/adr/deviations/` authorizes this value and names
 /// this constant; ADR-0003's calibration table owns the frozen one.
-const PROVISIONAL_LOUDNESS_TARGET_LUFS: &str = "-16.0";
+///
+/// **Not a delivery reference.** It is bounded by the voice, not chosen for a
+/// listener: `owner-fallback-v1`'s conditioning reference is itself about
+/// -39 LUFS, Chatterbox clones level from its reference, and the resulting
+/// master peaks around -10 dBTP. Reaching an ordinary -16 LUFS would need more
+/// gain than [`PROVISIONAL_TRUE_PEAK_CEILING_DBTP`] leaves, and gain cannot buy
+/// it because gain preserves crest factor. D012's 2026-09-06 amendment records
+/// the measurements. A louder reference is the actual remedy and belongs to
+/// ADR-0003's per-voice calibration.
+const PROVISIONAL_LOUDNESS_TARGET_LUFS: &str = "-27.0";
 
 /// Provisional true-peak ceiling for the master, in dBTP.
 ///
@@ -1387,11 +1396,11 @@ mod tests {
         // identity for every lesson.
         assert_eq!(
             loudnorm_filter(LoudnessPass::Measure),
-            "loudnorm=I=-16.0:TP=-1.0:LRA=7.0:print_format=json"
+            "loudnorm=I=-27.0:TP=-1.0:LRA=7.0:print_format=json"
         );
         assert_eq!(
             loudnorm_filter(LoudnessPass::Apply),
-            "loudnorm=I=-16.0:TP=-1.0:LRA=7.0:{measured_loudness}:linear=true:print_format=json"
+            "loudnorm=I=-27.0:TP=-1.0:LRA=7.0:{measured_loudness}:linear=true:print_format=json"
         );
     }
 

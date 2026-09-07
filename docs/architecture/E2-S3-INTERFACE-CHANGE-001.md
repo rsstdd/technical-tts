@@ -32,6 +32,7 @@ different build, and this one does.
 | **I-1** | Synthesis and cache keys | **Do not move** | Normalization reads the assembled master; it is downstream of every synthesis key, and no cache key reads an export profile |
 | **I-2** | `plan_hash` | **Does not move** | No plan field is added or reinterpreted |
 | **I-3** | Verification identity | **Does not move** | E4 does not exist, and nothing here reaches it |
+| **I-3a** | Loudness argument-profile digests | **Move again on 2026-09-06** | The D012 target amendment from `-16.0` to `-27.0` changes both `loudnorm` filter strings, so both profile identities move a second time. Same class of effect as I-4 and I-5, not a new one; packages built at `-16.0` are superseded rather than migrated, and no such package was ever published |
 | **I-4** | Package transaction identity | **Moves** | `ExportProfiles::identities` grows from four profiles to six, and `preview::transaction_identity` hashes that set |
 | **I-5** | Package identity | **Moves** | The published master's bytes change, so every artifact digest and the manifest digest that names the package directory move with them |
 | **I-6** | Reuse of an existing package | **Refused; rebuilt** | `manifest::expected_executions` grows from six entries to eight, so `validate_package` reports no match and the build writes a new generation |
@@ -45,6 +46,47 @@ rebuild re-encodes and re-normalizes without re-synthesizing a segment.
 `E2-S2-INTERFACE-CHANGE-001` §Identity effect already recorded: transaction identity only separates
 concurrent work, and reuse is decided by `manifest::validate_package`. The identity moves here
 because its inputs moved, which is the mechanism working rather than a version event.
+
+## Measured loudness, and why the target moved
+
+The first render of a real five-minute lesson refused with `ToolError::LoudnessNotLinear`. The
+measurements below are why, and they are the first real loudness data this project has for the
+Chatterbox backend. ADR-0003's calibration table records **Master loudness target/range** and
+**True-peak ceiling** as `Pending` and declares `Depends on: E2-S3`; these are that dependency's
+output, recorded here so the eventual calibration can cite them.
+
+| Artifact | Integrated | True peak | LRA |
+|---|---:|---:|---:|
+| `owner-fallback-v1/reference.wav` (voice conditioning) | **−38.96 LUFS** | −19.95 dBTP | 12.20 |
+| `e1-s4-three-segment` master, 3 segments | −35.26 LUFS | −15.72 dBTP | 10.80 |
+| `m2-durable-publication` master, 34 segments, 305.34 s | −34.45 LUFS | −9.92 dBTP | 5.80 |
+
+Across all 34 cached segments of that master: integrated spans −35.94 to −32.91, median −34.87 — a
+tight 3 dB. True peak spans −17.91 to −9.92, and the six loudest are −9.92, −11.00, −11.12, −11.52,
+−11.97, −12.63. That is a smooth distribution rather than one bad segment, and the master's
+−9.92 dBTP is exactly the loudest segment's, so assembly contributes no peak of its own.
+
+**The level originates in the voice reference.** Chatterbox clones level from its conditioning
+reference, and that reference is about 23 dB below an ordinary spoken-word level. Every synthesis
+inherits it.
+
+**Gain cannot correct it.** Reaching −16 LUFS needs +18.45 dB while the −1.0 dBTP ceiling permits
++8.92 dB. Applying the full gain was measured rather than argued: integrated lands at −16.01 and
+true peak at **+8.53 dBTP**, above 0 dBFS. Gain preserves crest factor, so applying it per segment
+instead of per master changes nothing. With a ~20 dB crest and a −1.0 dBTP ceiling, the reachable
+target is about −21 LUFS even if every peak sat at the median.
+
+`ADR-0001-D012`'s amendment of 2026-09-06 therefore moves the target to **−27.0 LUFS**, verified
+linear against the real master with 1.57 dB of peak margin; −25.0 still falls back to dynamic. The
+ceiling is unchanged, because it is not what is wrong. A louder reference is the actual remedy and
+belongs to ADR-0003's per-voice calibration and E5-S1's frozen references.
+
+The re-render at −27.0 published on 2026-09-06. Its master is a different performance — synthesis
+is not reproducible across output roots — and measures −34.50 LUFS over 309.30 s, so the applied
+gain was +7.48 dB and the published master sits at **−27.02 LUFS / −2.42 dBTP**, 1.42 dB inside the
+ceiling. `evidence/gates/g3/m2-acceptance-lesson/m2-acceptance-lesson-render-v1.md` records that
+render, and the table above stays as measured on the render that refused, because that is the
+material the target was chosen against.
 
 ## What the package path now does
 
@@ -132,7 +174,7 @@ terms `ADR-0001-D012` sets.
 |---|---|---|
 | Project owner | Accept that every existing published package is superseded and rebuilt, while every cache entry survives | |
 | Contract owner (T-RUNTIME) | Accept that package and transaction identity move with no schema version change, and the eight-entry reuse comparison | |
-| Affected track (T-AUDIO) | Accept `-16 LUFS`, `-1.0 dBTP`, and the `2.0` join band as provisional under `ADR-0001-D012` | |
+| Affected track (T-AUDIO) | Accept `-27 LUFS`, `-1.0 dBTP`, and the `2.0` join band as provisional under `ADR-0001-D012`, on the measurements in §Measured loudness | |
 | Affected track (T-CLI) | Accept that open question G-A assigns advisory join findings to E2-S4's run report | |
 | Engineering owner | Accept `normalize_master_output` as a published T4 seam and the first `RemedyOwner::HumanReview` routing | |
 | Effective version and date | No schema version moves; package identity moves | |
