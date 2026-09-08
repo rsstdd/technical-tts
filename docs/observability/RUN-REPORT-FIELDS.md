@@ -1,0 +1,119 @@
+# Run-report fields — what each number means
+
+The human side of `crates/study-tts-runtime/src/run_report.rs`. `ReportField::semantics` is the
+machine side and names this document in return; `MeasurementUnit::suffix` owns the unit spellings
+below. A change to either without the other is a one-sided mirror, which
+`.claude/skills/rust-comment/SKILL.md` §Coupling comments records as a finding.
+
+`DELIVERY-PLAN.md` E2-S4 task 4 requires each field to declare its unit, clock or sampling source,
+measured process, aggregation, missing-value semantics, and whether it is exact, sampled, or
+approximate under WSL2. The first five are properties of the field rather than of a run, so they
+are written here and in the `match` this document mirrors, not into every published document. Only
+the sixth — whether a value was observable at all — varies per run, which is why `Measured` is the
+only piece of this vocabulary that reaches the wire.
+
+## The fields
+
+| Field | Unit | Clock or source | Process | Aggregation | Fidelity |
+|---|---|---|---|---|---|
+| `wall_micros` | microseconds | monotonic elapsed | supervisor | total | exact |
+| `synthesis.wall_micros` | microseconds | monotonic elapsed | worker | total | exact |
+| `synthesis.audio_frames` | frames at 24 000 Hz | frame count | worker | total | exact |
+| `synthesis.segments_synthesized_count` | count | structural | worker | total | exact |
+| `synthesis.aggregate_real_time_factor_milli` | ratio × 1 000 | derived | worker | **aggregate** | exact |
+| `synthesis.worst_segment.real_time_factor_milli` | ratio × 1 000 | derived | worker | **worst segment** | exact |
+| `synthesis.segment_audio_minimum_frames` | frames | frame count | worker | minimum | exact |
+| `synthesis.segment_audio_maximum_frames` | frames | frame count | worker | maximum | exact |
+| `resources.worker_restarts_count` | count | structural | worker | total | exact |
+| `resources.peak_resident_kib` | kibibytes | `/proc/<pid>/status` | worker | maximum | **approximate** |
+| `resources.open_handles_count` | count | `/proc/<pid>/fd` | worker | total | **approximate** |
+
+Every number's unit is repeated in its own name — `_micros`, `_frames`, `_count`, `_kib`,
+`_milli` — following the convention `pause_after_ms` and `total_frames` already set.
+`t3_e2_every_published_run_report_number_names_its_unit` walks the generated schema and enforces
+it, so a future field cannot leave its unit to a doc comment. Three names are exempt and the test
+lists them: `value`, which takes its unit from the field holding it, and `build_attempt` and
+`take`, which are identifiers spelled this way in documents that already exist.
+
+## The real-time factor, and why there are two of them
+
+**The ratio itself is not a choice this project gets to make.**
+`docs/adr/ADR-0001-production-rust-study-guide-tts.md` §3.4 defines it as "synthesis wall time
+divided by generated-audio duration, excluding one-time installation and model download". That
+fixes both the window — synthesis, not the whole build — and the denominator — generated audio,
+not the master, whose inter-segment pauses no synthesis produced.
+
+**What was open is the statistic, and both answers are published.** `DELIVERY-PLAN.md` E2-S4 task 3
+asks for an *aggregate* RTF. `docs/perf/BUDGETS.md` registers `14.9804` as the baseline for
+"Chatterbox single-worker CPU RTF", and that number is the **worst of ten** single-utterance runs
+(`scripts/qualification/chatterbox_spike.py:1089`). They are different statistics of the same
+ADR-defined ratio and cannot be one number. The report carries both, and the `Aggregation` column
+above is what stops a reader collapsing them.
+
+**The worst is shaped differently from the aggregate on purpose.**
+`evidence/gates/g0/e0-s3/e0-s3-g0-requalification-torch-2-10-0-v1.md`, accepted 2026-09-02, fits
+this backend as `RTF = fixed / audio + marginal` — roughly eight seconds of fixed cost per take
+plus a marginal rate — and concludes that "a single RTF number is not meaningful for this backend
+unless the utterance length is stated beside it". So the worst ratio is a fact about one utterance
+and is published as a `worst_segment` object carrying that utterance's `audio_frames`, while the
+aggregate is a property of the run and sits beside the run's own minimum and maximum. A reader who
+sees two structurally identical numbers averages them; a reader who sees an object and a scalar
+does not.
+
+**Nothing else in this document is a ratio.** Whole-build elapsed time is published as
+`wall_micros`, undivided. A reader who wants it per second of audio can divide, but the document
+never offers a second number called a real-time factor that a `<= 6.0` gate does not answer to.
+
+**No floating point.** Both operands are exact integers — elapsed microseconds and audio frames at
+a fixed sample rate — so the quotient is exact rational arithmetic and the gate is checkable as
+`6_000` in integers. This is a property of these two operands, not a general prohibition:
+`schemas/manifest-v2.schema.json` already publishes `StoredJoin.loudness_ratio` as a float, because
+its inputs are RMS values with no exact integer form.
+
+## What is deliberately absent
+
+- **VRAM.** ADR-0001 §14 lists "peak RAM and VRAM where the operating environment exposes them
+  reliably", and ADR-0002 pins a CPU-only backend. A `vram_kib` field would be permanently
+  unavailable, which is a field whose only value is "not applicable".
+- **A mean segment length.** It is `audio_frames / segments_synthesized_count`, both published
+  exactly. A stored mean is a second copy of a derivable fact that can disagree with its inputs.
+- **Any text.** No field here can hold source text, spoken text, or a voice-reference path, which
+  is how `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Storage and access is satisfied —
+  structurally, rather than by a scrubber that has to be right every time.
+
+## Missing is never zero
+
+`peak_resident_kib`, `open_handles_count`, the two ratios, and the segment-length extremes are
+`Measured`, a two-variant enum on the wire:
+
+```json
+{ "observation": "observed", "value": 6291456 }
+{ "observation": "unavailable", "reason": "not_exposed_by_environment" }
+```
+
+A document cannot say "missing" and "zero" with the same bytes, and it cannot carry both a value
+and a reason — `fixtures/contracts/e2-s4-run-report-unavailable-carries-a-value.json` is refused by
+the published schema at `/resources/peak_resident_kib` for exactly that. The reasons are closed:
+
+| Reason | When |
+|---|---|
+| `not_exposed_by_environment` | ADR-0001 §14's "where the operating environment exposes them reliably", as its negative case |
+| `stage_not_reached` | The build ended before the stage that would have measured this |
+| `no_audio_generated` | A ratio whose denominator is zero. Distinct from a ratio of zero, which would claim synthesis took no time |
+
+## The layout label is gated, not just recorded
+
+`schema_version` is a `RunReportLayout`, not a string. Its `Deserialize` accepts only
+`1.0-skeleton` and its published schema emits that value as a `const`, so a document written by a
+future layout is refused where it is parsed rather than compared somewhere downstream.
+`fixtures/contracts/e2-s4-run-report-foreign-layout.json` is a complete and otherwise valid report
+declaring a layout this build does not read; the schema and the parser both refuse it at
+`/schema_version`.
+
+## Related
+
+- `docs/architecture/E2-S4-INTERFACE-CHANGE-001.md` — the record that classifies this document
+- `docs/adr/ADR-0001-production-rust-study-guide-tts.md` §3.4, §14
+- `docs/perf/BUDGETS.md` — the ratified baseline this report's worst-segment row is comparable to,
+  and the thread-budget caveat that keeps the comparison narrow
+- `crates/study-tts-runtime/src/run_report.rs` — `ReportField::semantics`, which this mirrors

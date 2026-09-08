@@ -1,0 +1,262 @@
+{
+  "$defs": {
+    "Measured": {
+      "description": "A number this environment may or may not have been able to observe.\n\nTwo variants rather than a nullable number, so a document cannot say\n\"missing\" and \"zero\" with the same bytes. No `#[serde(other)]`: an\nobservation state this build does not know is a parse error.\nNot generic. Every measurement this document publishes is a `u64`, and a\ntype parameter with one instantiation buys nothing while costing a real\nhazard: `schemars` names generic instantiations positionally, so a second\none would publish `$defs/Measured2` and reordering fields could swap which\ndefinition a reader is looking at.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The value was measured.",
+          "properties": {
+            "observation": {
+              "const": "observed",
+              "type": "string"
+            },
+            "value": {
+              "description": "What was measured, in the unit its field name names.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "observation",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The value was not measured, and this is why.",
+          "properties": {
+            "observation": {
+              "const": "unavailable",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/Unavailable",
+              "description": "Why no value is present."
+            }
+          },
+          "required": [
+            "observation",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RunReportLayout": {
+      "const": "1.0-skeleton",
+      "type": "string"
+    },
+    "RunResources": {
+      "additionalProperties": false,
+      "description": "What the build cost the machine.\n\nNo VRAM field. ADR-0001 §14 lists \"peak RAM and VRAM where the operating\nenvironment exposes them reliably\", and ADR-0002 pins a CPU-only backend, so\na VRAM field would be permanently unavailable — a field whose only value is\n\"not applicable\". `docs/architecture/E2-S4-INTERFACE-CHANGE-001.md` records\nthe omission.",
+      "properties": {
+        "open_handles_count": {
+          "$ref": "#/$defs/Measured",
+          "description": "Open file descriptors held by the worker."
+        },
+        "peak_resident_kib": {
+          "$ref": "#/$defs/Measured",
+          "description": "High-water resident memory of the worker."
+        },
+        "worker_restarts_count": {
+          "description": "Times the worker was restarted. Structurally zero at pool size one.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "peak_resident_kib",
+        "open_handles_count",
+        "worker_restarts_count"
+      ],
+      "type": "object"
+    },
+    "SynthesisTotals": {
+      "additionalProperties": false,
+      "description": "What the worker did across the whole build.",
+      "properties": {
+        "aggregate_real_time_factor_milli": {
+          "$ref": "#/$defs/Measured",
+          "description": "Real-time factor over the whole run: summed synthesis time divided by\nsummed generated audio, per ADR-0001 §3.4."
+        },
+        "audio_frames": {
+          "description": "Summed audio the worker generated, excluding inter-segment pauses the\ntimeline inserts.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "segment_audio_maximum_frames": {
+          "$ref": "#/$defs/Measured",
+          "description": "Longest segment audio the worker generated."
+        },
+        "segment_audio_minimum_frames": {
+          "$ref": "#/$defs/Measured",
+          "description": "Shortest segment audio the worker generated."
+        },
+        "segments_synthesized_count": {
+          "description": "Segments the worker synthesized, as opposed to segments reused from\ncache.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wall_micros": {
+          "description": "Summed time inside the worker's synthesis calls.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "worst_segment": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorstSegment"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The worst single segment, absent when nothing was synthesized."
+        }
+      },
+      "required": [
+        "segments_synthesized_count",
+        "wall_micros",
+        "audio_frames",
+        "aggregate_real_time_factor_milli",
+        "segment_audio_minimum_frames",
+        "segment_audio_maximum_frames"
+      ],
+      "type": "object"
+    },
+    "Unavailable": {
+      "description": "Why a measurement this document expected is not present.\n\nA stated reason rather than a null, because a reader handed `0` learns\nsomething false: a run whose peak resident memory could not be sampled did\nnot use zero kibibytes.",
+      "oneOf": [
+        {
+          "const": "not_exposed_by_environment",
+          "description": "ADR-0001 §14 admits peak RAM and handle counts only where the operating\nenvironment exposes them reliably. This is that concession's negative\ncase.",
+          "type": "string"
+        },
+        {
+          "const": "stage_not_reached",
+          "description": "The build ended before the stage that would have measured this.",
+          "type": "string"
+        },
+        {
+          "const": "no_audio_generated",
+          "description": "No audio was generated, so a ratio over it has no value. Distinct from a\nratio of zero, which would claim synthesis took no time.",
+          "type": "string"
+        }
+      ]
+    },
+    "WorstSegment": {
+      "additionalProperties": false,
+      "description": "The single worst segment by real-time factor, with the audio that produced\nit.\n\nShaped differently from the aggregate deliberately.\n`evidence/gates/g0/e0-s3/e0-s3-g0-requalification-torch-2-10-0-v1.md` found\nthat \"a single RTF number is not meaningful for this backend unless the\nutterance length is stated beside it\" — the fitted cost is a fixed\nper-take charge plus a marginal rate — so the worst ratio is a fact about\none utterance and carries that utterance's length.",
+      "properties": {
+        "audio_frames": {
+          "description": "Audio the worker generated for this segment.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "real_time_factor_milli": {
+          "description": "This segment's real-time factor, multiplied by one thousand.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "segment_id": {
+          "description": "Identifier of the segment this describes.",
+          "type": "string"
+        },
+        "take": {
+          "description": "Take of that segment the build synthesized.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wall_micros": {
+          "description": "Time inside the worker's synthesis call for this segment.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "segment_id",
+        "take",
+        "wall_micros",
+        "audio_frames",
+        "real_time_factor_milli"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://schemas.study-tts.example/run-report-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "What one build measured.\n\nCarries identifiers, timings, and counts only. It names no file, quotes no\nlesson text, and holds no voice-reference path.",
+  "properties": {
+    "build_attempt": {
+      "description": "Attempt within that job.",
+      "format": "uint32",
+      "maximum": 4294967295,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "job_id": {
+      "description": "Job this build belongs to.",
+      "type": "string"
+    },
+    "lesson_id": {
+      "description": "Lesson this build rendered.",
+      "type": "string"
+    },
+    "plan_hash": {
+      "description": "Plan hash the build rendered from.",
+      "type": "string"
+    },
+    "resources": {
+      "$ref": "#/$defs/RunResources",
+      "description": "What the build cost the machine."
+    },
+    "schema_version": {
+      "$ref": "#/$defs/RunReportLayout",
+      "description": "Layout this document was written against."
+    },
+    "synthesis": {
+      "$ref": "#/$defs/SynthesisTotals",
+      "description": "What the worker did."
+    },
+    "wall_micros": {
+      "description": "Elapsed time for the whole build.",
+      "format": "uint64",
+      "maximum": 18446744073709551615,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "job_id",
+    "build_attempt",
+    "lesson_id",
+    "plan_hash",
+    "wall_micros",
+    "synthesis",
+    "resources"
+  ],
+  "title": "RunReport",
+  "type": "object"
+}
