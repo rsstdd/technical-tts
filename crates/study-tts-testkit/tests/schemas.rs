@@ -34,7 +34,9 @@ use study_tts_core::{
     LESSON_SCHEMA_STEM, LESSON_SCHEMA_VERSION, LessonError, SchemaVersionError, ValidatedLesson,
     schema_uri,
 };
-use study_tts_runtime::{PUBLISHED_SCHEMAS, PublishedSchema, SCHEMA_DIRECTORY};
+use study_tts_runtime::{
+    MeasurementUnit, PUBLISHED_SCHEMAS, PublishedSchema, RUN_REPORT_SCHEMA_STEM, SCHEMA_DIRECTORY,
+};
 use study_tts_testkit::validate_against_schema;
 
 /// One invalid fixture and the invariant that must be what refuses it.
@@ -483,6 +485,12 @@ fn accepts_job(bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+fn accepts_run_report(bytes: &[u8]) -> Result<(), String> {
+    serde_json::from_slice::<study_tts_runtime::RunReport>(bytes)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 fn accepts_worker_frame(bytes: &[u8]) -> Result<(), String> {
     // One frame is one line, and `parse_worker_request` refuses a trailing
     // newline because on the wire that byte separates two frames. A fixture
@@ -537,7 +545,80 @@ fn t3_e2_published_job_schema_bounds_segment_count() {
     );
 }
 
-const VALID_EXAMPLES: [ValidExample; 5] = [
+/// Names that carry no unit suffix, and why each is exempt.
+///
+/// `value` takes its unit from the field holding the [`Measured`] it sits in,
+/// which is where the suffix lives. The other two are identifiers copied from
+/// documents that already spell them this way — `JobEvent::build_attempt` and
+/// `PlannedSegment::take` — and renaming them here would put two spellings of
+/// one concept in the tree.
+const UNSUFFIXED_RUN_REPORT_NUMBERS: [&str; 3] = ["value", "build_attempt", "take"];
+
+/// T3: every number the run report publishes names its own unit.
+///
+/// `study_tts_runtime::MeasurementUnit::suffix` is the single definition of the
+/// vocabulary and names this test in return. Without this, a field's unit lives
+/// only in a doc comment, and a reader who divides microseconds by milliseconds
+/// gets a number that looks plausible.
+#[test]
+fn t3_e2_every_published_run_report_number_names_its_unit() {
+    let schema =
+        read_json(&schema_directory().join(format!("{}-v1.schema.json", RUN_REPORT_SCHEMA_STEM)));
+    let suffixes = [
+        MeasurementUnit::Microseconds,
+        MeasurementUnit::Frames,
+        MeasurementUnit::Count,
+        MeasurementUnit::Kibibytes,
+        MeasurementUnit::MilliRatio,
+    ]
+    .map(MeasurementUnit::suffix);
+
+    let mut unnamed = Vec::new();
+    collect_numeric_property_names(&schema, &mut unnamed);
+    unnamed.retain(|name| {
+        !UNSUFFIXED_RUN_REPORT_NUMBERS.contains(&name.as_str())
+            && !suffixes.iter().any(|suffix| name.ends_with(suffix))
+    });
+
+    assert!(
+        unnamed.is_empty(),
+        "every published run-report number must end in one of {suffixes:?}; \
+         these do not: {unnamed:?}"
+    );
+}
+
+/// Collects the property name of every numeric leaf the schema publishes.
+fn collect_numeric_property_names(schema: &Value, found: &mut Vec<String>) {
+    let Some(object) = schema.as_object() else {
+        return;
+    };
+
+    if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+        for (name, property) in properties {
+            let numeric = property
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind == "integer" || kind == "number");
+            if numeric {
+                found.push(name.clone());
+            }
+        }
+    }
+
+    for value in object.values() {
+        match value {
+            Value::Object(_) => collect_numeric_property_names(value, found),
+            Value::Array(items) => {
+                for item in items {
+                    collect_numeric_property_names(item, found);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+const VALID_EXAMPLES: [ValidExample; 6] = [
     (
         LESSON_SCHEMA_STEM,
         "fixtures/lessons/e0-s0-two-segment.json",
@@ -559,13 +640,28 @@ const VALID_EXAMPLES: [ValidExample; 5] = [
         accepts_job,
     ),
     (
+        RUN_REPORT_SCHEMA_STEM,
+        "fixtures/contracts/e2-s4-run-report-valid.json",
+        accepts_run_report,
+    ),
+    (
         "worker-protocol",
         "fixtures/contracts/e0-s4-worker-valid.json",
         accepts_worker_frame,
     ),
 ];
 
-const INVALID_EXAMPLES: [InvalidExample; 10] = [
+const INVALID_EXAMPLES: [InvalidExample; 12] = [
+    (
+        RUN_REPORT_SCHEMA_STEM,
+        "fixtures/contracts/e2-s4-run-report-foreign-layout.json",
+        &["/schema_version"],
+    ),
+    (
+        RUN_REPORT_SCHEMA_STEM,
+        "fixtures/contracts/e2-s4-run-report-unavailable-carries-a-value.json",
+        &["/resources/peak_resident_kib"],
+    ),
     (
         study_tts_core::TAKES_SCHEMA_STEM,
         "fixtures/contracts/e1-s1-takes-uppercase-digest.json",
@@ -910,7 +1006,7 @@ fn t3_e1_every_published_schema_claims_the_uri_its_documents_name() {
 /// agree with any schema it was handed, including one that grew a required
 /// field nobody meant to add — which is the change this table exists to make
 /// impossible to land quietly.
-const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 44] = [
+const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 50] = [
     (
         "job 1.0",
         "/",
@@ -1269,6 +1365,62 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 44] = [
         "worker-protocol 2.0",
         "/$defs/WorkerSynthesisParameters",
         &["output", "seed", "style", "take", "text", "voice"],
+    ),
+    (
+        "run-report 1.0",
+        "/",
+        &[
+            "build_attempt",
+            "job_id",
+            "lesson_id",
+            "plan_hash",
+            "resources",
+            "schema_version",
+            "synthesis",
+            "wall_micros",
+        ],
+    ),
+    (
+        "run-report 1.0",
+        "/$defs/Measured/oneOf/0",
+        &["observation", "value"],
+    ),
+    (
+        "run-report 1.0",
+        "/$defs/Measured/oneOf/1",
+        &["observation", "reason"],
+    ),
+    (
+        "run-report 1.0",
+        "/$defs/RunResources",
+        &[
+            "open_handles_count",
+            "peak_resident_kib",
+            "worker_restarts_count",
+        ],
+    ),
+    (
+        "run-report 1.0",
+        "/$defs/SynthesisTotals",
+        &[
+            "aggregate_real_time_factor_milli",
+            "audio_frames",
+            "segment_audio_maximum_frames",
+            "segment_audio_minimum_frames",
+            "segments_synthesized_count",
+            "wall_micros",
+        ],
+    ),
+    (
+        "run-report 1.0",
+        "/$defs/WorstSegment",
+        &[
+            "audio_frames",
+            "real_time_factor_milli",
+            "segment_id",
+            "take",
+            "wall_micros",
+        ],
     ),
 ];
 

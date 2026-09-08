@@ -25,6 +25,7 @@ mod pipeline;
 mod preview;
 mod process;
 mod prune;
+mod run_report;
 mod schemas;
 mod synthesis;
 mod timeline;
@@ -72,6 +73,12 @@ pub use pipeline::{
     resume_preview_with_services, validate_m4a_output, validate_production_manifest,
 };
 pub use prune::{PruneCandidate, live_cache_keys, prune_candidates};
+pub use run_report::{
+    Aggregation, Fidelity, FieldSemantics, Measured, MeasuredProcess, MeasurementClock,
+    MeasurementUnit, RUN_REPORT_LAYOUT_VERSION, RUN_REPORT_SCHEMA_STEM, RUN_REPORT_SCHEMA_VERSION,
+    ReportField, RunReport, RunReportLayout, RunResources, SynthesisTotals, Unavailable,
+    WorstSegment, milli_real_time_factor,
+};
 pub use schemas::{
     MANIFEST_SCHEMA_VERSION, PUBLISHED_SCHEMAS, PublishedSchema, SCHEMA_DIRECTORY,
     WORKER_PROTOCOL_SCHEMA_VERSION,

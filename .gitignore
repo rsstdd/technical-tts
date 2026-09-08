@@ -77,7 +77,10 @@ flamegraph.svg
 # Keep dependency lockfiles tracked for reproducible builds.
 # Cargo.lock and worker lockfiles must not be ignored.
 
-# Local agent configuration
+# Local agent configuration. The skills under .claude/skills are the binding
+# standards CLAUDE.md and CONTRIBUTING.md cite, so they are tracked; everything
+# else under .claude is per-machine.
 .agents
-.claude
+.claude/*
+!.claude/skills/
 .codex
