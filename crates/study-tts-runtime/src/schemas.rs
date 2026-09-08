@@ -18,7 +18,8 @@
 //! ```
 //!
 //! The catalogue lives in this crate rather than in `study-tts-core` because
-//! two of the seven documents — the manifest and the worker protocol — are
+//! three of the eight documents — the manifest, the run report, and the worker
+//! protocol — are
 //! defined here, and a catalogue that could not see them would be a catalogue
 //! with a hole in it.
 //!
@@ -36,6 +37,7 @@ use study_tts_core::{
     VerificationIdentityRecord, schema_file_name, schema_uri,
 };
 
+use crate::run_report::{RUN_REPORT_SCHEMA_STEM, RUN_REPORT_SCHEMA_VERSION, RunReport};
 use crate::worker_protocol::WorkerFrame;
 
 /// Directory holding the published schemas, relative to the repository root.
@@ -45,7 +47,7 @@ pub const SCHEMA_DIRECTORY: &str = "schemas";
 /// to produce it.
 ///
 /// Holds a function pointer rather than a generated value so the catalogue is a
-/// `const` a reader can take in at once, and so generating seven schemas costs
+/// `const` a reader can take in at once, and so generating eight schemas costs
 /// nothing until somebody asks for one.
 #[derive(Clone, Copy, Debug)]
 pub struct PublishedSchema {
@@ -119,7 +121,7 @@ impl PublishedSchema {
 /// `t3_e1_generated_schemas_match_checked_in_files` compares this list against
 /// the contents of `schemas/` in both directions: a file with no entry and an
 /// entry with no file each fail it.
-pub const PUBLISHED_SCHEMAS: [PublishedSchema; 7] = [
+pub const PUBLISHED_SCHEMAS: [PublishedSchema; 8] = [
     PublishedSchema {
         stem: LESSON_SCHEMA_STEM,
         version: LESSON_SCHEMA_VERSION,
@@ -149,6 +151,11 @@ pub const PUBLISHED_SCHEMAS: [PublishedSchema; 7] = [
         stem: "manifest",
         version: MANIFEST_SCHEMA_VERSION,
         generate: crate::manifest::current_manifest_schema,
+    },
+    PublishedSchema {
+        stem: RUN_REPORT_SCHEMA_STEM,
+        version: RUN_REPORT_SCHEMA_VERSION,
+        generate: || schema_of::<RunReport>(),
     },
     PublishedSchema {
         stem: "worker-protocol",
