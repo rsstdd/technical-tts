@@ -23,6 +23,10 @@ to them. Before reporting done, apply `rust-review`'s own severity scale to your
 `rust-production` codifies the OS-facing rules this tree already proves — subprocess supervision,
 durable publication, determinism, schema evolution — and cites the module behind each one.
 
+The issue-workflow skills `issue-plan`, `issue-plan-review`, `issue-implement`, and
+`issue-implement-review` are invoked explicitly rather than loaded by this table, and load the
+standards above when they run. `.claude/skills/README.md` indexes all ten.
+
 ## Conflict order
 
 Newest accepted ADR that explicitly supersedes → `docs/adr/ADR-0001-production-rust-study-guide-tts.md`
