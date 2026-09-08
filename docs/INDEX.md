@@ -24,6 +24,7 @@ evidence. Documents below explain execution without superseding either authority
 | Qualification and evidence records | [`testing/EVIDENCE-AND-QUALIFICATION.md`](testing/EVIDENCE-AND-QUALIFICATION.md) |
 | Daily development workflow | [`operations/DEVELOPMENT-WORKFLOW.md`](operations/DEVELOPMENT-WORKFLOW.md) |
 | Authoring a lesson: scaffold, edit, review, validate, preview | [`operations/AUTHORING.md`](operations/AUTHORING.md) |
+| Which skill loads when, and which of them bind | [`../.claude/skills/README.md`](../.claude/skills/README.md) |
 | Code style rules applied to all code | [`../.claude/skills/clean-code/SKILL.md`](../.claude/skills/clean-code/SKILL.md) |
 | Code review standard and severity scale | [`../.claude/skills/rust-review/SKILL.md`](../.claude/skills/rust-review/SKILL.md) |
 | Executable E0-S0 integration order and provisional seams | [`architecture/WALKING-SKELETON.md`](architecture/WALKING-SKELETON.md) |
