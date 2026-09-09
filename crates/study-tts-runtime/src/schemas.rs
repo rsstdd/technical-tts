@@ -173,17 +173,28 @@ pub const PUBLISHED_SCHEMAS: [PublishedSchema; 8] = [
 /// §Change classes calls a **Breaking contract** and answers with a major
 /// increment.
 ///
-/// The document keeps its `-skeleton` suffix because E2-S3 and E2-S4 will
-/// break this manifest again, so the label must not claim a stability they
-/// are going to take away. The major says the change was breaking; the suffix
-/// says the layout is still provisional.
+/// The document keeps its `-skeleton` suffix because the package contract is
+/// still provisional. The major says the change was breaking; the suffix says
+/// the layout is not frozen.
 ///
 /// `2.0`, following `2.0-skeleton`, carries ADR-0001 §12.2's selection record:
 /// every segment repeats its selected take and synthesis base key, and the
 /// document records whether its selection was reviewed or generated. Required
 /// fields, so **Breaking contract** again, recorded in
 /// `docs/architecture/E2-S2-INTERFACE-CHANGE-001.md`.
-pub const MANIFEST_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(3, 0);
+///
+/// `3.0`, following `3.0-skeleton`, requires the producing build attempt and
+/// checksummed run report. It is the current implementation described by the
+/// unsigned, **Proposed**
+/// `docs/architecture/E2-S4-INTERFACE-CHANGE-002.md`; that record has not made
+/// the version effective in the accepted freeze charter.
+///
+/// `4.0`, following `4.0-skeleton`, replaces absolute staging roots in recorded
+/// tool arguments with `{staging}`. It is the current implementation described
+/// by the unsigned, **Proposed**
+/// `docs/architecture/E2-INTERFACE-CHANGE-001.md`; validation enforces that
+/// semantic change rather than trusting the version label.
+pub const MANIFEST_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
 
 /// Version of the published worker-protocol schema.
 ///

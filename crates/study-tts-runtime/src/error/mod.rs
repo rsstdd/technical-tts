@@ -805,6 +805,7 @@ mod tests {
             | DurableStateError::UnexpectedPackageArtifactPath { .. }
             | DurableStateError::PackageArtifactChecksumMismatch { .. }
             | DurableStateError::MissingPackageToolArguments { .. }
+            | DurableStateError::UnredactedPackageToolArgument { .. }
             | DurableStateError::PackageManifestChecksumMismatch { .. }
             | DurableStateError::MalformedDurableDigest { .. }
             | DurableStateError::MissingCurrentPreview { .. }

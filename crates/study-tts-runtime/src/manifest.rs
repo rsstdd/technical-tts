@@ -35,7 +35,7 @@ use crate::{
 /// The `schema_version` a `manifest.json` this build writes carries.
 ///
 /// Independent of `CACHE_SCHEMA_VERSION` and the lesson schema: each versions a
-/// different document and moves separately. `manifest-v3.schema.json` describes
+/// different document and moves separately. `manifest-v4.schema.json` describes
 /// this layout and only this one, because that schema is generated from the one
 /// stored Rust shape.
 ///
@@ -45,10 +45,32 @@ use crate::{
 /// calls a breaking contract. The `-skeleton` suffix remains because this
 /// layout is still provisional; the major and suffix answer different facts.
 ///
+/// Issue #82 moves it again, `3.0` to `4.0`. No field changed: a recorded
+/// argument stopped naming the staging root it ran in, which
+/// §Change classes calls a semantic change and answers the same way. The
+/// version selects which rule a reader enforces: the current decoder verifies
+/// that no recorded argument is an absolute path before treating the values as
+/// redacted. `docs/architecture/E2-INTERFACE-CHANGE-001.md` records it.
+///
 /// `docs/architecture/WALKING-SKELETON.md` names both constants in its
 /// provisional package-manifest paragraph, and records why reconciliation still
 /// reads the legacy layouts and why only the current one is published.
-const CURRENT_MANIFEST_LAYOUT_VERSION: &str = "3.0-skeleton";
+const CURRENT_MANIFEST_LAYOUT_VERSION: &str = "4.0-skeleton";
+
+/// The `schema_version` of the layout that recorded absolute staging paths.
+///
+/// Read so a package an earlier build published still reconciles, and never
+/// written. Its shape is this build's shape exactly — issue #82 changed what a
+/// recorded argument *means*, not what the document holds — so it decodes
+/// through [`StoredManifest`] rather than a frozen copy that would duplicate
+/// every field to say nothing new. The version is what tells a reader whether
+/// `tools.executions[].arguments[]` names a host directory or a placeholder,
+/// which is the whole reason it moved.
+///
+/// [`records_absolute_argument`] is deliberately not applied to this layout:
+/// an absolute recorded argument is what it *is*, so proving its absence
+/// would refuse every package the demotion exists to keep readable.
+const ABSOLUTE_PATH_MANIFEST_LAYOUT_VERSION: &str = "3.0-skeleton";
 
 /// Milliseconds in one second, for checking a declared pause against frames.
 const MILLISECONDS_PER_SECOND: u64 = 1_000;
@@ -66,7 +88,7 @@ const LEGACY_MANIFEST_LAYOUT_VERSION: &str = "0.1-skeleton";
 /// written. It records six artifacts, so it can never satisfy this build's
 /// reuse: `validate_package` compares the whole recorded set against the seven
 /// a package now holds, and one missing the run report cannot match.
-const PREVIOUS_MANIFEST_LAYOUT_VERSION: &str = "2.0-skeleton";
+const RUN_REPORTLESS_MANIFEST_LAYOUT_VERSION: &str = "2.0-skeleton";
 
 /// The artifact names that layout recorded, frozen.
 ///
@@ -116,6 +138,18 @@ pub(crate) const CAPTIONS_NAME: &str = "transcript.vtt";
 
 /// Name of the FFMETADATA chapter source.
 pub(crate) const CHAPTERS_NAME: &str = "chapters.ffmetadata";
+
+/// What a recorded argument names the staging root as.
+///
+/// Braced like `export`'s `{input_path}`, because it is the same idea applied
+/// one step later: a path this build must not publish, held open by a token a
+/// reader can recognize.
+///
+/// This value reaches package consumers: [`StoredExecution::arguments`]'s doc
+/// comment names it, and `schemars` publishes that prose as the `arguments`
+/// description in `schemas/manifest-v4.schema.json`. Changing the token means
+/// changing that sentence and regenerating the schema in the same commit.
+const STAGING_ROOT_PLACEHOLDER: &str = "{staging}";
 
 /// Name of the manifest itself inside a preview directory.
 pub(crate) const MANIFEST_NAME: &str = "manifest.json";
@@ -264,7 +298,10 @@ impl RecordedTool {
 #[derive(Serialize)]
 struct ExecutionRecord<'a> {
     tool: RecordedTool,
-    arguments: &'a [String],
+    /// Owned rather than borrowed: what the manifest publishes is the recorded
+    /// vector with its staging root replaced, which is a different string from
+    /// the one the build executed.
+    arguments: Vec<String>,
     argument_profile_blake3: &'a ToolProfileHash,
 }
 
@@ -435,7 +472,10 @@ pub(crate) fn write(
                 .iter()
                 .map(|recorded| ExecutionRecord {
                     tool: recorded.tool,
-                    arguments: &recorded.execution.arguments,
+                    arguments: with_staging_root_redacted(
+                        &recorded.execution.arguments,
+                        records.package_dir,
+                    ),
                     argument_profile_blake3: &recorded.execution.argument_profile_blake3,
                 })
                 .collect(),
@@ -444,7 +484,7 @@ pub(crate) fn write(
     write_json_atomically(filesystem, destination, &manifest)
 }
 
-/// Publishes the one layout `manifest-v3.schema.json` describes.
+/// Publishes the one layout `manifest-v4.schema.json` describes.
 ///
 /// [`validate_package`] also reads [`LEGACY_MANIFEST_LAYOUT_VERSION`] and
 /// [`SKELETON_MANIFEST_LAYOUT_VERSION`], and neither is listed: both carry a
@@ -562,6 +602,12 @@ struct StoredToolIdentity {
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 struct StoredExecution {
     tool: RecordedTool,
+    /// The arguments as they were passed, with one substitution: the staging
+    /// directory this build ran in appears as `{staging}`, because it carries
+    /// the operator's username and is renamed into the package before anyone
+    /// reads this. Every other token is what the tool received. Layouts
+    /// before `4.0-skeleton` recorded the host path instead, which
+    /// `docs/architecture/E2-INTERFACE-CHANGE-001.md` records.
     arguments: Vec<String>,
     argument_profile_blake3: ToolProfileHash,
 }
@@ -655,6 +701,14 @@ struct PackageRecord {
     ffmpeg: StoredToolIdentity,
     ffprobe: StoredToolIdentity,
     executions: Vec<RecordedToolUse>,
+    /// Whether the recorded arguments have their staging root redacted.
+    ///
+    /// Every layout before `4.0-skeleton` published absolute host paths. A
+    /// build that redacts cannot reuse one that did not, or `current.json`
+    /// would keep selecting a manifest naming the operator's home directory —
+    /// which is the finding issue #82 exists to close, not merely to stop
+    /// repeating.
+    redacted_arguments: bool,
     /// Advisory join evidence retained for run-report agreement.
     joins: Vec<StoredJoin>,
 }
@@ -725,6 +779,11 @@ impl From<StoredManifest> for PackageRecord {
             run_report,
         } = manifest.artifacts;
         Self {
+            // Set from the version by the arm that decoded it, because this
+            // shape serves two layouts and only one of them redacts. False
+            // here so a caller that forgot costs a rebuild rather than reusing
+            // a package that names the operator's home directory.
+            redacted_arguments: false,
             release_status: manifest.release_status,
             lesson_id: manifest.lesson_id,
             build_attempt: Some(manifest.build_attempt),
@@ -853,6 +912,7 @@ impl From<StoredManifestV2> for PackageRecord {
         } = artifacts;
 
         Self {
+            redacted_arguments: false,
             release_status,
             lesson_id,
             build_attempt: None,
@@ -921,6 +981,7 @@ fn legacy_record<T>(
     let ffmpeg_identity = identity(&ffmpeg);
     let ffprobe_identity = identity(&ffprobe);
     PackageRecord {
+        redacted_arguments: false,
         release_status: manifest.release_status,
         lesson_id: manifest.lesson_id,
         build_attempt: None,
@@ -1053,13 +1114,16 @@ pub(crate) fn validate_package(
         // because it is the same question: was this package produced by what
         // this build would produce it with.
         //
-        // The artifact set is asked first because it is the one question the
-        // others cannot answer: a layout that recorded fewer files can carry
-        // identical tools, renderer, and selection, and E2-S4's run report is
-        // produced by no tool at all. Without this, a six-artifact package
-        // would be reused by a build that publishes seven, and the manifest a
-        // consumer read would checksum a report that package never held.
-        records_every_artifact(&manifest)
+        // Redaction and the artifact set are asked first because they are
+        // the two questions the others cannot answer. `3.0-skeleton` holds
+        // this build's shape exactly, so its tools, renderer, and selection
+        // all match while its arguments name the operator's home directory.
+        // A layout recording fewer files matches on everything it does
+        // record, and E2-S4's run report is produced by no tool at all.
+        // Without these two, `current.json` would keep selecting a package
+        // naming a host path, or one checksumming a report it never held.
+        manifest.redacted_arguments
+            && records_every_artifact(&manifest)
             && tools_match(&manifest, &expected)
             && manifest.text_renderer_version.as_deref() == Some(expected.text_renderer_version)
             && manifest.take_selection_source == Some(expected.take_selection_source)
@@ -1141,6 +1205,38 @@ fn validate_run_report(package_dir: &Path, manifest: &PackageRecord) -> Result<(
     Ok(())
 }
 
+/// The staging root a build ran in, replaced by a stable placeholder.
+///
+/// Issue #82: the argument vector is the provenance and stays, but the
+/// directory it happened to run in is not — it carries the operator's username
+/// and private filesystem layout, which a consumer of the package has no use
+/// for. The paths are stale as well as private: `preview::publish_transaction`
+/// renames the staging directory into the package, so an unredacted manifest
+/// names a directory that no longer exists.
+///
+/// Matched through `to_string_lossy`, the same conversion
+/// `export::display_arguments` used to record the argument, so a root this
+/// process cannot spell is still redacted rather than silently missed.
+fn with_staging_root_redacted(arguments: &[String], staging: &Path) -> Vec<String> {
+    let root = staging.to_string_lossy();
+    arguments
+        .iter()
+        .map(|argument| argument.replace(root.as_ref(), STAGING_ROOT_PLACEHOLDER))
+        .collect()
+}
+
+/// Whether an execution kept a host path the current layout forbids.
+///
+/// The read half of what [`with_staging_root_redacted`] writes: the version
+/// claims a manifest is redacted and this is what proves it, so a hand-edited
+/// or foreign `4.0-skeleton` cannot assert what it is not.
+fn records_absolute_argument(execution: &&RecordedToolUse) -> bool {
+    execution
+        .arguments
+        .iter()
+        .any(|argument| Path::new(argument).is_absolute())
+}
+
 /// Whether a package records every artifact this build publishes.
 ///
 /// By required name rather than by count, so a layout that recorded six
@@ -1192,6 +1288,9 @@ fn parse_stored_manifest(
     manifest_path: &Path,
     version: &str,
 ) -> Result<PackageRecord, BuildError> {
+    // A layout added here needs a row in
+    // `t3_e1_the_published_manifest_schema_names_every_layout_it_describes`,
+    // whose list is hand-maintained and cannot see a new arm on its own.
     match version {
         LEGACY_MANIFEST_LAYOUT_VERSION => Ok(legacy_record(
             parse_manifest::<LegacyStoredManifest<LegacyStoredToolUse>>(bytes, manifest_path)?,
@@ -1217,14 +1316,31 @@ fn parse_stored_manifest(
                 version: tool.version.clone(),
             },
         )),
-        PREVIOUS_MANIFEST_LAYOUT_VERSION => Ok(PackageRecord::from(parse_manifest::<
+        RUN_REPORTLESS_MANIFEST_LAYOUT_VERSION => Ok(PackageRecord::from(parse_manifest::<
             StoredManifestV2,
         >(
             bytes, manifest_path
         )?)),
-        CURRENT_MANIFEST_LAYOUT_VERSION => Ok(PackageRecord::from(
-            parse_manifest::<StoredManifest>(bytes, manifest_path)?,
-        )),
+        // Two versions, one decoder. The layouts differ in what a recorded
+        // argument means rather than in what the document carries, so a second
+        // stored shape would be a copy with no field of its own. The version
+        // selects whether the absolute-path refusal below applies.
+        ABSOLUTE_PATH_MANIFEST_LAYOUT_VERSION | CURRENT_MANIFEST_LAYOUT_VERSION => {
+            let redacted = version == CURRENT_MANIFEST_LAYOUT_VERSION;
+            let mut record =
+                PackageRecord::from(parse_manifest::<StoredManifest>(bytes, manifest_path)?);
+            if redacted
+                && let Some(execution) = record.executions.iter().find(records_absolute_argument)
+            {
+                return Err(DurableStateError::UnredactedPackageToolArgument {
+                    path: manifest_path.to_path_buf(),
+                    tool: execution.tool.label(),
+                }
+                .into());
+            }
+            record.redacted_arguments = redacted;
+            Ok(record)
+        }
         found => Err(DurableStateError::UnsupportedPackageManifest {
             path: manifest_path.to_path_buf(),
             found: found.to_owned(),
@@ -1849,6 +1965,76 @@ mod tests {
         ));
     }
 
+    /// The layout that published absolute staging paths stays readable, and
+    /// cannot be reused.
+    ///
+    /// Unlike every earlier demotion in this tree, this one is not automatic:
+    /// `3.0-skeleton` holds exactly the fields `4.0-skeleton` holds, so the
+    /// artifact set and profile comparisons that refused `0.1`, `0.2`, and
+    /// `2.0` all pass here. Only `redacted_arguments` separates them, and
+    /// without it `current.json` would keep selecting a manifest naming the
+    /// operator's home directory — the finding issue #82 exists to close.
+    #[test]
+    fn t4_e2_an_unredacted_layout_is_read_and_rebuilt_rather_than_refused() {
+        let workspace = TempDir::new().expect("create unredacted-layout workspace");
+        let package = workspace.path().join("package");
+        write_test_package(&package);
+        rewrite_test_manifest(&package, |manifest| {
+            manifest["schema_version"] = json!(ABSOLUTE_PATH_MANIFEST_LAYOUT_VERSION);
+        });
+
+        assert!(
+            validate_package(&package, "lesson", None, None)
+                .expect("an unredacted package must still parse and validate"),
+            "demoting a layout must not make an operator's existing preview unreadable"
+        );
+
+        let (ffmpeg, ffprobe) = test_tool_identities();
+        let profiles = export::export_profiles();
+        assert!(
+            !validate_package(
+                &package,
+                "lesson",
+                None,
+                Some(expectations(&ffmpeg, &ffprobe, &profiles)),
+            )
+            .expect("an unredacted package is valid without being reusable"),
+            "a package recording host paths cannot satisfy a build that redacts them"
+        );
+    }
+
+    /// A `4.0-skeleton` manifest cannot claim redaction it did not perform.
+    ///
+    /// The other direction of [`with_staging_root_redacted`]: writing the
+    /// placeholder is what this build does, and refusing an absolute argument
+    /// is what makes the version trustworthy on a document this build did not
+    /// write. Rejects an implementation that redacts on write and takes the
+    /// version at its word on read.
+    #[test]
+    fn t4_e2_a_current_manifest_refuses_an_absolute_tool_argument() {
+        let workspace = TempDir::new().expect("create unredacted-argument workspace");
+        let package = workspace.path().join("package");
+        write_test_package(&package);
+        rewrite_test_manifest(&package, |manifest| {
+            manifest["tools"]["executions"][0]["arguments"][0] =
+                json!("/home/alice/private/lesson.wav");
+        });
+
+        let error = validate_package(&package, "lesson", None, None)
+            .expect_err("a current manifest carrying an absolute tool argument must be refused");
+        assert!(
+            matches!(
+                error,
+                BuildError::DurableState(ref error)
+                    if matches!(
+                        **error,
+                        DurableStateError::UnredactedPackageToolArgument { .. }
+                    )
+            ),
+            "an absolute recorded argument must be refused as unredacted: {error:?}"
+        );
+    }
+
     /// The layout before this one stays readable, and cannot be reused.
     ///
     /// Preservation and reuse are different questions, and E1-S4's record
@@ -1858,14 +2044,15 @@ mod tests {
     ///
     /// Built by demoting a current package rather than hand-authoring one, so
     /// the document this reads is the shape a real build actually wrote —
-    /// which is the only thing that makes the frozen decoder evidence.
+    /// which is the only thing that makes the frozen decoder evidence. The
+    /// test above demotes the same way, for the same reason.
     #[test]
     fn t4_e2_the_previous_layout_is_read_and_rebuilt_rather_than_refused() {
         let workspace = TempDir::new().expect("create previous-layout workspace");
         let package = workspace.path().join("package");
         write_test_package(&package);
         rewrite_test_manifest(&package, |manifest| {
-            manifest["schema_version"] = json!(PREVIOUS_MANIFEST_LAYOUT_VERSION);
+            manifest["schema_version"] = json!(RUN_REPORTLESS_MANIFEST_LAYOUT_VERSION);
             manifest
                 .as_object_mut()
                 .expect("the manifest is an object")
@@ -1948,6 +2135,8 @@ mod tests {
         for known in [
             LEGACY_MANIFEST_LAYOUT_VERSION,
             SKELETON_MANIFEST_LAYOUT_VERSION,
+            RUN_REPORTLESS_MANIFEST_LAYOUT_VERSION,
+            ABSOLUTE_PATH_MANIFEST_LAYOUT_VERSION,
             CURRENT_MANIFEST_LAYOUT_VERSION,
         ] {
             let error = parse_stored_manifest(b"{}", path, known)

@@ -119,6 +119,7 @@
           "$ref": "#/$defs/ToolProfileHash"
         },
         "arguments": {
+          "description": "The arguments as they were passed, with one substitution: the staging\ndirectory this build ran in appears as `{staging}`, because it carries\nthe operator's username and is renamed into the package before anyone\nreads this. Every other token is what the tool received. Layouts\nbefore `4.0-skeleton` recorded the host path instead, which\n`docs/architecture/E2-INTERFACE-CHANGE-001.md` records.",
           "items": {
             "type": "string"
           },
@@ -292,7 +293,7 @@
       "type": "string"
     }
   },
-  "$id": "https://schemas.study-tts.example/manifest-v3.schema.json",
+  "$id": "https://schemas.study-tts.example/manifest-v4.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "Strict owned shape used when an immutable package is reconciled or reused.",
@@ -323,7 +324,7 @@
       "$ref": "#/$defs/ReleaseStatus"
     },
     "schema_version": {
-      "const": "3.0-skeleton",
+      "const": "4.0-skeleton",
       "type": "string"
     },
     "segments": {

@@ -608,7 +608,7 @@ fn t4_e0_walking_skeleton_uses_only_published_seams() {
         serde_json::from_slice(&std::fs::read(&second.manifest).expect("read selected manifest"))
             .expect("parse selected manifest");
     assert_eq!(manifest["release_status"], "private_preview");
-    assert_eq!(manifest["schema_version"], "3.0-skeleton");
+    assert_eq!(manifest["schema_version"], "4.0-skeleton");
     // 9,600 frames of tone and generated silence, plus the edge conditioning
     // each of the two segments now carries: ADR-0001 §13.4 requires 10 ms of
     // zero padding at each exposed edge, which is 240 frames at the canonical

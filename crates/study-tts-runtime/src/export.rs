@@ -348,6 +348,15 @@ struct ProbeStream {
 /// The arguments as they were passed, not as they were composed: a manifest
 /// that records an intended command line rather than the executed one cannot
 /// be used to reproduce a build.
+///
+/// One substitution survives that rule. `manifest::write` replaces the staging
+/// root with a placeholder before publishing, because that directory is not
+/// provenance — it carries the operator's username, and
+/// `preview::publish_transaction` renames it away, so an unredacted manifest
+/// names a path that no longer exists. Everything a reader needs to see the
+/// executed command shape stays. Issue #82 and
+/// `docs/architecture/E2-INTERFACE-CHANGE-001.md` describe the current
+/// implementation and proposed contract change.
 #[derive(Clone, Debug)]
 pub(crate) struct ToolExecution {
     /// The argument list the tool was invoked with, in order.
@@ -615,9 +624,15 @@ pub(crate) fn encode(
     // The handle is closed but the path is kept, because FFmpeg writes the
     // file itself rather than through a handle this process holds. Dropping the
     // whole `NamedTempFile` here would take the cleanup with it.
+    // Deterministic, like the normalization pass E2-S3 pinned: a random
+    // component reaches `ToolExecution::arguments` and through the manifest
+    // into the digest that names the package, so two builds of one lesson
+    // would never share a package identity. Nothing collides — the job lock
+    // makes this directory single-writer, and the two formats' suffixes differ.
     let staged = Builder::new()
         .prefix("lesson-")
         .suffix(format.staging_suffix())
+        .rand_bytes(0)
         .tempfile_in(parent)
         .map_err(|error| io_error(parent, error))?
         .into_temp_path();
@@ -737,8 +752,9 @@ const LINEAR_NORMALIZATION: &str = "linear";
 /// directory, which `preview::start_transaction` creates fresh and quarantines
 /// if one is already there, so exactly one normalization ever writes it.
 ///
-/// The encode path still stages under randomized names; issue #82 owns that,
-/// and until it lands the manifest is not yet reproducible as a whole.
+/// The encode path uses the same fixed-name rule for the same identity reason.
+/// Issue #82 and `docs/architecture/E2-INTERFACE-CHANGE-001.md` couple the two
+/// staging sites so neither can reintroduce random manifest arguments alone.
 ///
 /// The stem only. The extension is given to `Builder` as a suffix rather than
 /// carried here, so it stays last in the filename even if the random component

@@ -398,6 +398,7 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`crate::DurableStateError::UnexpectedPackageArtifactPath`],
 /// [`crate::DurableStateError::PackageArtifactChecksumMismatch`],
 /// [`crate::DurableStateError::MissingPackageToolArguments`],
+/// [`crate::DurableStateError::UnredactedPackageToolArgument`],
 /// [`crate::DurableStateError::PackageManifestChecksumMismatch`],
 /// [`crate::DurableStateError::MalformedDurableDigest`],
 /// [`crate::DurableStateError::MissingCurrentPreview`],

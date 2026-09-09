@@ -1078,7 +1078,7 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 54] = [
         ],
     ),
     (
-        "manifest 3.0",
+        "manifest 4.0",
         "/",
         &[
             "artifacts",
@@ -1095,9 +1095,9 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 54] = [
             "total_frames",
         ],
     ),
-    ("manifest 3.0", "/$defs/StoredArtifact", &["blake3", "path"]),
+    ("manifest 4.0", "/$defs/StoredArtifact", &["blake3", "path"]),
     (
-        "manifest 3.0",
+        "manifest 4.0",
         "/$defs/StoredJoin",
         &[
             "calibration_source",
@@ -1108,7 +1108,7 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 54] = [
         ],
     ),
     (
-        "manifest 3.0",
+        "manifest 4.0",
         "/$defs/StoredArtifacts",
         &[
             "captions",
@@ -1121,12 +1121,12 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 54] = [
         ],
     ),
     (
-        "manifest 3.0",
+        "manifest 4.0",
         "/$defs/StoredExecution",
         &["argument_profile_blake3", "arguments", "tool"],
     ),
     (
-        "manifest 3.0",
+        "manifest 4.0",
         "/$defs/StoredManifestSegment",
         &[
             "audio_blake3",
@@ -1141,12 +1141,12 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 54] = [
         ],
     ),
     (
-        "manifest 3.0",
+        "manifest 4.0",
         "/$defs/StoredToolIdentity",
         &["resolved_executable", "version"],
     ),
     (
-        "manifest 3.0",
+        "manifest 4.0",
         "/$defs/StoredTools",
         &["executions", "ffmpeg", "ffprobe"],
     ),
