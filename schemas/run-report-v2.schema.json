@@ -1,5 +1,90 @@
 {
   "$defs": {
+    "BuildErrorClass": {
+      "description": "Stable, redacted class of a build failure.\n\nADR-0001 §14 permits an error class in observability records, never a\nformatted error: several underlying variants carry host paths. Keeping the\nvocabulary here makes [`BuildError::class`] exhaustive and lets published\nreports reject a class this build does not know.",
+      "oneOf": [
+        {
+          "const": "io",
+          "description": "Filesystem, JSON, or WAV I/O failed.",
+          "type": "string"
+        },
+        {
+          "const": "lesson",
+          "description": "An authored lesson was invalid.",
+          "type": "string"
+        },
+        {
+          "const": "takes",
+          "description": "A take selection was invalid or stale.",
+          "type": "string"
+        },
+        {
+          "const": "plan",
+          "description": "Render planning failed.",
+          "type": "string"
+        },
+        {
+          "const": "voice",
+          "description": "Voice consent or scope was refused.",
+          "type": "string"
+        },
+        {
+          "const": "voice_profile",
+          "description": "A voice-profile record failed validation.",
+          "type": "string"
+        },
+        {
+          "const": "rights",
+          "description": "Rights declarations refused the operation.",
+          "type": "string"
+        },
+        {
+          "const": "publication",
+          "description": "Publication policy refused the operation.",
+          "type": "string"
+        },
+        {
+          "const": "cache",
+          "description": "A cache entry failed validation or publication.",
+          "type": "string"
+        },
+        {
+          "const": "audio",
+          "description": "Audio failed a structural or quality invariant.",
+          "type": "string"
+        },
+        {
+          "const": "tool",
+          "description": "An external tool failed or returned invalid output.",
+          "type": "string"
+        },
+        {
+          "const": "managed_path",
+          "description": "A managed path escaped or was invalid.",
+          "type": "string"
+        },
+        {
+          "const": "durable_state",
+          "description": "Durable state was malformed or contradictory.",
+          "type": "string"
+        },
+        {
+          "const": "synthesis",
+          "description": "Synthesis or its protocol failed.",
+          "type": "string"
+        },
+        {
+          "const": "worker_bundle",
+          "description": "The worker bundle could not be identified.",
+          "type": "string"
+        },
+        {
+          "const": "model_artifacts",
+          "description": "Governed model artifacts failed validation.",
+          "type": "string"
+        }
+      ]
+    },
     "CacheOutcome": {
       "description": "Whether this build's worker produced a segment or reused one.\n\n`DELIVERY-PLAN.md` E2-S4 task 2 requires the outcome per segment. It is\nread from whether the cache ran the producer closure, which is the only\nplace the distinction survives: [`crate::CachePublisher::resolve`] returns\nthe same validated artifact either way, deliberately, so that reused audio\nand fresh audio are indistinguishable to everything downstream of it.",
       "oneOf": [
@@ -12,8 +97,32 @@
           "const": "reused",
           "description": "A published cache entry supplied it and no synthesis ran.",
           "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Cache resolution or synthesis failed before audio was available.",
+          "type": "string"
         }
       ]
+    },
+    "JoinFinding": {
+      "additionalProperties": false,
+      "description": "One provisional join-discontinuity finding requiring human review.\n\nThe ratios remain in the manifest. This report carries only the segment\npair whose measured continuity is outside the provisional band, so it does\nnot publish a second copy of the measurement or promote that band to a\nproduction threshold.",
+      "properties": {
+        "earlier_segment_id": {
+          "description": "Segment ending at the join.",
+          "type": "string"
+        },
+        "later_segment_id": {
+          "description": "Segment beginning at the join.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "earlier_segment_id",
+        "later_segment_id"
+      ],
+      "type": "object"
     },
     "Measured": {
       "description": "A number this environment may or may not have been able to observe.\n\nTwo variants rather than a nullable number, so a document cannot say\n\"missing\" and \"zero\" with the same bytes. No `#[serde(other)]`: an\nobservation state this build does not know is a parse error.\nNot generic. Every measurement this document publishes is a `u64`, and a\ntype parameter with one instantiation buys nothing while costing a real\nhazard: `schemars` names generic instantiations positionally, so a second\none would publish `$defs/Measured2` and reordering fields could swap which\ndefinition a reader is looking at.",
@@ -70,9 +179,27 @@
           "type": "string"
         },
         {
-          "const": "incomplete",
+          "additionalProperties": false,
           "description": "The build stopped, and this is what it had measured.",
-          "type": "string"
+          "properties": {
+            "incomplete": {
+              "additionalProperties": false,
+              "properties": {
+                "error_class": {
+                  "$ref": "#/$defs/BuildErrorClass",
+                  "description": "Closed class of the failure that ended the build."
+                }
+              },
+              "required": [
+                "error_class"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "incomplete"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -85,11 +212,8 @@
       "description": "What one planned segment cost this build.\n\nThe five facts `DELIVERY-PLAN.md` E2-S4 task 2 names. Built from planned\nidentities and the resolved cache artifact, never from the validated\nlesson: `spoken_text` and `display_text` sit on `PlannedSegment` beside the\n`id` this carries, and the guarantee that neither reaches a published\ndocument is that this type has nowhere to put them.",
       "properties": {
         "audio_frames": {
-          "description": "Audio this segment generated, excluding the pause written after it.",
-          "format": "uint64",
-          "maximum": 18446744073709551615,
-          "minimum": 0,
-          "type": "integer"
+          "$ref": "#/$defs/Measured",
+          "description": "Audio this segment supplied, excluding the pause written after it."
         },
         "cache_outcome": {
           "$ref": "#/$defs/CacheOutcome",
@@ -309,22 +433,23 @@
     },
     "completion": {
       "$ref": "#/$defs/ReportCompletion",
-      "description": "Whether the build this describes finished."
+      "description": "Whether the build finished, with a required class only when it failed."
     },
     "encode_micros": {
       "$ref": "#/$defs/Measured",
       "description": "Time spent encoding both lossy outputs, absent for the same reason."
     },
-    "error_class": {
-      "description": "Class of the failure that ended an incomplete build.\n\n`None` on a complete report, and never a message: several failure\nclasses carry a path, and `BuildError::class` is the closed vocabulary\nthat keeps one out of a published document.",
-      "type": [
-        "string",
-        "null"
-      ]
-    },
     "job_id": {
       "description": "Job this build belongs to.",
       "type": "string"
+    },
+    "join_findings": {
+      "description": "Provisional join discontinuities requiring human review.",
+      "items": {
+        "$ref": "#/$defs/JoinFinding"
+      },
+      "maxItems": 4096,
+      "type": "array"
     },
     "lesson_id": {
       "description": "Lesson this build rendered.",
@@ -355,6 +480,7 @@
       "items": {
         "$ref": "#/$defs/RunReportSegment"
       },
+      "maxItems": 4096,
       "type": "array"
     },
     "synthesis": {
@@ -362,7 +488,7 @@
       "description": "What the worker did."
     },
     "wall_micros": {
-      "description": "Elapsed time for the whole build.",
+      "description": "Elapsed time from build entry through package production, sampled\nimmediately before this report is sealed.",
       "format": "uint64",
       "maximum": 18446744073709551615,
       "minimum": 0,
@@ -382,6 +508,7 @@
     "normalize_micros",
     "encode_micros",
     "segments",
+    "join_findings",
     "synthesis",
     "resources"
   ],

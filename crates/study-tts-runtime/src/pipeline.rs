@@ -32,11 +32,11 @@ use study_tts_core::{
 use crate::{
     BackendError, BuildError, BuildStage, CacheOutcome, CachePublisher, CacheResolveRequest,
     DurableStateError, ExecutorMeasurements, FileSystemCachePublisher, FileSystemJobRepository,
-    FileSystemPackageWriter, IoError, JobOwnership, JobRepository, Measured,
-    PackagePreflightRequest, PackagePrepareRequest, PackageTimings, PackageWriteRequest,
-    PackageWriter, PreparedPackageWriter, PublicationError, ReportCompletion, RightsError,
-    RunReport, RunReportLayout, RunReportSegment, RunResources, SynthesisRequest, TtsExecutor,
-    Unavailable,
+    FileSystemPackageWriter, IoError, JobOwnership, JobRepository, Measured, PackageDisposition,
+    PackagePreflightRequest, PackagePrepareRequest, PackageTimings, PackageWriteOutcome,
+    PackageWriteRequest, PackageWriter, PreparedPackageWriter, PublicationError, ReportCompletion,
+    RightsError, RunReport, RunReportLayout, RunReportSegment, RunResources, SynthesisRequest,
+    TtsExecutor, Unavailable,
     durable::read_bounded_bytes,
     export, io_error, managed,
     run_report::{MICROSECONDS_PER_MILLISECOND, synthesis_totals},
@@ -383,6 +383,12 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`crate::DurableStateError::MalformedPackageManifest`], including when a
 /// recorded digest is not one and its value object refuses it during parsing,
 /// [`crate::DurableStateError::UnsupportedPackageManifest`],
+/// [`crate::DurableStateError::MalformedPackageRunReport`],
+/// [`crate::DurableStateError::PackageRunReportSegmentCountExceeded`],
+/// [`crate::DurableStateError::PackageRunReportIncomplete`],
+/// [`crate::DurableStateError::PackageRunReportIdentityMismatch`],
+/// [`crate::DurableStateError::PackageRunReportSegmentMismatch`],
+/// [`crate::DurableStateError::PackageRunReportJoinMismatch`],
 /// [`crate::DurableStateError::PackageReleaseStatusMismatch`],
 /// [`crate::DurableStateError::PackageLessonMismatch`],
 /// [`crate::DurableStateError::EmptyPackageSegmentId`],
@@ -440,6 +446,7 @@ pub fn build_preview_with_services(
     request: BuildRequest,
     services: PreviewServiceBundle<'_>,
 ) -> Result<BuildResult, BuildError> {
+    let run_started = Instant::now();
     let lesson_bytes = read_lesson(&request.lesson_path)?;
     let lesson =
         ValidatedLesson::from_json(&request.lesson_path.display().to_string(), &lesson_bytes)?;
@@ -461,7 +468,14 @@ pub fn build_preview_with_services(
         .map_err(|error| io_error(&request.workspace, error))?;
     let ownership = services.jobs.claim(&workspace, gated.lesson.lesson_id())?;
     let previous = services.jobs.load(&workspace, gated.lesson.lesson_id())?;
-    render_attempt(&workspace, ownership, previous, gated, services)
+    render_attempt(
+        &workspace,
+        ownership,
+        previous,
+        gated,
+        services,
+        run_started,
+    )
 }
 
 /// Resumes a job from its retained inputs and recorded state.
@@ -514,6 +528,7 @@ pub fn resume_preview_with_services(
     request: ResumeRequest,
     services: PreviewServiceBundle<'_>,
 ) -> Result<BuildResult, BuildError> {
+    let run_started = Instant::now();
     let workspace = fs::canonicalize(&request.workspace)
         .map_err(|error| io_error(&request.workspace, error))?;
     let no_job = || DurableStateError::NoJobToResume {
@@ -584,7 +599,14 @@ pub fn resume_preview_with_services(
         &request.ffprobe_executable,
         services,
     )?;
-    render_attempt(&workspace, ownership, Some(previous), gated, services)
+    render_attempt(
+        &workspace,
+        ownership,
+        Some(previous),
+        gated,
+        services,
+        run_started,
+    )
 }
 
 /// What the gates produced and one attempt renders.
@@ -655,6 +677,7 @@ fn render_attempt(
     previous: Option<JobDocument>,
     gated: GatedBuild,
     services: PreviewServiceBundle<'_>,
+    run_started: Instant,
 ) -> Result<BuildResult, BuildError> {
     // Started here rather than at the entry point: the gate before this
     // refuses a build without doing any of it, and ADR-0001 §3.4 excludes
@@ -662,6 +685,7 @@ fn render_attempt(
     let mut progress = BuildProgress::new(
         gated.lesson.lesson_id().to_owned(),
         gated.plan.plan_hash.as_str().to_owned(),
+        run_started,
     );
     let job_id = progress.job_id.clone();
     match render_attempt_inner(
@@ -677,7 +701,9 @@ fn render_attempt(
             // Discarded on purpose. A report that cannot be written must not
             // replace the error that made it worth writing, and a caller
             // handling a tool failure would be told about a filesystem one.
-            if let Some(report) = progress.seal(ReportCompletion::Incomplete, Some(error.class())) {
+            if let Some(report) = progress.seal(ReportCompletion::Incomplete {
+                error_class: error.class(),
+            }) {
                 let _ = services.jobs.retain_run_report(workspace, &job_id, &report);
             }
             Err(error)
@@ -702,19 +728,21 @@ struct BuildProgress {
     build_attempt: Option<u32>,
     segments: Vec<RunReportSegment>,
     measurements: ExecutorMeasurements,
+    package_timings: PackageTimings,
 }
 
 impl BuildProgress {
-    fn new(job_id: String, plan_hash: String) -> Self {
+    fn new(job_id: String, plan_hash: String, started: Instant) -> Self {
         Self {
             job_id,
             plan_hash,
-            started: Instant::now(),
+            started,
             build_attempt: None,
             segments: Vec::new(),
             // Until a stage runs, nothing about it was observed. Every field
             // says so rather than reading as a zero nobody measured.
             measurements: ExecutorMeasurements::default(),
+            package_timings: PackageTimings::not_reached(),
         }
     }
 
@@ -723,18 +751,12 @@ impl BuildProgress {
     /// Only the failure path needs the option: a build that finished has the
     /// attempt number in hand and calls [`BuildProgress::report`] directly,
     /// which is what keeps an unreachable branch out of the success path.
-    fn seal(&self, completion: ReportCompletion, error_class: Option<&str>) -> Option<RunReport> {
-        Some(self.report(self.build_attempt?, completion, error_class))
+    fn seal(&self, completion: ReportCompletion) -> Option<RunReport> {
+        Some(self.report(self.build_attempt?, completion))
     }
 
     /// The report as it stands, for a caller that knows the attempt.
-    fn report(
-        &self,
-        build_attempt: u32,
-        completion: ReportCompletion,
-        error_class: Option<&str>,
-    ) -> RunReport {
-        let package = PackageTimings::reused();
+    fn report(&self, build_attempt: u32, completion: ReportCompletion) -> RunReport {
         RunReport {
             schema_version: RunReportLayout::current(),
             job_id: self.job_id.clone(),
@@ -742,17 +764,17 @@ impl BuildProgress {
             lesson_id: self.job_id.clone(),
             plan_hash: self.plan_hash.clone(),
             completion,
-            error_class: error_class.map(str::to_owned),
             wall_micros: duration_micros(self.started.elapsed()),
             model_load_micros: self.measurements.model_load_micros,
             // Filled in by the package writer, which is the only place that
             // measures them. A report sealed before that stage — or written
             // because the build never reached it — reports none of them.
-            assembly_micros: package.assembly_micros,
-            normalize_micros: package.normalize_micros,
-            encode_micros: package.encode_micros,
+            assembly_micros: self.package_timings.assembly_micros,
+            normalize_micros: self.package_timings.normalize_micros,
+            encode_micros: self.package_timings.encode_micros,
             synthesis: synthesis_totals(&self.segments),
             segments: self.segments.clone(),
+            join_findings: Vec::new(),
             resources: RunResources {
                 peak_resident_kib: self.measurements.peak_resident_kib,
                 open_handles_count: self.measurements.open_handles_count,
@@ -815,31 +837,69 @@ fn render_attempt_inner(
     services.jobs.replace(workspace, &document)?;
     let mut cached_segments = Vec::with_capacity(gated.plan.segments.len());
     for (segment, synthesis_request) in gated.plan.segments.iter().zip(gated.synthesis_requests) {
-        let mut pending_request = Some(synthesis_request);
         // Only the synthesis call, so the figure is comparable to the ratified
         // per-utterance baseline rather than to it plus this build's cache
         // validation and publication.
         let mut synthesis_elapsed = None;
-        let mut producer = |destination: &Path| {
-            let request = pending_request
-                .take()
-                .ok_or_else(|| BackendError::Protocol {
-                    request_id: segment.id.clone(),
-                    message: "cache requested staged synthesis more than once".to_owned(),
-                })?;
-            let started = Instant::now();
-            let synthesized = block_on(services.executor.synthesize(request, destination));
-            synthesis_elapsed = Some(started.elapsed());
-            synthesized
+        let cached = {
+            let mut pending_request = Some(synthesis_request);
+            let mut producer = |destination: &Path| {
+                let request = pending_request
+                    .take()
+                    .ok_or_else(|| BackendError::Protocol {
+                        request_id: segment.id.clone(),
+                        message: "cache requested staged synthesis more than once".to_owned(),
+                    })?;
+                let started = Instant::now();
+                let synthesized = block_on(services.executor.synthesize(request, destination));
+                synthesis_elapsed = Some(started.elapsed());
+                synthesized
+            };
+            services.cache.resolve(
+                &CacheResolveRequest {
+                    workspace: workspace.to_path_buf(),
+                    job_id: job_id.to_owned(),
+                    segment: segment.clone(),
+                },
+                &mut producer,
+            )
         };
-        let cached = services.cache.resolve(
-            &CacheResolveRequest {
-                workspace: workspace.to_path_buf(),
-                job_id: job_id.to_owned(),
-                segment: segment.clone(),
-            },
-            &mut producer,
-        )?;
+        let cached = match cached {
+            Ok(cached) => cached,
+            Err(error) => {
+                let synthesis_wall_micros = synthesis_elapsed.map_or(
+                    Measured::Unavailable {
+                        reason: Unavailable::StageNotReached,
+                    },
+                    |elapsed| Measured::Observed {
+                        value: duration_micros(elapsed),
+                    },
+                );
+                progress.segments.push(RunReportSegment {
+                    segment_id: segment.id.clone(),
+                    take: segment.take,
+                    cache_outcome: CacheOutcome::Failed,
+                    retry_count: 0,
+                    synthesis_wall_micros,
+                    audio_frames: Measured::Unavailable {
+                        reason: Unavailable::StageNotReached,
+                    },
+                });
+                let _ = services.jobs.record_stage(
+                    workspace,
+                    job_id,
+                    build_attempt,
+                    BuildStage::SegmentFailed {
+                        segment_id: segment.id.clone(),
+                        take: segment.take,
+                        error_class: error.class(),
+                        duration_ms: synthesis_elapsed
+                            .map(|elapsed| duration_micros(elapsed) / MICROSECONDS_PER_MILLISECOND),
+                    },
+                );
+                return Err(error);
+            }
+        };
         let audio_blake3: AudioDigest = cached.audio_blake3().parse().map_err(|_| {
             DurableStateError::MalformedDurableDigest {
                 path: cached.entry_dir().to_path_buf(),
@@ -911,7 +971,9 @@ fn render_attempt_inner(
             // `ReportField::SegmentRetries` states as its clock.
             retry_count: 0,
             synthesis_wall_micros,
-            audio_frames: u64::from(cached.frames()),
+            audio_frames: Measured::Observed {
+                value: u64::from(cached.frames()),
+            },
         });
         cached_segments.push(cached);
     }
@@ -927,30 +989,50 @@ fn render_attempt_inner(
     services.jobs.replace(workspace, &document)?;
     // Sealed by the writer, not here: the manifest checksums this document,
     // so the bytes the package publishes must be the ones this build returns.
-    let pending = progress.report(build_attempt, ReportCompletion::Complete, None);
-    let written = gated.packages.write(&PackageWriteRequest {
+    let pending = progress.report(build_attempt, ReportCompletion::Complete);
+    let written = match gated.packages.write(&PackageWriteRequest {
         workspace,
         job_id,
         plan: &gated.plan,
         cached_artifacts: &cached_segments,
         run_report: &pending,
-    })?;
-    let package = written.publication;
-    // The sealed document on a fresh write, so the bytes this build returns are
-    // the ones its manifest checksummed. On a reuse the package keeps the
-    // report of the build that made it, and this run describes itself: it
-    // assembled and encoded nothing, which `pending` already says.
-    let run_report = written.sealed.unwrap_or(pending);
-    for stage in [
-        BuildStage::PackageAssembled,
-        BuildStage::PackageEncoded,
-        BuildStage::PackagePublished {
-            manifest_blake3: package.identity.manifest_blake3.as_str().to_owned(),
-        },
-    ] {
-        services
-            .jobs
-            .record_stage(workspace, job_id, build_attempt, stage)?;
+        run_started: progress.started,
+    }) {
+        Ok(written) => written,
+        Err(failure) => {
+            progress.package_timings = failure.timings;
+            return Err(*failure.source);
+        }
+    };
+    let PackageWriteOutcome {
+        publication: package,
+        run_report,
+        disposition,
+    } = written;
+    match disposition {
+        PackageDisposition::Published => {
+            for stage in [
+                BuildStage::PackageAssembled,
+                BuildStage::PackageEncoded,
+                BuildStage::PackagePublished {
+                    manifest_blake3: package.identity.manifest_blake3.as_str().to_owned(),
+                },
+            ] {
+                services
+                    .jobs
+                    .record_stage(workspace, job_id, build_attempt, stage)?;
+            }
+        }
+        PackageDisposition::Reused => {
+            services.jobs.record_stage(
+                workspace,
+                job_id,
+                build_attempt,
+                BuildStage::PackageReused {
+                    manifest_blake3: package.identity.manifest_blake3.as_str().to_owned(),
+                },
+            )?;
+        }
     }
     // The private-preview completion is recorded beside the state, not as
     // one: `Rendered` is as far as the ADR-0001 §6.4 machine can honestly go

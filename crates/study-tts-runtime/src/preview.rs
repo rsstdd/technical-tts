@@ -824,6 +824,9 @@ mod tests {
         cache::ValidatedCachedArtifact,
         durable::{OsDurableFileSystem, TracingFileSystem},
         export::{ToolExecution, ToolProfile},
+        run_report::{
+            CacheOutcome, Measured, ReportCompletion, RunReport, RunReportSegment, Unavailable,
+        },
     };
 
     #[test]
@@ -938,12 +941,38 @@ mod tests {
                 execution,
             })
             .collect();
+        let plan = one_segment_plan(&plan_hash, &segment);
+        let mut report = RunReport::unmeasured(
+            "lesson",
+            "lesson",
+            plan_hash.as_str(),
+            1,
+            ReportCompletion::Complete,
+        );
+        report.segments.push(RunReportSegment {
+            segment_id: segment.segment_id.clone(),
+            take: study_tts_core::BASE_TAKE,
+            cache_outcome: CacheOutcome::Reused,
+            retry_count: 0,
+            synthesis_wall_micros: Measured::Unavailable {
+                reason: Unavailable::ReusedFromCache,
+            },
+            audio_frames: Measured::Observed { value: 1 },
+        });
+        fs::write(
+            transaction
+                .stage_dir
+                .join(crate::run_report::RUN_REPORT_NAME),
+            serde_json::to_vec_pretty(&report).expect("serialize run report"),
+        )
+        .expect("write run report");
         manifest::write(
             &OsDurableFileSystem,
             &manifest_path,
             manifest::ManifestRecords {
                 lesson_id: "lesson",
-                plan: &one_segment_plan(&plan_hash, &segment),
+                build_attempt: 1,
+                plan: &plan,
                 joins: &[],
                 segments: std::slice::from_ref(&segment),
                 timeline: &timeline::Timeline {

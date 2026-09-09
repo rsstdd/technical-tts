@@ -25,7 +25,8 @@ use serde::{Deserialize, Serialize};
 use study_tts_core::JobState;
 
 use crate::{
-    BuildError, DurableStateError, IoError, durable::DurableFileSystem, io_error, managed,
+    BuildError, BuildErrorClass, DurableStateError, IoError, durable::DurableFileSystem, io_error,
+    managed,
 };
 
 /// Version of the event line. Listed in
@@ -79,12 +80,21 @@ pub(crate) enum JobEventKind {
     },
     /// A published cache entry supplied one segment and no synthesis ran.
     SegmentReused { segment_id: String, take: u32 },
+    /// Cache resolution or synthesis failed for one segment.
+    SegmentFailed {
+        segment_id: String,
+        take: u32,
+        error_class: BuildErrorClass,
+        duration_ms: Option<u64>,
+    },
     /// Segment audio was assembled into the master.
     PackageAssembled,
     /// The lossy outputs were encoded from that master.
     PackageEncoded,
     /// The staged package became the authoritative one.
     PackagePublished { manifest_blake3: String },
+    /// An already-published matching package was selected.
+    PackageReused { manifest_blake3: String },
 }
 
 /// A stage a build may record as it passes it.
@@ -125,6 +135,17 @@ pub enum BuildStage {
         /// Take this build reused.
         take: u32,
     },
+    /// Cache resolution or synthesis failed for one segment.
+    SegmentFailed {
+        /// Identity of the segment within its lesson.
+        segment_id: String,
+        /// Take this build attempted.
+        take: u32,
+        /// Redacted class of the failure.
+        error_class: BuildErrorClass,
+        /// Time inside synthesis, absent when the worker was never invoked.
+        duration_ms: Option<u64>,
+    },
     /// Segment audio was assembled into the master.
     ///
     /// No duration here. An event says a boundary was crossed and names what
@@ -137,6 +158,11 @@ pub enum BuildStage {
     /// The staged package became the authoritative one.
     PackagePublished {
         /// Digest of the manifest naming the published package.
+        manifest_blake3: String,
+    },
+    /// An already-published matching package was selected.
+    PackageReused {
+        /// Digest naming the selected package.
         manifest_blake3: String,
     },
 }
@@ -159,10 +185,24 @@ impl From<BuildStage> for JobEventKind {
             BuildStage::SegmentReused { segment_id, take } => {
                 Self::SegmentReused { segment_id, take }
             }
+            BuildStage::SegmentFailed {
+                segment_id,
+                take,
+                error_class,
+                duration_ms,
+            } => Self::SegmentFailed {
+                segment_id,
+                take,
+                error_class,
+                duration_ms,
+            },
             BuildStage::PackageAssembled => Self::PackageAssembled,
             BuildStage::PackageEncoded => Self::PackageEncoded,
             BuildStage::PackagePublished { manifest_blake3 } => {
                 Self::PackagePublished { manifest_blake3 }
+            }
+            BuildStage::PackageReused { manifest_blake3 } => {
+                Self::PackageReused { manifest_blake3 }
             }
         }
     }

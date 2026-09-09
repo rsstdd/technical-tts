@@ -13,18 +13,21 @@ use std::{
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use study_tts_core::{
-    AudioDigest, CANONICAL_SAMPLE_RATE, CacheKey, PlanHash, ReleaseStatus, RenderPlan,
-    TakeSelectionSource, ToolProfileHash,
+    AudioDigest, CANONICAL_SAMPLE_RATE, CacheKey, MAX_LESSON_SEGMENTS, PlanHash, ReleaseStatus,
+    RenderPlan, TakeSelectionSource, ToolProfileHash,
 };
 
 use crate::{
     BuildError, DurableStateError,
     audio_edges::JoinContinuity,
     cache::{ValidatedCachedArtifact, hash_file},
-    durable::{DurableFileSystem, write_json_atomically},
+    durable::{DurableFileSystem, read_bounded_bytes, write_json_atomically},
     export::{ExportProfiles, ToolExecution},
     managed,
-    run_report::RUN_REPORT_NAME,
+    run_report::{
+        CacheOutcome, JoinFinding, MAX_RUN_REPORT_JSON_BYTES, Measured, RUN_REPORT_NAME,
+        ReportCompletion, RunReport,
+    },
     timeline::{TEXT_RENDERER_VERSION, Timeline},
     tools::ToolIdentity,
 };
@@ -32,21 +35,15 @@ use crate::{
 /// The `schema_version` a `manifest.json` this build writes carries.
 ///
 /// Independent of `CACHE_SCHEMA_VERSION` and the lesson schema: each versions a
-/// different document and moves separately. `manifest-v1.schema.json` describes
+/// different document and moves separately. `manifest-v3.schema.json` describes
 /// this layout and only this one, because that schema is generated from the one
 /// stored Rust shape.
 ///
-/// `1.0` rather than `0.3`: E1-S4 makes the timeline, both lossy exports, the
-/// text documents, the renderer that wrote them, and every tool execution
-/// required fields, which
+/// E2-S4 moves the E2-S2 layout from `2.0` to `3.0`: the run report artifact
+/// and producing build attempt are required fields, which
 /// `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` §Change classes
-/// calls a **Breaking contract** and answers with a major increment.
-///
-/// `-skeleton` rather than a bare `1.0`, because E2-S3 adds loudness
-/// normalization to this manifest and E2-S4 adds the run report,
-/// so a label claiming a frozen `1.0` would claim a stability those stories are
-/// going to break. The suffix says the layout is still provisional; the major
-/// says the change was breaking. Both are true.
+/// calls a breaking contract. The `-skeleton` suffix remains because this
+/// layout is still provisional; the major and suffix answer different facts.
 ///
 /// `docs/architecture/WALKING-SKELETON.md` names both constants in its
 /// provisional package-manifest paragraph, and records why reconciliation still
@@ -148,6 +145,7 @@ struct Manifest<'a> {
     schema_version: &'static str,
     release_status: ReleaseStatus,
     lesson_id: &'a str,
+    build_attempt: u32,
     plan_hash: &'a PlanHash,
     take_selection_source: TakeSelectionSource,
     text_renderer_version: &'static str,
@@ -316,6 +314,8 @@ pub(crate) struct ReuseExpectations<'a> {
 pub(crate) struct ManifestRecords<'a> {
     /// Validated lesson identity.
     pub lesson_id: &'a str,
+    /// Build attempt whose report is sealed into this package.
+    pub build_attempt: u32,
     /// The plan this build rendered, which carries the identity and the
     /// ADR-0001 §12.2 selection values the manifest repeats.
     pub plan: &'a RenderPlan,
@@ -367,6 +367,7 @@ pub(crate) fn write(
         // and this field is what `validate_production_manifest` gates on.
         release_status: ReleaseStatus::PrivatePreview,
         lesson_id: records.lesson_id,
+        build_attempt: records.build_attempt,
         plan_hash: &records.plan.plan_hash,
         take_selection_source: records.plan.take_selection_source,
         // The constant `timeline` renders from, never a literal: a second
@@ -443,7 +444,7 @@ pub(crate) fn write(
     write_json_atomically(filesystem, destination, &manifest)
 }
 
-/// Publishes the one layout `manifest-v1.schema.json` describes.
+/// Publishes the one layout `manifest-v3.schema.json` describes.
 ///
 /// [`validate_package`] also reads [`LEGACY_MANIFEST_LAYOUT_VERSION`] and
 /// [`SKELETON_MANIFEST_LAYOUT_VERSION`], and neither is listed: both carry a
@@ -480,6 +481,7 @@ struct StoredManifest {
     schema_version: String,
     release_status: ReleaseStatus,
     lesson_id: String,
+    build_attempt: u32,
     plan_hash: PlanHash,
     /// Whether the take selection this package was built at was recorded by a
     /// reviewer or generated. A package whose value differs from this build's
@@ -638,6 +640,8 @@ struct StoredManifestVersion {
 struct PackageRecord {
     release_status: ReleaseStatus,
     lesson_id: String,
+    /// Attempt recorded by a layout that carries a run report.
+    build_attempt: Option<u32>,
     plan_hash: PlanHash,
     /// Frames in the master, for a layout that records one.
     total_frames: Option<u64>,
@@ -651,6 +655,8 @@ struct PackageRecord {
     ffmpeg: StoredToolIdentity,
     ffprobe: StoredToolIdentity,
     executions: Vec<RecordedToolUse>,
+    /// Advisory join evidence retained for run-report agreement.
+    joins: Vec<StoredJoin>,
 }
 
 #[derive(Debug)]
@@ -660,6 +666,8 @@ struct RecordedSegment {
     cache_key: CacheKey,
     /// The take-zero entry from which the selected take was derived.
     synthesis_base_key: CacheKey,
+    /// Selected take recorded by layouts that carry one.
+    selected_take: Option<u32>,
     frames: u32,
     /// The written positions, for a layout that carries them.
     ///
@@ -701,17 +709,6 @@ impl From<StoredManifest> for PackageRecord {
         // strict parse above already said everything there is to say about
         // each of them.
         let _ = &manifest.schema_version;
-        // The joins are read for the same reason and kept out of
-        // `PackageRecord`: ADR-0003 has not frozen what the numbers mean, so
-        // nothing may decide anything on them yet, and a record field nothing
-        // reads would invite one to.
-        for join in &manifest.join_continuity {
-            let _ = (
-                &join.earlier_segment_id,
-                &join.later_segment_id,
-                &join.continuity,
-            );
-        }
         // Destructured with no rest pattern, so an artifact added to the
         // stored shape is a compile error here. `zip` below stops at the
         // shorter side: a name added to `PACKAGE_ARTIFACT_NAMES` without a
@@ -730,6 +727,7 @@ impl From<StoredManifest> for PackageRecord {
         Self {
             release_status: manifest.release_status,
             lesson_id: manifest.lesson_id,
+            build_attempt: Some(manifest.build_attempt),
             plan_hash: manifest.plan_hash,
             text_renderer_version: Some(manifest.text_renderer_version),
             take_selection_source: Some(manifest.take_selection_source),
@@ -738,11 +736,12 @@ impl From<StoredManifest> for PackageRecord {
                 .segments
                 .into_iter()
                 .map(|segment| {
-                    let _ = (&segment.selected_take, &segment.audio_blake3);
+                    let _ = &segment.audio_blake3;
                     RecordedSegment {
                         segment_id: segment.segment_id,
                         cache_key: segment.cache_key,
                         synthesis_base_key: segment.synthesis_base_key,
+                        selected_take: Some(segment.selected_take),
                         frames: segment.frames,
                         written: Some(WrittenPosition {
                             start_frame: segment.start_frame,
@@ -775,6 +774,7 @@ impl From<StoredManifest> for PackageRecord {
                     argument_profile_blake3: Some(execution.argument_profile_blake3),
                 })
                 .collect(),
+            joins: manifest.join_continuity,
         }
     }
 }
@@ -832,10 +832,9 @@ impl From<StoredManifestV2> for PackageRecord {
             artifacts,
             tools,
         } = manifest;
-        // Read for the reason the current layout's conversion reads them: the
-        // version selected this decoder before any field was decoded, and the
-        // joins are deliberately kept out of the record because ADR-0003 has
-        // not frozen what the numbers mean.
+        // Read for the reason the current layout's conversion reads its
+        // version. Historical joins need no report agreement and cannot
+        // decide reuse while ADR-0003 remains provisional.
         let _ = &schema_version;
         for join in &join_continuity {
             let _ = (
@@ -856,6 +855,7 @@ impl From<StoredManifestV2> for PackageRecord {
         Self {
             release_status,
             lesson_id,
+            build_attempt: None,
             plan_hash,
             text_renderer_version: Some(text_renderer_version),
             take_selection_source: Some(take_selection_source),
@@ -863,11 +863,12 @@ impl From<StoredManifestV2> for PackageRecord {
             segments: segments
                 .into_iter()
                 .map(|segment| {
-                    let _ = (&segment.selected_take, &segment.audio_blake3);
+                    let _ = &segment.audio_blake3;
                     RecordedSegment {
                         segment_id: segment.segment_id,
                         cache_key: segment.cache_key,
                         synthesis_base_key: segment.synthesis_base_key,
+                        selected_take: Some(segment.selected_take),
                         frames: segment.frames,
                         written: Some(WrittenPosition {
                             start_frame: segment.start_frame,
@@ -897,6 +898,7 @@ impl From<StoredManifestV2> for PackageRecord {
                     argument_profile_blake3: Some(execution.argument_profile_blake3),
                 })
                 .collect(),
+            joins: Vec::new(),
         }
     }
 }
@@ -921,6 +923,7 @@ fn legacy_record<T>(
     PackageRecord {
         release_status: manifest.release_status,
         lesson_id: manifest.lesson_id,
+        build_attempt: None,
         plan_hash: manifest.plan_hash,
         // Predates the versioned renderer, and predates the text documents
         // themselves, so it can never be a matching generation.
@@ -939,6 +942,7 @@ fn legacy_record<T>(
                     segment_id: segment.segment_id,
                     cache_key: segment.cache_key,
                     synthesis_base_key,
+                    selected_take: None,
                     frames: segment.frames,
                     written: None,
                 }
@@ -962,6 +966,7 @@ fn legacy_record<T>(
             read(RecordedTool::Ffmpeg, ffmpeg),
             read(RecordedTool::Ffprobe, ffprobe),
         ],
+        joins: Vec::new(),
     }
 }
 
@@ -1029,6 +1034,9 @@ pub(crate) fn validate_package(
     for artifact in &manifest.artifacts {
         validate_artifact(package_dir, &manifest_path, artifact)?;
     }
+    if manifest.build_attempt.is_some() {
+        validate_run_report(package_dir, &manifest)?;
+    }
     for recorded in &manifest.executions {
         if recorded.arguments.is_empty() {
             return Err(DurableStateError::MissingPackageToolArguments {
@@ -1057,6 +1065,80 @@ pub(crate) fn validate_package(
             && manifest.take_selection_source == Some(expected.take_selection_source)
     });
     Ok(plan_matches && reusable)
+}
+
+/// Validates the checksummed report as the completion record of this manifest.
+fn validate_run_report(package_dir: &Path, manifest: &PackageRecord) -> Result<(), BuildError> {
+    let report_path = managed::leaf(package_dir, RUN_REPORT_NAME)?;
+    let bytes = read_bounded_bytes(&report_path, MAX_RUN_REPORT_JSON_BYTES)?;
+    let report: RunReport = serde_json::from_slice(&bytes).map_err(|source| {
+        DurableStateError::MalformedPackageRunReport {
+            path: report_path.clone(),
+            source,
+        }
+    })?;
+
+    if report.segments.len() > MAX_LESSON_SEGMENTS
+        || report.join_findings.len() > MAX_LESSON_SEGMENTS
+    {
+        return Err(
+            DurableStateError::PackageRunReportSegmentCountExceeded { path: report_path }.into(),
+        );
+    }
+    if report.completion != ReportCompletion::Complete {
+        return Err(DurableStateError::PackageRunReportIncomplete { path: report_path }.into());
+    }
+    if report.job_id != manifest.lesson_id || report.lesson_id != manifest.lesson_id {
+        return Err(
+            DurableStateError::PackageRunReportIdentityMismatch { path: report_path }.into(),
+        );
+    }
+    if report.plan_hash != manifest.plan_hash.as_str() {
+        return Err(
+            DurableStateError::PackageRunReportIdentityMismatch { path: report_path }.into(),
+        );
+    }
+    if Some(report.build_attempt) != manifest.build_attempt {
+        return Err(
+            DurableStateError::PackageRunReportIdentityMismatch { path: report_path }.into(),
+        );
+    }
+    if report.segments.len() != manifest.segments.len()
+        || report
+            .segments
+            .iter()
+            .zip(&manifest.segments)
+            .any(|(reported, recorded)| {
+                reported.segment_id != recorded.segment_id
+                    || Some(reported.take) != recorded.selected_take
+                    || reported.cache_outcome == CacheOutcome::Failed
+                    || reported.audio_frames
+                        != Measured::Observed {
+                            value: u64::from(recorded.frames),
+                        }
+            })
+    {
+        return Err(
+            DurableStateError::PackageRunReportSegmentMismatch { path: report_path }.into(),
+        );
+    }
+
+    let expected_findings: Vec<JoinFinding> = manifest
+        .joins
+        .iter()
+        .filter(|join| {
+            join.continuity.provisional_tolerance() == crate::audio_edges::JoinTolerance::Outside
+        })
+        .map(|join| JoinFinding {
+            earlier_segment_id: join.earlier_segment_id.clone(),
+            later_segment_id: join.later_segment_id.clone(),
+        })
+        .collect();
+    if report.join_findings != expected_findings {
+        return Err(DurableStateError::PackageRunReportJoinMismatch { path: report_path }.into());
+    }
+
+    Ok(())
 }
 
 /// Whether a package records every artifact this build publishes.
@@ -1340,6 +1422,7 @@ mod tests {
         CalibrationSource,
         durable::OsDurableFileSystem,
         export::{self, ToolProfile},
+        run_report::{CacheOutcome, RunReportSegment, Unavailable},
         timeline::WrittenSegment,
     };
 
@@ -1485,11 +1568,37 @@ mod tests {
 
     fn write_test_package(package: &Path) {
         std::fs::create_dir(package).expect("create test package");
-        for name in PACKAGE_ARTIFACT_NAMES {
+        for name in PACKAGE_ARTIFACT_NAMES
+            .into_iter()
+            .filter(|name| *name != RUN_REPORT_NAME)
+        {
             std::fs::write(package.join(name), name.as_bytes()).expect("write package artifact");
         }
         let segment = cached_segment(blake3::hash(b"segment").to_hex().to_string());
         let plan_hash = PlanHash::from(blake3::hash(b"plan"));
+        let plan = one_segment_plan(&plan_hash);
+        let mut report = RunReport::unmeasured(
+            "lesson",
+            "lesson",
+            plan_hash.as_str(),
+            1,
+            ReportCompletion::Complete,
+        );
+        report.segments.push(RunReportSegment {
+            segment_id: "segment".to_owned(),
+            take: study_tts_core::BASE_TAKE,
+            cache_outcome: CacheOutcome::Reused,
+            retry_count: 0,
+            synthesis_wall_micros: Measured::Unavailable {
+                reason: Unavailable::ReusedFromCache,
+            },
+            audio_frames: Measured::Observed { value: 1 },
+        });
+        std::fs::write(
+            package.join(RUN_REPORT_NAME),
+            serde_json::to_vec_pretty(&report).expect("serialize test run report"),
+        )
+        .expect("write test run report");
         let (ffmpeg, ffprobe) = test_tool_identities();
         let profiles = export::export_profiles();
         let executions = test_executions(&profiles);
@@ -1498,7 +1607,8 @@ mod tests {
             &package.join(MANIFEST_NAME),
             ManifestRecords {
                 lesson_id: "lesson",
-                plan: &one_segment_plan(&plan_hash),
+                build_attempt: 1,
+                plan: &plan,
                 joins: &[],
                 segments: std::slice::from_ref(&segment),
                 timeline: &one_segment_timeline(),
@@ -1576,6 +1686,169 @@ mod tests {
         .expect("write changed test manifest");
     }
 
+    fn rewrite_test_run_report(package: &Path, update: impl FnOnce(&mut Value)) {
+        let report_path = package.join(RUN_REPORT_NAME);
+        let mut report: Value =
+            serde_json::from_slice(&std::fs::read(&report_path).expect("read test run report"))
+                .expect("parse test run report");
+        update(&mut report);
+        std::fs::write(
+            &report_path,
+            serde_json::to_vec_pretty(&report).expect("serialize changed run report"),
+        )
+        .expect("write changed run report");
+        let checksum = hash_file(&report_path).expect("hash changed run report");
+        rewrite_test_manifest(package, |manifest| {
+            manifest["artifacts"]["run_report"]["blake3"] = json!(checksum);
+        });
+    }
+
+    #[test]
+    fn t4_e2_package_validation_joins_the_report_to_its_manifest() {
+        #[derive(Clone, Copy, Debug)]
+        enum RunReportMutation {
+            Layout,
+            SegmentCount,
+            Completion,
+            JobIdentity,
+            AttemptIdentity,
+            PlanIdentity,
+            SegmentIdentity,
+            Take,
+            CacheOutcome,
+            AudioFrames,
+            JoinFindings,
+        }
+
+        for mismatch in [
+            RunReportMutation::Layout,
+            RunReportMutation::SegmentCount,
+            RunReportMutation::Completion,
+            RunReportMutation::JobIdentity,
+            RunReportMutation::AttemptIdentity,
+            RunReportMutation::PlanIdentity,
+            RunReportMutation::SegmentIdentity,
+            RunReportMutation::Take,
+            RunReportMutation::CacheOutcome,
+            RunReportMutation::AudioFrames,
+            RunReportMutation::JoinFindings,
+        ] {
+            let workspace = TempDir::new().expect("create run-report workspace");
+            let package = workspace.path().join("package");
+            write_test_package(&package);
+            rewrite_test_run_report(&package, |report| match mismatch {
+                RunReportMutation::Layout => report["schema_version"] = json!("99.0"),
+                RunReportMutation::SegmentCount => {
+                    let segment = report["segments"][0].clone();
+                    report["segments"] = Value::Array(vec![segment; MAX_LESSON_SEGMENTS + 1]);
+                }
+                RunReportMutation::Completion => {
+                    report["completion"] = json!({"incomplete": {"error_class": "io"}});
+                }
+                RunReportMutation::JobIdentity => report["job_id"] = json!("another-job"),
+                RunReportMutation::AttemptIdentity => report["build_attempt"] = json!(2),
+                RunReportMutation::PlanIdentity => {
+                    report["plan_hash"] = json!(blake3::hash(b"other-plan").to_hex().to_string());
+                }
+                RunReportMutation::SegmentIdentity => {
+                    report["segments"][0]["segment_id"] = json!("another-segment");
+                }
+                RunReportMutation::Take => report["segments"][0]["take"] = json!(1),
+                RunReportMutation::CacheOutcome => {
+                    report["segments"][0]["cache_outcome"] = json!("failed");
+                }
+                RunReportMutation::AudioFrames => {
+                    report["segments"][0]["audio_frames"]["value"] = json!(2);
+                }
+                RunReportMutation::JoinFindings => {
+                    report["join_findings"] = json!([{
+                        "earlier_segment_id": "segment",
+                        "later_segment_id": "another-segment",
+                    }]);
+                }
+            });
+
+            let error = validate_package(&package, "lesson", None, None)
+                .expect_err("a foreign run report must be refused");
+            let BuildError::DurableState(state) = &error else {
+                panic!("{mismatch:?} produced `{error}`")
+            };
+            let correct_variant = match mismatch {
+                RunReportMutation::Layout => {
+                    matches!(
+                        state.as_ref(),
+                        DurableStateError::MalformedPackageRunReport { .. }
+                    )
+                }
+                RunReportMutation::SegmentCount => matches!(
+                    state.as_ref(),
+                    DurableStateError::PackageRunReportSegmentCountExceeded { .. }
+                ),
+                RunReportMutation::Completion => matches!(
+                    state.as_ref(),
+                    DurableStateError::PackageRunReportIncomplete { .. }
+                ),
+                RunReportMutation::JobIdentity
+                | RunReportMutation::AttemptIdentity
+                | RunReportMutation::PlanIdentity => matches!(
+                    state.as_ref(),
+                    DurableStateError::PackageRunReportIdentityMismatch { .. }
+                ),
+                RunReportMutation::SegmentIdentity
+                | RunReportMutation::Take
+                | RunReportMutation::CacheOutcome
+                | RunReportMutation::AudioFrames => matches!(
+                    state.as_ref(),
+                    DurableStateError::PackageRunReportSegmentMismatch { .. }
+                ),
+                RunReportMutation::JoinFindings => matches!(
+                    state.as_ref(),
+                    DurableStateError::PackageRunReportJoinMismatch { .. }
+                ),
+            };
+            assert!(correct_variant, "{mismatch:?} produced `{error}`");
+        }
+    }
+
+    #[test]
+    fn t4_e2_package_validation_bounded_deserializes_the_run_report() {
+        let workspace = TempDir::new().expect("create malformed-report workspace");
+        let package = workspace.path().join("package");
+        write_test_package(&package);
+        let report_path = package.join(RUN_REPORT_NAME);
+        std::fs::write(&report_path, b"{").expect("write malformed run report");
+        let checksum = hash_file(&report_path).expect("hash malformed run report");
+        rewrite_test_manifest(&package, |manifest| {
+            manifest["artifacts"]["run_report"]["blake3"] = json!(checksum);
+        });
+
+        let error = validate_package(&package, "lesson", None, None)
+            .expect_err("a malformed checksummed report must be refused");
+        assert!(matches!(
+            error,
+            BuildError::DurableState(error)
+                if matches!(*error, DurableStateError::MalformedPackageRunReport { .. })
+        ));
+
+        let oversized = workspace.path().join("oversized-package");
+        write_test_package(&oversized);
+        let report_path = oversized.join(RUN_REPORT_NAME);
+        std::fs::write(&report_path, vec![b' '; MAX_RUN_REPORT_JSON_BYTES + 1])
+            .expect("write oversized run report");
+        let checksum = hash_file(&report_path).expect("hash oversized run report");
+        rewrite_test_manifest(&oversized, |manifest| {
+            manifest["artifacts"]["run_report"]["blake3"] = json!(checksum);
+        });
+
+        let error = validate_package(&oversized, "lesson", None, None)
+            .expect_err("an oversized checksummed report must be refused before decoding");
+        assert!(matches!(
+            error,
+            BuildError::DurableState(error)
+                if matches!(*error, DurableStateError::DurableRecordTooLarge { .. })
+        ));
+    }
+
     /// The layout before this one stays readable, and cannot be reused.
     ///
     /// Preservation and reuse are different questions, and E1-S4's record
@@ -1593,6 +1866,11 @@ mod tests {
         write_test_package(&package);
         rewrite_test_manifest(&package, |manifest| {
             manifest["schema_version"] = json!(PREVIOUS_MANIFEST_LAYOUT_VERSION);
+            manifest
+                .as_object_mut()
+                .expect("the manifest is an object")
+                .remove("build_attempt")
+                .expect("the current layout records a build attempt");
             manifest["artifacts"]
                 .as_object_mut()
                 .expect("the manifest records an artifact map")

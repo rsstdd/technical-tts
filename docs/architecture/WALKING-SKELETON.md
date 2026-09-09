@@ -268,11 +268,24 @@ The word provisional remains material for the internal lock, journal, and select
 
 The lesson fixture is no longer among them. E1-S1 published the lesson schema and moved the fixture to `1.1`, so `0.1-skeleton` is now refused as a malformed version rather than accepted as an old one; [`E1-S1-INTERFACE-CHANGE-001.md`](E1-S1-INTERFACE-CHANGE-001.md) records why the increment was a major followed by a minor. E1-S2 repeated that shape twice. First to `2.x`, where `2.0` made `speakers` required and `2.1` added the optional `editorial` flag; [`E1-S2-INTERFACE-CHANGE-001.md`](E1-S2-INTERFACE-CHANGE-001.md) records that increment, the `SYNTHESIS_IDENTITY_VERSION` move to `e1-s2-v1` that resolving voice references forced, and the required `voice_conditioning_hash` on `SynthesisRequest` that came with it. Then to `3.x`, published at `schemas/lesson-v3.schema.json`, where `3.0` closed the `role` and `style` vocabularies, bounded a recall prompt's pause to ADR-0001 §13.2's range, and refuses a `speakers` object binding one name twice, and `3.1` added the optional `learning_objectives` and `source` records; [`E1-S2-INTERFACE-CHANGE-002.md`](E1-S2-INTERFACE-CHANGE-002.md) records that increment, and is `Accepted`, signed 2026-08-30. Every `1.x` and `2.x` document is now refused as a different major.
 
-New preview manifests use `1.0-skeleton`, which requires the written timeline, all six artifact checksums, and every FFmpeg and ffprobe execution. E1-S4 made those fields required, which `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` §Change classes calls a Breaking contract, so the major incremented; the `-skeleton` suffix stays because E2-S3 and E2-S4 will break this layout again and a bare `1.0` would claim a stability they are going to take away. [`E1-S4-INTERFACE-CHANGE-001.md`](E1-S4-INTERFACE-CHANGE-001.md) records the increment.
+New preview manifests use proposed `3.0-skeleton`. They retain E2-S2's take-selection and join
+surface, add the producing build attempt, and checksum `run-report.json` as the seventh package
+artifact. [`E2-S4-INTERFACE-CHANGE-002.md`](E2-S4-INTERFACE-CHANGE-002.md) records the breaking
+manifest and package-writer moves; it remains unsigned, so the accepted G1 charter still records
+the effective `2.0-skeleton` / package-writer `2.0` pair.
 
-Reconciliation still accepts strict `0.1-skeleton` manifests without argument-profile fields and strict `0.2-skeleton` manifests with them. Both are preserved and neither is reusable: each describes a two-artifact package, and reuse compares the whole set of recorded argument profiles against the set this build publishes, so a package missing three of them is rebuilt rather than accepted as complete.
+Reconciliation accepts strict `0.1-skeleton` and `0.2-skeleton` two-artifact manifests and the
+strict `2.0-skeleton` six-artifact manifest. All are preserved and none is reusable by this build:
+reuse requires the entire seven-artifact current set. Current packages additionally require the
+checksummed report to parse within its byte ceiling and agree with the manifest's completion,
+identities, ordered segments, takes, frame counts, and advisory join evidence.
 
-The three layouts are `LEGACY_MANIFEST_LAYOUT_VERSION`, `SKELETON_MANIFEST_LAYOUT_VERSION`, and `CURRENT_MANIFEST_LAYOUT_VERSION` in `crates/study-tts-runtime/src/manifest.rs`, which names this paragraph in return; `parse_stored_manifest` dispatches on them and refuses every other string. Only `1.0-skeleton` is published, as `schemas/manifest-v1.schema.json`: that schema is generated from the current stored shape, and the older layouts carry a different `artifacts` and `tools` shape it would describe wrongly. The omission is deliberate rather than incidental, and `t3_e1_the_published_manifest_schema_names_every_layout_it_describes` is what keeps it so — a fourth accepted layout fails that test until somebody decides whether the published schema describes it.
+The four layouts are `LEGACY_MANIFEST_LAYOUT_VERSION`, `SKELETON_MANIFEST_LAYOUT_VERSION`,
+`PREVIOUS_MANIFEST_LAYOUT_VERSION`, and `CURRENT_MANIFEST_LAYOUT_VERSION` in
+`crates/study-tts-runtime/src/manifest.rs`; `parse_stored_manifest` refuses every other string.
+Only `3.0-skeleton` is published, as `schemas/manifest-v3.schema.json`, because the older layouts
+have different stored shapes. `t3_e1_the_published_manifest_schema_names_every_layout_it_describes`
+keeps the generated schema and parser dispatch explicit.
 
 Before G1, the provisional flat `BuildError` was intentionally replaced by
 transparent category variants with exact leaf refusals beneath them. This was a

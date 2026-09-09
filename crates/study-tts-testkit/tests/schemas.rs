@@ -1012,7 +1012,7 @@ fn t3_e1_every_published_schema_claims_the_uri_its_documents_name() {
 /// agree with any schema it was handed, including one that grew a required
 /// field nobody meant to add — which is the change this table exists to make
 /// impossible to land quietly.
-const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 51] = [
+const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 54] = [
     (
         "job 1.0",
         "/",
@@ -1082,6 +1082,7 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 51] = [
         "/",
         &[
             "artifacts",
+            "build_attempt",
             "join_continuity",
             "lesson_id",
             "plan_hash",
@@ -1382,6 +1383,7 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 51] = [
             "completion",
             "encode_micros",
             "job_id",
+            "join_findings",
             "lesson_id",
             "model_load_micros",
             "normalize_micros",
@@ -1395,6 +1397,11 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 51] = [
     ),
     (
         "run-report 2.0",
+        "/$defs/JoinFinding",
+        &["earlier_segment_id", "later_segment_id"],
+    ),
+    (
+        "run-report 2.0",
         "/$defs/Measured/oneOf/0",
         &["observation", "value"],
     ),
@@ -1402,6 +1409,16 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 51] = [
         "run-report 2.0",
         "/$defs/Measured/oneOf/1",
         &["observation", "reason"],
+    ),
+    (
+        "run-report 2.0",
+        "/$defs/ReportCompletion/oneOf/1",
+        &["incomplete"],
+    ),
+    (
+        "run-report 2.0",
+        "/$defs/ReportCompletion/oneOf/1/properties/incomplete",
+        &["error_class"],
     ),
     (
         "run-report 2.0",

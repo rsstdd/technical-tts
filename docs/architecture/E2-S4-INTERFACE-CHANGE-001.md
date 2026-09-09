@@ -17,22 +17,19 @@ system of record for decisions. Issue #17 is the working record.
 
 ## Version and compatibility
 
-**One published schema is added; none moves.** `run-report` enters `PUBLISHED_SCHEMAS` at `1.0`,
-writing the layout label `1.0-skeleton`. The other seven documents are byte-identical, and
-`t3_e1_generated_schemas_match_checked_in_files` proves it: regenerating produced a diff in
-`schemas/run-report-v1.schema.json` alone. (That file was retired by this record's first
-amendment; `run-report-v2.schema.json` replaces it.)
+**One published schema is added.** It was first drafted at `1.0-skeleton`; the amendments below
+fold all E2-S4 fields into the still-unmerged contract at `2.0-skeleton`.
 
 - Contract ID: `run-report`
 - Old version: none
-- New version: `1.0`, layout `1.0-skeleton`
+- New version: `2.0`, layout `2.0-skeleton`
 - Compatibility class: **new contract**. Nothing consumed it before, so nothing can break.
-- Required fields: eight at the root at `1.0`, listed in `PUBLISHED_REQUIRED_SURFACE` — twelve at
-  `2.0`, under `run-report 2.0`, per this record's first amendment
+- Required fields: fifteen at the root, listed in `PUBLISHED_REQUIRED_SURFACE` under
+  `run-report 2.0`
 - Unknown-field behavior: refused. `#[serde(deny_unknown_fields)]` on every struct and on both
   `Measured` variants; no `#[serde(other)]` anywhere.
 - Unknown-version behavior: refused **at the parse**, not compared downstream. `schema_version` is
-  a `RunReportLayout` newtype whose `Deserialize` accepts only `1.0-skeleton` and whose published
+  a `RunReportLayout` newtype whose `Deserialize` accepts only `2.0-skeleton` and whose published
   schema emits that label as a `const`, so the schema and the parser refuse the same bytes at the
   same field. `fixtures/contracts/e2-s4-run-report-foreign-layout.json` proves both halves.
 
@@ -58,9 +55,9 @@ document from `events.ndjson` and `publication.json`, which stay internal journa
 | **I-5** | Reuse of an existing package | **Unaffected** | `manifest::expected_executions` is untouched, so an existing package still matches |
 | **I-6** | `manifest` schema | **Moved, by `E2-S4-INTERFACE-CHANGE-002`** | Predicted here and made there: the manifest now checksums the sealed report, a **Breaking contract** move to `3.0-skeleton`. The run report joins the package as its seventh artifact, and reuse gained a check on the recorded artifact set so a six-artifact package cannot stand in for one holding seven |
 
-**Nothing this step adds is written by a build.** The document is defined and published; no code
-path constructs one. That is deliberate: the vocabulary is reviewable in a diff before any
-measurement is shaped by whatever proved easy to instrument.
+The pipeline now writes partial reports under the job and seals complete reports into packages.
+The package manifest checksums the sealed bytes and package validation joins the report back to the
+manifest before reuse.
 
 ## The real-time factor, and why the report publishes two
 
@@ -183,27 +180,28 @@ vocabulary on the wire.
 
 | Item | Kind | Why it is public |
 |---|---|---|
-| `RunReport`, `SynthesisTotals`, `RunResources`, `WorstSegment` | structs | The document `schemars` derives the published schema from |
-| `Measured`, `Unavailable` | enums | The one dynamic semantic, and the closed reasons a value can be absent |
+| `RunReport`, `RunReportSegment`, `JoinFinding`, `SynthesisTotals`, `RunResources`, `WorstSegment` | structs | The document `schemars` derives the published schema from |
+| `Measured`, `Unavailable`, `CacheOutcome`, `ReportCompletion`, `BuildErrorClass` | enums | Closed observation, cache, completion, and failure states |
 | `RunReportLayout` | newtype | Gates the layout label at the deserialization boundary |
 | `ReportField`, `FieldSemantics` | enum, struct | Task 4's catalogue, mirrored by `docs/observability/RUN-REPORT-FIELDS.md` |
 | `MeasurementUnit`, `MeasurementClock`, `MeasuredProcess`, `Aggregation`, `Fidelity` | enums | The closed vocabularies those semantics range over |
 | `milli_real_time_factor` | function | ADR-0001 §3.4's ratio, in integers |
 | `RUN_REPORT_SCHEMA_STEM`, `RUN_REPORT_SCHEMA_VERSION` | constants | The catalogue entry, and the testkit's contract tests |
 
-All are additive. No published item is removed, renamed, or retyped.
+The `2.0` move covers the breaking changes from the first draft: segment audio became `Measured`,
+completion and error class became one typed state, and join findings became required.
 
 ## Impact
 
 - **Synthesis identities affected:** none. See I-1.
-- **Existing artifacts:** none. No package, cache entry, job document, or event log is read,
-  written, migrated, or invalidated.
+- **Existing artifacts:** no artifact is migrated or deleted. A `2.0-skeleton` manifest remains
+  readable but cannot satisfy current reuse because it has no run report.
 - **Security, rights, and privacy:** no control is waived. The document is structurally incapable
   of carrying the three things the rights policy excludes.
-- **Determinism:** the report is a function of what a build measured. Its ratio is integer
-  arithmetic, so it is byte-identical across rebuilds given identical inputs.
-- **Recovery:** nothing yet writes the document, so there is nothing to recover. Durable
-  finalization is a later E2-S4 step.
+- **Determinism:** identities and ratios use canonical integer representations. Elapsed and sampled
+  measurements naturally vary and participate in no synthesis, cache, or plan identity.
+- **Recovery:** partial reports are durably replaced under the job; complete reports publish with
+  the immutable package.
 - **Tests:** `t1_e2_run_report_units_and_missing_values_follow_schema` proves the vocabulary is
   total and that only the two ratios are ratios;
   `t3_e2_every_published_run_report_number_names_its_unit` proves every published number names its
@@ -211,12 +209,10 @@ All are additive. No published item is removed, renamed, or retyped.
 
 ## Open questions
 
-**G-A — the advisory join finding, carried forward from E2-S3.**
-`E2-S3-INTERFACE-CHANGE-001.md` §Open questions assigns `JoinTolerance::Outside` a destination in
-this story's run report. This step defines the document but adds no field for it. The finding is
-derivable from the manifest's recorded joins, so the field belongs with the step that populates the
-report from a real build rather than with the one that defines its vocabulary. **Still open, still
-assigned here.**
+**G-A — the advisory join finding, answered 2026-09-09.** `join_findings` carries the ordered
+segment pairs whose manifest evidence is `JoinTolerance::Outside`. The ratios stay only in the
+manifest. Package validation derives the same pairs and refuses disagreement, so the advisory
+finding cannot drift from its evidence.
 
 **G-B — which process the peak-resident sample names. Answered 2026-09-09.** The worker, which is
 the process holding Torch; a supervisor figure would measure this Rust binary and say nothing about
@@ -240,15 +236,15 @@ is why the rows stay separate.
 
 | Role | Decision sought | Status |
 |---|---|---|
-| Project owner | Accept a new published document at `1.0-skeleton` whose layout later E2-S4 steps will break | |
-| Contract owner (T-CLI) | Accept `run-report` as the eighth published schema, and the six required-surface rows recorded for it | |
+| Project owner | Accept a new published document at `2.0-skeleton` | |
+| Contract owner (T-CLI) | Accept `run-report` as the eighth published schema, and the fifteen required root fields recorded for it | |
 | Affected track (T-RUNTIME) | Accept that no identity, package, cache entry, or existing schema moves, and that the manifest's move to `3.0-skeleton` is named but not made here | |
 | Affected track (T-AUDIO) | Accept that the report publishes both an aggregate and a worst-segment real-time factor, and claims comparability to `docs/perf/BUDGETS.md`'s baseline only narrowly | |
 | Engineering owner | Accept the answer to the freeze charter's delegated question: `events.ndjson` stays unpublished and `JOB_EVENT_SCHEMA_VERSION` does not move | |
-| Effective version and date | `run-report` `1.0` added; no existing schema version moves | |
+| Effective version and date | `run-report` `2.0` added, on signature | |
 
 ## Amendments
 
 | Date | Amendment | Approval |
 |---|---|---|
-| 2026-09-09 | **`run-report` moves to `2.0`, layout `2.0-skeleton`.** §Version and compatibility above said "E2-S4's remaining steps add stage durations, per-segment rows, and cache outcomes to this document. The major will say the change was breaking." They did, and it does. Three required-field additions land under one move: `segments` with its per-segment rows, `model_load_micros`, the `assembly_micros`/`normalize_micros`/`encode_micros` package durations `E2-S4-INTERFACE-CHANGE-002` supplies, and `completion` with `error_class`, which task 5 needs so a reader can tell a report sealed into a package from one written where a build stopped. One move covers all of them because no consumer could have seen an older shape: no build has ever written a `run-report.json`, and every change is on one unmerged branch. **If this branch merges before a further field lands, that reasoning expires and the next required field moves the major again.** `schemas/run-report-v1.schema.json` is retired and `run-report-v2.schema.json` replaces it; `PUBLISHED_REQUIRED_SURFACE` records the new surface under `run-report 2.0`. **Nothing migrates**: no build has ever written a `run-report.json`, because durable finalization is still E2-S4's unstarted third step, so no document exists in either layout. The `-skeleton` suffix survives the increment for the reason `MANIFEST_SCHEMA_VERSION` set when it did the same — the major reports that the change was breaking, the suffix that the layout is still provisional | |
+| 2026-09-09 | **`run-report` moves to `2.0`, layout `2.0-skeleton`.** The final proposed surface adds per-segment rows, stage durations, `join_findings`, and a closed completion state. `ReportCompletion::Incomplete` contains a typed `BuildErrorClass`; complete reports cannot carry an error and incomplete reports cannot omit one. Failed segment rows use `cache_outcome: failed` and measured-or-unavailable audio and synthesis fields. One move covers the additions because no accepted build has published the earlier draft. `schemas/run-report-v1.schema.json` is retired and `run-report-v2.schema.json` replaces it. The `-skeleton` suffix remains because the layout is still provisional. | |

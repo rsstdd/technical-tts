@@ -20,11 +20,11 @@ use study_tts_core::{
 };
 use study_tts_runtime::{
     BackendDescriptor, BackendError, BuildError, BuildRequest, CacheOutcome, DurableStateError,
-    FileSystemCachePublisher, FileSystemPackageWriter, IoError, ManagedPathError, Measured,
-    PreviewServiceBundle, PublicationError, ResumeRequest, SynthesisReport, SynthesisRequest,
-    ToolError, TtsExecutor, Unavailable, build_preview, build_preview_with_services, load_lesson,
-    normalize_master_output, publish, resume_preview, validate_m4a_output,
-    validate_production_manifest,
+    FileSystemCachePublisher, FileSystemPackageWriter, IoError, JoinContinuity, JoinTolerance,
+    ManagedPathError, Measured, PreviewServiceBundle, PublicationError, ReportCompletion,
+    ResumeRequest, RunReport, SynthesisReport, SynthesisRequest, ToolError, TtsExecutor,
+    Unavailable, build_preview, build_preview_with_services, load_lesson, normalize_master_output,
+    publish, resume_preview, validate_m4a_output, validate_production_manifest,
 };
 use study_tts_testkit::{
     DeterministicToneWorker, FIXTURE_VOICE_PROFILES, InterruptingJobRepository,
@@ -1125,6 +1125,24 @@ fn t4_e2_run_report_records_every_segment_and_cache_outcome() {
             "{label}: synthesized count"
         );
 
+        if label == "cold" {
+            let package_micros = [
+                report.assembly_micros,
+                report.normalize_micros,
+                report.encode_micros,
+            ]
+            .into_iter()
+            .map(|measurement| match measurement {
+                Measured::Observed { value } => value,
+                other => panic!("cold package stage was not observed: {other:?}"),
+            })
+            .sum::<u64>();
+            assert!(
+                report.wall_micros >= report.synthesis.wall_micros + package_micros,
+                "whole-run elapsed must include synthesis and package production"
+            );
+        }
+
         for segment in &report.segments {
             let id = &segment.segment_id;
             assert_eq!(
@@ -1134,7 +1152,7 @@ fn t4_e2_run_report_records_every_segment_and_cache_outcome() {
             assert_eq!(segment.take, 0, "{label}: {id} renders the base take");
             assert_eq!(segment.retry_count, 0, "{label}: {id} retry count");
             assert!(
-                segment.audio_frames > 0,
+                matches!(segment.audio_frames, Measured::Observed { value } if value > 0),
                 "{label}: {id} generated no audio duration"
             );
 
@@ -1335,6 +1353,21 @@ fn t4_e2_a_reused_segment_is_recorded_as_reused_not_synthesized() {
         2,
         "the executor is the independent witness that the warm build synthesized nothing"
     );
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| *kind == "package_reused")
+            .count(),
+        1,
+        "the warm build records package reuse"
+    );
+    for fresh in ["package_assembled", "package_encoded", "package_published"] {
+        assert_eq!(
+            kinds.iter().filter(|kind| *kind == fresh).count(),
+            1,
+            "only the cold build may record `{fresh}`: {kinds:?}"
+        );
+    }
 }
 
 /// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Storage and access, and
@@ -1410,8 +1443,8 @@ fn t4_e2_successful_manifest_references_final_run_report_checksum() {
     let report: Value = serde_json::from_slice(&report_bytes).expect("the sealed report parses");
     assert_eq!(report["completion"], "complete");
     assert!(
-        report["error_class"].is_null(),
-        "a complete report names no failure"
+        report.get("error_class").is_none(),
+        "a complete report has no independent failure field"
     );
 }
 
@@ -1457,13 +1490,9 @@ fn t4_e2_failed_run_preserves_partial_report_in_job_directory() {
     )
     .expect("the partial report parses");
 
-    assert_eq!(
-        report["completion"], "incomplete",
-        "a reader cannot otherwise tell a partial report from a sealed one"
-    );
     assert!(
-        report["error_class"].is_string(),
-        "an incomplete report names the class of failure that ended it"
+        report["completion"]["incomplete"]["error_class"].is_string(),
+        "an incomplete report contains the class of failure that ended it"
     );
     assert_eq!(
         report["segments"]
@@ -1474,6 +1503,59 @@ fn t4_e2_failed_run_preserves_partial_report_in_job_directory() {
         "both segments resolved before the interruption, so both are recorded"
     );
     assert_eq!(report["job_id"], SKELETON_JOB_ID);
+}
+
+#[test]
+fn t4_e2_a_failed_synthesis_retains_its_segment_and_event() {
+    let workspace = TempDir::new().expect("create failed-synthesis workspace");
+    let worker = DeterministicToneWorker::default();
+    worker.fail_next(BackendError::Execution {
+        request_id: "injected".to_owned(),
+        code: "injected_failure".to_owned(),
+        message: "injected synthesis failure".to_owned(),
+    });
+
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect_err("the injected synthesis failure must surface");
+    assert!(matches!(error, BuildError::Synthesis(_)));
+
+    let report: RunReport = serde_json::from_slice(
+        &std::fs::read(
+            workspace
+                .path()
+                .join("jobs")
+                .join(SKELETON_JOB_ID)
+                .join("run-report.json"),
+        )
+        .expect("a failed synthesis retains its report"),
+    )
+    .expect("the failed report parses");
+    assert!(matches!(
+        report.completion,
+        ReportCompletion::Incomplete { .. }
+    ));
+    assert_eq!(report.segments.len(), 1);
+    assert_eq!(report.segments[0].cache_outcome, CacheOutcome::Failed);
+    assert!(matches!(
+        report.segments[0].audio_frames,
+        Measured::Unavailable {
+            reason: Unavailable::StageNotReached,
+        }
+    ));
+    assert!(matches!(
+        report.segments[0].synthesis_wall_micros,
+        Measured::Observed { .. }
+    ));
+
+    let events = read_event_log(workspace.path(), SKELETON_JOB_ID);
+    assert_eq!(
+        stage_kinds(&events),
+        ["plan_selected", "segment_failed"],
+        "the failed attempt records the segment before returning"
+    );
 }
 
 #[test]
@@ -3186,6 +3268,48 @@ fn t4_e2_retake_changes_only_selected_segment_identity() {
     // §13.2's base key is the segment's take-zero identity whatever take is
     // selected, so it is what a reviewer reads to see which take was replaced.
     assert_eq!(after[1]["synthesis_base_key"], before[1]["cache_key"]);
+
+    let manifest = read_manifest(&second);
+    let expected: Vec<(String, String)> = manifest["join_continuity"]
+        .as_array()
+        .expect("the manifest records join evidence")
+        .iter()
+        .filter_map(|join| {
+            let continuity: JoinContinuity = serde_json::from_value(serde_json::json!({
+                "loudness_ratio": join["loudness_ratio"],
+                "rate_ratio": join["rate_ratio"],
+                "calibration_source": join["calibration_source"],
+            }))
+            .expect("the manifest join is a continuity measurement");
+            (continuity.provisional_tolerance() == JoinTolerance::Outside).then(|| {
+                (
+                    join["earlier_segment_id"]
+                        .as_str()
+                        .expect("an earlier segment")
+                        .to_owned(),
+                    join["later_segment_id"]
+                        .as_str()
+                        .expect("a later segment")
+                        .to_owned(),
+                )
+            })
+        })
+        .collect();
+    let reported: Vec<(String, String)> = second
+        .run_report
+        .join_findings
+        .iter()
+        .map(|finding| {
+            (
+                finding.earlier_segment_id.clone(),
+                finding.later_segment_id.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reported, expected,
+        "the report carries the manifest finding"
+    );
 }
 
 /// T4, AC5: a retake request that names no planned segment is refused, and is

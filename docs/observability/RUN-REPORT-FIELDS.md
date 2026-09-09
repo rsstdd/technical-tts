@@ -44,13 +44,14 @@ lists them: `value`, which takes its unit from the field holding it, and `build_
 
 ## Complete, or as far as it got
 
-`completion` is `complete` or `incomplete`, and it is the field that makes every other one
+`completion` is either the string `complete` or an `incomplete` object, and it is the field that makes every other one
 readable. An incomplete report's totals cover the work that happened before a failure, not the work
 the lesson asked for, and nothing else in the document distinguishes the two: a build that stopped
 after two of thirty-four segments publishes the same shape as one that finished.
 
-`error_class` names the class of the failure that ended an incomplete build, and is absent from a
-complete one. It is a **class and never a message**: `BuildError::class` is a closed vocabulary of
+The incomplete variant contains the `error_class` that ended the build; the complete variant has no
+place to put one. That makes "complete with an error" and "incomplete without an error"
+unrepresentable. It is a **class and never a message**: `BuildError::class` is a closed vocabulary of
 sixteen values, exhaustively matched so a new failure kind cannot report someone else's. A
 formatted message was refused rather than trimmed — several failure kinds carry a path, `IoError`
 always does, and `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` keeps host paths out of a
@@ -127,8 +128,8 @@ synthesis dominates it — the M2 acceptance render spent 1,988 seconds, nearly 
 worker, against seconds of packaging. Subtracting these three from it leaves synthesis and
 everything else, not a residue worth reading.
 
-**Both are absent when a build selects a package an earlier one produced.** The writer returns
-before assembling or encoding anything, so both read
+**All three are absent when a build selects a package an earlier one produced.** The writer returns
+before assembling, normalizing, or encoding anything, so all three read
 `{ "observation": "unavailable", "reason": "reused_from_cache" }` — the same reason a reused segment
 carries, for the same reason.
 
@@ -223,10 +224,24 @@ the published schema at `/resources/peak_resident_kib` for exactly that. The rea
 | `reused_from_cache` | A cache entry supplied the segment and this build's worker never synthesized it. Distinct from a duration of zero, which would claim the worker produced the audio instantly |
 | `no_worker_process` | The executor ran synthesis with no separate worker process, so there was nothing to sample — or it had one and the process was already gone when the sample was asked for. Distinct from `not_exposed_by_environment`: there, the platform withheld a counter; here, the platform would have answered and no process existed to ask about |
 
+`wall_micros` starts before input loading and ends after package assembly, normalization, encoding,
+and probing have completed, immediately before the report is sealed. The report and manifest writes
+and the immutable directory rename necessarily follow that self-referential endpoint. A
+failed package stage retains every duration already observed; the failing stage itself also carries
+its elapsed observation, while later stages remain `stage_not_reached`.
+
+`cache_outcome` is `synthesized`, `reused`, or `failed`. A failed row is retained before the error
+returns. Its `audio_frames` is `stage_not_reached`; its synthesis duration is observed when the
+worker was entered and otherwise `stage_not_reached`.
+
+`join_findings` contains the ordered segment pairs whose manifest join evidence is outside the
+provisional tolerance. It deliberately repeats no ratio: the manifest remains the measurement
+record, while the report carries the advisory finding E6 consumes.
+
 ## The layout label is gated, not just recorded
 
 `schema_version` is a `RunReportLayout`, not a string. Its `Deserialize` accepts only
-`1.0-skeleton` and its published schema emits that value as a `const`, so a document written by a
+`2.0-skeleton` and its published schema emits that value as a `const`, so a document written by a
 future layout is refused where it is parsed rather than compared somewhere downstream.
 `fixtures/contracts/e2-s4-run-report-foreign-layout.json` is a complete and otherwise valid report
 declaring a layout this build does not read; the schema and the parser both refuse it at

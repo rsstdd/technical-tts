@@ -21,7 +21,9 @@
 //! invariant rather than a scrubber.
 
 use serde::{Deserialize, Serialize};
-use study_tts_core::{CANONICAL_SAMPLE_RATE, SchemaVersion};
+use study_tts_core::{CANONICAL_SAMPLE_RATE, MAX_LESSON_SEGMENTS, SchemaVersion};
+
+use crate::BuildErrorClass;
 
 /// File-name stem of the published run-report schema.
 pub const RUN_REPORT_SCHEMA_STEM: &str = "run-report";
@@ -33,13 +35,15 @@ pub const RUN_REPORT_SCHEMA_STEM: &str = "run-report";
 /// They are the same document at two moments, so they share a name.
 pub(crate) const RUN_REPORT_NAME: &str = "run-report.json";
 
+/// Maximum serialized run-report size accepted before JSON decoding.
+pub const MAX_RUN_REPORT_JSON_BYTES: usize = 16 * 1024 * 1024;
+
 /// Version of the published run-report schema.
 ///
-/// `1.0` at its first publication, carrying the `1.0-skeleton` layout label
-/// [`RUN_REPORT_LAYOUT_VERSION`] writes. The suffix follows the precedent
-/// `MANIFEST_SCHEMA_VERSION` sets: later E2-S4 steps add measured stages to
-/// this document, so the label must not claim a stability they are going to
-/// take away.
+/// First drafted at `1.0`; moved to `2.0` before acceptance when E2-S4 added
+/// the breaking per-segment, package-stage, typed-completion, and advisory-join
+/// fields. The suffix follows `MANIFEST_SCHEMA_VERSION`: the layout remains
+/// provisional even though the breaking change required a major increment.
 pub const RUN_REPORT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(2, 0);
 
 /// The `schema_version` a `run-report.json` this build writes carries.
@@ -190,7 +194,7 @@ pub struct FieldSemantics {
 /// in return.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReportField {
-    /// Elapsed time for the whole build.
+    /// Elapsed time from build entry through package production.
     WallTime,
     /// Summed time inside the worker's synthesis calls.
     SynthesisWallTime,
@@ -481,6 +485,8 @@ pub enum CacheOutcome {
     Synthesized,
     /// A published cache entry supplied it and no synthesis ran.
     Reused,
+    /// Cache resolution or synthesis failed before audio was available.
+    Failed,
 }
 
 /// What one planned segment cost this build.
@@ -503,8 +509,23 @@ pub struct RunReportSegment {
     pub retry_count: u32,
     /// Time inside the worker's synthesis call, absent for a reused segment.
     pub synthesis_wall_micros: Measured,
-    /// Audio this segment generated, excluding the pause written after it.
-    pub audio_frames: u64,
+    /// Audio this segment supplied, excluding the pause written after it.
+    pub audio_frames: Measured,
+}
+
+/// One provisional join-discontinuity finding requiring human review.
+///
+/// The ratios remain in the manifest. This report carries only the segment
+/// pair whose measured continuity is outside the provisional band, so it does
+/// not publish a second copy of the measurement or promote that band to a
+/// production threshold.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct JoinFinding {
+    /// Segment ending at the join.
+    pub earlier_segment_id: String,
+    /// Segment beginning at the join.
+    pub later_segment_id: String,
 }
 
 /// The single worst segment by real-time factor, with the audio that produced
@@ -639,7 +660,10 @@ pub enum ReportCompletion {
     /// The build finished and this report was sealed into its package.
     Complete,
     /// The build stopped, and this is what it had measured.
-    Incomplete,
+    Incomplete {
+        /// Closed class of the failure that ended the build.
+        error_class: BuildErrorClass,
+    },
 }
 
 /// What one build measured.
@@ -659,15 +683,10 @@ pub struct RunReport {
     pub lesson_id: String,
     /// Plan hash the build rendered from.
     pub plan_hash: String,
-    /// Whether the build this describes finished.
+    /// Whether the build finished, with a required class only when it failed.
     pub completion: ReportCompletion,
-    /// Class of the failure that ended an incomplete build.
-    ///
-    /// `None` on a complete report, and never a message: several failure
-    /// classes carry a path, and `BuildError::class` is the closed vocabulary
-    /// that keeps one out of a published document.
-    pub error_class: Option<String>,
-    /// Elapsed time for the whole build.
+    /// Elapsed time from build entry through package production, sampled
+    /// immediately before this report is sealed.
     pub wall_micros: u64,
     /// Time the backend spent starting and loading its model, where the
     /// backend has a process that can report it.
@@ -681,7 +700,11 @@ pub struct RunReport {
     /// Time spent encoding both lossy outputs, absent for the same reason.
     pub encode_micros: Measured,
     /// One row per planned segment, in the order the plan renders them.
+    #[schemars(length(max = MAX_LESSON_SEGMENTS))]
     pub segments: Vec<RunReportSegment>,
+    /// Provisional join discontinuities requiring human review.
+    #[schemars(length(max = MAX_LESSON_SEGMENTS))]
+    pub join_findings: Vec<JoinFinding>,
     /// What the worker did.
     pub synthesis: SynthesisTotals,
     /// What the build cost the machine.
@@ -740,17 +763,17 @@ pub(crate) fn synthesis_totals(segments: &[RunReportSegment]) -> SynthesisTotals
         let Measured::Observed { value: micros } = segment.synthesis_wall_micros else {
             continue;
         };
+        let Measured::Observed { value: frames } = segment.audio_frames else {
+            continue;
+        };
 
         synthesized_count = synthesized_count.saturating_add(1);
         wall_micros = wall_micros.saturating_add(micros);
-        audio_frames = audio_frames.saturating_add(segment.audio_frames);
-        shortest =
-            Some(shortest.map_or(segment.audio_frames, |held| held.min(segment.audio_frames)));
-        longest = Some(longest.map_or(segment.audio_frames, |held| held.max(segment.audio_frames)));
+        audio_frames = audio_frames.saturating_add(frames);
+        shortest = Some(shortest.map_or(frames, |held| held.min(frames)));
+        longest = Some(longest.map_or(frames, |held| held.max(frames)));
 
-        let Measured::Observed { value: ratio } =
-            milli_real_time_factor(micros, segment.audio_frames)
-        else {
+        let Measured::Observed { value: ratio } = milli_real_time_factor(micros, frames) else {
             continue;
         };
         if worst
@@ -761,7 +784,7 @@ pub(crate) fn synthesis_totals(segments: &[RunReportSegment]) -> SynthesisTotals
                 segment_id: segment.segment_id.clone(),
                 take: segment.take,
                 wall_micros: micros,
-                audio_frames: segment.audio_frames,
+                audio_frames: frames,
                 real_time_factor_milli: ratio,
             });
         }
@@ -800,7 +823,13 @@ impl RunReport {
     /// statement from observing none. The package writer takes a report to
     /// seal, so this is what a caller hands it before any stage has run.
     #[must_use]
-    pub fn unmeasured(job_id: &str, lesson_id: &str, plan_hash: &str, build_attempt: u32) -> Self {
+    pub fn unmeasured(
+        job_id: &str,
+        lesson_id: &str,
+        plan_hash: &str,
+        build_attempt: u32,
+        completion: ReportCompletion,
+    ) -> Self {
         let absent = Measured::Unavailable {
             reason: Unavailable::StageNotReached,
         };
@@ -810,14 +839,14 @@ impl RunReport {
             build_attempt,
             lesson_id: lesson_id.to_owned(),
             plan_hash: plan_hash.to_owned(),
-            completion: ReportCompletion::Incomplete,
-            error_class: None,
+            completion,
             wall_micros: 0,
             model_load_micros: absent,
             assembly_micros: absent,
             normalize_micros: absent,
             encode_micros: absent,
             segments: Vec::new(),
+            join_findings: Vec::new(),
             synthesis: synthesis_totals(&[]),
             resources: RunResources {
                 peak_resident_kib: absent,
@@ -847,13 +876,13 @@ mod tests {
             lesson_id: _,
             plan_hash: _,
             completion: _,
-            error_class: _,
             wall_micros: _,
             model_load_micros: _,
             assembly_micros: _,
             normalize_micros: _,
             encode_micros: _,
             segments,
+            join_findings: _,
             synthesis,
             resources,
         } = report;
@@ -892,8 +921,9 @@ mod tests {
             build_attempt: 1,
             lesson_id: "lesson".to_owned(),
             plan_hash: "0".repeat(64),
-            completion: ReportCompletion::Incomplete,
-            error_class: Some("io".to_owned()),
+            completion: ReportCompletion::Incomplete {
+                error_class: BuildErrorClass::Io,
+            },
             wall_micros: 0,
             model_load_micros: Measured::Unavailable {
                 reason: Unavailable::NoWorkerProcess,
@@ -910,6 +940,7 @@ mod tests {
             // A build that reached no stage synthesized no segment, so the
             // rows are empty rather than fabricated.
             segments: Vec::new(),
+            join_findings: Vec::new(),
             synthesis: SynthesisTotals {
                 segments_synthesized_count: 0,
                 wall_micros: 0,
@@ -1020,6 +1051,36 @@ mod tests {
                 "{sampled:?} is a point sample under WSL2"
             );
         }
+    }
+
+    #[test]
+    fn t1_e2_completion_and_error_class_are_one_closed_state() {
+        let mut complete = serde_json::to_value(RunReport::unmeasured(
+            "job",
+            "lesson",
+            &"0".repeat(64),
+            1,
+            ReportCompletion::Complete,
+        ))
+        .expect("serialize complete report");
+        complete["error_class"] = serde_json::json!("io");
+        assert!(
+            serde_json::from_value::<RunReport>(complete).is_err(),
+            "a complete report cannot carry an independent error class"
+        );
+
+        let mut incomplete =
+            serde_json::to_value(unmeasured_report()).expect("serialize incomplete report");
+        incomplete["completion"] = serde_json::json!({"incomplete": {}});
+        assert!(
+            serde_json::from_value::<RunReport>(incomplete.clone()).is_err(),
+            "an incomplete report must carry an error class"
+        );
+        incomplete["completion"] = serde_json::json!({"incomplete": {"error_class": "invented"}});
+        assert!(
+            serde_json::from_value::<RunReport>(incomplete).is_err(),
+            "an incomplete report cannot invent an error class"
+        );
     }
 
     #[test]

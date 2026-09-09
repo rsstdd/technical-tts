@@ -21,9 +21,9 @@
 - Compatibility class: **breaking**. `PreparedPackageWriter::write` returns
   [`PackageWriteOutcome`] where it returned `PackagePublication`. Every implementation changes
   signature, so nothing compiles against the old shape by accident.
-- Required/defaulted fields: one — `PackageWriteOutcome::sealed`, an `Option<RunReport>`. `Some`
-  where this call assembled, encoded, and published; `None` where it selected a package an earlier
-  build produced. Absence is not "no report": a reused package keeps the one sealed beside it.
+- Required/defaulted fields: `PackageWriteOutcome` is a data struct carrying the selected package,
+  the report for the current call, and a closed `PackageDisposition::Published` / `Reused` value
+  saying whether this call created package bytes.
 - Unknown-field behavior: not applicable. This is a Rust API, not a serialized format; nothing here
   reaches the wire.
 - Wire or Rust representation changed: **Rust only.** No published schema, manifest field, or
@@ -32,7 +32,8 @@
 - Contract ID: `manifest`
 - Old version: `2.0-skeleton` (`MANIFEST_SCHEMA_VERSION` `2.0`)
 - New version: `3.0-skeleton` (`3.0`); `schemas/manifest-v2.schema.json` retired for `v3`
-- Compatibility class: **breaking**. `artifacts` gains a required `run_report` entry.
+- Compatibility class: **breaking**. `artifacts` gains a required `run_report` entry and the root
+  gains `build_attempt`, joining that report to the attempt that produced it.
 - Unknown-field behavior: refused. `deny_unknown_fields` on every stored shape.
 - Unknown-version behavior: refused at the version, before any field is decoded.
 
@@ -51,6 +52,12 @@ manifest a consumer read would have checksummed a report that package never held
 `t4_e2_the_previous_layout_is_read_and_rebuilt_rather_than_refused` is what found it, and
 `records_every_artifact` is what closes it.
 
+**A checksum alone does not make the report trustworthy.** Current-layout package validation reads
+`run-report.json` through `MAX_RUN_REPORT_JSON_BYTES`, strictly deserializes `RunReport`, requires a
+complete current layout, and checks job, lesson, plan, build attempt, ordered segment IDs, takes,
+audio frame counts, and advisory join pairs against the manifest. A malformed but checksummed
+report and a valid report copied from another attempt are both refused.
+
 **Why the return type moved rather than the publication growing.** `PackagePublication` derives
 `Eq`, and two tests compare it whole: `provisional_contracts.rs:374` against the fake writer and
 `:456` inside `t4_e1_the_real_package_writer_passes_the_shared_contract`, both asserting that a
@@ -59,11 +66,12 @@ branch and performs no assembly and no encoding, so a document that moved with t
 every reused package unequal to the one it reuses. `E2-S3-INTERFACE-CHANGE-001` §G-A recorded the same
 trap when it kept a join finding off this type; this record follows it.
 
-**Why `sealed` is an option and not a report.** The package's report describes the package; the
-build's report describes the build. On a fresh write they are one document. On a reuse they are two,
-and the caller needs its own — an earlier design returned the package's report on both paths, and
-two tests caught it: the reused write reported the first build's durations, and a warm build claimed
-two segments synthesized when it had synthesized none.
+**Why disposition is an enum.** The package's sealed report describes the producing build; a warm
+call needs a report describing its own reuse. An optional field made reuse implicit and let the
+pipeline emit fresh assembly, encoding, and publication events unconditionally. The disposition
+makes the branch exhaustive: only `Published` emits those events, while `Reused` emits
+`PackageReused`. The package and current report have the same shape in both cases, so they remain
+plain fields rather than being duplicated across disposition variants.
 
 **Why the durations are `Measured` and not numbers.** A build that reused a package spent nothing on
 it, which is a different statement from spending no time. `Unavailable::ReusedFromCache` says so, and
@@ -71,13 +79,15 @@ it, which is a different statement from spending no time. `Unavailable::ReusedFr
 
 ## Identity effect
 
-**None.** `PACKAGE_WRITER_CONTRACT_VERSION` appears in exactly two places in the source — its
+**No synthesis, cache, plan, or verification identity moves.** `PACKAGE_WRITER_CONTRACT_VERSION` appears in exactly two places in the source — its
 declaration in `crates/study-tts-runtime/src/package_port.rs` and its re-export in `lib.rs` — and
 nowhere in `schemas/`, `fixtures/`, or `evidence/`. It reaches no cache key, no synthesis key, no
 manifest field, and no durable document. The durable identity that gates package reuse is
 `manifest::CURRENT_MANIFEST_LAYOUT_VERSION` together with the recorded artifact set, the
 tool-profile comparison, and `text_renderer_version` — the first of which this record adds, for the
-reason §Version and compatibility gives.
+reason §Version and compatibility gives. The package identity does move: the manifest now includes
+the report artifact, its checksum, and the producing build attempt, and the manifest digest names
+the immutable package directory.
 
 `E1-S4-INTERFACE-CHANGE-001` reached the same conclusion when it moved this constant from `1.0` to
 `2.0`, and `docs/INDEX.md` records it: "No synthesis, verification, or cache identity moves."
@@ -86,9 +96,10 @@ reason §Version and compatibility gives.
 
 - Synthesis identities affected: none
 - Verification identities affected: none
-- Plan, takes, or package identities affected: none
-- Consumers and commands affected: one — `pipeline::render_attempt`, which uses the sealed report
-  where there is one and its own where there is not. No CLI command reads a package writer directly.
+- Plan or takes identities affected: none. New package identities include the report-bearing
+  manifest; old packages remain immutable and are rebuilt rather than reused.
+- Consumers and commands affected: one — `pipeline::render_attempt`, which handles the published
+  and reused outcomes exhaustively. No CLI command reads a package writer directly.
 - Fakes and shared suites affected: `FakePackageWriter`, `RecordingPreparedPackageWriter`, and
   `run_package_writer_contract_scenario`, which now returns `[PackageWriteOutcome; 2]`
 - Fixtures and schemas affected: `schemas/manifest-v2.schema.json` is retired and
@@ -140,13 +151,15 @@ Both are **supervisor** measurements. Assembly is Rust in this process and encod
 running under it, so neither can be read against `docs/perf/BUDGETS.md`, whose figures describe the
 Python worker.
 
-**Two spans sit outside both on purpose, and the pair does not account for the write.**
-`export::normalize_master`, the loudness pass E2-S3 added, runs over the master before either
-encode; the three `ffprobe` validations prove the outputs rather than produce them. A third
-`normalize_micros` field is the obvious next question and is refused here: ADR-0001 §14 names two
-durations, and adding a third uninvited is scope this record cannot justify.
-`docs/observability/RUN-REPORT-FIELDS.md` states the exclusion so a reader does not read the pair as
-a full account.
+`normalize_micros` spans both loudness passes. The three `ffprobe` validations remain outside the
+stage durations because they prove bytes rather than produce them. `wall_micros` includes both the
+production and validation work: its clock starts before input loading and is finalized after the
+package work, immediately before the report is sealed.
+
+`PackageWriteFailure` carries the original typed `BuildError` plus `PackageTimings`. Each timed
+operation stores its elapsed observation even when it returns an error, completed earlier stages
+remain observed, and later stages remain `stage_not_reached`. The pipeline copies those values into
+the partial report before returning the original error.
 
 ## Delivery and recovery
 
@@ -184,7 +197,7 @@ with this.
 
 | Role | Decision | Signature |
 |---|---|---|
-| Contract owner (T-AUDIO) | Accept `e0.package-writer.3.0`, the `PackageWriteOutcome` return shape, and `manifest` `3.0-skeleton` with its seventh artifact | |
+| Contract owner (T-AUDIO) | Accept `e0.package-writer.3.0`, `PackageWriteOutcome` with its closed `PackageDisposition`, failure timings, and `manifest` `3.0-skeleton` with its seventh artifact and build-attempt join | |
 | Engineering owner | Accept the empty migration, on the evidence that no durable artifact records this contract version | |
 | Affected-track reviewers (T-CLI, T-RUNTIME) | Accept the two supervisor timings and the stated exclusions | |
 | Effective version and date | `e0.package-writer.3.0` and `manifest` `3.0-skeleton`, on signature | |

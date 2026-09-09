@@ -50,12 +50,12 @@ pub use cache_port::{
     FileSystemCachePublisher, StagedAudioProducer,
 };
 pub use error::{
-    AudioError, AudioFault, BuildError, CacheEntryFault, CacheError, ConditioningContradiction,
-    DurableStateError, EnvironmentMismatch, IoError, ManagedPathError, ModelArtifactError,
-    PackageArtifactMismatch, PublicationError, RemedyAdvice, RemedyOwner, RightsError,
-    RuntimeIdentityMismatch, ToolError, ToolInvocation, ToolOperation, ToolOutputStream,
-    VoiceProfileError, WorkerBundleError, WorkerLockfileErrorReason, WorkerLockfileLocus,
-    WorkerRequirementFault,
+    AudioError, AudioFault, BuildError, BuildErrorClass, CacheEntryFault, CacheError,
+    ConditioningContradiction, DurableStateError, EnvironmentMismatch, IoError, ManagedPathError,
+    ModelArtifactError, PackageArtifactMismatch, PublicationError, RemedyAdvice, RemedyOwner,
+    RightsError, RuntimeIdentityMismatch, ToolError, ToolInvocation, ToolOperation,
+    ToolOutputStream, VoiceProfileError, WorkerBundleError, WorkerLockfileErrorReason,
+    WorkerLockfileLocus, WorkerRequirementFault,
 };
 pub use job_events::BuildStage;
 pub use job_repository::{FileSystemJobRepository, JobOwnership, JobRepository};
@@ -64,9 +64,10 @@ pub use model_gate::{
     model_artifacts_hash, verify_model_artifacts,
 };
 pub use package_port::{
-    FileSystemPackageWriter, PACKAGE_WRITER_CONTRACT_VERSION, PackagePreflightRequest,
-    PackagePrepareRequest, PackagePublication, PackageTimings, PackageWriteOutcome,
-    PackageWriteRequest, PackageWriter, PreparedPackageWriter,
+    FileSystemPackageWriter, PACKAGE_WRITER_CONTRACT_VERSION, PackageDisposition,
+    PackagePreflightRequest, PackagePrepareRequest, PackagePublication, PackageTimings,
+    PackageWriteFailure, PackageWriteOutcome, PackageWriteRequest, PackageWriter,
+    PreparedPackageWriter,
 };
 pub use pipeline::{
     BuildRequest, BuildResult, PreviewServiceBundle, ResumeRequest, build_preview,
@@ -75,10 +76,10 @@ pub use pipeline::{
 };
 pub use prune::{PruneCandidate, live_cache_keys, prune_candidates};
 pub use run_report::{
-    Aggregation, CacheOutcome, Fidelity, FieldSemantics, Measured, MeasuredProcess,
-    MeasurementClock, MeasurementUnit, RUN_REPORT_LAYOUT_VERSION, RUN_REPORT_SCHEMA_STEM,
-    RUN_REPORT_SCHEMA_VERSION, ReportCompletion, ReportField, RunReport, RunReportLayout,
-    RunReportSegment, RunResources, SynthesisTotals, Unavailable, WorstSegment,
+    Aggregation, CacheOutcome, Fidelity, FieldSemantics, JoinFinding, MAX_RUN_REPORT_JSON_BYTES,
+    Measured, MeasuredProcess, MeasurementClock, MeasurementUnit, RUN_REPORT_LAYOUT_VERSION,
+    RUN_REPORT_SCHEMA_STEM, RUN_REPORT_SCHEMA_VERSION, ReportCompletion, ReportField, RunReport,
+    RunReportLayout, RunReportSegment, RunResources, SynthesisTotals, Unavailable, WorstSegment,
     milli_real_time_factor,
 };
 pub use schemas::{

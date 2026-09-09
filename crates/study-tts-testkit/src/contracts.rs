@@ -22,10 +22,11 @@ use study_tts_core::{JobDocument, JobState, ManifestDigest, RenderPlan, Selected
 use study_tts_runtime::{
     BackendDescriptor, BackendError, BuildError, BuildStage, CachePublisher, CacheResolveRequest,
     ExecutorMeasurements, FileSystemCachePublisher, FileSystemJobRepository, IoError, JobOwnership,
-    JobRepository, PackagePreflightRequest, PackagePrepareRequest, PackagePublication,
-    PackageWriteOutcome, PackageWriteRequest, PackageWriter, PreparedPackageWriter,
-    ReportCompletion, RunReport, StagedAudioProducer, SynthesisReport, SynthesisRequest,
-    TtsExecutor, ValidatedCachedArtifact, WorkerConfiguration, WorkerTtsExecutor,
+    JobRepository, PackageDisposition, PackagePreflightRequest, PackagePrepareRequest,
+    PackagePublication, PackageWriteFailure, PackageWriteOutcome, PackageWriteRequest,
+    PackageWriter, PreparedPackageWriter, ReportCompletion, RunReport, StagedAudioProducer,
+    SynthesisReport, SynthesisRequest, TtsExecutor, ValidatedCachedArtifact, WorkerConfiguration,
+    WorkerTtsExecutor,
 };
 
 /// Thread-safe ordered observations shared by recording seam adapters.
@@ -171,7 +172,10 @@ impl PreparedPackageWriter for RecordingPreparedPackageWriter {
         self.inner.prepare(request)
     }
 
-    fn write(&self, request: &PackageWriteRequest<'_>) -> Result<PackageWriteOutcome, BuildError> {
+    fn write(
+        &self,
+        request: &PackageWriteRequest<'_>,
+    ) -> Result<PackageWriteOutcome, PackageWriteFailure> {
         self.events.record("package.write");
         self.inner.write(request)
     }
@@ -426,6 +430,7 @@ pub struct FakePackageWriter {
     root: PathBuf,
     calls: Arc<Mutex<Vec<FakePackageCall>>>,
     selected: Arc<Mutex<BTreeMap<String, PackagePublication>>>,
+    next_failure: Arc<Mutex<Option<PackageWriteFailure>>>,
 }
 
 impl FakePackageWriter {
@@ -435,6 +440,7 @@ impl FakePackageWriter {
             root,
             calls: Arc::new(Mutex::new(Vec::new())),
             selected: Arc::new(Mutex::new(BTreeMap::new())),
+            next_failure: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -444,6 +450,14 @@ impl FakePackageWriter {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// Injects one package-write failure with the timings reached before it.
+    pub fn fail_next(&self, failure: PackageWriteFailure) {
+        *self
+            .next_failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(failure);
     }
 }
 
@@ -469,11 +483,22 @@ impl PreparedPackageWriter for FakePackageWriter {
         Ok(())
     }
 
-    fn write(&self, request: &PackageWriteRequest<'_>) -> Result<PackageWriteOutcome, BuildError> {
+    fn write(
+        &self,
+        request: &PackageWriteRequest<'_>,
+    ) -> Result<PackageWriteOutcome, PackageWriteFailure> {
         self.calls
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(FakePackageCall::Write);
+        if let Some(failure) = self
+            .next_failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            return Err(failure);
+        }
         let plan_hash = request.plan.plan_hash.as_str().to_owned();
         if let Some(publication) = self
             .selected
@@ -482,7 +507,11 @@ impl PreparedPackageWriter for FakePackageWriter {
             .get(&plan_hash)
             .cloned()
         {
-            return Ok(no_work_outcome(publication));
+            return Ok(no_work_outcome(
+                publication,
+                request.run_report,
+                PackageDisposition::Reused,
+            ));
         }
 
         let package_dir = self.root.join("packages").join(&plan_hash);
@@ -534,7 +563,11 @@ impl PreparedPackageWriter for FakePackageWriter {
             .insert(plan_hash, publication.clone());
         // The fake performs no assembly and no encoding, so it reports none
         // rather than a fabricated duration a consumer might assert on.
-        Ok(no_work_outcome(publication))
+        Ok(no_work_outcome(
+            publication,
+            request.run_report,
+            PackageDisposition::Published,
+        ))
     }
 }
 
@@ -543,10 +576,15 @@ impl PreparedPackageWriter for FakePackageWriter {
 /// The fake performs neither on either branch, so it seals nothing and lets
 /// the caller describe its own run rather than handing back a fabricated pair
 /// of durations a consumer might assert on.
-fn no_work_outcome(publication: PackagePublication) -> PackageWriteOutcome {
+fn no_work_outcome(
+    publication: PackagePublication,
+    run_report: &RunReport,
+    disposition: PackageDisposition,
+) -> PackageWriteOutcome {
     PackageWriteOutcome {
         publication,
-        sealed: None,
+        run_report: run_report.clone(),
+        disposition,
     }
 }
 
@@ -580,6 +618,7 @@ pub struct InMemoryJobRepository {
     history: Mutex<Vec<JobDocument>>,
     retained: Mutex<BTreeMap<String, Vec<u8>>>,
     plans: Mutex<BTreeMap<String, RenderPlan>>,
+    reports: Mutex<Vec<RunReport>>,
     calls: Mutex<Vec<FakeJobCall>>,
 }
 
@@ -595,6 +634,14 @@ impl InMemoryJobRepository {
     /// Returns every document passed to [`JobRepository::replace`].
     pub fn documents(&self) -> Vec<JobDocument> {
         self.history
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Returns every complete or partial report retained by the pipeline.
+    pub fn reports(&self) -> Vec<RunReport> {
+        self.reports
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -659,6 +706,10 @@ impl JobRepository for InMemoryJobRepository {
         _job_id: &str,
         report: &RunReport,
     ) -> Result<(), BuildError> {
+        self.reports
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(report.clone());
         self.calls
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -898,8 +949,8 @@ pub fn run_package_writer_contract_scenario(
 ) -> Result<[PackageWriteOutcome; 2], BuildError> {
     let writer = writer.preflight(preflight)?;
     writer.prepare(prepare)?;
-    let first = writer.write(write)?;
-    let second = writer.write(write)?;
+    let first = writer.write(write).map_err(|failure| *failure.source)?;
+    let second = writer.write(write).map_err(|failure| *failure.source)?;
     Ok([first, second])
 }
 

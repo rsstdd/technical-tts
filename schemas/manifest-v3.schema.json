@@ -300,6 +300,12 @@
     "artifacts": {
       "$ref": "#/$defs/StoredArtifacts"
     },
+    "build_attempt": {
+      "format": "uint32",
+      "maximum": 4294967295,
+      "minimum": 0,
+      "type": "integer"
+    },
     "join_continuity": {
       "description": "The measured joins, empty where the build replaced nothing. Read back\nso the strict parse accounts for the whole document; nothing decides\nreuse on it, because ADR-0003 has not frozen what the numbers mean.",
       "items": {
@@ -348,6 +354,7 @@
     "schema_version",
     "release_status",
     "lesson_id",
+    "build_attempt",
     "plan_hash",
     "take_selection_source",
     "text_renderer_version",

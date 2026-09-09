@@ -5,7 +5,6 @@
   "lesson_id": "e0-s0-two-segment",
   "plan_hash": "0000000000000000000000000000000000000000000000000000000000000000",
   "completion": "complete",
-  "error_class": null,
   "wall_micros": 120000000,
   "model_load_micros": {
     "observation": "observed",
@@ -33,7 +32,10 @@
         "observation": "observed",
         "value": 52000000
       },
-      "audio_frames": 216000
+      "audio_frames": {
+        "observation": "observed",
+        "value": 216000
+      }
     },
     {
       "segment_id": "seg-0002",
@@ -44,7 +46,10 @@
         "observation": "observed",
         "value": 44000000
       },
-      "audio_frames": 264000
+      "audio_frames": {
+        "observation": "observed",
+        "value": 264000
+      }
     },
     {
       "segment_id": "seg-0003",
@@ -55,9 +60,13 @@
         "observation": "unavailable",
         "reason": "reused_from_cache"
       },
-      "audio_frames": 300000
+      "audio_frames": {
+        "observation": "observed",
+        "value": 300000
+      }
     }
   ],
+  "join_findings": [],
   "synthesis": {
     "segments_synthesized_count": 0,
     "wall_micros": 0,
