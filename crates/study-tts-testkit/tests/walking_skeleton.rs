@@ -840,6 +840,17 @@ fn t4_e1_only_the_run_report_makes_two_builds_of_one_lesson_differ() {
     let mut first_manifest = read_manifest(&first);
     let mut second_manifest = read_manifest(&second);
 
+    assert_ne!(
+        first.package_dir.file_name(),
+        second.package_dir.file_name(),
+        "the run-specific manifests must name different package identities"
+    );
+    assert_ne!(
+        first_manifest["artifacts"]["run_report"]["blake3"],
+        second_manifest["artifacts"]["run_report"]["blake3"],
+        "the sealed run reports must carry different elapsed observations"
+    );
+
     // The sealed run report carries this build's elapsed times, so its digest
     // differs under the current E2-S4 implementation. Its still-Proposed
     // interface record has not made that package identity an accepted

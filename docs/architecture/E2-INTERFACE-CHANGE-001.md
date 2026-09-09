@@ -37,9 +37,9 @@
 distinguishes a manifest whose `tools.executions[].arguments[]` names `/home/<user>/…` from one
 naming `{staging}/lesson.wav`. A `4.0-skeleton` reader therefore refuses any absolute recorded
 argument before treating the document as redacted. The version tells the reader which rule to
-enforce; untrusted contents still have to satisfy it. The published schema states the rule as well
-as enforcing it: `arguments` carries a `description` naming the `{staging}` substitution, so a
-consumer reads what changed rather than inferring it from a version number.
+enforce; untrusted contents still have to satisfy it. The published schema states the rule:
+`arguments` carries a `description` naming the `{staging}` substitution, so a consumer reads what
+changed rather than inferring it from a version number. `parse_stored_manifest` enforces it.
 
 **One decoder reads both layouts.** `3.0-skeleton` holds exactly the fields `4.0-skeleton` holds, so
 `parse_stored_manifest` decodes it through `StoredManifest` rather than a frozen copy that would
