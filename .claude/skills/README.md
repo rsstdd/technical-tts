@@ -1,6 +1,6 @@
 # Repository skills
 
-Ten skills live here, one directory each, all invocable as `/<name>`. This file routes: it says
+Eleven skills live here, one directory each, all invocable as `/<name>`. This file routes: it says
 which skill loads when and whether it binds. Each `SKILL.md` frontmatter stays authoritative for
 what that skill covers, so nothing here restates a skill's content and nothing here can drift from
 it.
@@ -43,6 +43,18 @@ merges, or opens a pull request.
 plan. It re-derives the criteria set independently — a set read off the implementation agrees with
 the implementation — and it is the correctness pass `rust-review` routes to, that skill being
 scoped to over-engineering alone.
+
+## Working tree — invoked explicitly, changes nothing
+
+| Skill | Invoke when | Produces | Touches code |
+|---|---|---|---|
+| [`commit-plan`](commit-plan/SKILL.md) | Uncommitted work needs splitting into commits | A grouping, a message per commit, and the `git add`/`git commit` commands as text | No |
+
+It emits commands and runs none of them: `AGENTS.md` §Ask first puts committing behind the user
+and `CLAUDE.md` §Non-negotiables gives them every Git operation outright. Its splits are the ones
+this tree enforces mechanically — an index row with the document it names, a fixture with its
+checksum row, a generated schema with the type that generates it, a record before the change it
+authorizes.
 
 ## Adding a skill
 

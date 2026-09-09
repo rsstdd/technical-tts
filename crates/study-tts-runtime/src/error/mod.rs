@@ -29,6 +29,7 @@
 
 use std::{io, path::PathBuf};
 
+use serde::{Deserialize, Serialize};
 use study_tts_core::{LessonDiagnostic, PlanError, ReleaseError, TakesError, VoiceError};
 use thiserror::Error;
 
@@ -60,6 +61,49 @@ pub use worker_bundle::{
     EnvironmentMismatch, RuntimeIdentityMismatch, WorkerBundleError, WorkerLockfileErrorReason,
     WorkerLockfileLocus, WorkerRequirementFault,
 };
+
+/// Stable, redacted class of a build failure.
+///
+/// ADR-0001 §14 permits an error class in observability records, never a
+/// formatted error: several underlying variants carry host paths. Keeping the
+/// vocabulary here makes [`BuildError::class`] exhaustive and lets published
+/// reports reject a class this build does not know.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildErrorClass {
+    /// Filesystem, JSON, or WAV I/O failed.
+    Io,
+    /// An authored lesson was invalid.
+    Lesson,
+    /// A take selection was invalid or stale.
+    Takes,
+    /// Render planning failed.
+    Plan,
+    /// Voice consent or scope was refused.
+    Voice,
+    /// A voice-profile record failed validation.
+    VoiceProfile,
+    /// Rights declarations refused the operation.
+    Rights,
+    /// Publication policy refused the operation.
+    Publication,
+    /// A cache entry failed validation or publication.
+    Cache,
+    /// Audio failed a structural or quality invariant.
+    Audio,
+    /// An external tool failed or returned invalid output.
+    Tool,
+    /// A managed path escaped or was invalid.
+    ManagedPath,
+    /// Durable state was malformed or contradictory.
+    DurableState,
+    /// Synthesis or its protocol failed.
+    Synthesis,
+    /// The worker bundle could not be identified.
+    WorkerBundle,
+    /// Governed model artifacts failed validation.
+    ModelArtifacts,
+}
 
 /// Why a build or publication was refused, grouped by its owning boundary.
 #[derive(Debug, Error)]
@@ -132,6 +176,38 @@ pub enum BuildError {
 }
 
 impl BuildError {
+    /// The class of failure, as ADR-0001 §14's `error_class` names it.
+    ///
+    /// A closed vocabulary and never a formatted message. Several variants
+    /// carry a path — [`IoError`] always does — and a run report is a
+    /// published document that `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`
+    /// keeps host paths out of. A `Debug` string would put one there the first
+    /// time a build failed on a governed root.
+    ///
+    /// Exhaustive, so a new variant is a compile error here rather than a
+    /// failure that reports someone else's class.
+    #[must_use]
+    pub fn class(&self) -> BuildErrorClass {
+        match self {
+            Self::Io(_) => BuildErrorClass::Io,
+            Self::Lesson(_) => BuildErrorClass::Lesson,
+            Self::Takes(_) => BuildErrorClass::Takes,
+            Self::Plan(_) => BuildErrorClass::Plan,
+            Self::Voice(_) => BuildErrorClass::Voice,
+            Self::VoiceProfile(_) => BuildErrorClass::VoiceProfile,
+            Self::Rights(_) => BuildErrorClass::Rights,
+            Self::Publication(_) => BuildErrorClass::Publication,
+            Self::Cache(_) => BuildErrorClass::Cache,
+            Self::Audio(_) => BuildErrorClass::Audio,
+            Self::Tool(_) => BuildErrorClass::Tool,
+            Self::ManagedPath(_) => BuildErrorClass::ManagedPath,
+            Self::DurableState(_) => BuildErrorClass::DurableState,
+            Self::Synthesis(_) => BuildErrorClass::Synthesis,
+            Self::WorkerBundle(_) => BuildErrorClass::WorkerBundle,
+            Self::ModelArtifacts(_) => BuildErrorClass::ModelArtifacts,
+        }
+    }
+
     /// Returns governed recovery advice when the routing table establishes it.
     pub fn remedy(&self) -> Option<RemedyAdvice> {
         match self {
@@ -715,6 +791,12 @@ mod tests {
             | DurableStateError::MissingPackageManifest { .. }
             | DurableStateError::MalformedPackageManifest { .. }
             | DurableStateError::UnsupportedPackageManifest { .. }
+            | DurableStateError::MalformedPackageRunReport { .. }
+            | DurableStateError::PackageRunReportSegmentCountExceeded { .. }
+            | DurableStateError::PackageRunReportIncomplete { .. }
+            | DurableStateError::PackageRunReportIdentityMismatch { .. }
+            | DurableStateError::PackageRunReportSegmentMismatch { .. }
+            | DurableStateError::PackageRunReportJoinMismatch { .. }
             | DurableStateError::PackageReleaseStatusMismatch { .. }
             | DurableStateError::PackageLessonMismatch { .. }
             | DurableStateError::EmptyPackageSegmentId { .. }

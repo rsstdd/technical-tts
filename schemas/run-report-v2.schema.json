@@ -1,0 +1,517 @@
+{
+  "$defs": {
+    "BuildErrorClass": {
+      "description": "Stable, redacted class of a build failure.\n\nADR-0001 §14 permits an error class in observability records, never a\nformatted error: several underlying variants carry host paths. Keeping the\nvocabulary here makes [`BuildError::class`] exhaustive and lets published\nreports reject a class this build does not know.",
+      "oneOf": [
+        {
+          "const": "io",
+          "description": "Filesystem, JSON, or WAV I/O failed.",
+          "type": "string"
+        },
+        {
+          "const": "lesson",
+          "description": "An authored lesson was invalid.",
+          "type": "string"
+        },
+        {
+          "const": "takes",
+          "description": "A take selection was invalid or stale.",
+          "type": "string"
+        },
+        {
+          "const": "plan",
+          "description": "Render planning failed.",
+          "type": "string"
+        },
+        {
+          "const": "voice",
+          "description": "Voice consent or scope was refused.",
+          "type": "string"
+        },
+        {
+          "const": "voice_profile",
+          "description": "A voice-profile record failed validation.",
+          "type": "string"
+        },
+        {
+          "const": "rights",
+          "description": "Rights declarations refused the operation.",
+          "type": "string"
+        },
+        {
+          "const": "publication",
+          "description": "Publication policy refused the operation.",
+          "type": "string"
+        },
+        {
+          "const": "cache",
+          "description": "A cache entry failed validation or publication.",
+          "type": "string"
+        },
+        {
+          "const": "audio",
+          "description": "Audio failed a structural or quality invariant.",
+          "type": "string"
+        },
+        {
+          "const": "tool",
+          "description": "An external tool failed or returned invalid output.",
+          "type": "string"
+        },
+        {
+          "const": "managed_path",
+          "description": "A managed path escaped or was invalid.",
+          "type": "string"
+        },
+        {
+          "const": "durable_state",
+          "description": "Durable state was malformed or contradictory.",
+          "type": "string"
+        },
+        {
+          "const": "synthesis",
+          "description": "Synthesis or its protocol failed.",
+          "type": "string"
+        },
+        {
+          "const": "worker_bundle",
+          "description": "The worker bundle could not be identified.",
+          "type": "string"
+        },
+        {
+          "const": "model_artifacts",
+          "description": "Governed model artifacts failed validation.",
+          "type": "string"
+        }
+      ]
+    },
+    "CacheOutcome": {
+      "description": "Whether this build's worker produced a segment or reused one.\n\n`DELIVERY-PLAN.md` E2-S4 task 2 requires the outcome per segment. It is\nread from whether the cache ran the producer closure, which is the only\nplace the distinction survives: [`crate::CachePublisher::resolve`] returns\nthe same validated artifact either way, deliberately, so that reused audio\nand fresh audio are indistinguishable to everything downstream of it.",
+      "oneOf": [
+        {
+          "const": "synthesized",
+          "description": "The worker synthesized this segment during this build.",
+          "type": "string"
+        },
+        {
+          "const": "reused",
+          "description": "A published cache entry supplied it and no synthesis ran.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Cache resolution or synthesis failed before audio was available.",
+          "type": "string"
+        }
+      ]
+    },
+    "JoinFinding": {
+      "additionalProperties": false,
+      "description": "One provisional join-discontinuity finding requiring human review.\n\nThe ratios remain in the manifest. This report carries only the segment\npair whose measured continuity is outside the provisional band, so it does\nnot publish a second copy of the measurement or promote that band to a\nproduction threshold.",
+      "properties": {
+        "earlier_segment_id": {
+          "description": "Segment ending at the join.",
+          "type": "string"
+        },
+        "later_segment_id": {
+          "description": "Segment beginning at the join.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "earlier_segment_id",
+        "later_segment_id"
+      ],
+      "type": "object"
+    },
+    "Measured": {
+      "description": "A number this environment may or may not have been able to observe.\n\nTwo variants rather than a nullable number, so a document cannot say\n\"missing\" and \"zero\" with the same bytes. No `#[serde(other)]`: an\nobservation state this build does not know is a parse error.\nNot generic. Every measurement this document publishes is a `u64`, and a\ntype parameter with one instantiation buys nothing while costing a real\nhazard: `schemars` names generic instantiations positionally, so a second\none would publish `$defs/Measured2` and reordering fields could swap which\ndefinition a reader is looking at.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The value was measured.",
+          "properties": {
+            "observation": {
+              "const": "observed",
+              "type": "string"
+            },
+            "value": {
+              "description": "What was measured, in the unit its field name names.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "observation",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The value was not measured, and this is why.",
+          "properties": {
+            "observation": {
+              "const": "unavailable",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/Unavailable",
+              "description": "Why no value is present."
+            }
+          },
+          "required": [
+            "observation",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ReportCompletion": {
+      "description": "Whether a report describes a build that finished.\n\nA reader cannot otherwise tell a report sealed into a published package\nfrom one written where a build stopped, and the two carry the same fields\nwith very different meanings: an incomplete report's totals cover the work\nthat happened before the failure, not the work the lesson asked for.",
+      "oneOf": [
+        {
+          "const": "complete",
+          "description": "The build finished and this report was sealed into its package.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The build stopped, and this is what it had measured.",
+          "properties": {
+            "incomplete": {
+              "additionalProperties": false,
+              "properties": {
+                "error_class": {
+                  "$ref": "#/$defs/BuildErrorClass",
+                  "description": "Closed class of the failure that ended the build."
+                }
+              },
+              "required": [
+                "error_class"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "incomplete"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RunReportLayout": {
+      "const": "2.0-skeleton",
+      "type": "string"
+    },
+    "RunReportSegment": {
+      "additionalProperties": false,
+      "description": "What one planned segment cost this build.\n\nThe five facts `DELIVERY-PLAN.md` E2-S4 task 2 names. Built from planned\nidentities and the resolved cache artifact, never from the validated\nlesson: `spoken_text` and `display_text` sit on `PlannedSegment` beside the\n`id` this carries, and the guarantee that neither reaches a published\ndocument is that this type has nowhere to put them.",
+      "properties": {
+        "audio_frames": {
+          "$ref": "#/$defs/Measured",
+          "description": "Audio this segment supplied, excluding the pause written after it."
+        },
+        "cache_outcome": {
+          "$ref": "#/$defs/CacheOutcome",
+          "description": "Whether the worker produced this segment or the cache supplied it."
+        },
+        "retry_count": {
+          "description": "Times this segment's synthesis was retried.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "segment_id": {
+          "description": "Identity of the segment within its lesson.",
+          "type": "string"
+        },
+        "synthesis_wall_micros": {
+          "$ref": "#/$defs/Measured",
+          "description": "Time inside the worker's synthesis call, absent for a reused segment."
+        },
+        "take": {
+          "description": "Take this build rendered.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "segment_id",
+        "take",
+        "cache_outcome",
+        "retry_count",
+        "synthesis_wall_micros",
+        "audio_frames"
+      ],
+      "type": "object"
+    },
+    "RunResources": {
+      "additionalProperties": false,
+      "description": "What the build cost the machine.\n\nNo VRAM field. ADR-0001 §14 lists \"peak RAM and VRAM where the operating\nenvironment exposes them reliably\", and ADR-0002 pins a CPU-only backend, so\na VRAM field would be permanently unavailable — a field whose only value is\n\"not applicable\". `docs/architecture/E2-S4-INTERFACE-CHANGE-001.md` records\nthe omission.",
+      "properties": {
+        "open_handles_count": {
+          "$ref": "#/$defs/Measured",
+          "description": "Open file descriptors held by the worker."
+        },
+        "peak_resident_kib": {
+          "$ref": "#/$defs/Measured",
+          "description": "High-water resident memory of the worker."
+        },
+        "worker_restarts_count": {
+          "description": "Times the worker was restarted. Structurally zero at pool size one.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "peak_resident_kib",
+        "open_handles_count",
+        "worker_restarts_count"
+      ],
+      "type": "object"
+    },
+    "SynthesisTotals": {
+      "additionalProperties": false,
+      "description": "What the worker did across the whole build.",
+      "properties": {
+        "aggregate_real_time_factor_milli": {
+          "$ref": "#/$defs/Measured",
+          "description": "Real-time factor over the whole run: summed synthesis time divided by\nsummed generated audio, per ADR-0001 §3.4."
+        },
+        "audio_frames": {
+          "description": "Summed audio the worker generated, excluding inter-segment pauses the\ntimeline inserts.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "segment_audio_maximum_frames": {
+          "$ref": "#/$defs/Measured",
+          "description": "Longest segment audio the worker generated."
+        },
+        "segment_audio_minimum_frames": {
+          "$ref": "#/$defs/Measured",
+          "description": "Shortest segment audio the worker generated."
+        },
+        "segments_synthesized_count": {
+          "description": "Segments the worker synthesized, as opposed to segments reused from\ncache.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wall_micros": {
+          "description": "Summed time inside the worker's synthesis calls.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "worst_segment": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorstSegment"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The worst single segment, absent when nothing was synthesized."
+        }
+      },
+      "required": [
+        "segments_synthesized_count",
+        "wall_micros",
+        "audio_frames",
+        "aggregate_real_time_factor_milli",
+        "segment_audio_minimum_frames",
+        "segment_audio_maximum_frames"
+      ],
+      "type": "object"
+    },
+    "Unavailable": {
+      "description": "Why a measurement this document expected is not present.\n\nA stated reason rather than a null, because a reader handed `0` learns\nsomething false: a run whose peak resident memory could not be sampled did\nnot use zero kibibytes.",
+      "oneOf": [
+        {
+          "const": "not_exposed_by_environment",
+          "description": "ADR-0001 §14 admits peak RAM and handle counts only where the operating\nenvironment exposes them reliably. This is that concession's negative\ncase.",
+          "type": "string"
+        },
+        {
+          "const": "stage_not_reached",
+          "description": "The build ended before the stage that would have measured this.",
+          "type": "string"
+        },
+        {
+          "const": "no_audio_generated",
+          "description": "No audio was generated, so a ratio over it has no value. Distinct from a\nratio of zero, which would claim synthesis took no time.",
+          "type": "string"
+        },
+        {
+          "const": "reused_from_cache",
+          "description": "The work was reused rather than performed: a segment came from the\ncache and no synthesis ran, or a package an earlier build produced was\nselected and nothing was assembled or encoded. Distinct from a duration\nof zero, which would claim the work happened instantly.",
+          "type": "string"
+        },
+        {
+          "const": "no_worker_process",
+          "description": "The executor ran synthesis with no separate worker process, so there\nwas nothing to sample. Distinct from\n[`Unavailable::NotExposedByEnvironment`], which says the platform\nwithheld a counter: here the platform would have supplied one and no\nprocess existed to ask about.",
+          "type": "string"
+        }
+      ]
+    },
+    "WorstSegment": {
+      "additionalProperties": false,
+      "description": "The single worst segment by real-time factor, with the audio that produced\nit.\n\nShaped differently from the aggregate deliberately.\n`evidence/gates/g0/e0-s3/e0-s3-g0-requalification-torch-2-10-0-v1.md` found\nthat \"a single RTF number is not meaningful for this backend unless the\nutterance length is stated beside it\" — the fitted cost is a fixed\nper-take charge plus a marginal rate — so the worst ratio is a fact about\none utterance and carries that utterance's length.",
+      "properties": {
+        "audio_frames": {
+          "description": "Audio the worker generated for this segment.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "real_time_factor_milli": {
+          "description": "This segment's real-time factor, multiplied by one thousand.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "segment_id": {
+          "description": "Identifier of the segment this describes.",
+          "type": "string"
+        },
+        "take": {
+          "description": "Take of that segment the build synthesized.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wall_micros": {
+          "description": "Time inside the worker's synthesis call for this segment.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "segment_id",
+        "take",
+        "wall_micros",
+        "audio_frames",
+        "real_time_factor_milli"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://schemas.study-tts.example/run-report-v2.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "What one build measured.\n\nCarries identifiers, timings, and counts only. It names no file, quotes no\nlesson text, and holds no voice-reference path.",
+  "properties": {
+    "assembly_micros": {
+      "$ref": "#/$defs/Measured",
+      "description": "Time spent assembling segment audio into the master, absent when this\nbuild selected a package an earlier one produced."
+    },
+    "build_attempt": {
+      "description": "Attempt within that job.",
+      "format": "uint32",
+      "maximum": 4294967295,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "completion": {
+      "$ref": "#/$defs/ReportCompletion",
+      "description": "Whether the build finished, with a required class only when it failed."
+    },
+    "encode_micros": {
+      "$ref": "#/$defs/Measured",
+      "description": "Time spent encoding both lossy outputs, absent for the same reason."
+    },
+    "job_id": {
+      "description": "Job this build belongs to.",
+      "type": "string"
+    },
+    "join_findings": {
+      "description": "Provisional join discontinuities requiring human review.",
+      "items": {
+        "$ref": "#/$defs/JoinFinding"
+      },
+      "maxItems": 4096,
+      "type": "array"
+    },
+    "lesson_id": {
+      "description": "Lesson this build rendered.",
+      "type": "string"
+    },
+    "model_load_micros": {
+      "$ref": "#/$defs/Measured",
+      "description": "Time the backend spent starting and loading its model, where the\nbackend has a process that can report it."
+    },
+    "normalize_micros": {
+      "$ref": "#/$defs/Measured",
+      "description": "Time spent normalizing that master's loudness, absent for the same\nreason."
+    },
+    "plan_hash": {
+      "description": "Plan hash the build rendered from.",
+      "type": "string"
+    },
+    "resources": {
+      "$ref": "#/$defs/RunResources",
+      "description": "What the build cost the machine."
+    },
+    "schema_version": {
+      "$ref": "#/$defs/RunReportLayout",
+      "description": "Layout this document was written against."
+    },
+    "segments": {
+      "description": "One row per planned segment, in the order the plan renders them.",
+      "items": {
+        "$ref": "#/$defs/RunReportSegment"
+      },
+      "maxItems": 4096,
+      "type": "array"
+    },
+    "synthesis": {
+      "$ref": "#/$defs/SynthesisTotals",
+      "description": "What the worker did."
+    },
+    "wall_micros": {
+      "description": "Elapsed time from build entry through package production, sampled\nimmediately before this report is sealed.",
+      "format": "uint64",
+      "maximum": 18446744073709551615,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "job_id",
+    "build_attempt",
+    "lesson_id",
+    "plan_hash",
+    "completion",
+    "wall_micros",
+    "model_load_micros",
+    "assembly_micros",
+    "normalize_micros",
+    "encode_micros",
+    "segments",
+    "join_findings",
+    "synthesis",
+    "resources"
+  ],
+  "title": "RunReport",
+  "type": "object"
+}

@@ -16,6 +16,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll, Wake, Waker},
     thread,
+    time::{Duration, Instant},
 };
 
 use serde::Deserialize;
@@ -29,12 +30,17 @@ use study_tts_core::{
 };
 
 use crate::{
-    BackendError, BuildError, CachePublisher, CacheResolveRequest, DurableStateError,
-    FileSystemCachePublisher, FileSystemJobRepository, FileSystemPackageWriter, IoError,
-    JobOwnership, JobRepository, PackagePreflightRequest, PackagePrepareRequest,
-    PackageWriteRequest, PackageWriter, PreparedPackageWriter, PublicationError, RightsError,
-    SynthesisRequest, TtsExecutor, durable::read_bounded_bytes, export, io_error, managed, tools,
-    voice_gate,
+    BackendError, BuildError, BuildStage, CacheOutcome, CachePublisher, CacheResolveRequest,
+    DurableStateError, ExecutorMeasurements, FileSystemCachePublisher, FileSystemJobRepository,
+    FileSystemPackageWriter, IoError, JobOwnership, JobRepository, Measured, PackageDisposition,
+    PackagePreflightRequest, PackagePrepareRequest, PackageTimings, PackageWriteOutcome,
+    PackageWriteRequest, PackageWriter, PreparedPackageWriter, PublicationError, ReportCompletion,
+    RightsError, RunReport, RunReportLayout, RunReportSegment, RunResources, SynthesisRequest,
+    TtsExecutor, Unavailable,
+    durable::read_bounded_bytes,
+    export, io_error, managed,
+    run_report::{MICROSECONDS_PER_MILLISECOND, synthesis_totals},
+    tools, voice_gate,
 };
 
 /// Everything one preview build needs, named explicitly rather than read from
@@ -114,6 +120,8 @@ pub struct BuildResult {
     pub chapters: PathBuf,
     /// The manifest recording segments, checksums, and the tools used.
     pub manifest: PathBuf,
+    /// What this build measured, per `DELIVERY-PLAN.md` E2-S4.
+    pub run_report: RunReport,
 }
 
 /// Published provisional services used by one preview orchestration.
@@ -375,6 +383,12 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`crate::DurableStateError::MalformedPackageManifest`], including when a
 /// recorded digest is not one and its value object refuses it during parsing,
 /// [`crate::DurableStateError::UnsupportedPackageManifest`],
+/// [`crate::DurableStateError::MalformedPackageRunReport`],
+/// [`crate::DurableStateError::PackageRunReportSegmentCountExceeded`],
+/// [`crate::DurableStateError::PackageRunReportIncomplete`],
+/// [`crate::DurableStateError::PackageRunReportIdentityMismatch`],
+/// [`crate::DurableStateError::PackageRunReportSegmentMismatch`],
+/// [`crate::DurableStateError::PackageRunReportJoinMismatch`],
 /// [`crate::DurableStateError::PackageReleaseStatusMismatch`],
 /// [`crate::DurableStateError::PackageLessonMismatch`],
 /// [`crate::DurableStateError::EmptyPackageSegmentId`],
@@ -432,6 +446,7 @@ pub fn build_preview_with_services(
     request: BuildRequest,
     services: PreviewServiceBundle<'_>,
 ) -> Result<BuildResult, BuildError> {
+    let run_started = Instant::now();
     let lesson_bytes = read_lesson(&request.lesson_path)?;
     let lesson =
         ValidatedLesson::from_json(&request.lesson_path.display().to_string(), &lesson_bytes)?;
@@ -453,7 +468,14 @@ pub fn build_preview_with_services(
         .map_err(|error| io_error(&request.workspace, error))?;
     let ownership = services.jobs.claim(&workspace, gated.lesson.lesson_id())?;
     let previous = services.jobs.load(&workspace, gated.lesson.lesson_id())?;
-    render_attempt(&workspace, ownership, previous, gated, services)
+    render_attempt(
+        &workspace,
+        ownership,
+        previous,
+        gated,
+        services,
+        run_started,
+    )
 }
 
 /// Resumes a job from its retained inputs and recorded state.
@@ -506,6 +528,7 @@ pub fn resume_preview_with_services(
     request: ResumeRequest,
     services: PreviewServiceBundle<'_>,
 ) -> Result<BuildResult, BuildError> {
+    let run_started = Instant::now();
     let workspace = fs::canonicalize(&request.workspace)
         .map_err(|error| io_error(&request.workspace, error))?;
     let no_job = || DurableStateError::NoJobToResume {
@@ -576,7 +599,14 @@ pub fn resume_preview_with_services(
         &request.ffprobe_executable,
         services,
     )?;
-    render_attempt(&workspace, ownership, Some(previous), gated, services)
+    render_attempt(
+        &workspace,
+        ownership,
+        Some(previous),
+        gated,
+        services,
+        run_started,
+    )
 }
 
 /// What the gates produced and one attempt renders.
@@ -647,6 +677,123 @@ fn render_attempt(
     previous: Option<JobDocument>,
     gated: GatedBuild,
     services: PreviewServiceBundle<'_>,
+    run_started: Instant,
+) -> Result<BuildResult, BuildError> {
+    // Started here rather than at the entry point: the gate before this
+    // refuses a build without doing any of it, and ADR-0001 §3.4 excludes
+    // one-time installation and model download from what a run is measured on.
+    let mut progress = BuildProgress::new(
+        gated.lesson.lesson_id().to_owned(),
+        gated.plan.plan_hash.as_str().to_owned(),
+        run_started,
+    );
+    let job_id = progress.job_id.clone();
+    match render_attempt_inner(
+        &mut progress,
+        workspace,
+        ownership,
+        previous,
+        gated,
+        services,
+    ) {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            // Discarded on purpose. A report that cannot be written must not
+            // replace the error that made it worth writing, and a caller
+            // handling a tool failure would be told about a filesystem one.
+            if let Some(report) = progress.seal(ReportCompletion::Incomplete {
+                error_class: error.class(),
+            }) {
+                let _ = services.jobs.retain_run_report(workspace, &job_id, &report);
+            }
+            Err(error)
+        }
+    }
+}
+
+/// What a build has measured so far.
+///
+/// Held across the attempt rather than assembled at the end, because the run
+/// worth reporting on is often the one that did not finish: every measurement
+/// lived in a local until E2-S4 task 5, so a failure discarded all of them.
+///
+/// `build_attempt` is absent until the job document is opened. A failure
+/// before that has no attempt to report and writes nothing — the same boundary
+/// a gate refusal sits behind, for the same reason.
+#[derive(Debug)]
+struct BuildProgress {
+    job_id: String,
+    plan_hash: String,
+    started: Instant,
+    build_attempt: Option<u32>,
+    segments: Vec<RunReportSegment>,
+    measurements: ExecutorMeasurements,
+    package_timings: PackageTimings,
+}
+
+impl BuildProgress {
+    fn new(job_id: String, plan_hash: String, started: Instant) -> Self {
+        Self {
+            job_id,
+            plan_hash,
+            started,
+            build_attempt: None,
+            segments: Vec::new(),
+            // Until a stage runs, nothing about it was observed. Every field
+            // says so rather than reading as a zero nobody measured.
+            measurements: ExecutorMeasurements::default(),
+            package_timings: PackageTimings::not_reached(),
+        }
+    }
+
+    /// The report as it stands, or `None` when no attempt was opened.
+    ///
+    /// Only the failure path needs the option: a build that finished has the
+    /// attempt number in hand and calls [`BuildProgress::report`] directly,
+    /// which is what keeps an unreachable branch out of the success path.
+    fn seal(&self, completion: ReportCompletion) -> Option<RunReport> {
+        Some(self.report(self.build_attempt?, completion))
+    }
+
+    /// The report as it stands, for a caller that knows the attempt.
+    fn report(&self, build_attempt: u32, completion: ReportCompletion) -> RunReport {
+        RunReport {
+            schema_version: RunReportLayout::current(),
+            job_id: self.job_id.clone(),
+            build_attempt,
+            lesson_id: self.job_id.clone(),
+            plan_hash: self.plan_hash.clone(),
+            completion,
+            wall_micros: duration_micros(self.started.elapsed()),
+            model_load_micros: self.measurements.model_load_micros,
+            // Filled in by the package writer, which is the only place that
+            // measures them. A report sealed before that stage — or written
+            // because the build never reached it — reports none of them.
+            assembly_micros: self.package_timings.assembly_micros,
+            normalize_micros: self.package_timings.normalize_micros,
+            encode_micros: self.package_timings.encode_micros,
+            synthesis: synthesis_totals(&self.segments),
+            segments: self.segments.clone(),
+            join_findings: Vec::new(),
+            resources: RunResources {
+                peak_resident_kib: self.measurements.peak_resident_kib,
+                open_handles_count: self.measurements.open_handles_count,
+                // E5-S2 owns the worker pool. No path restarts a worker, so
+                // this is structural rather than observed, which
+                // `ReportField::WorkerRestarts` states as its clock.
+                worker_restarts_count: 0,
+            },
+        }
+    }
+}
+
+fn render_attempt_inner(
+    progress: &mut BuildProgress,
+    workspace: &Path,
+    ownership: Box<dyn JobOwnership>,
+    previous: Option<JobDocument>,
+    gated: GatedBuild,
+    services: PreviewServiceBundle<'_>,
 ) -> Result<BuildResult, BuildError> {
     let _job_ownership = ownership;
     let job_id = gated.lesson.lesson_id();
@@ -676,29 +823,83 @@ fn render_attempt(
     .transition(JobState::Validated)?
     .transition(JobState::Planned)?;
     services.jobs.replace(workspace, &document)?;
+    let build_attempt = document.build_attempt.get();
+    progress.build_attempt = Some(build_attempt);
+    let segment_count = u32::try_from(gated.plan.segments.len()).unwrap_or(u32::MAX);
+    services.jobs.record_stage(
+        workspace,
+        job_id,
+        build_attempt,
+        BuildStage::PlanSelected { segment_count },
+    )?;
 
     document = document.transition(JobState::Rendering)?;
     services.jobs.replace(workspace, &document)?;
     let mut cached_segments = Vec::with_capacity(gated.plan.segments.len());
     for (segment, synthesis_request) in gated.plan.segments.iter().zip(gated.synthesis_requests) {
-        let mut pending_request = Some(synthesis_request);
-        let mut producer = |destination: &Path| {
-            let request = pending_request
-                .take()
-                .ok_or_else(|| BackendError::Protocol {
-                    request_id: segment.id.clone(),
-                    message: "cache requested staged synthesis more than once".to_owned(),
-                })?;
-            block_on(services.executor.synthesize(request, destination))
+        // Only the synthesis call, so the figure is comparable to the ratified
+        // per-utterance baseline rather than to it plus this build's cache
+        // validation and publication.
+        let mut synthesis_elapsed = None;
+        let cached = {
+            let mut pending_request = Some(synthesis_request);
+            let mut producer = |destination: &Path| {
+                let request = pending_request
+                    .take()
+                    .ok_or_else(|| BackendError::Protocol {
+                        request_id: segment.id.clone(),
+                        message: "cache requested staged synthesis more than once".to_owned(),
+                    })?;
+                let started = Instant::now();
+                let synthesized = block_on(services.executor.synthesize(request, destination));
+                synthesis_elapsed = Some(started.elapsed());
+                synthesized
+            };
+            services.cache.resolve(
+                &CacheResolveRequest {
+                    workspace: workspace.to_path_buf(),
+                    job_id: job_id.to_owned(),
+                    segment: segment.clone(),
+                },
+                &mut producer,
+            )
         };
-        let cached = services.cache.resolve(
-            &CacheResolveRequest {
-                workspace: workspace.to_path_buf(),
-                job_id: job_id.to_owned(),
-                segment: segment.clone(),
-            },
-            &mut producer,
-        )?;
+        let cached = match cached {
+            Ok(cached) => cached,
+            Err(error) => {
+                let synthesis_wall_micros = synthesis_elapsed.map_or(
+                    Measured::Unavailable {
+                        reason: Unavailable::StageNotReached,
+                    },
+                    |elapsed| Measured::Observed {
+                        value: duration_micros(elapsed),
+                    },
+                );
+                progress.segments.push(RunReportSegment {
+                    segment_id: segment.id.clone(),
+                    take: segment.take,
+                    cache_outcome: CacheOutcome::Failed,
+                    retry_count: 0,
+                    synthesis_wall_micros,
+                    audio_frames: Measured::Unavailable {
+                        reason: Unavailable::StageNotReached,
+                    },
+                });
+                let _ = services.jobs.record_stage(
+                    workspace,
+                    job_id,
+                    build_attempt,
+                    BuildStage::SegmentFailed {
+                        segment_id: segment.id.clone(),
+                        take: segment.take,
+                        error_class: error.class(),
+                        duration_ms: synthesis_elapsed
+                            .map(|elapsed| duration_micros(elapsed) / MICROSECONDS_PER_MILLISECOND),
+                    },
+                );
+                return Err(error);
+            }
+        };
         let audio_blake3: AudioDigest = cached.audio_blake3().parse().map_err(|_| {
             DurableStateError::MalformedDurableDigest {
                 path: cached.entry_dir().to_path_buf(),
@@ -729,17 +930,110 @@ fn render_attempt(
             },
         );
         services.jobs.replace(workspace, &document)?;
+        services.jobs.record_stage(
+            workspace,
+            job_id,
+            build_attempt,
+            match synthesis_elapsed {
+                Some(elapsed) => BuildStage::SegmentSynthesized {
+                    segment_id: segment.id.clone(),
+                    take: segment.take,
+                    voice_profile: segment.voice_profile.clone(),
+                    duration_ms: duration_micros(elapsed) / MICROSECONDS_PER_MILLISECOND,
+                },
+                None => BuildStage::SegmentReused {
+                    segment_id: segment.id.clone(),
+                    take: segment.take,
+                },
+            },
+        )?;
+        // Whether the producer ran is the only record that this segment was
+        // synthesized rather than reused: the cache returns the same validated
+        // artifact either way.
+        let synthesis_wall_micros = match synthesis_elapsed {
+            Some(elapsed) => Measured::Observed {
+                value: duration_micros(elapsed),
+            },
+            None => Measured::Unavailable {
+                reason: Unavailable::ReusedFromCache,
+            },
+        };
+        progress.segments.push(RunReportSegment {
+            segment_id: segment.id.clone(),
+            take: segment.take,
+            cache_outcome: if synthesis_elapsed.is_some() {
+                CacheOutcome::Synthesized
+            } else {
+                CacheOutcome::Reused
+            },
+            // E5-S3 owns retry. No path retries a segment, so this is the
+            // build's shape rather than an observation, which
+            // `ReportField::SegmentRetries` states as its clock.
+            retry_count: 0,
+            synthesis_wall_micros,
+            audio_frames: Measured::Observed {
+                value: u64::from(cached.frames()),
+            },
+        });
         cached_segments.push(cached);
     }
 
+    // Sampled with the worker still alive and no synthesis left to do.
+    // `/proc/<pid>/status` stops answering the moment the process exits, and
+    // `VmHWM` only grows, so this is both the last point the reading is
+    // available and the first at which it is the run's true peak.
+    // `docs/architecture/E2-S4-INTERFACE-CHANGE-001.md` §G-B states it.
+    progress.measurements = services.executor.process_measurements();
+
     document = document.transition(JobState::Rendered)?;
     services.jobs.replace(workspace, &document)?;
-    let package = gated.packages.write(&PackageWriteRequest {
+    // Sealed by the writer, not here: the manifest checksums this document,
+    // so the bytes the package publishes must be the ones this build returns.
+    let pending = progress.report(build_attempt, ReportCompletion::Complete);
+    let written = match gated.packages.write(&PackageWriteRequest {
         workspace,
         job_id,
         plan: &gated.plan,
         cached_artifacts: &cached_segments,
-    })?;
+        run_report: &pending,
+        run_started: progress.started,
+    }) {
+        Ok(written) => written,
+        Err(failure) => {
+            progress.package_timings = failure.timings;
+            return Err(*failure.source);
+        }
+    };
+    let PackageWriteOutcome {
+        publication: package,
+        run_report,
+        disposition,
+    } = written;
+    match disposition {
+        PackageDisposition::Published => {
+            for stage in [
+                BuildStage::PackageAssembled,
+                BuildStage::PackageEncoded,
+                BuildStage::PackagePublished {
+                    manifest_blake3: package.identity.manifest_blake3.as_str().to_owned(),
+                },
+            ] {
+                services
+                    .jobs
+                    .record_stage(workspace, job_id, build_attempt, stage)?;
+            }
+        }
+        PackageDisposition::Reused => {
+            services.jobs.record_stage(
+                workspace,
+                job_id,
+                build_attempt,
+                BuildStage::PackageReused {
+                    manifest_blake3: package.identity.manifest_blake3.as_str().to_owned(),
+                },
+            )?;
+        }
+    }
     // The private-preview completion is recorded beside the state, not as
     // one: `Rendered` is as far as the ADR-0001 §6.4 machine can honestly go
     // without a verifier, and the selected package is what E2-S1 task 4 keeps
@@ -748,6 +1042,12 @@ fn render_attempt(
         workspace,
         &document.with_preview_package(package.identity.clone()),
     )?;
+    // Beside the inputs as well as inside the package. A failed attempt leaves
+    // an incomplete report here, and a resume that succeeded without replacing
+    // it would leave that stale document describing a build that did finish.
+    services
+        .jobs
+        .retain_run_report(workspace, job_id, &run_report)?;
 
     Ok(BuildResult {
         package_dir: package.package_dir,
@@ -759,7 +1059,17 @@ fn render_attempt(
         captions: package.captions,
         chapters: package.chapters,
         manifest: package.manifest,
+        run_report,
     })
+}
+
+/// `elapsed` in microseconds, saturated rather than wrapped.
+///
+/// A build long enough to overflow would run for some five hundred thousand
+/// years, so the saturation guards a nonsense clock rather than a reachable
+/// case.
+fn duration_micros(elapsed: Duration) -> u64 {
+    u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX)
 }
 
 /// Where the takes one build plans at come from.

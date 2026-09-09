@@ -17,13 +17,15 @@ use study_tts_core::{
 };
 use study_tts_runtime::{
     BackendDescriptor, BackendError, BackendValidationError, BuildError,
-    CACHE_PUBLICATION_CONTRACT_VERSION, CacheResolveRequest, FileSystemCachePublisher,
-    FileSystemJobRepository, FileSystemPackageWriter, JobRepository, MAX_WORKER_FRAME_BYTES,
-    MAX_WORKER_REQUEST_ID_BYTES, PackagePreflightRequest, PackagePrepareRequest,
-    PackageWriteRequest, PreviewServiceBundle, SynthesisReport, SynthesisRequest,
-    TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, WorkerFrameError, WorkerRequestFrame,
-    WorkerResponseFrame, build_preview, build_preview_with_services, parse_worker_request,
-    parse_worker_response, validate_executor_request,
+    CACHE_PUBLICATION_CONTRACT_VERSION, CacheOutcome, CacheResolveRequest,
+    FileSystemCachePublisher, FileSystemJobRepository, FileSystemPackageWriter, IoError,
+    JobRepository, MAX_WORKER_FRAME_BYTES, MAX_WORKER_REQUEST_ID_BYTES, Measured,
+    PackageDisposition, PackagePreflightRequest, PackagePrepareRequest, PackageTimings,
+    PackageWriteFailure, PackageWriteRequest, PreviewServiceBundle, ReportCompletion, RunReport,
+    RunReportSegment, SynthesisReport, SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION,
+    TtsExecutor, Unavailable, WorkerFrameError, WorkerRequestFrame, WorkerResponseFrame,
+    build_preview, build_preview_with_services, parse_worker_request, parse_worker_response,
+    validate_executor_request,
 };
 use study_tts_testkit::{
     FIXTURE_VOICE_PROFILES, FakeCachePublisher, FakeJobCall, FakePackageCall, FakePackageWriter,
@@ -132,7 +134,7 @@ fn request_for(plan: &RenderPlan, index: usize) -> SynthesisRequest {
 /// `t4_e0_executor_validation_precedes_tools_and_durable_state` asserts the
 /// workspace was never created.
 fn build_request(workspace: &Path) -> study_tts_runtime::BuildRequest {
-    let voice_profile_root = workspace.with_file_name("voices");
+    let voice_profile_root = workspace.with_extension("voices");
     write_voice_profile_root(&voice_profile_root, &FIXTURE_VOICE_PROFILES);
     study_tts_runtime::BuildRequest {
         lesson_path: walking_skeleton_fixture(),
@@ -364,16 +366,29 @@ fn t4_e0_every_provisional_seam_has_a_fake() {
         job_id: "contract-job",
         plan: &plan,
     };
+    let report = RunReport::unmeasured(
+        "contract-job",
+        "contract-job",
+        plan.plan_hash.as_str(),
+        1,
+        ReportCompletion::Complete,
+    );
     let write = PackageWriteRequest {
         workspace: workspace.path(),
         job_id: "contract-job",
         plan: &plan,
         cached_artifacts: &cached[..1],
+        run_report: &report,
+        run_started: std::time::Instant::now(),
     };
-    let publications =
-        run_package_writer_contract_scenario(&packages, &preflight, &prepare, &write)
-            .expect("package contract scenario");
-    assert_eq!(publications[0], publications[1]);
+    let outcomes = run_package_writer_contract_scenario(&packages, &preflight, &prepare, &write)
+        .expect("package contract scenario");
+    assert_eq!(&outcomes[0].publication, &outcomes[1].publication);
+    assert!(
+        outcomes[0].disposition == PackageDisposition::Published
+            && outcomes[1].disposition == PackageDisposition::Reused,
+        "the fake publishes once and then reuses"
+    );
     assert_eq!(
         packages.calls(),
         [
@@ -401,7 +416,7 @@ fn t4_e1_the_real_package_writer_passes_the_shared_contract() {
     let executor = FakeTtsExecutor::default();
     let plan = validated_plan(&executor);
     let cache = FileSystemCachePublisher;
-    // Every segment the plan names: the package writer refuses a artifact list
+    // Every segment the plan names: the package writer refuses an artifact list
     // that does not match its plan, which is the check that would otherwise
     // hide a partially cached lesson.
     let cached: Vec<_> = plan
@@ -433,7 +448,32 @@ fn t4_e1_the_real_package_writer_passes_the_shared_contract() {
         })
         .collect();
 
-    let publications = run_package_writer_contract_scenario(
+    let mut report = RunReport::unmeasured(
+        "contract-job",
+        "contract-job",
+        plan.plan_hash.as_str(),
+        1,
+        ReportCompletion::Complete,
+    );
+    report.segments = plan
+        .segments
+        .iter()
+        .zip(&cached)
+        .map(|(segment, artifact)| RunReportSegment {
+            segment_id: segment.id.clone(),
+            take: segment.take,
+            cache_outcome: CacheOutcome::Reused,
+            retry_count: 0,
+            synthesis_wall_micros: Measured::Unavailable {
+                reason: Unavailable::ReusedFromCache,
+            },
+            audio_frames: Measured::Observed {
+                value: u64::from(artifact.frames()),
+            },
+        })
+        .collect();
+
+    let outcomes = run_package_writer_contract_scenario(
         &FileSystemPackageWriter,
         &PackagePreflightRequest {
             ffmpeg_executable: Path::new("ffmpeg"),
@@ -449,22 +489,42 @@ fn t4_e1_the_real_package_writer_passes_the_shared_contract() {
             job_id: "contract-job",
             plan: &plan,
             cached_artifacts: &cached,
+            run_report: &report,
+            run_started: std::time::Instant::now(),
         },
     )
     .expect("the real package writer must pass the shared package contract");
 
     assert_eq!(
-        publications[0], publications[1],
+        &outcomes[0].publication, &outcomes[1].publication,
         "a second write must select the package the first one published"
     );
+
+    // Equal publications, unequal timings — which is the whole reason the two
+    // are separate values. Folding a duration into `PackagePublication` would
+    // make the assertion above fail for a package that is byte-for-byte the
+    // one it reuses.
+    let sealed = &outcomes[0].run_report;
+    assert!(
+        matches!(
+            (sealed.assembly_micros, sealed.encode_micros),
+            (Measured::Observed { .. }, Measured::Observed { .. })
+        ),
+        "both durations are observed on the write that performed them"
+    );
+    assert!(
+        outcomes[1].disposition == PackageDisposition::Reused,
+        "the second write selected what the first published"
+    );
+
     for artifact in [
-        &publications[0].master_wav,
-        &publications[0].m4a,
-        &publications[0].mp3,
-        &publications[0].transcript,
-        &publications[0].captions,
-        &publications[0].chapters,
-        &publications[0].manifest,
+        &outcomes[0].publication.master_wav,
+        &outcomes[0].publication.m4a,
+        &outcomes[0].publication.mp3,
+        &outcomes[0].publication.transcript,
+        &outcomes[0].publication.captions,
+        &outcomes[0].publication.chapters,
+        &outcomes[0].publication.manifest,
     ] {
         assert!(artifact.is_file(), "`{}` must exist", artifact.display());
     }
@@ -548,7 +608,7 @@ fn t4_e0_walking_skeleton_uses_only_published_seams() {
         serde_json::from_slice(&std::fs::read(&second.manifest).expect("read selected manifest"))
             .expect("parse selected manifest");
     assert_eq!(manifest["release_status"], "private_preview");
-    assert_eq!(manifest["schema_version"], "2.0-skeleton");
+    assert_eq!(manifest["schema_version"], "3.0-skeleton");
     // 9,600 frames of tone and generated silence, plus the edge conditioning
     // each of the two segments now carries: ADR-0001 §13.4 requires 10 ms of
     // zero padding at each exposed edge, which is 240 frames at the canonical
@@ -580,6 +640,60 @@ fn t4_e0_walking_skeleton_uses_only_published_seams() {
             .filter(|event| event.starts_with("executor.synthesize:"))
             .count(),
         2
+    );
+}
+
+#[test]
+fn t4_e2_a_package_failure_retains_the_stages_it_reached() {
+    let workspace = TempDir::new().expect("create package-failure workspace");
+    let executor = FakeTtsExecutor::default();
+    let cache = FakeCachePublisher::default();
+    let packages = FakePackageWriter::new(workspace.path().join("fake-packages"));
+    let jobs = InMemoryJobRepository::default();
+    packages.fail_next(PackageWriteFailure {
+        source: Box::new(
+            IoError::FileSystem {
+                path: PathBuf::from("lesson.m4a"),
+                source: std::io::Error::other("injected package failure"),
+            }
+            .into(),
+        ),
+        timings: PackageTimings {
+            assembly_micros: Measured::Observed { value: 11 },
+            normalize_micros: Measured::Observed { value: 22 },
+            encode_micros: Measured::Unavailable {
+                reason: Unavailable::StageNotReached,
+            },
+        },
+    });
+
+    let error = build_preview_with_services(
+        build_request(workspace.path()),
+        PreviewServiceBundle {
+            executor: &executor,
+            cache: &cache,
+            packages: &packages,
+            jobs: &jobs,
+        },
+    )
+    .expect_err("the injected package failure must surface");
+    assert!(matches!(error, BuildError::Io(IoError::FileSystem { .. })));
+
+    let reports = jobs.reports();
+    let report = reports
+        .last()
+        .expect("a package failure retains its report");
+    assert!(matches!(
+        report.completion,
+        ReportCompletion::Incomplete { .. }
+    ));
+    assert_eq!(report.assembly_micros, Measured::Observed { value: 11 });
+    assert_eq!(report.normalize_micros, Measured::Observed { value: 22 });
+    assert_eq!(
+        report.encode_micros,
+        Measured::Unavailable {
+            reason: Unavailable::StageNotReached,
+        }
     );
 }
 

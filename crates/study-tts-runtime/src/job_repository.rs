@@ -26,8 +26,11 @@ use crate::{
         DurableFileSystem, OsDurableFileSystem, read_bounded_bytes, write_bytes_atomically,
         write_json_atomically,
     },
-    job_events::{JobEvent, JobEventKind, append_event, preflight_append, validate_event_log},
+    job_events::{
+        BuildStage, JobEvent, JobEventKind, append_event, preflight_append, validate_event_log,
+    },
     locking, managed, pipeline, preview,
+    run_report::{RUN_REPORT_NAME, RunReport},
 };
 
 const JOB_DOCUMENT_NAME: &str = "job.json";
@@ -94,6 +97,32 @@ pub trait JobRepository: Send + Sync {
     /// atomic replacement fails.
     fn replace(&self, workspace: &Path, document: &JobDocument) -> Result<(), BuildError>;
 
+    /// Records one build stage in the job's diagnostic log.
+    ///
+    /// Separate from [`JobRepository::replace`] because a stage is not a
+    /// state: ADR-0001 §6.4 names five states and a build crosses more
+    /// boundaries than that, so recording assembly as a state would put a
+    /// vertex in the machine that no transition leads out of.
+    ///
+    /// Call only once the work the stage names is durable. This cannot check
+    /// that, exactly as `job_events::append_event` cannot; the caller's
+    /// ordering is the guarantee, per ADR-0001 §12.3 step 5.
+    ///
+    /// # Errors
+    ///
+    /// [`BuildError::ManagedPath`] when the job path is unsafe,
+    /// [`DurableStateError::MalformedJobEventLog`] when an existing line is
+    /// malformed or foreign, [`DurableStateError::JobEventLineTooLarge`] or
+    /// [`DurableStateError::DurableRecordTooLarge`] at a ceiling, or
+    /// [`BuildError::Io`] when the log cannot be written.
+    fn record_stage(
+        &self,
+        workspace: &Path,
+        job_id: &str,
+        build_attempt: u32,
+        stage: BuildStage,
+    ) -> Result<(), BuildError>;
+
     /// Retains the validated lesson bytes and the plan beside the document,
     /// ADR-0001 §12.1, so a job can be resumed from its identity alone.
     ///
@@ -107,6 +136,24 @@ pub trait JobRepository: Send + Sync {
         job_id: &str,
         lesson: &[u8],
         plan: &RenderPlan,
+    ) -> Result<(), BuildError>;
+
+    /// Retains what this attempt measured, beside the inputs it rendered.
+    ///
+    /// `DELIVERY-PLAN.md` E2-S4 task 5 puts partial and failure reports under
+    /// the job directory. Replacement rather than append: a later attempt
+    /// measured the run a reader is asking about, and two reports for one job
+    /// could disagree about what happened.
+    ///
+    /// # Errors
+    ///
+    /// [`BuildError::ManagedPath`] when the job path is unsafe, or
+    /// [`BuildError::Io`] when the document cannot be written.
+    fn retain_run_report(
+        &self,
+        workspace: &Path,
+        job_id: &str,
+        report: &RunReport,
     ) -> Result<(), BuildError>;
 
     /// Reads back the retained lesson bytes, or `None` when nothing was
@@ -189,6 +236,30 @@ impl JobRepository for FileSystemJobRepository {
 
     fn replace(&self, workspace: &Path, document: &JobDocument) -> Result<(), BuildError> {
         replace_document(&OsDurableFileSystem, workspace, document)
+    }
+
+    fn record_stage(
+        &self,
+        workspace: &Path,
+        job_id: &str,
+        build_attempt: u32,
+        stage: BuildStage,
+    ) -> Result<(), BuildError> {
+        let path = job_document_path(workspace, job_id)?;
+        let job_dir = path.parent().unwrap_or(workspace);
+        let event = JobEvent::new(job_id, Some(build_attempt), stage.into());
+        append_event(&OsDurableFileSystem, job_dir, &event)
+    }
+
+    fn retain_run_report(
+        &self,
+        workspace: &Path,
+        job_id: &str,
+        report: &RunReport,
+    ) -> Result<(), BuildError> {
+        let directory = job_directory(workspace, job_id)?;
+        let path = managed::leaf(&directory, RUN_REPORT_NAME)?;
+        write_json_atomically(&OsDurableFileSystem, &path, report)
     }
 
     fn retain_inputs(

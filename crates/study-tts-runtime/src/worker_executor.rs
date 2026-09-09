@@ -19,7 +19,7 @@ use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use study_tts_core::{
     CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT, CANONICAL_SAMPLE_RATE, DeterminismClass,
@@ -27,9 +27,12 @@ use study_tts_core::{
 };
 
 use crate::model_gate::verify_model_artifacts;
+use crate::process;
+use crate::run_report::{Measured, Unavailable};
 use crate::synthesis::{
-    BackendDescriptor, BackendError, BackendValidationError, DriftedIdentity, SynthesisReport,
-    SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, validate_executor_request,
+    BackendDescriptor, BackendError, BackendValidationError, DriftedIdentity, ExecutorMeasurements,
+    SynthesisReport, SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor,
+    validate_executor_request,
 };
 use crate::voice_gate::admit_voice_root;
 use crate::worker_bundle::{WORKER_ENTRY_MODULE, WORKER_PACKAGE_ROOT, WorkerBundle};
@@ -147,6 +150,14 @@ pub struct WorkerTtsExecutor {
     /// Delivery styles the worker said it has parameters for.
     declared_styles: BTreeSet<String>,
     request_deadline: Duration,
+    /// What starting this backend cost, measured once in
+    /// [`WorkerTtsExecutor::start`].
+    ///
+    /// Held here because only `start` can see it: the caller constructs the
+    /// executor before a build begins, so a pipeline timing its own work would
+    /// never observe the model load ADR-0001 §3.4 excludes from the real-time
+    /// factor.
+    model_load: Duration,
     /// Behind a mutex because ADR-0001 §10.1 gives one worker one in-flight
     /// request, and [`TtsExecutor`] takes `&self` so callers cannot serialize
     /// it for us.
@@ -425,6 +436,11 @@ impl WorkerTtsExecutor {
     /// [`BackendError::Execution`] when it refuses to initialize — which is
     /// what a bundle-identity disagreement arrives as.
     pub fn start(configuration: &WorkerConfiguration) -> Result<Self, BuildError> {
+        // Spans the spawn, the `initialize` exchange that loads the model, and
+        // the capabilities exchange — everything a build pays once before any
+        // synthesis, which is exactly what ADR-0001 §3.4 excludes from the
+        // real-time factor.
+        let started = Instant::now();
         // Refused here rather than at the frame: the protocol carries paths as
         // UTF-8 text, and a root this build cannot spell is a containment
         // boundary the worker would never be told about.
@@ -586,6 +602,7 @@ impl WorkerTtsExecutor {
                 max_text_bytes: usize::try_from(capabilities.max_text_bytes).unwrap_or(usize::MAX),
             },
             request_deadline: configuration.request_deadline,
+            model_load: started.elapsed(),
             client: Mutex::new(client),
         })
     }
@@ -787,7 +804,62 @@ impl WorkerTtsExecutor {
     }
 }
 
+/// `elapsed` as an observation, saturated rather than wrapped.
+///
+/// Always observed: a model load is timed by this process, so unlike a `/proc`
+/// counter there is no one to withhold it. A start long enough to overflow
+/// would run for some five hundred thousand years, so the saturation guards a
+/// nonsense clock rather than a reachable case, exactly as the pipeline's own
+/// `duration_micros` does.
+fn micros(elapsed: Duration) -> Measured {
+    Measured::Observed {
+        value: u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX),
+    }
+}
+
+/// A counter `/proc` answered with, or the reason it did not.
+///
+/// The worker exists and this platform simply did not report the figure, which
+/// is exactly ADR-0001 §14's "where the operating environment exposes them
+/// reliably" as its negative case.
+fn sampled(value: Option<u64>) -> Measured {
+    value.map_or(
+        Measured::Unavailable {
+            reason: Unavailable::NotExposedByEnvironment,
+        },
+        |value| Measured::Observed { value },
+    )
+}
+
 impl TtsExecutor for WorkerTtsExecutor {
+    /// Samples the live worker, which is the process holding Torch.
+    ///
+    /// `docs/architecture/E2-S4-INTERFACE-CHANGE-001.md` §G-B fixes when this
+    /// is called: the pipeline asks once the last segment has resolved and
+    /// before assembly. `VmHWM` only grows, so any point after the final
+    /// synthesis reports the run's true peak; asking before assembly means the
+    /// figure does not depend on a caller that has already shut the worker
+    /// down. The handle count is a point sample and carries no such guarantee,
+    /// which `Aggregation::PointInTime` is what says so.
+    fn process_measurements(&self) -> ExecutorMeasurements {
+        let model_load_micros = micros(self.model_load);
+        // The worker is gone, so `/proc` has nothing to answer with. That is a
+        // sampling window this build missed, not a platform that withheld the
+        // counters, and `NoWorkerProcess` is the reason that says so.
+        let Some(pid) = self.locked_client().pid() else {
+            return ExecutorMeasurements {
+                model_load_micros,
+                ..ExecutorMeasurements::default()
+            };
+        };
+
+        ExecutorMeasurements {
+            model_load_micros,
+            peak_resident_kib: sampled(process::peak_resident_kib(pid)),
+            open_handles_count: sampled(process::open_handle_count(pid)),
+        }
+    }
+
     fn descriptor(&self) -> BackendDescriptor {
         self.descriptor.clone()
     }

@@ -19,6 +19,8 @@ use study_tts_core::{
 };
 use thiserror::Error;
 
+use crate::run_report::{Measured, Unavailable};
+
 /// Mirrors the executor version in the E0-S4 provisional contract baseline.
 ///
 /// Raised to a major version by
@@ -34,7 +36,52 @@ use thiserror::Error;
 /// [`SynthesisReport::voice_conditioning_hash`] replaced a reported profile
 /// hash the worker cannot compute, which is what makes the cache's identity
 /// gate evidence rather than a tautology.
-pub const TTS_EXECUTOR_CONTRACT_VERSION: &str = "e1.tts-executor.3.0";
+/// Raised to `3.1` by E2-S4: [`TtsExecutor::process_measurements`] is a
+/// defaulted method, which
+/// `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` §Change classes
+/// puts under **Compatible extension** — an existing backend implements
+/// nothing new and keeps working. It moves no cache entry: every field of
+/// [`BackendDescriptor`] but this one and `max_text_bytes` is a
+/// speech-affecting synthesis-key input, and this one is neither.
+pub const TTS_EXECUTOR_CONTRACT_VERSION: &str = "e1.tts-executor.3.1";
+
+/// What one executor's own process cost this build.
+///
+/// Each figure carries its own reason for being absent rather than a bare
+/// `None`, because only the executor knows which reason applies: an in-process
+/// backend has no process to sample, while a real worker on a platform that
+/// withheld a counter met a different fact entirely. Inferring one from the
+/// other at the call site would put the answer where the knowledge is not.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExecutorMeasurements {
+    /// Time spent starting the backend and loading its model.
+    ///
+    /// ADR-0001 §3.4 excludes model download and installation from the
+    /// real-time factor, so this is the figure that explains a slow build
+    /// without moving the ratio the budget is written against.
+    pub model_load_micros: Measured,
+    /// High-water resident size of the backend's process, in kibibytes.
+    pub peak_resident_kib: Measured,
+    /// File descriptors that process held when sampled.
+    pub open_handles_count: Measured,
+}
+
+impl Default for ExecutorMeasurements {
+    /// Nothing sampled, because there was no separate process to sample.
+    ///
+    /// This is the honest answer for every in-process executor, and the reason
+    /// [`TtsExecutor::process_measurements`] can be defaulted at all.
+    fn default() -> Self {
+        let absent = Measured::Unavailable {
+            reason: Unavailable::NoWorkerProcess,
+        };
+        Self {
+            model_load_micros: absent,
+            peak_resident_kib: absent,
+            open_handles_count: absent,
+        }
+    }
+}
 
 /// Stable identity and supported request envelope of one backend.
 ///
@@ -511,6 +558,21 @@ impl std::fmt::Display for DriftedIdentity {
 pub trait TtsExecutor: Send + Sync {
     /// Returns stable backend identity and validation limits.
     fn descriptor(&self) -> BackendDescriptor;
+
+    /// Returns what this executor's own process cost, where it has one.
+    ///
+    /// Defaulted to "nothing observed" because most executors are in-process
+    /// and have no separate process to sample. ADR-0001 §14 asks for these
+    /// "where the operating environment exposes them reliably", and an
+    /// executor that cannot answer is that concession's negative case rather
+    /// than a failure.
+    ///
+    /// A delegating wrapper must forward this. A wrapper that took the default
+    /// would report nothing for a backend that had a real answer, and no test
+    /// of the wrapped executor would notice.
+    fn process_measurements(&self) -> ExecutorMeasurements {
+        ExecutorMeasurements::default()
+    }
 
     /// Returns the number of requests this executor may run concurrently.
     fn capacity(&self) -> usize;

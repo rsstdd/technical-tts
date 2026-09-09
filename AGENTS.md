@@ -243,6 +243,6 @@ Do not copy a root rule into a nested file unless the local rule changes or clar
 - Style: rustfmt 2024 defaults + Clippy when configured, plus `.claude/skills/clean-code/SKILL.md`, plus `.claude/skills/ponytail/SKILL.md`, plus `.claude/skills/rust-production/SKILL.md`
 - Review: `.claude/skills/rust-review/SKILL.md`, plus `.claude/skills/ponytail/SKILL.md`
 - Comments: `.claude/skills/rust-comment/SKILL.md`
-- Skills: `.claude/skills/README.md` — the six binding standards and the four issue-workflow skills (`issue-plan`, `issue-plan-review`, `issue-implement`, `issue-implement-review`)
+- Skills: `.claude/skills/README.md` — the six binding standards, the four issue-workflow skills (`issue-plan`, `issue-plan-review`, `issue-implement`, `issue-implement-review`), and `commit-plan`, which groups a working tree into commits and emits the commands without running them
 - Python worker: `docs/operations/WORKER-ENVIRONMENT.md`, `worker/bundle-manifest.json`, `worker/pyproject.toml`, `worker/requirements.lock`
 - Operations: `docs/operations/`

@@ -521,6 +521,75 @@ pub enum DurableStateError {
         required: &'static str,
     },
 
+    /// A checksummed package run report is not valid strict JSON.
+    #[error(
+        "package run report `{}` is malformed ({source}); preserve the package for runtime \
+         reconciliation",
+        path.display()
+    )]
+    MalformedPackageRunReport {
+        /// Report that strict parsing refused.
+        path: PathBuf,
+        /// What strict parsing reported.
+        source: serde_json::Error,
+    },
+
+    /// A package run report exceeds the bounded segment or join count.
+    #[error(
+        "package run report `{}` exceeds the lesson segment limit; preserve the package for \
+         runtime reconciliation",
+        path.display()
+    )]
+    PackageRunReportSegmentCountExceeded {
+        /// Report carrying too many segment-scoped records.
+        path: PathBuf,
+    },
+
+    /// A published package carries an incomplete run report.
+    #[error(
+        "package run report `{}` is incomplete; preserve the package for runtime reconciliation",
+        path.display()
+    )]
+    PackageRunReportIncomplete {
+        /// Report that does not describe a completed build.
+        path: PathBuf,
+    },
+
+    /// A package run report names another job, lesson, plan, or attempt.
+    #[error(
+        "package run report `{}` identity disagrees with its manifest; preserve the package for \
+         runtime reconciliation",
+        path.display()
+    )]
+    PackageRunReportIdentityMismatch {
+        /// Report carrying the contradictory identity.
+        path: PathBuf,
+    },
+
+    /// A package run report's ordered segment records disagree with its
+    /// manifest.
+    #[error(
+        "package run report `{}` segments disagree with its manifest; preserve the package for \
+         runtime reconciliation",
+        path.display()
+    )]
+    PackageRunReportSegmentMismatch {
+        /// Report carrying the contradictory segment records.
+        path: PathBuf,
+    },
+
+    /// A package run report's advisory join findings disagree with its
+    /// manifest.
+    #[error(
+        "package run report `{}` join findings disagree with its manifest; preserve the package \
+         for runtime reconciliation",
+        path.display()
+    )]
+    PackageRunReportJoinMismatch {
+        /// Report carrying the contradictory join findings.
+        path: PathBuf,
+    },
+
     /// A package manifest is not marked as a private preview.
     #[error(
         "package manifest `{}` declares release status `{found}`, not `private_preview`; preserve \
@@ -788,6 +857,12 @@ impl DurableStateError {
             | Self::MissingPackageManifest { .. }
             | Self::MalformedPackageManifest { .. }
             | Self::UnsupportedPackageManifest { .. }
+            | Self::MalformedPackageRunReport { .. }
+            | Self::PackageRunReportSegmentCountExceeded { .. }
+            | Self::PackageRunReportIncomplete { .. }
+            | Self::PackageRunReportIdentityMismatch { .. }
+            | Self::PackageRunReportSegmentMismatch { .. }
+            | Self::PackageRunReportJoinMismatch { .. }
             | Self::PackageReleaseStatusMismatch { .. }
             | Self::PackageLessonMismatch { .. }
             | Self::EmptyPackageSegmentId { .. }

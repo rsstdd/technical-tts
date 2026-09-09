@@ -94,6 +94,9 @@
         "mp3": {
           "$ref": "#/$defs/StoredArtifact"
         },
+        "run_report": {
+          "$ref": "#/$defs/StoredArtifact"
+        },
         "transcript": {
           "$ref": "#/$defs/StoredArtifact"
         }
@@ -104,7 +107,8 @@
         "mp3",
         "transcript",
         "captions",
-        "chapters"
+        "chapters",
+        "run_report"
       ],
       "type": "object"
     },
@@ -288,13 +292,19 @@
       "type": "string"
     }
   },
-  "$id": "https://schemas.study-tts.example/manifest-v2.schema.json",
+  "$id": "https://schemas.study-tts.example/manifest-v3.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "Strict owned shape used when an immutable package is reconciled or reused.",
   "properties": {
     "artifacts": {
       "$ref": "#/$defs/StoredArtifacts"
+    },
+    "build_attempt": {
+      "format": "uint32",
+      "maximum": 4294967295,
+      "minimum": 0,
+      "type": "integer"
     },
     "join_continuity": {
       "description": "The measured joins, empty where the build replaced nothing. Read back\nso the strict parse accounts for the whole document; nothing decides\nreuse on it, because ADR-0003 has not frozen what the numbers mean.",
@@ -313,7 +323,7 @@
       "$ref": "#/$defs/ReleaseStatus"
     },
     "schema_version": {
-      "const": "2.0-skeleton",
+      "const": "3.0-skeleton",
       "type": "string"
     },
     "segments": {
@@ -344,6 +354,7 @@
     "schema_version",
     "release_status",
     "lesson_id",
+    "build_attempt",
     "plan_hash",
     "take_selection_source",
     "text_renderer_version",

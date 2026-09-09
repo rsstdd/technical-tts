@@ -955,6 +955,60 @@ fn parse_process_record(pid: i32, stat: &str) -> Option<ProcessRecord> {
     })
 }
 
+/// High-water resident set size of `pid`, in kibibytes.
+///
+/// `VmHWM` rather than `VmRSS`: ADR-0001 §14 asks for *peak* RAM, and a
+/// current reading taken after synthesis has finished would miss the model
+/// load that produced the peak. The kernel keeps the high-water mark for the
+/// life of the process, so any sample before exit reports the true maximum —
+/// but only before exit, which is why §G-B of
+/// `docs/architecture/E2-S4-INTERFACE-CHANGE-001.md` fixes when it is taken.
+///
+/// `None` rather than an error: a resource figure the platform withholds is a
+/// diagnostic gap, never a reason to fail a build that otherwise succeeded.
+#[cfg(target_os = "linux")]
+pub(crate) fn peak_resident_kib(pid: i32) -> Option<u64> {
+    parse_peak_resident_kib(&fs::read_to_string(format!("/proc/{pid}/status")).ok()?)
+}
+
+#[cfg(target_os = "linux")]
+fn parse_peak_resident_kib(status: &str) -> Option<u64> {
+    // `/proc/<pid>/status` is `Name:\tvalue` lines whose memory rows carry a
+    // unit the kernel has always written as `kB` and which is really KiB.
+    // Reading the unit rather than assuming it means a kernel that ever wrote
+    // another one reports nothing instead of a wrong number.
+    let row = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmHWM:"))?;
+    let (value, unit) = row.trim().split_once(char::is_whitespace)?;
+    (unit.trim() == "kB").then(|| value.parse().ok())?
+}
+
+/// Open file descriptors `pid` holds right now.
+///
+/// A point sample, not a peak: `/proc/<pid>/fd` is a directory whose entries
+/// are the descriptors open at the moment it is read, and the kernel keeps no
+/// high-water mark for them. `ReportField::OpenHandles` says so through
+/// [`crate::Aggregation::PointInTime`], which is what stops a reader treating
+/// it the way [`crate::ReportField::PeakResidentMemory`] may be treated.
+#[cfg(target_os = "linux")]
+pub(crate) fn open_handle_count(pid: i32) -> Option<u64> {
+    let entries = fs::read_dir(format!("/proc/{pid}/fd")).ok()?;
+    u64::try_from(entries.filter(Result::is_ok).count()).ok()
+}
+
+/// No `/proc` here, so neither figure can be sampled.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn peak_resident_kib(_pid: i32) -> Option<u64> {
+    None
+}
+
+/// No `/proc` here, so neither figure can be sampled.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn open_handle_count(_pid: i32) -> Option<u64> {
+    None
+}
+
 /// Whether the process that recorded this identity is still running.
 ///
 /// A zombie is not live. That is right for containment, whose comment on
@@ -1270,6 +1324,8 @@ mod tests {
 
     use tempfile::TempDir;
 
+    #[cfg(target_os = "linux")]
+    use super::parse_peak_resident_kib;
     use super::{
         CaptureEvent, CommandPolicy, CommandRunError, FFMPEG_ENCODE_POLICY, FFPROBE_POLICY,
         VERSION_PROBE_POLICY, WORKER_ENVIRONMENT_PROBE_POLICY, run, run_with_capture_spawner,
@@ -1419,6 +1475,41 @@ mod tests {
         assert_eq!(record.start_time_ticks, 987_654);
         assert_eq!(record.parent_pid, 1);
         assert!(!record.is_zombie);
+    }
+
+    /// `/proc/<pid>/status` as a real kernel writes it, trimmed to the rows
+    /// that matter here. Kept verbatim rather than minimised, so the parser is
+    /// read against the file it will actually meet.
+    #[cfg(target_os = "linux")]
+    const SAMPLE_PROC_STATUS: &str = "Name:\tpython3\n\
+         State:\tS (sleeping)\n\
+         VmPeak:\t 9182364 kB\n\
+         VmSize:\t 8471232 kB\n\
+         VmHWM:\t 6831940 kB\n\
+         VmRSS:\t 4210088 kB\n\
+         Threads:\t12\n";
+
+    /// Three rows carry a memory figure and only one is the high-water mark.
+    /// `VmPeak` is peak *virtual* size and `VmRSS` is the current resident
+    /// size, so a parser that matched a prefix loosely would report a number
+    /// several gibibytes wrong and still look plausible.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn t1_e2_the_peak_resident_parser_reads_the_high_water_row_and_its_unit() {
+        assert_eq!(parse_peak_resident_kib(SAMPLE_PROC_STATUS), Some(6_831_940));
+
+        // The unit is read, not assumed. A kernel that wrote another one
+        // reports nothing rather than a number in an unknown scale.
+        assert_eq!(
+            parse_peak_resident_kib("VmHWM:\t 6831940 MB\n"),
+            None,
+            "an unexpected unit must not be read as kibibytes"
+        );
+        assert_eq!(
+            parse_peak_resident_kib("VmRSS:\t 4210088 kB\n"),
+            None,
+            "a status without VmHWM reports nothing"
+        );
     }
 
     #[cfg(target_os = "linux")]

@@ -1,0 +1,105 @@
+{
+  "schema_version": "99.0-not-a-real-layout",
+  "job_id": "e2-s4-run-report-foreign-layout",
+  "build_attempt": 1,
+  "lesson_id": "e0-s0-two-segment",
+  "plan_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "completion": "complete",
+  "wall_micros": 120000000,
+  "model_load_micros": {
+    "observation": "observed",
+    "value": 18000000
+  },
+  "assembly_micros": {
+    "observation": "observed",
+    "value": 3400000
+  },
+  "normalize_micros": {
+    "observation": "observed",
+    "value": 47000000
+  },
+  "encode_micros": {
+    "observation": "observed",
+    "value": 21000000
+  },
+  "segments": [
+    {
+      "segment_id": "seg-0001",
+      "take": 0,
+      "cache_outcome": "synthesized",
+      "retry_count": 0,
+      "synthesis_wall_micros": {
+        "observation": "observed",
+        "value": 52000000
+      },
+      "audio_frames": {
+        "observation": "observed",
+        "value": 216000
+      }
+    },
+    {
+      "segment_id": "seg-0002",
+      "take": 0,
+      "cache_outcome": "synthesized",
+      "retry_count": 0,
+      "synthesis_wall_micros": {
+        "observation": "observed",
+        "value": 44000000
+      },
+      "audio_frames": {
+        "observation": "observed",
+        "value": 264000
+      }
+    },
+    {
+      "segment_id": "seg-0003",
+      "take": 0,
+      "cache_outcome": "reused",
+      "retry_count": 0,
+      "synthesis_wall_micros": {
+        "observation": "unavailable",
+        "reason": "reused_from_cache"
+      },
+      "audio_frames": {
+        "observation": "observed",
+        "value": 300000
+      }
+    }
+  ],
+  "join_findings": [],
+  "synthesis": {
+    "segments_synthesized_count": 2,
+    "wall_micros": 96000000,
+    "audio_frames": 480000,
+    "aggregate_real_time_factor_milli": {
+      "observation": "observed",
+      "value": 4800
+    },
+    "segment_audio_minimum_frames": {
+      "observation": "observed",
+      "value": 216000
+    },
+    "segment_audio_maximum_frames": {
+      "observation": "observed",
+      "value": 264000
+    },
+    "worst_segment": {
+      "segment_id": "seg-0001",
+      "take": 0,
+      "wall_micros": 52000000,
+      "audio_frames": 216000,
+      "real_time_factor_milli": 5777
+    }
+  },
+  "resources": {
+    "peak_resident_kib": {
+      "observation": "observed",
+      "value": 6291456
+    },
+    "open_handles_count": {
+      "observation": "unavailable",
+      "reason": "not_exposed_by_environment"
+    },
+    "worker_restarts_count": 0
+  }
+}

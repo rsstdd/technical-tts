@@ -19,12 +19,12 @@ use study_tts_core::{
     CacheKey, JobState, LessonError, MAX_LESSON_JSON_BYTES, PlanError, ReleaseError, RenderPlan,
 };
 use study_tts_runtime::{
-    BackendDescriptor, BackendError, BuildError, BuildRequest, DurableStateError,
-    FileSystemCachePublisher, FileSystemPackageWriter, IoError, ManagedPathError,
-    PreviewServiceBundle, PublicationError, ResumeRequest, SynthesisReport, SynthesisRequest,
-    ToolError, TtsExecutor, build_preview, build_preview_with_services, load_lesson,
-    normalize_master_output, publish, resume_preview, validate_m4a_output,
-    validate_production_manifest,
+    BackendDescriptor, BackendError, BuildError, BuildRequest, CacheOutcome, DurableStateError,
+    FileSystemCachePublisher, FileSystemPackageWriter, IoError, JoinContinuity, JoinTolerance,
+    ManagedPathError, Measured, PreviewServiceBundle, PublicationError, ReportCompletion,
+    ResumeRequest, RunReport, SynthesisReport, SynthesisRequest, ToolError, TtsExecutor,
+    Unavailable, build_preview, build_preview_with_services, load_lesson, normalize_master_output,
+    publish, resume_preview, validate_m4a_output, validate_production_manifest,
 };
 use study_tts_testkit::{
     DeterministicToneWorker, FIXTURE_VOICE_PROFILES, InterruptingJobRepository,
@@ -398,7 +398,7 @@ fn t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest() {
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(&result.manifest).expect("read minimal manifest"))
             .expect("parse minimal manifest");
-    assert_eq!(manifest["schema_version"], "2.0-skeleton");
+    assert_eq!(manifest["schema_version"], "3.0-skeleton");
     assert_eq!(manifest["release_status"], "private_preview");
     assert_eq!(manifest["lesson_id"], "e0-s0-walking-skeleton");
     assert_eq!(manifest["segments"].as_array().map(Vec::len), Some(2));
@@ -439,12 +439,15 @@ struct PackageArtifact {
     field: &'static str,
 }
 
-/// The six artifacts a complete E1-S4 package holds beside its manifest.
+/// The seven artifacts a complete package holds beside its manifest.
 ///
-/// Transcribed from ADR-0001 §12.1's `output/` tree rather than read back out
-/// of the runtime, so a test asserting the package is complete cannot be
-/// satisfied by a runtime that changed its mind about what complete means.
-const PACKAGE_ARTIFACTS: [PackageArtifact; 6] = [
+/// Transcribed rather than read back out of the runtime, so a test asserting
+/// the package is complete cannot be satisfied by a runtime that changed its
+/// mind about what complete means. Six come from ADR-0001 §12.1's `output/`
+/// tree; the run report is the seventh, added by E2-S4 and recorded in
+/// `docs/architecture/E2-S4-INTERFACE-CHANGE-002.md` — §12.1's tree does not
+/// name it, and that record says why.
+const PACKAGE_ARTIFACTS: [PackageArtifact; 7] = [
     PackageArtifact {
         name: "lesson.wav",
         field: "master_wav",
@@ -468,6 +471,10 @@ const PACKAGE_ARTIFACTS: [PackageArtifact; 6] = [
     PackageArtifact {
         name: "chapters.ffmetadata",
         field: "chapters",
+    },
+    PackageArtifact {
+        name: "run-report.json",
+        field: "run_report",
     },
 ];
 
@@ -1041,6 +1048,514 @@ fn t4_e0_cache_hit_avoids_synthesis_and_is_byte_identical() {
     assert_eq!(first.package_dir, second.package_dir);
     assert_eq!(first.manifest, second.manifest);
     assert_eq!(first.publication_record, second.publication_record);
+}
+
+/// The five per-segment facts `DELIVERY-PLAN.md` E2-S4 task 2 names —
+/// synthesis duration, audio duration, cache outcome, retry count, and take —
+/// correlated to the job task 1 requires them reported against.
+///
+/// A cold build and a warm one, because a report populated only where the
+/// producer ran looks complete on a first run and goes silent on every run
+/// after it. Reuse is the common case once a cache exists, so a reused segment
+/// that vanished from the report would be the defect nobody saw.
+#[test]
+fn t4_e2_run_report_records_every_segment_and_cache_outcome() {
+    let (workspace, cold, worker) = run_skeleton();
+    let synthesized_by_cold = worker.synthesis_count();
+    let warm = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect("a rebuild over the warm cache should succeed");
+
+    // What actually happened, counted by the executor rather than read back
+    // out of the report: two synthesis calls in total means the cold build
+    // produced both segments and the warm build reused both.
+    assert_eq!(
+        (synthesized_by_cold, worker.synthesis_count()),
+        (2, 2),
+        "the cold build synthesizes both segments and the warm build reuses them"
+    );
+
+    let packaged: Vec<String> = manifest_segments(&cold)
+        .iter()
+        .map(|segment| {
+            segment["segment_id"]
+                .as_str()
+                .expect("a segment id")
+                .to_owned()
+        })
+        .collect();
+    let manifest = read_manifest(&cold);
+
+    for (label, result, outcome, synthesized_count) in [
+        ("cold", &cold, CacheOutcome::Synthesized, 2_u32),
+        ("warm", &warm, CacheOutcome::Reused, 0_u32),
+    ] {
+        let report = &result.run_report;
+
+        // Task 1: the report names the build it describes, so a report found
+        // beside a package can be shown to belong to it.
+        assert_eq!(report.job_id, "e0-s0-walking-skeleton", "{label}: job id");
+        assert_eq!(
+            report.lesson_id,
+            manifest["lesson_id"]
+                .as_str()
+                .expect("a manifest lesson id"),
+            "{label}: the report and the manifest name one lesson"
+        );
+        assert_eq!(
+            report.plan_hash,
+            manifest["plan_hash"]
+                .as_str()
+                .expect("a manifest plan hash"),
+            "{label}: the report and the manifest name one plan"
+        );
+
+        // Task 2, "every segment": the same segments the package records, in
+        // the order the plan renders them.
+        let recorded: Vec<String> = report
+            .segments
+            .iter()
+            .map(|segment| segment.segment_id.clone())
+            .collect();
+        assert_eq!(recorded, packaged, "{label}: one row per packaged segment");
+        assert_eq!(
+            report.synthesis.segments_synthesized_count, synthesized_count,
+            "{label}: synthesized count"
+        );
+
+        if label == "cold" {
+            let package_micros = [
+                report.assembly_micros,
+                report.normalize_micros,
+                report.encode_micros,
+            ]
+            .into_iter()
+            .map(|measurement| match measurement {
+                Measured::Observed { value } => value,
+                other => panic!("cold package stage was not observed: {other:?}"),
+            })
+            .sum::<u64>();
+            assert!(
+                report.wall_micros >= report.synthesis.wall_micros + package_micros,
+                "whole-run elapsed must include synthesis and package production"
+            );
+        }
+
+        for segment in &report.segments {
+            let id = &segment.segment_id;
+            assert_eq!(
+                segment.cache_outcome, outcome,
+                "{label}: {id} cache outcome"
+            );
+            assert_eq!(segment.take, 0, "{label}: {id} renders the base take");
+            assert_eq!(segment.retry_count, 0, "{label}: {id} retry count");
+            assert!(
+                matches!(segment.audio_frames, Measured::Observed { value } if value > 0),
+                "{label}: {id} generated no audio duration"
+            );
+
+            // A reused segment has no synthesis duration to report, and saying
+            // zero would claim the worker produced it instantly.
+            match (outcome, segment.synthesis_wall_micros) {
+                (CacheOutcome::Synthesized, Measured::Observed { .. })
+                | (
+                    CacheOutcome::Reused,
+                    Measured::Unavailable {
+                        reason: Unavailable::ReusedFromCache,
+                    },
+                ) => {}
+                (_, other) => panic!("{label}: {id} reports {other:?} for a {outcome:?} segment"),
+            }
+        }
+    }
+}
+
+/// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Storage and access: logs
+/// carry "hashes, IDs, timings, states, and error classes" and exclude full
+/// source text, spoken text, and raw voice-reference paths.
+///
+/// Read out of the fixture rather than restated here, so a fixture reworded
+/// later is still the text this checks for. The path half is not hypothetical:
+/// `manifest.json` embeds absolute host paths in its recorded tool arguments
+/// today, which issue #82 tracks, and that is the leak this document must not
+/// repeat.
+#[test]
+fn t4_e2_run_report_excludes_sensitive_fixture_content() {
+    let (workspace, result, _worker) = run_skeleton();
+    let published =
+        serde_json::to_string(&result.run_report).expect("serialize the run report as published");
+
+    let lesson: Value = serde_json::from_slice(
+        &std::fs::read(walking_skeleton_fixture()).expect("read the lesson fixture"),
+    )
+    .expect("parse the lesson fixture");
+    let segments = lesson["segments"]
+        .as_array()
+        .expect("the fixture plans segments");
+    assert!(
+        !segments.is_empty(),
+        "a fixture carrying no text could not fail this test"
+    );
+
+    for segment in segments {
+        for field in ["spoken_text", "display_text"] {
+            let text = segment[field]
+                .as_str()
+                .expect("every planned segment carries both texts");
+            assert!(
+                !published.contains(text),
+                "the run report quotes {field}: {text:?}"
+            );
+        }
+    }
+
+    for profile in FIXTURE_VOICE_PROFILES {
+        assert!(
+            !published.contains(profile),
+            "the run report names voice profile {profile}"
+        );
+    }
+
+    // Structural rather than filtered: the report is built from plan
+    // identities and cache digests, and no field it declares can hold a path.
+    // A slash anywhere in it means one arrived through a field that was not
+    // supposed to be able to carry it.
+    assert!(
+        !published.contains('/'),
+        "the run report carries a path-shaped value: {published}"
+    );
+    assert!(
+        !published.contains(workspace.path().to_str().expect("a UTF-8 workspace path")),
+        "the run report names the workspace it built in"
+    );
+}
+
+/// Every event line a build wrote, in append order.
+///
+/// Parsed here rather than through the runtime's own reader, which is
+/// `#[cfg(test)]`-gated inside that crate. A test that shared the writer's
+/// parser could not notice a line the writer emitted and no reader could
+/// take.
+fn read_event_log(workspace: &Path, job_id: &str) -> Vec<Value> {
+    let path = workspace.join("jobs").join(job_id).join("events.ndjson");
+    let log = std::fs::read_to_string(&path).expect("a build writes an event log");
+
+    log.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("every event line is one JSON document"))
+        .collect()
+}
+
+/// The `kind` discriminant of every event that is not a state replacement.
+///
+/// E2-S1 owns `state_durable` and proves its ordering already, so filtering it
+/// out leaves exactly what `DELIVERY-PLAN.md` E2-S4 task 1 adds.
+/// The envelope carries `kind`, and the variant is internally tagged with
+/// `kind` in turn, so the discriminant is one level down.
+fn event_kind(event: &Value) -> &str {
+    event["kind"]["kind"]
+        .as_str()
+        .expect("every event names its kind")
+}
+
+fn stage_kinds(events: &[Value]) -> Vec<String> {
+    events
+        .iter()
+        .map(event_kind)
+        .filter(|kind| *kind != "state_durable")
+        .map(str::to_owned)
+        .collect()
+}
+
+/// `DELIVERY-PLAN.md` E2-S4 task 1: "Emit job-correlated structured events
+/// across planning, synthesis, cache, assembly, and export."
+///
+/// Nothing proved a build wrote any event before this test: E2-S1's six event
+/// tests all construct events by hand, so the whole emission path was
+/// unobserved.
+#[test]
+fn t4_e2_a_build_records_one_event_for_every_stage_it_reached() {
+    let (workspace, result, _worker) = run_skeleton();
+    let events = read_event_log(workspace.path(), SKELETON_JOB_ID);
+
+    assert_eq!(
+        stage_kinds(&events),
+        [
+            "plan_selected",
+            "segment_synthesized",
+            "segment_synthesized",
+            "package_assembled",
+            "package_encoded",
+            "package_published",
+        ],
+        "a cold build reaches planning, synthesis, assembly, and export in that order"
+    );
+
+    // Job correlation, which is what task 1 asks for by name: a line that did
+    // not name its job could not be read back beside the package it describes.
+    for event in &events {
+        assert_eq!(
+            event["job_id"].as_str().expect("every event names its job"),
+            SKELETON_JOB_ID
+        );
+    }
+
+    let synthesized: Vec<&str> = events
+        .iter()
+        .filter(|event| event_kind(event) == "segment_synthesized")
+        .map(|event| event["kind"]["segment_id"].as_str().expect("a segment id"))
+        .collect();
+    let packaged: Vec<String> = manifest_segments(&result)
+        .iter()
+        .map(|segment| {
+            segment["segment_id"]
+                .as_str()
+                .expect("a segment id")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        synthesized, packaged,
+        "the log names the same segments the package records"
+    );
+}
+
+/// Reuse is the common case once a cache exists, so a log that fell silent on
+/// the second build would be wrong far more often than it was right.
+#[test]
+fn t4_e2_a_reused_segment_is_recorded_as_reused_not_synthesized() {
+    let (workspace, _cold, worker) = run_skeleton();
+    build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect("a rebuild over the warm cache should succeed");
+
+    let kinds = stage_kinds(&read_event_log(workspace.path(), SKELETON_JOB_ID));
+    let synthesized = kinds
+        .iter()
+        .filter(|kind| *kind == "segment_synthesized")
+        .count();
+    let reused = kinds
+        .iter()
+        .filter(|kind| *kind == "segment_reused")
+        .count();
+
+    assert_eq!(
+        (synthesized, reused),
+        (2, 2),
+        "two segments synthesized cold and the same two reused warm, in {kinds:?}"
+    );
+    assert_eq!(
+        worker.synthesis_count(),
+        2,
+        "the executor is the independent witness that the warm build synthesized nothing"
+    );
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| *kind == "package_reused")
+            .count(),
+        1,
+        "the warm build records package reuse"
+    );
+    for fresh in ["package_assembled", "package_encoded", "package_published"] {
+        assert_eq!(
+            kinds.iter().filter(|kind| *kind == fresh).count(),
+            1,
+            "only the cold build may record `{fresh}`: {kinds:?}"
+        );
+    }
+}
+
+/// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Storage and access, and
+/// `job_events.rs`'s own module header: an event carries identifiers, states,
+/// and hashes, never spoken text, source text, or a voice-reference path.
+///
+/// ADR-0001 §14 does list `voice_profile` as an event field, and a profile
+/// identity is not a reference path, so the log names profiles where the run
+/// report does not. That asymmetry is deliberate and recorded in
+/// `docs/architecture/E2-S4-INTERFACE-CHANGE-001.md`.
+#[test]
+fn t4_e2_no_event_quotes_lesson_text() {
+    let (workspace, _result, _worker) = run_skeleton();
+    let path = workspace
+        .path()
+        .join("jobs")
+        .join(SKELETON_JOB_ID)
+        .join("events.ndjson");
+    let log = std::fs::read_to_string(&path).expect("a build writes an event log");
+
+    let lesson: Value = serde_json::from_slice(
+        &std::fs::read(walking_skeleton_fixture()).expect("read the lesson fixture"),
+    )
+    .expect("parse the lesson fixture");
+    let segments = lesson["segments"]
+        .as_array()
+        .expect("the fixture plans segments");
+    assert!(
+        !segments.is_empty(),
+        "a fixture carrying no text could not fail this test"
+    );
+
+    for segment in segments {
+        for field in ["spoken_text", "display_text"] {
+            let text = segment[field]
+                .as_str()
+                .expect("every planned segment carries both texts");
+            assert!(!log.contains(text), "an event quotes {field}: {text:?}");
+        }
+    }
+    assert!(
+        !log.contains(workspace.path().to_str().expect("a UTF-8 workspace path")),
+        "an event names a host path"
+    );
+}
+
+/// `DELIVERY-PLAN.md` E2-S4 task 5: the successful report is immutable and the
+/// build manifest checksums it.
+///
+/// One direction only. The manifest names the report; the report names no
+/// manifest. `DELIVERY-PLAN.md`'s M2 acceptance requires human approval
+/// "without a checksum cycle", and the same discipline applies to any pair of
+/// documents where one checksums the other.
+#[test]
+fn t4_e2_successful_manifest_references_final_run_report_checksum() {
+    let (_workspace, result, _worker) = run_skeleton();
+    let package = result
+        .manifest
+        .parent()
+        .expect("the manifest sits inside its package");
+    let report_path = package.join("run-report.json");
+    let report_bytes = std::fs::read(&report_path).expect("the package publishes its run report");
+
+    let manifest = read_manifest(&result);
+    assert_eq!(
+        manifest["artifacts"]["run_report"]["blake3"]
+            .as_str()
+            .expect("the manifest checksums the run report"),
+        blake3::hash(&report_bytes).to_hex().as_str(),
+        "the recorded digest must be of the bytes actually published"
+    );
+
+    let report: Value = serde_json::from_slice(&report_bytes).expect("the sealed report parses");
+    assert_eq!(report["completion"], "complete");
+    assert!(
+        report.get("error_class").is_none(),
+        "a complete report has no independent failure field"
+    );
+}
+
+/// The run report a failed build leaves behind.
+///
+/// `DELIVERY-PLAN.md` E2-S4 task 5 requires partial and failure reports under
+/// the job directory. Everything a build measures lives in locals today, so a
+/// failure discards all of it — and a failed build is the run whose
+/// measurements a reader most wants.
+///
+/// The interruption lands after both segments are published to the cache and
+/// before the attempt records `Rendered`, which is the crash ADR-0001 §12.7
+/// step 4 names, so the report must hold the two segments that did resolve.
+#[test]
+fn t4_e2_failed_run_preserves_partial_report_in_job_directory() {
+    let workspace = TempDir::new().expect("create interrupted workspace");
+    let worker = DeterministicToneWorker::default();
+    let jobs = InterruptingJobRepository::failing_before(JobState::Rendered);
+    let error = build_preview_with_services(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        PreviewServiceBundle {
+            executor: &worker,
+            cache: &FileSystemCachePublisher,
+            packages: &FileSystemPackageWriter,
+            jobs: &jobs,
+        },
+    )
+    .expect_err("the injected interruption must surface");
+
+    // The error a caller sees is the one that happened. Writing a report is
+    // the last thing the build does and must not become the thing it reports.
+    assert!(matches!(error, BuildError::Io(IoError::FileSystem { .. })));
+
+    let report: Value = serde_json::from_slice(
+        &std::fs::read(
+            workspace
+                .path()
+                .join("jobs")
+                .join(SKELETON_JOB_ID)
+                .join("run-report.json"),
+        )
+        .expect("a failed build leaves a report in its job directory"),
+    )
+    .expect("the partial report parses");
+
+    assert!(
+        report["completion"]["incomplete"]["error_class"].is_string(),
+        "an incomplete report contains the class of failure that ended it"
+    );
+    assert_eq!(
+        report["segments"]
+            .as_array()
+            .expect("a report records its segments")
+            .len(),
+        2,
+        "both segments resolved before the interruption, so both are recorded"
+    );
+    assert_eq!(report["job_id"], SKELETON_JOB_ID);
+}
+
+#[test]
+fn t4_e2_a_failed_synthesis_retains_its_segment_and_event() {
+    let workspace = TempDir::new().expect("create failed-synthesis workspace");
+    let worker = DeterministicToneWorker::default();
+    worker.fail_next(BackendError::Execution {
+        request_id: "injected".to_owned(),
+        code: "injected_failure".to_owned(),
+        message: "injected synthesis failure".to_owned(),
+    });
+
+    let error = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect_err("the injected synthesis failure must surface");
+    assert!(matches!(error, BuildError::Synthesis(_)));
+
+    let report: RunReport = serde_json::from_slice(
+        &std::fs::read(
+            workspace
+                .path()
+                .join("jobs")
+                .join(SKELETON_JOB_ID)
+                .join("run-report.json"),
+        )
+        .expect("a failed synthesis retains its report"),
+    )
+    .expect("the failed report parses");
+    assert!(matches!(
+        report.completion,
+        ReportCompletion::Incomplete { .. }
+    ));
+    assert_eq!(report.segments.len(), 1);
+    assert_eq!(report.segments[0].cache_outcome, CacheOutcome::Failed);
+    assert!(matches!(
+        report.segments[0].audio_frames,
+        Measured::Unavailable {
+            reason: Unavailable::StageNotReached,
+        }
+    ));
+    assert!(matches!(
+        report.segments[0].synthesis_wall_micros,
+        Measured::Observed { .. }
+    ));
+
+    let events = read_event_log(workspace.path(), SKELETON_JOB_ID);
+    assert_eq!(
+        stage_kinds(&events),
+        ["plan_selected", "segment_failed"],
+        "the failed attempt records the segment before returning"
+    );
 }
 
 #[test]
@@ -2460,7 +2975,7 @@ fn t4_e0_private_preview_cannot_enter_production_publication() {
         Err(BuildError::Publication(
             PublicationError::UnsupportedProductionManifest { ref version }
         ))
-            if version == "2.0-skeleton"
+            if version == "3.0-skeleton"
     ));
 }
 
@@ -2753,6 +3268,48 @@ fn t4_e2_retake_changes_only_selected_segment_identity() {
     // §13.2's base key is the segment's take-zero identity whatever take is
     // selected, so it is what a reviewer reads to see which take was replaced.
     assert_eq!(after[1]["synthesis_base_key"], before[1]["cache_key"]);
+
+    let manifest = read_manifest(&second);
+    let expected: Vec<(String, String)> = manifest["join_continuity"]
+        .as_array()
+        .expect("the manifest records join evidence")
+        .iter()
+        .filter_map(|join| {
+            let continuity: JoinContinuity = serde_json::from_value(serde_json::json!({
+                "loudness_ratio": join["loudness_ratio"],
+                "rate_ratio": join["rate_ratio"],
+                "calibration_source": join["calibration_source"],
+            }))
+            .expect("the manifest join is a continuity measurement");
+            (continuity.provisional_tolerance() == JoinTolerance::Outside).then(|| {
+                (
+                    join["earlier_segment_id"]
+                        .as_str()
+                        .expect("an earlier segment")
+                        .to_owned(),
+                    join["later_segment_id"]
+                        .as_str()
+                        .expect("a later segment")
+                        .to_owned(),
+                )
+            })
+        })
+        .collect();
+    let reported: Vec<(String, String)> = second
+        .run_report
+        .join_findings
+        .iter()
+        .map(|finding| {
+            (
+                finding.earlier_segment_id.clone(),
+                finding.later_segment_id.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reported, expected,
+        "the report carries the manifest finding"
+    );
 }
 
 /// T4, AC5: a retake request that names no planned segment is refused, and is
@@ -3006,7 +3563,7 @@ fn t4_e2_a_resumed_retake_keeps_its_selected_take() {
 /// The manifest is constructed at `PRODUCTION_MANIFEST_VERSION` rather than
 /// built: `validate_production_manifest` gates a hypothetical production
 /// manifest shape at `"1.0"`, and what a preview build writes is
-/// `"2.0-skeleton"`, which
+/// `"3.0-skeleton"`, which
 /// `t4_e0_private_preview_cannot_enter_production_publication` pins as refused
 /// for its version before any selection is read.
 #[test]
