@@ -2,6 +2,10 @@
 
 Read ADR-0001, the Delivery Plan, AGENTS.md, and the documentation index before changing cross-cutting behavior. The accepted architecture is binding unless a new decision record explicitly supersedes it.
 
+The standards in `.claude/skills/` are binding on code written here, not advice: load them before
+the first edit. [`.claude/skills/README.md`](.claude/skills/README.md) says which skill loads when,
+and indexes the issue-workflow skills that plan, review, and implement a story.
+
 ## Workflow
 
 1. Select a ready GitHub story and assign it.

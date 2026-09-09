@@ -113,6 +113,7 @@ Approved target. Create incrementally. Absent paths are planned, not missing wor
 | Job / cache / recovery          | `crates/study-tts-runtime/`                                               | Runtime, manifest schemas, recovery tests                                               |
 | External-process safety         | `crates/study-tts-runtime/`                                               | Pool + FFmpeg adapters + containment tests; ASR in-process                              |
 | Test patterns                   | `crates/study-tts-testkit/`, colocated tests                              | Fake-worker, property, contract, recovery tests                                         |
+| Skill inventory                 | `.claude/skills/README.md`                                                | `CLAUDE.md` §Required skills binds; the README routes                                   |
 | Code review standard            | `.claude/skills/rust-review/SKILL.md`, `.claude/skills/ponytail/SKILL.md` | This file + `PRINCIPLES.md`; review reports, never edits unless asked                   |
 | Code style rules                | `.claude/skills/clean-code/SKILL.md`, `.claude/skills/ponytail/SKILL.md`  | Binding on all code; this file, `PRINCIPLES.md`, and accepted ADRs win on conflict      |
 | Production Rust craft standard  | `.claude/skills/rust-production/SKILL.md`                                 | Process, durability, determinism, and schema-evolution rules, each citing the module in this tree that proves it |
@@ -242,5 +243,6 @@ Do not copy a root rule into a nested file unless the local rule changes or clar
 - Style: rustfmt 2024 defaults + Clippy when configured, plus `.claude/skills/clean-code/SKILL.md`, plus `.claude/skills/ponytail/SKILL.md`, plus `.claude/skills/rust-production/SKILL.md`
 - Review: `.claude/skills/rust-review/SKILL.md`, plus `.claude/skills/ponytail/SKILL.md`
 - Comments: `.claude/skills/rust-comment/SKILL.md`
+- Skills: `.claude/skills/README.md` — the six binding standards and the four issue-workflow skills (`issue-plan`, `issue-plan-review`, `issue-implement`, `issue-implement-review`)
 - Python worker: `docs/operations/WORKER-ENVIRONMENT.md`, `worker/bundle-manifest.json`, `worker/pyproject.toml`, `worker/requirements.lock`
 - Operations: `docs/operations/`
