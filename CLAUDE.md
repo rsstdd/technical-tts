@@ -25,7 +25,7 @@ durable publication, determinism, schema evolution — and cites the module behi
 
 The issue-workflow skills `issue-plan`, `issue-plan-review`, `issue-implement`, and
 `issue-implement-review` are invoked explicitly rather than loaded by this table, and load the
-standards above when they run. `.claude/skills/README.md` indexes all ten.
+standards above when they run. `.claude/skills/README.md` indexes all eleven.
 
 ## Conflict order
 
