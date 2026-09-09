@@ -356,7 +356,7 @@ struct ProbeStream {
 /// names a path that no longer exists. Everything a reader needs to see the
 /// executed command shape stays. Issue #82 and
 /// `docs/architecture/E2-INTERFACE-CHANGE-001.md` describe the current
-/// implementation and proposed contract change.
+/// implementation and accepted contract change.
 #[derive(Clone, Debug)]
 pub(crate) struct ToolExecution {
     /// The argument list the tool was invoked with, in order.
