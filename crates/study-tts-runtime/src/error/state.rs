@@ -698,6 +698,20 @@ pub enum DurableStateError {
         tool: &'static str,
     },
 
+    /// A current package manifest records an absolute host path in a tool
+    /// argument.
+    #[error(
+        "package manifest `{}` records an unredacted absolute argument for `{tool}`; preserve the \
+         package for runtime reconciliation",
+        path.display()
+    )]
+    UnredactedPackageToolArgument {
+        /// Manifest carrying the private host path.
+        path: PathBuf,
+        /// Tool whose recorded argument violates the current layout.
+        tool: &'static str,
+    },
+
     /// A manifest file no longer matches the selecting record's checksum.
     #[error(
         "package manifest `{}` hashes to `{found}`, not selected checksum `{expected}`; preserve \
@@ -871,6 +885,7 @@ impl DurableStateError {
             | Self::UnexpectedPackageArtifactPath { .. }
             | Self::PackageArtifactChecksumMismatch { .. }
             | Self::MissingPackageToolArguments { .. }
+            | Self::UnredactedPackageToolArgument { .. }
             | Self::PackageManifestChecksumMismatch { .. }
             | Self::MalformedDurableDigest { .. }
             | Self::MissingCurrentPreview { .. }

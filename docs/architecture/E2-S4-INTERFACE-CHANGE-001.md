@@ -202,6 +202,21 @@ completion and error class became one typed state, and join findings became requ
   measurements naturally vary and participate in no synthesis, cache, or plan identity.
 - **Recovery:** partial reports are durably replaced under the job; complete reports publish with
   the immutable package.
+- **Bounded growth:** `docs/governance/TRACEABILITY-MATRIX.md` names this beside schema,
+  redaction, and reconciliation as what E2-S4 owes M2, and it is the one the other three sections
+  do not answer. Two documents are involved and only one of them grows. `run-report.json` is
+  *replaced*, never appended, so its size follows the lesson rather than the attempt count: one row
+  per planned segment, and join findings capped at `MAX_LESSON_SEGMENTS`. `events.ndjson` does
+  append, and this story roughly doubled what an attempt writes to it — the log carried only
+  `state_durable` before, and now carries a stage line per segment as well. Measured against
+  `fixtures/lessons/m2-durable-publication.json`, the largest committed lesson at 34 segments: a
+  `segment_synthesized` line serializes to 250 bytes, `state_durable` to 169, and
+  `package_published` to 238, giving **76 lines and 15.5 KiB per attempt, so 528 attempts against
+  one job directory** before `MAX_JOB_EVENT_LOG_BYTES` is reached. The ceiling refuses rather than
+  truncates: `encode_line` checks the prospective size before any write, so a full log keeps every
+  line it already held, which `t4_e2_event_log_limits_are_enforced_before_append` proves. Published
+  packages each carry one sealed report and accumulate as generations, which ADR-0001 §12.2's
+  cache-prune roots govern rather than this record.
 - **Tests:** `t1_e2_run_report_units_and_missing_values_follow_schema` proves the vocabulary is
   total and that only the two ratios are ratios;
   `t3_e2_every_published_run_report_number_names_its_unit` proves every published number names its

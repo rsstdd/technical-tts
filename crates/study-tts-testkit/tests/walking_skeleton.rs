@@ -398,7 +398,7 @@ fn t4_e0_skeleton_produces_wav_m4a_and_minimal_manifest() {
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(&result.manifest).expect("read minimal manifest"))
             .expect("parse minimal manifest");
-    assert_eq!(manifest["schema_version"], "3.0-skeleton");
+    assert_eq!(manifest["schema_version"], "4.0-skeleton");
     assert_eq!(manifest["release_status"], "private_preview");
     assert_eq!(manifest["lesson_id"], "e0-s0-walking-skeleton");
     assert_eq!(manifest["segments"].as_array().map(Vec::len), Some(2));
@@ -800,6 +800,111 @@ exec ffmpeg \"$@\"\n",
             stage.display()
         );
     }
+}
+
+/// Issue #82's second-order consequence, bounded to what this issue owns.
+///
+/// The package directory is named by the BLAKE3 of `manifest.json`, so anything
+/// nondeterministic in that document makes two builds of one lesson land under
+/// different identities. Two sources existed: FFmpeg's randomized staging names
+/// and the absolute workspace path, both closed here. A third remains and is
+/// deliberate — the sealed run report carries elapsed times, which
+/// the current E2-S4 implementation checksums under the still-Proposed
+/// `E2-S4-INTERFACE-CHANGE-002`. This asserts the two defects are gone and pins
+/// the third as the only one left.
+///
+/// Two workspaces rather than two builds in one, because a second build in one
+/// workspace takes the reuse path and returns the first package — equality
+/// would then be trivially true and prove nothing.
+///
+/// It rejects both wrong implementations independently: without the pinned
+/// staging name the recorded arguments differ by a random suffix, and without
+/// the redacted staging root they differ by the workspace path.
+#[test]
+fn t4_e1_only_the_run_report_makes_two_builds_of_one_lesson_differ() {
+    let first_workspace = TempDir::new().expect("create the first workspace");
+    let second_workspace = TempDir::new().expect("create the second workspace");
+    let worker = DeterministicToneWorker::default();
+
+    let first = build_preview(
+        build_request(&walking_skeleton_fixture(), first_workspace.path()),
+        &worker,
+    )
+    .expect("the first build should succeed");
+    let second = build_preview(
+        build_request(&walking_skeleton_fixture(), second_workspace.path()),
+        &worker,
+    )
+    .expect("the second build should succeed");
+
+    let mut first_manifest = read_manifest(&first);
+    let mut second_manifest = read_manifest(&second);
+
+    // The sealed run report carries this build's elapsed times, so its digest
+    // differs under the current E2-S4 implementation. Its still-Proposed
+    // interface record has not made that package identity an accepted
+    // contract. Removed here so the assertion is about what issue #82 owns:
+    // nothing else may differ.
+    for manifest in [&mut first_manifest, &mut second_manifest] {
+        manifest["artifacts"]
+            .as_object_mut()
+            .expect("a manifest records an artifact map")
+            .remove("run_report")
+            .expect("the current layout records a run report");
+    }
+
+    assert_eq!(
+        first_manifest, second_manifest,
+        "outside the run report, one lesson built twice must produce one manifest"
+    );
+}
+
+/// Issue #82: a published manifest records the operator's home directory and
+/// private filesystem layout in `tools.executions[].arguments[]`.
+///
+/// The argument vector is the provenance and stays; the staging directory it
+/// happened to run in is not, and it carries a username. The paths are also
+/// stale by the time anyone reads them: `preview::publish_transaction` renames
+/// the staging directory into the package, so a published manifest currently
+/// names a directory that no longer exists.
+///
+/// Asserts both directions. A test that only forbade the root would pass if
+/// redaction became deletion, and the recorded command shape is what
+/// `export.rs`'s `ToolExecution` doc says the field is for.
+#[test]
+fn t4_e2_a_recorded_argument_names_no_path_outside_the_package() {
+    let (workspace, result, _worker) = run_skeleton();
+    let manifest = read_manifest(&result);
+    let root = workspace.path().to_str().expect("a UTF-8 workspace path");
+
+    let mut substituted = false;
+    let mut survived = false;
+    for execution in manifest["tools"]["executions"]
+        .as_array()
+        .expect("a manifest records the executions it performed")
+    {
+        for argument in execution["arguments"]
+            .as_array()
+            .expect("every execution records its arguments")
+        {
+            let argument = argument.as_str().expect("an argument is a string");
+            assert!(
+                !argument.contains(root),
+                "a recorded argument names the workspace it ran in: {argument}"
+            );
+            substituted |= argument.contains("{staging}");
+            survived |= argument == "-i";
+        }
+    }
+
+    assert!(
+        substituted,
+        "redaction must replace the staging root, not delete the argument"
+    );
+    assert!(
+        survived,
+        "the non-path arguments must survive redaction unchanged"
+    );
 }
 
 #[test]
@@ -2975,7 +3080,7 @@ fn t4_e0_private_preview_cannot_enter_production_publication() {
         Err(BuildError::Publication(
             PublicationError::UnsupportedProductionManifest { ref version }
         ))
-            if version == "3.0-skeleton"
+            if version == "4.0-skeleton"
     ));
 }
 
@@ -3563,7 +3668,7 @@ fn t4_e2_a_resumed_retake_keeps_its_selected_take() {
 /// The manifest is constructed at `PRODUCTION_MANIFEST_VERSION` rather than
 /// built: `validate_production_manifest` gates a hypothetical production
 /// manifest shape at `"1.0"`, and what a preview build writes is
-/// `"3.0-skeleton"`, which
+/// `"4.0-skeleton"`, which
 /// `t4_e0_private_preview_cannot_enter_production_publication` pins as refused
 /// for its version before any selection is read.
 #[test]

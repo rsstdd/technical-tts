@@ -150,8 +150,25 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install FFmpeg
+        # `update` reads Ubuntu's own sources and nothing else. The runner image
+        # ships third-party lists under `sources.list.d/` — Google Chrome and
+        # Microsoft among them — that this job never installs from, and
+        # `apt-get update` exits 100 if *any* configured source fails. Run
+        # 34383458842 failed exactly there: Google's repository was mid-rotation,
+        # its `Release` file indexed a `Packages.gz` that had already been
+        # replaced, and a hash mismatch in a vendor repository this project does
+        # not use failed a documentation-only pull request.
+        #
+        # Scoped rather than ignored. `|| true` would also have passed that run,
+        # and would equally pass an archive outage that leaves ffmpeg
+        # uninstalled; this keeps a real failure fatal by removing the sources
+        # whose failure was never ours to care about. `ffmpeg` comes from
+        # `archive.ubuntu.com noble/universe`, which stays in scope.
         run: |
-          sudo apt-get update
+          sudo apt-get update \
+            -o Dir::Etc::sourcelist="sources.list.d/ubuntu.sources" \
+            -o Dir::Etc::sourceparts="-" \
+            -o APT::Get::List-Cleanup="0"
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg
 
       - name: Restore locked Rust dependencies
