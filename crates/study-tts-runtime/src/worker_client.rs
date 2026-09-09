@@ -384,6 +384,18 @@ impl WorkerClient {
         }
     }
 
+    /// The operating-system identity of the live worker, when one is running.
+    ///
+    /// `None` once [`WorkerClient::shutdown`] has taken the child, which is
+    /// what makes the ordering visible to a caller: `/proc/<pid>/status` stops
+    /// answering when the process exits, so a sample asked for after shutdown
+    /// reports nothing rather than reading whatever reused the identity.
+    pub(crate) fn pid(&self) -> Option<i32> {
+        self.child
+            .as_ref()
+            .and_then(|child| i32::try_from(child.id()).ok())
+    }
+
     /// Everything the worker has written to standard error so far.
     ///
     /// Diagnostics only. ADR-0001 §16 keeps source text and voice paths off

@@ -4,7 +4,60 @@
   "build_attempt": 1,
   "lesson_id": "e0-s0-two-segment",
   "plan_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "completion": "complete",
+  "error_class": null,
   "wall_micros": 120000000,
+  "model_load_micros": {
+    "observation": "observed",
+    "value": 18000000
+  },
+  "assembly_micros": {
+    "observation": "observed",
+    "value": 3400000
+  },
+  "normalize_micros": {
+    "observation": "observed",
+    "value": 47000000
+  },
+  "encode_micros": {
+    "observation": "observed",
+    "value": 21000000
+  },
+  "segments": [
+    {
+      "segment_id": "seg-0001",
+      "take": 0,
+      "cache_outcome": "synthesized",
+      "retry_count": 0,
+      "synthesis_wall_micros": {
+        "observation": "observed",
+        "value": 52000000
+      },
+      "audio_frames": 216000
+    },
+    {
+      "segment_id": "seg-0002",
+      "take": 0,
+      "cache_outcome": "synthesized",
+      "retry_count": 0,
+      "synthesis_wall_micros": {
+        "observation": "observed",
+        "value": 44000000
+      },
+      "audio_frames": 264000
+    },
+    {
+      "segment_id": "seg-0003",
+      "take": 0,
+      "cache_outcome": "reused",
+      "retry_count": 0,
+      "synthesis_wall_micros": {
+        "observation": "unavailable",
+        "reason": "reused_from_cache"
+      },
+      "audio_frames": 300000
+    }
+  ],
   "synthesis": {
     "segments_synthesized_count": 2,
     "wall_micros": 96000000,

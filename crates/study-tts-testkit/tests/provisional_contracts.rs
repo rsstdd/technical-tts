@@ -19,8 +19,8 @@ use study_tts_runtime::{
     BackendDescriptor, BackendError, BackendValidationError, BuildError,
     CACHE_PUBLICATION_CONTRACT_VERSION, CacheResolveRequest, FileSystemCachePublisher,
     FileSystemJobRepository, FileSystemPackageWriter, JobRepository, MAX_WORKER_FRAME_BYTES,
-    MAX_WORKER_REQUEST_ID_BYTES, PackagePreflightRequest, PackagePrepareRequest,
-    PackageWriteRequest, PreviewServiceBundle, SynthesisReport, SynthesisRequest,
+    MAX_WORKER_REQUEST_ID_BYTES, Measured, PackagePreflightRequest, PackagePrepareRequest,
+    PackageWriteRequest, PreviewServiceBundle, RunReport, SynthesisReport, SynthesisRequest,
     TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, WorkerFrameError, WorkerRequestFrame,
     WorkerResponseFrame, build_preview, build_preview_with_services, parse_worker_request,
     parse_worker_response, validate_executor_request,
@@ -364,16 +364,21 @@ fn t4_e0_every_provisional_seam_has_a_fake() {
         job_id: "contract-job",
         plan: &plan,
     };
+    let report = RunReport::unmeasured("contract-job", "contract-job", &"0".repeat(64), 1);
     let write = PackageWriteRequest {
         workspace: workspace.path(),
         job_id: "contract-job",
         plan: &plan,
         cached_artifacts: &cached[..1],
+        run_report: &report,
     };
-    let publications =
-        run_package_writer_contract_scenario(&packages, &preflight, &prepare, &write)
-            .expect("package contract scenario");
-    assert_eq!(publications[0], publications[1]);
+    let outcomes = run_package_writer_contract_scenario(&packages, &preflight, &prepare, &write)
+        .expect("package contract scenario");
+    assert_eq!(outcomes[0].publication, outcomes[1].publication);
+    assert!(
+        outcomes.iter().all(|outcome| outcome.sealed.is_none()),
+        "the fake assembles and encodes nothing, so it seals no report"
+    );
     assert_eq!(
         packages.calls(),
         [
@@ -433,7 +438,7 @@ fn t4_e1_the_real_package_writer_passes_the_shared_contract() {
         })
         .collect();
 
-    let publications = run_package_writer_contract_scenario(
+    let outcomes = run_package_writer_contract_scenario(
         &FileSystemPackageWriter,
         &PackagePreflightRequest {
             ffmpeg_executable: Path::new("ffmpeg"),
@@ -449,22 +454,45 @@ fn t4_e1_the_real_package_writer_passes_the_shared_contract() {
             job_id: "contract-job",
             plan: &plan,
             cached_artifacts: &cached,
+            run_report: &RunReport::unmeasured("contract-job", "contract-job", &"0".repeat(64), 1),
         },
     )
     .expect("the real package writer must pass the shared package contract");
 
     assert_eq!(
-        publications[0], publications[1],
+        outcomes[0].publication, outcomes[1].publication,
         "a second write must select the package the first one published"
     );
+
+    // Equal publications, unequal timings — which is the whole reason the two
+    // are separate values. Folding a duration into `PackagePublication` would
+    // make the assertion above fail for a package that is byte-for-byte the
+    // one it reuses.
+    let sealed = outcomes[0]
+        .sealed
+        .as_ref()
+        .expect("the first write assembled and encoded, so it sealed a report");
+    assert!(
+        matches!(
+            (sealed.assembly_micros, sealed.encode_micros),
+            (Measured::Observed { .. }, Measured::Observed { .. })
+        ),
+        "both durations are observed on the write that performed them"
+    );
+    assert!(
+        outcomes[1].sealed.is_none(),
+        "the second write selected what the first published and sealed nothing, \
+         leaving that package's own report the one that describes it"
+    );
+
     for artifact in [
-        &publications[0].master_wav,
-        &publications[0].m4a,
-        &publications[0].mp3,
-        &publications[0].transcript,
-        &publications[0].captions,
-        &publications[0].chapters,
-        &publications[0].manifest,
+        &outcomes[0].publication.master_wav,
+        &outcomes[0].publication.m4a,
+        &outcomes[0].publication.mp3,
+        &outcomes[0].publication.transcript,
+        &outcomes[0].publication.captions,
+        &outcomes[0].publication.chapters,
+        &outcomes[0].publication.manifest,
     ] {
         assert!(artifact.is_file(), "`{}` must exist", artifact.display());
     }
@@ -548,7 +576,7 @@ fn t4_e0_walking_skeleton_uses_only_published_seams() {
         serde_json::from_slice(&std::fs::read(&second.manifest).expect("read selected manifest"))
             .expect("parse selected manifest");
     assert_eq!(manifest["release_status"], "private_preview");
-    assert_eq!(manifest["schema_version"], "2.0-skeleton");
+    assert_eq!(manifest["schema_version"], "3.0-skeleton");
     // 9,600 frames of tone and generated silence, plus the edge conditioning
     // each of the two segments now carries: ADR-0001 §13.4 requires 10 ms of
     // zero padding at each exposed edge, which is 240 frames at the canonical

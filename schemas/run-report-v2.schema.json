@@ -1,5 +1,20 @@
 {
   "$defs": {
+    "CacheOutcome": {
+      "description": "Whether this build's worker produced a segment or reused one.\n\n`DELIVERY-PLAN.md` E2-S4 task 2 requires the outcome per segment. It is\nread from whether the cache ran the producer closure, which is the only\nplace the distinction survives: [`crate::CachePublisher::resolve`] returns\nthe same validated artifact either way, deliberately, so that reused audio\nand fresh audio are indistinguishable to everything downstream of it.",
+      "oneOf": [
+        {
+          "const": "synthesized",
+          "description": "The worker synthesized this segment during this build.",
+          "type": "string"
+        },
+        {
+          "const": "reused",
+          "description": "A published cache entry supplied it and no synthesis ran.",
+          "type": "string"
+        }
+      ]
+    },
     "Measured": {
       "description": "A number this environment may or may not have been able to observe.\n\nTwo variants rather than a nullable number, so a document cannot say\n\"missing\" and \"zero\" with the same bytes. No `#[serde(other)]`: an\nobservation state this build does not know is a parse error.\nNot generic. Every measurement this document publishes is a `u64`, and a\ntype parameter with one instantiation buys nothing while costing a real\nhazard: `schemars` names generic instantiations positionally, so a second\none would publish `$defs/Measured2` and reordering fields could swap which\ndefinition a reader is looking at.",
       "oneOf": [
@@ -46,9 +61,72 @@
         }
       ]
     },
+    "ReportCompletion": {
+      "description": "Whether a report describes a build that finished.\n\nA reader cannot otherwise tell a report sealed into a published package\nfrom one written where a build stopped, and the two carry the same fields\nwith very different meanings: an incomplete report's totals cover the work\nthat happened before the failure, not the work the lesson asked for.",
+      "oneOf": [
+        {
+          "const": "complete",
+          "description": "The build finished and this report was sealed into its package.",
+          "type": "string"
+        },
+        {
+          "const": "incomplete",
+          "description": "The build stopped, and this is what it had measured.",
+          "type": "string"
+        }
+      ]
+    },
     "RunReportLayout": {
-      "const": "1.0-skeleton",
+      "const": "2.0-skeleton",
       "type": "string"
+    },
+    "RunReportSegment": {
+      "additionalProperties": false,
+      "description": "What one planned segment cost this build.\n\nThe five facts `DELIVERY-PLAN.md` E2-S4 task 2 names. Built from planned\nidentities and the resolved cache artifact, never from the validated\nlesson: `spoken_text` and `display_text` sit on `PlannedSegment` beside the\n`id` this carries, and the guarantee that neither reaches a published\ndocument is that this type has nowhere to put them.",
+      "properties": {
+        "audio_frames": {
+          "description": "Audio this segment generated, excluding the pause written after it.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cache_outcome": {
+          "$ref": "#/$defs/CacheOutcome",
+          "description": "Whether the worker produced this segment or the cache supplied it."
+        },
+        "retry_count": {
+          "description": "Times this segment's synthesis was retried.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "segment_id": {
+          "description": "Identity of the segment within its lesson.",
+          "type": "string"
+        },
+        "synthesis_wall_micros": {
+          "$ref": "#/$defs/Measured",
+          "description": "Time inside the worker's synthesis call, absent for a reused segment."
+        },
+        "take": {
+          "description": "Take this build rendered.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "segment_id",
+        "take",
+        "cache_outcome",
+        "retry_count",
+        "synthesis_wall_micros",
+        "audio_frames"
+      ],
+      "type": "object"
     },
     "RunResources": {
       "additionalProperties": false,
@@ -153,6 +231,16 @@
           "const": "no_audio_generated",
           "description": "No audio was generated, so a ratio over it has no value. Distinct from a\nratio of zero, which would claim synthesis took no time.",
           "type": "string"
+        },
+        {
+          "const": "reused_from_cache",
+          "description": "The work was reused rather than performed: a segment came from the\ncache and no synthesis ran, or a package an earlier build produced was\nselected and nothing was assembled or encoded. Distinct from a duration\nof zero, which would claim the work happened instantly.",
+          "type": "string"
+        },
+        {
+          "const": "no_worker_process",
+          "description": "The executor ran synthesis with no separate worker process, so there\nwas nothing to sample. Distinct from\n[`Unavailable::NotExposedByEnvironment`], which says the platform\nwithheld a counter: here the platform would have supplied one and no\nprocess existed to ask about.",
+          "type": "string"
         }
       ]
     },
@@ -203,17 +291,36 @@
       "type": "object"
     }
   },
-  "$id": "https://schemas.study-tts.example/run-report-v1.schema.json",
+  "$id": "https://schemas.study-tts.example/run-report-v2.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "What one build measured.\n\nCarries identifiers, timings, and counts only. It names no file, quotes no\nlesson text, and holds no voice-reference path.",
   "properties": {
+    "assembly_micros": {
+      "$ref": "#/$defs/Measured",
+      "description": "Time spent assembling segment audio into the master, absent when this\nbuild selected a package an earlier one produced."
+    },
     "build_attempt": {
       "description": "Attempt within that job.",
       "format": "uint32",
       "maximum": 4294967295,
       "minimum": 0,
       "type": "integer"
+    },
+    "completion": {
+      "$ref": "#/$defs/ReportCompletion",
+      "description": "Whether the build this describes finished."
+    },
+    "encode_micros": {
+      "$ref": "#/$defs/Measured",
+      "description": "Time spent encoding both lossy outputs, absent for the same reason."
+    },
+    "error_class": {
+      "description": "Class of the failure that ended an incomplete build.\n\n`None` on a complete report, and never a message: several failure\nclasses carry a path, and `BuildError::class` is the closed vocabulary\nthat keeps one out of a published document.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "job_id": {
       "description": "Job this build belongs to.",
@@ -222,6 +329,14 @@
     "lesson_id": {
       "description": "Lesson this build rendered.",
       "type": "string"
+    },
+    "model_load_micros": {
+      "$ref": "#/$defs/Measured",
+      "description": "Time the backend spent starting and loading its model, where the\nbackend has a process that can report it."
+    },
+    "normalize_micros": {
+      "$ref": "#/$defs/Measured",
+      "description": "Time spent normalizing that master's loudness, absent for the same\nreason."
     },
     "plan_hash": {
       "description": "Plan hash the build rendered from.",
@@ -234,6 +349,13 @@
     "schema_version": {
       "$ref": "#/$defs/RunReportLayout",
       "description": "Layout this document was written against."
+    },
+    "segments": {
+      "description": "One row per planned segment, in the order the plan renders them.",
+      "items": {
+        "$ref": "#/$defs/RunReportSegment"
+      },
+      "type": "array"
     },
     "synthesis": {
       "$ref": "#/$defs/SynthesisTotals",
@@ -253,7 +375,13 @@
     "build_attempt",
     "lesson_id",
     "plan_hash",
+    "completion",
     "wall_micros",
+    "model_load_micros",
+    "assembly_micros",
+    "normalize_micros",
+    "encode_micros",
+    "segments",
     "synthesis",
     "resources"
   ],

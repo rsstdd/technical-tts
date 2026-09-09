@@ -562,8 +562,14 @@ const UNSUFFIXED_RUN_REPORT_NUMBERS: [&str; 3] = ["value", "build_attempt", "tak
 /// gets a number that looks plausible.
 #[test]
 fn t3_e2_every_published_run_report_number_names_its_unit() {
-    let schema =
-        read_json(&schema_directory().join(format!("{}-v1.schema.json", RUN_REPORT_SCHEMA_STEM)));
+    // Looked up rather than spelled: a hardcoded major silently reads the
+    // wrong file the first time the document's version moves, and reports
+    // that every field is fine because it found nothing to check.
+    let published = PUBLISHED_SCHEMAS
+        .iter()
+        .find(|schema| schema.stem == RUN_REPORT_SCHEMA_STEM)
+        .expect("the run report is a published schema");
+    let schema = read_json(&schema_directory().join(published.file_name()));
     let suffixes = [
         MeasurementUnit::Microseconds,
         MeasurementUnit::Frames,
@@ -1006,7 +1012,7 @@ fn t3_e1_every_published_schema_claims_the_uri_its_documents_name() {
 /// agree with any schema it was handed, including one that grew a required
 /// field nobody meant to add — which is the change this table exists to make
 /// impossible to land quietly.
-const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 50] = [
+const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 51] = [
     (
         "job 1.0",
         "/",
@@ -1072,7 +1078,7 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 50] = [
         ],
     ),
     (
-        "manifest 2.0",
+        "manifest 3.0",
         "/",
         &[
             "artifacts",
@@ -1088,9 +1094,9 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 50] = [
             "total_frames",
         ],
     ),
-    ("manifest 2.0", "/$defs/StoredArtifact", &["blake3", "path"]),
+    ("manifest 3.0", "/$defs/StoredArtifact", &["blake3", "path"]),
     (
-        "manifest 2.0",
+        "manifest 3.0",
         "/$defs/StoredJoin",
         &[
             "calibration_source",
@@ -1101,7 +1107,7 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 50] = [
         ],
     ),
     (
-        "manifest 2.0",
+        "manifest 3.0",
         "/$defs/StoredArtifacts",
         &[
             "captions",
@@ -1109,16 +1115,17 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 50] = [
             "m4a",
             "master_wav",
             "mp3",
+            "run_report",
             "transcript",
         ],
     ),
     (
-        "manifest 2.0",
+        "manifest 3.0",
         "/$defs/StoredExecution",
         &["argument_profile_blake3", "arguments", "tool"],
     ),
     (
-        "manifest 2.0",
+        "manifest 3.0",
         "/$defs/StoredManifestSegment",
         &[
             "audio_blake3",
@@ -1133,12 +1140,12 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 50] = [
         ],
     ),
     (
-        "manifest 2.0",
+        "manifest 3.0",
         "/$defs/StoredToolIdentity",
         &["resolved_executable", "version"],
     ),
     (
-        "manifest 2.0",
+        "manifest 3.0",
         "/$defs/StoredTools",
         &["executions", "ffmpeg", "ffprobe"],
     ),
@@ -1367,31 +1374,49 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 50] = [
         &["output", "seed", "style", "take", "text", "voice"],
     ),
     (
-        "run-report 1.0",
+        "run-report 2.0",
         "/",
         &[
+            "assembly_micros",
             "build_attempt",
+            "completion",
+            "encode_micros",
             "job_id",
             "lesson_id",
+            "model_load_micros",
+            "normalize_micros",
             "plan_hash",
             "resources",
             "schema_version",
+            "segments",
             "synthesis",
             "wall_micros",
         ],
     ),
     (
-        "run-report 1.0",
+        "run-report 2.0",
         "/$defs/Measured/oneOf/0",
         &["observation", "value"],
     ),
     (
-        "run-report 1.0",
+        "run-report 2.0",
         "/$defs/Measured/oneOf/1",
         &["observation", "reason"],
     ),
     (
-        "run-report 1.0",
+        "run-report 2.0",
+        "/$defs/RunReportSegment",
+        &[
+            "audio_frames",
+            "cache_outcome",
+            "retry_count",
+            "segment_id",
+            "synthesis_wall_micros",
+            "take",
+        ],
+    ),
+    (
+        "run-report 2.0",
         "/$defs/RunResources",
         &[
             "open_handles_count",
@@ -1400,7 +1425,7 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 50] = [
         ],
     ),
     (
-        "run-report 1.0",
+        "run-report 2.0",
         "/$defs/SynthesisTotals",
         &[
             "aggregate_real_time_factor_milli",
@@ -1412,7 +1437,7 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 50] = [
         ],
     ),
     (
-        "run-report 1.0",
+        "run-report 2.0",
         "/$defs/WorstSegment",
         &[
             "audio_frames",

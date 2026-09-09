@@ -24,6 +24,7 @@ use crate::{
     durable::{DurableFileSystem, write_json_atomically},
     export::{ExportProfiles, ToolExecution},
     managed,
+    run_report::RUN_REPORT_NAME,
     timeline::{TEXT_RENDERER_VERSION, Timeline},
     tools::ToolIdentity,
 };
@@ -50,7 +51,7 @@ use crate::{
 /// `docs/architecture/WALKING-SKELETON.md` names both constants in its
 /// provisional package-manifest paragraph, and records why reconciliation still
 /// reads the legacy layouts and why only the current one is published.
-const CURRENT_MANIFEST_LAYOUT_VERSION: &str = "2.0-skeleton";
+const CURRENT_MANIFEST_LAYOUT_VERSION: &str = "3.0-skeleton";
 
 /// Milliseconds in one second, for checking a declared pause against frames.
 const MILLISECONDS_PER_SECOND: u64 = 1_000;
@@ -61,6 +62,28 @@ const MILLISECONDS_PER_SECOND: u64 = 1_000;
 /// package can be reconciled; never written, and never reusable as a matching
 /// tool-profile generation.
 const LEGACY_MANIFEST_LAYOUT_VERSION: &str = "0.1-skeleton";
+
+/// The `schema_version` of the E2-S2 layout, which predates the run report.
+///
+/// Read so a package an earlier build published still reconciles, and never
+/// written. It records six artifacts, so it can never satisfy this build's
+/// reuse: `validate_package` compares the whole recorded set against the seven
+/// a package now holds, and one missing the run report cannot match.
+const PREVIOUS_MANIFEST_LAYOUT_VERSION: &str = "2.0-skeleton";
+
+/// The artifact names that layout recorded, frozen.
+///
+/// Its own list rather than a slice of [`PACKAGE_ARTIFACT_NAMES`]: reading a
+/// frozen layout through the live array would make the old shape follow the
+/// new one's ordering, which is the coupling freezing exists to break.
+const PACKAGE_ARTIFACT_NAMES_V2: [&str; 6] = [
+    MASTER_WAV_NAME,
+    M4A_NAME,
+    MP3_NAME,
+    TRANSCRIPT_NAME,
+    CAPTIONS_NAME,
+    CHAPTERS_NAME,
+];
 
 /// The `schema_version` of the E1-S1 layout, which recorded argument profiles.
 ///
@@ -102,16 +125,17 @@ pub(crate) const MANIFEST_NAME: &str = "manifest.json";
 
 /// Every file a complete package holds besides the manifest, in written order.
 ///
-/// One list rather than six call sites: `preview::publish_transaction`
+/// One list rather than seven call sites: `preview::publish_transaction`
 /// synchronizes exactly these before the package becomes durable, and a file
 /// added here without being added there would be published unflushed.
-pub(crate) const PACKAGE_ARTIFACT_NAMES: [&str; 6] = [
+pub(crate) const PACKAGE_ARTIFACT_NAMES: [&str; 7] = [
     MASTER_WAV_NAME,
     M4A_NAME,
     MP3_NAME,
     TRANSCRIPT_NAME,
     CAPTIONS_NAME,
     CHAPTERS_NAME,
+    RUN_REPORT_NAME,
 ];
 
 /// The manifest document, borrowed from the build that produced it.
@@ -170,7 +194,7 @@ pub(crate) struct RecordedJoin<'a> {
     pub continuity: JoinContinuity,
 }
 
-/// The six files a build leaves in its preview directory.
+/// The seven files a build leaves in its preview directory.
 #[derive(Serialize)]
 struct Artifacts {
     master_wav: Artifact,
@@ -179,6 +203,7 @@ struct Artifacts {
     transcript: Artifact,
     captions: Artifact,
     chapters: Artifact,
+    run_report: Artifact,
 }
 
 /// One produced file, named relative to the preview directory and hashed.
@@ -379,6 +404,10 @@ pub(crate) fn write(
             transcript: artifact(TRANSCRIPT_NAME)?,
             captions: artifact(CAPTIONS_NAME)?,
             chapters: artifact(CHAPTERS_NAME)?,
+            // Sealed into the staging directory before this call, so hashing
+            // it names the bytes the package publishes. `DELIVERY-PLAN.md`
+            // E2-S4 task 5 requires the manifest to checksum it.
+            run_report: artifact(RUN_REPORT_NAME)?,
         },
         tools: Tools {
             ffmpeg: ToolIdentityRecord {
@@ -502,6 +531,7 @@ struct StoredArtifacts {
     transcript: StoredArtifact,
     captions: StoredArtifact,
     chapters: StoredArtifact,
+    run_report: StoredArtifact,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -682,7 +712,21 @@ impl From<StoredManifest> for PackageRecord {
                 &join.continuity,
             );
         }
-        let artifacts = manifest.artifacts;
+        // Destructured with no rest pattern, so an artifact added to the
+        // stored shape is a compile error here. `zip` below stops at the
+        // shorter side: a name added to `PACKAGE_ARTIFACT_NAMES` without a
+        // field beside it would be dropped from the record silently, and
+        // `validate_package` would then never check the file
+        // `publish_transaction` had already flushed.
+        let StoredArtifacts {
+            master_wav,
+            m4a,
+            mp3,
+            transcript,
+            captions,
+            chapters,
+            run_report,
+        } = manifest.artifacts;
         Self {
             release_status: manifest.release_status,
             lesson_id: manifest.lesson_id,
@@ -711,12 +755,7 @@ impl From<StoredManifest> for PackageRecord {
             artifacts: PACKAGE_ARTIFACT_NAMES
                 .into_iter()
                 .zip([
-                    artifacts.master_wav,
-                    artifacts.m4a,
-                    artifacts.mp3,
-                    artifacts.transcript,
-                    artifacts.captions,
-                    artifacts.chapters,
+                    master_wav, m4a, mp3, transcript, captions, chapters, run_report,
                 ])
                 .map(|(required_name, artifact)| RecordedArtifact {
                     required_name,
@@ -728,6 +767,128 @@ impl From<StoredManifest> for PackageRecord {
             ffprobe: manifest.tools.ffprobe,
             executions: manifest
                 .tools
+                .executions
+                .into_iter()
+                .map(|execution| RecordedToolUse {
+                    tool: execution.tool,
+                    arguments: execution.arguments,
+                    argument_profile_blake3: Some(execution.argument_profile_blake3),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The `2.0-skeleton` manifest, frozen at the shape that layout published.
+///
+/// Differs from [`StoredManifest`] in its artifact set alone, so every other
+/// stored shape is shared rather than copied — those did not move. No
+/// `JsonSchema`: this is read and never published, so giving it one would add
+/// a second definition of a format to the generated schemas.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+struct StoredManifestV2 {
+    schema_version: String,
+    release_status: ReleaseStatus,
+    lesson_id: String,
+    plan_hash: PlanHash,
+    take_selection_source: TakeSelectionSource,
+    text_renderer_version: String,
+    total_frames: u64,
+    segments: Vec<StoredManifestSegment>,
+    join_continuity: Vec<StoredJoin>,
+    artifacts: StoredArtifactsV2,
+    tools: StoredTools,
+}
+
+/// The six artifacts `2.0-skeleton` recorded, frozen.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+struct StoredArtifactsV2 {
+    master_wav: StoredArtifact,
+    m4a: StoredArtifact,
+    mp3: StoredArtifact,
+    transcript: StoredArtifact,
+    captions: StoredArtifact,
+    chapters: StoredArtifact,
+}
+
+impl From<StoredManifestV2> for PackageRecord {
+    fn from(manifest: StoredManifestV2) -> Self {
+        // Destructured with no rest pattern, so a field this layout carried
+        // cannot be dropped unnoticed. The current conversion reaches through
+        // `manifest.field` instead, and this one feeds reconciliation for a
+        // layout no build writes any more — nothing else would notice.
+        let StoredManifestV2 {
+            schema_version,
+            release_status,
+            lesson_id,
+            plan_hash,
+            take_selection_source,
+            text_renderer_version,
+            total_frames,
+            segments,
+            join_continuity,
+            artifacts,
+            tools,
+        } = manifest;
+        // Read for the reason the current layout's conversion reads them: the
+        // version selected this decoder before any field was decoded, and the
+        // joins are deliberately kept out of the record because ADR-0003 has
+        // not frozen what the numbers mean.
+        let _ = &schema_version;
+        for join in &join_continuity {
+            let _ = (
+                &join.earlier_segment_id,
+                &join.later_segment_id,
+                &join.continuity,
+            );
+        }
+        let StoredArtifactsV2 {
+            master_wav,
+            m4a,
+            mp3,
+            transcript,
+            captions,
+            chapters,
+        } = artifacts;
+
+        Self {
+            release_status,
+            lesson_id,
+            plan_hash,
+            text_renderer_version: Some(text_renderer_version),
+            take_selection_source: Some(take_selection_source),
+            total_frames: Some(total_frames),
+            segments: segments
+                .into_iter()
+                .map(|segment| {
+                    let _ = (&segment.selected_take, &segment.audio_blake3);
+                    RecordedSegment {
+                        segment_id: segment.segment_id,
+                        cache_key: segment.cache_key,
+                        synthesis_base_key: segment.synthesis_base_key,
+                        frames: segment.frames,
+                        written: Some(WrittenPosition {
+                            start_frame: segment.start_frame,
+                            pause_after_ms: segment.pause_after_ms,
+                            pause_frames: segment.pause_frames,
+                        }),
+                    }
+                })
+                .collect(),
+            artifacts: PACKAGE_ARTIFACT_NAMES_V2
+                .into_iter()
+                .zip([master_wav, m4a, mp3, transcript, captions, chapters])
+                .map(|(required_name, artifact)| RecordedArtifact {
+                    required_name,
+                    path: artifact.path,
+                    blake3: artifact.blake3,
+                })
+                .collect(),
+            ffmpeg: tools.ffmpeg,
+            ffprobe: tools.ffprobe,
+            executions: tools
                 .executions
                 .into_iter()
                 .map(|execution| RecordedToolUse {
@@ -883,11 +1044,32 @@ pub(crate) fn validate_package(
         // The renderer is checked beside the tools rather than after them
         // because it is the same question: was this package produced by what
         // this build would produce it with.
-        tools_match(&manifest, &expected)
+        //
+        // The artifact set is asked first because it is the one question the
+        // others cannot answer: a layout that recorded fewer files can carry
+        // identical tools, renderer, and selection, and E2-S4's run report is
+        // produced by no tool at all. Without this, a six-artifact package
+        // would be reused by a build that publishes seven, and the manifest a
+        // consumer read would checksum a report that package never held.
+        records_every_artifact(&manifest)
+            && tools_match(&manifest, &expected)
             && manifest.text_renderer_version.as_deref() == Some(expected.text_renderer_version)
             && manifest.take_selection_source == Some(expected.take_selection_source)
     });
     Ok(plan_matches && reusable)
+}
+
+/// Whether a package records every artifact this build publishes.
+///
+/// By required name rather than by count, so a layout that recorded six
+/// different files could not pass by holding six of the seven.
+fn records_every_artifact(manifest: &PackageRecord) -> bool {
+    PACKAGE_ARTIFACT_NAMES.iter().all(|required| {
+        manifest
+            .artifacts
+            .iter()
+            .any(|recorded| recorded.required_name == *required)
+    })
 }
 
 /// Every cache entry the published package at `manifest_path` was assembled
@@ -953,6 +1135,11 @@ fn parse_stored_manifest(
                 version: tool.version.clone(),
             },
         )),
+        PREVIOUS_MANIFEST_LAYOUT_VERSION => Ok(PackageRecord::from(parse_manifest::<
+            StoredManifestV2,
+        >(
+            bytes, manifest_path
+        )?)),
         CURRENT_MANIFEST_LAYOUT_VERSION => Ok(PackageRecord::from(
             parse_manifest::<StoredManifest>(bytes, manifest_path)?,
         )),
@@ -1387,6 +1574,52 @@ mod tests {
             serde_json::to_vec_pretty(&manifest).expect("serialize test manifest"),
         )
         .expect("write changed test manifest");
+    }
+
+    /// The layout before this one stays readable, and cannot be reused.
+    ///
+    /// Preservation and reuse are different questions, and E1-S4's record
+    /// answers them differently for every layout it demoted: an operator's
+    /// existing preview must keep validating, while a package holding six
+    /// artifacts can never stand in for one holding seven.
+    ///
+    /// Built by demoting a current package rather than hand-authoring one, so
+    /// the document this reads is the shape a real build actually wrote —
+    /// which is the only thing that makes the frozen decoder evidence.
+    #[test]
+    fn t4_e2_the_previous_layout_is_read_and_rebuilt_rather_than_refused() {
+        let workspace = TempDir::new().expect("create previous-layout workspace");
+        let package = workspace.path().join("package");
+        write_test_package(&package);
+        rewrite_test_manifest(&package, |manifest| {
+            manifest["schema_version"] = json!(PREVIOUS_MANIFEST_LAYOUT_VERSION);
+            manifest["artifacts"]
+                .as_object_mut()
+                .expect("the manifest records an artifact map")
+                .remove("run_report")
+                .expect("the current layout records a run report");
+        });
+        std::fs::remove_file(package.join(RUN_REPORT_NAME))
+            .expect("the previous layout published no run report");
+
+        assert!(
+            validate_package(&package, "lesson", None, None)
+                .expect("a previous-layout package must still parse and validate"),
+            "demoting a layout must not make an operator's existing preview unreadable"
+        );
+
+        let (ffmpeg, ffprobe) = test_tool_identities();
+        let profiles = export::export_profiles();
+        assert!(
+            !validate_package(
+                &package,
+                "lesson",
+                None,
+                Some(expectations(&ffmpeg, &ffprobe, &profiles)),
+            )
+            .expect("a previous-layout package is valid without being reusable"),
+            "a package with no run report cannot satisfy a build that publishes one"
+        );
     }
 
     /// One named way to corrupt a written manifest, for a table of them.

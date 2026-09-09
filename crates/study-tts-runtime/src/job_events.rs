@@ -54,6 +54,13 @@ pub(crate) struct JobEvent {
 }
 
 /// What durable fact an event records.
+///
+/// New variants are additive by construction: an internally tagged enum reads
+/// every line whose tag it knows, so a log written before these existed still
+/// parses and `JOB_EVENT_SCHEMA_VERSION` does not move.
+/// `docs/architecture/G1-FREEZE-CHARTER.md` requires exactly that — moving it
+/// would make `validate_event_file` refuse every existing log, and because
+/// that refusal runs before each append, every later state change with it.
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
 pub(crate) enum JobEventKind {
@@ -61,6 +68,104 @@ pub(crate) enum JobEventKind {
     StateDurable { state: JobState },
     /// A lock whose recorded owner was verified gone was taken over.
     JobLockRecovered { pid: u32, process_start: u64 },
+    /// The plan this attempt renders was selected and retained.
+    PlanSelected { segment_count: u32 },
+    /// The worker produced one segment.
+    SegmentSynthesized {
+        segment_id: String,
+        take: u32,
+        voice_profile: String,
+        duration_ms: u64,
+    },
+    /// A published cache entry supplied one segment and no synthesis ran.
+    SegmentReused { segment_id: String, take: u32 },
+    /// Segment audio was assembled into the master.
+    PackageAssembled,
+    /// The lossy outputs were encoded from that master.
+    PackageEncoded,
+    /// The staged package became the authoritative one.
+    PackagePublished { manifest_blake3: String },
+}
+
+/// A stage a build may record as it passes it.
+///
+/// `DELIVERY-PLAN.md` E2-S4 task 1 asks for events "across planning,
+/// synthesis, cache, assembly, and export", and ADR-0001 §14 names the fields
+/// each carries "where applicable" — satisfied by putting each field on the
+/// stage it applies to rather than as an empty column on every line. The
+/// stage's own name is the §14 `stage` field: [`JobEventKind`] is tagged, so
+/// the discriminant is written into every line.
+///
+/// Separate from [`JobEventKind`] so that a caller cannot forge a
+/// `StateDurable` or a `JobLockRecovered`. Those two describe durable facts the
+/// repository and the lock path own, and an event claiming a state nothing
+/// wrote would be worse than no event at all.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BuildStage {
+    /// The plan this attempt renders was selected and retained.
+    PlanSelected {
+        /// Segments the plan names.
+        segment_count: u32,
+    },
+    /// The worker produced one segment.
+    SegmentSynthesized {
+        /// Identity of the segment within its lesson.
+        segment_id: String,
+        /// Take this build rendered.
+        take: u32,
+        /// Voice profile the segment was spoken by.
+        voice_profile: String,
+        /// Time inside the worker's synthesis call.
+        duration_ms: u64,
+    },
+    /// A published cache entry supplied one segment.
+    SegmentReused {
+        /// Identity of the segment within its lesson.
+        segment_id: String,
+        /// Take this build reused.
+        take: u32,
+    },
+    /// Segment audio was assembled into the master.
+    ///
+    /// No duration here. An event says a boundary was crossed and names what
+    /// crossed it; how long the stage took is a measurement, and the run
+    /// report is the document that carries measurements. A duration in both
+    /// would be two numbers for one fact that can disagree.
+    PackageAssembled,
+    /// The lossy outputs were encoded from that master.
+    PackageEncoded,
+    /// The staged package became the authoritative one.
+    PackagePublished {
+        /// Digest of the manifest naming the published package.
+        manifest_blake3: String,
+    },
+}
+
+impl From<BuildStage> for JobEventKind {
+    fn from(stage: BuildStage) -> Self {
+        match stage {
+            BuildStage::PlanSelected { segment_count } => Self::PlanSelected { segment_count },
+            BuildStage::SegmentSynthesized {
+                segment_id,
+                take,
+                voice_profile,
+                duration_ms,
+            } => Self::SegmentSynthesized {
+                segment_id,
+                take,
+                voice_profile,
+                duration_ms,
+            },
+            BuildStage::SegmentReused { segment_id, take } => {
+                Self::SegmentReused { segment_id, take }
+            }
+            BuildStage::PackageAssembled => Self::PackageAssembled,
+            BuildStage::PackageEncoded => Self::PackageEncoded,
+            BuildStage::PackagePublished { manifest_blake3 } => {
+                Self::PackagePublished { manifest_blake3 }
+            }
+        }
+    }
 }
 
 impl JobEvent {

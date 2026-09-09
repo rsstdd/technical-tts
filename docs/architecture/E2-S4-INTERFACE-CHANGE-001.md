@@ -20,13 +20,15 @@ system of record for decisions. Issue #17 is the working record.
 **One published schema is added; none moves.** `run-report` enters `PUBLISHED_SCHEMAS` at `1.0`,
 writing the layout label `1.0-skeleton`. The other seven documents are byte-identical, and
 `t3_e1_generated_schemas_match_checked_in_files` proves it: regenerating produced a diff in
-`schemas/run-report-v1.schema.json` alone.
+`schemas/run-report-v1.schema.json` alone. (That file was retired by this record's first
+amendment; `run-report-v2.schema.json` replaces it.)
 
 - Contract ID: `run-report`
 - Old version: none
 - New version: `1.0`, layout `1.0-skeleton`
 - Compatibility class: **new contract**. Nothing consumed it before, so nothing can break.
-- Required fields: eight at the root, listed in `PUBLISHED_REQUIRED_SURFACE` under `run-report 1.0`
+- Required fields: eight at the root at `1.0`, listed in `PUBLISHED_REQUIRED_SURFACE` — twelve at
+  `2.0`, under `run-report 2.0`, per this record's first amendment
 - Unknown-field behavior: refused. `#[serde(deny_unknown_fields)]` on every struct and on both
   `Measured` variants; no `#[serde(other)]` anywhere.
 - Unknown-version behavior: refused **at the parse**, not compared downstream. `schema_version` is
@@ -54,7 +56,7 @@ document from `events.ndjson` and `publication.json`, which stay internal journa
 | **I-3** | Package transaction identity | **Does not move** | `ExportProfiles::identities` is untouched |
 | **I-4** | Package identity | **Does not move** | No package artifact changes, so no digest moves |
 | **I-5** | Reuse of an existing package | **Unaffected** | `manifest::expected_executions` is untouched, so an existing package still matches |
-| **I-6** | `manifest` schema | **Does not move yet** | The manifest will checksum this report, which is a later E2-S4 step and a **Breaking contract** move to `3.0-skeleton`. It is named here so the reader knows it is coming, and is not made here |
+| **I-6** | `manifest` schema | **Moved, by `E2-S4-INTERFACE-CHANGE-002`** | Predicted here and made there: the manifest now checksums the sealed report, a **Breaking contract** move to `3.0-skeleton`. The run report joins the package as its seventh artifact, and reuse gained a check on the recorded artifact set so a six-artifact package cannot stand in for one holding seven |
 
 **Nothing this step adds is written by a build.** The document is defined and published; no code
 path constructs one. That is deliberate: the vocabulary is reviewable in a diff before any
@@ -124,6 +126,37 @@ the manifest will checksum, so that is where the contract belongs. Two mechanica
 have different readers, so one contract would over-promise the diagnostic and under-serve the
 report.
 
+### What the stage events add, and what stays out of them
+
+Task 1's stages are new `JobEventKind` variants and nothing else. An internally tagged enum reads
+every line whose tag it knows, so a log written before these existed still parses and the version
+above stays put. **Adding a field to the `JobEvent` envelope would have been the same mistake as a
+version bump**: `deny_unknown_fields` plus a missing required field fails every old line, and
+because `validate_event_file` runs before each append, that failure would take every later state
+change with it — a job directory that could no longer record that it had advanced.
+
+**ADR-0001 §14's `stage` field is the tag discriminant.** `JobEventKind` is `tag = "kind"`, so
+every line already writes the stage's own name; a second `stage` field would be that name repeated.
+Renaming the tag to `stage` was not available — it would break every existing line for a spelling.
+
+**Events carry ordering and identity; the run report carries measurements.** `PackageAssembled` and
+`PackageEncoded` name a boundary and carry no duration, because a duration in both documents is two
+numbers for one fact that can drift apart. `SegmentSynthesized` is the exception ADR-0001 §14 names
+directly, pairing `segment_id` with `duration_ms`.
+
+**No package stage can be recorded from inside the writer.** Everything `package_port::write`
+stages is non-authoritative until its final rename, so the three package events are appended after
+it returns, describing work a crash can no longer discard. That is ADR-0001 §12.3 step 5 applied to
+a stage rather than a state.
+
+**The event log names voice profiles and the run report does not.** ADR-0001 §14 lists
+`voice_profile` among an event's fields, so `SegmentSynthesized` carries the profile identity, while
+`t4_e2_run_report_excludes_sensitive_fixture_content` asserts no profile name appears in the run
+report. Both are correct and the asymmetry is deliberate: E2-S4 task 6 and
+`docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` redact voice-reference **paths**, and a profile
+identity is not a path — it is the name of a record a reviewer follows to a consent decision. The
+run report is stricter than required because it has no field that needs one.
+
 ## What the document carries, and what it deliberately does not
 
 `docs/observability/RUN-REPORT-FIELDS.md` is the field-by-field statement and names
@@ -185,11 +218,19 @@ derivable from the manifest's recorded joins, so the field belongs with the step
 report from a real build rather than with the one that defines its vocabulary. **Still open, still
 assigned here.**
 
-**G-B — which process the peak-resident sample names.** The worker holds Torch and is the
-interesting number, but `Fidelity::Approximate` is doing work the record cannot yet quantify:
-`/proc/<pid>/status` `VmHWM` is unreadable once the process exits, so the sample must be taken
-before shutdown and its representativeness depends on when. The step that measures it owes a
-statement of when the sample is taken.
+**G-B — which process the peak-resident sample names. Answered 2026-09-09.** The worker, which is
+the process holding Torch; a supervisor figure would measure this Rust binary and say nothing about
+the cost that matters. The sample is taken in `render_attempt` once the last segment has resolved
+and before assembly — both the last point `/proc/<pid>/status` still answers and the first at which
+`VmHWM`, a mark the kernel only ever raises, is the run's true peak.
+
+The representativeness this question worried about turns out to differ between the two figures, and
+the field semantics now carry the difference rather than leaving `Fidelity::Approximate` to imply
+it. `peak_resident_kib` is a `Maximum` and covers the whole run wherever it is sampled before exit.
+`open_handles_count` is `PointInTime`, a variant this step added: `/proc/<pid>/fd` lists what is
+open at the instant it is read and the kernel keeps no high-water mark for descriptors, so its
+value means only "what the worker held when synthesis finished". It was previously declared
+`Total`, which would have licensed a reader to sum it.
 
 ## Approval
 
@@ -210,3 +251,4 @@ is why the rows stay separate.
 
 | Date | Amendment | Approval |
 |---|---|---|
+| 2026-09-09 | **`run-report` moves to `2.0`, layout `2.0-skeleton`.** §Version and compatibility above said "E2-S4's remaining steps add stage durations, per-segment rows, and cache outcomes to this document. The major will say the change was breaking." They did, and it does. Three required-field additions land under one move: `segments` with its per-segment rows, `model_load_micros`, the `assembly_micros`/`normalize_micros`/`encode_micros` package durations `E2-S4-INTERFACE-CHANGE-002` supplies, and `completion` with `error_class`, which task 5 needs so a reader can tell a report sealed into a package from one written where a build stopped. One move covers all of them because no consumer could have seen an older shape: no build has ever written a `run-report.json`, and every change is on one unmerged branch. **If this branch merges before a further field lands, that reasoning expires and the next required field moves the major again.** `schemas/run-report-v1.schema.json` is retired and `run-report-v2.schema.json` replaces it; `PUBLISHED_REQUIRED_SURFACE` records the new surface under `run-report 2.0`. **Nothing migrates**: no build has ever written a `run-report.json`, because durable finalization is still E2-S4's unstarted third step, so no document exists in either layout. The `-skeleton` suffix survives the increment for the reason `MANIFEST_SCHEMA_VERSION` set when it did the same — the major reports that the change was breaking, the suffix that the layout is still provisional | |

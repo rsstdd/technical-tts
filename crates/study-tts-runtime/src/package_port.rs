@@ -10,6 +10,7 @@ use std::{
     fs,
     io::Write as _,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use study_tts_core::{PlannedSegment, RenderPlan, SelectedPackageIdentity};
@@ -18,10 +19,13 @@ use crate::{
     BuildError, CacheError, ManagedPathError, PackageArtifactMismatch, assembly, audio_edges,
     cache::ValidatedCachedArtifact,
     durable::OsDurableFileSystem,
+    durable::write_json_atomically,
     export::{self, EncodedFormat, ExportProfiles, PackagedAudio},
     io_error, managed,
     manifest::{self, RecordedExecution, RecordedTool},
-    preview, timeline,
+    preview,
+    run_report::{Measured, RUN_REPORT_NAME, RunReport, Unavailable},
+    timeline,
     tools::{self, ToolIdentity},
 };
 
@@ -30,12 +34,23 @@ use crate::{
 /// Not a policy this project invented: `tempfile` creates the master, both
 /// exports, and the manifest `0600`, and this is that value written down so the
 /// three documents `timeline` renders match rather than inheriting a umask.
-/// `t4_e1_every_package_file_is_owner_only` holds all seven to it.
+/// `t4_e1_every_package_file_is_owner_only` holds all eight to it.
 #[cfg(unix)]
 const PACKAGE_FILE_MODE: u32 = 0o600;
 
 /// Mirrors the package version in the E0-S4 provisional contract baseline.
-pub const PACKAGE_WRITER_CONTRACT_VERSION: &str = "e0.package-writer.2.0";
+///
+/// Raised to `3.0` by E2-S4: [`PreparedPackageWriter::write`] returns
+/// [`PackageWriteOutcome`] rather than a bare [`PackagePublication`], which
+/// `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` §Change classes
+/// puts under **Breaking contract**. The record is
+/// `docs/architecture/E2-S4-INTERFACE-CHANGE-002.md`, and the migration it
+/// defines is empty: this constant reaches no cache key,
+/// manifest field, published schema, or durable document, so no cached
+/// artifact, published package, or accepted take is affected — the same
+/// conclusion `E1-S4-INTERFACE-CHANGE-001` reached when it moved `1.0` to
+/// `2.0`.
+pub const PACKAGE_WRITER_CONTRACT_VERSION: &str = "e0.package-writer.3.0";
 
 #[derive(Clone, Debug)]
 struct PackageToolchain {
@@ -113,6 +128,13 @@ pub struct PackageWriteRequest<'a> {
     pub plan: &'a RenderPlan,
     /// Validated immutable cache artifacts in plan order.
     pub cached_artifacts: &'a [ValidatedCachedArtifact],
+    /// What the build measured before the package stage began.
+    ///
+    /// Passed in rather than assembled here because the manifest can only
+    /// checksum a document that already exists, and the manifest is written
+    /// inside this call. The writer fills in the two durations it measures and
+    /// seals the result.
+    pub run_report: &'a RunReport,
 }
 
 /// Immutable package paths and the identity selected for consumers.
@@ -140,6 +162,95 @@ pub struct PackagePublication {
     pub identity: SelectedPackageIdentity,
 }
 
+/// What producing one package cost, beside the package itself.
+///
+/// ADR-0001 §14 requires "assembly and encoding durations"; the loudness pass
+/// between them is here because it rewrites the master's bytes, and the line
+/// this set is drawn on is production rather than validation. Each is
+/// [`Measured`] rather than a bare number because a write that reused an
+/// existing package performed none of them, and reporting zero would claim the
+/// work happened instantly.
+///
+/// **The three `ffprobe` validations are outside these deliberately.** They
+/// prove the outputs rather than produce them, so the three durations account
+/// for every byte-producing span of the package write and nothing else.
+/// `docs/observability/RUN-REPORT-FIELDS.md` says so where a reader will look.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackageTimings {
+    /// Time assembling segment audio into the canonical master.
+    pub assembly_micros: Measured,
+    /// Time normalizing that master's loudness.
+    pub normalize_micros: Measured,
+    /// Time encoding both lossy outputs from that master.
+    pub encode_micros: Measured,
+}
+
+impl PackageTimings {
+    /// Writes these durations into the report about to be sealed.
+    ///
+    /// One move rather than a field assignment each, so a duration added here
+    /// cannot be measured and then left out of the document.
+    fn apply(self, report: &mut RunReport) {
+        report.assembly_micros = self.assembly_micros;
+        report.normalize_micros = self.normalize_micros;
+        report.encode_micros = self.encode_micros;
+    }
+}
+
+impl PackageTimings {
+    /// What a write that selected an existing package spent: nothing.
+    ///
+    /// An earlier write produced the package, so this call assembled and
+    /// encoded none of it. That is a different statement from a duration of
+    /// zero, which is why both fields are [`Measured`] rather than numbers.
+    /// Public because the fake writer in `study-tts-testkit` reports the same
+    /// thing, and one definition of it is what keeps the two agreeing.
+    #[must_use]
+    pub const fn reused() -> Self {
+        let reused = Measured::Unavailable {
+            reason: Unavailable::ReusedFromCache,
+        };
+        Self {
+            assembly_micros: reused,
+            normalize_micros: reused,
+            encode_micros: reused,
+        }
+    }
+}
+
+/// A selected package, and the report this call sealed into it.
+///
+/// The report sits beside [`PackagePublication`] rather than inside it because
+/// that value is compared: `run_package_writer_contract_scenario` writes twice
+/// and asserts the second selects what the first published, and a document
+/// that moves with the build would make every reuse unequal to the package it
+/// reuses. The distinction is the same one `E2-S3-INTERFACE-CHANGE-001` §G-A
+/// recorded when it kept a join finding off this type.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackageWriteOutcome {
+    /// The immutable package this write selected.
+    pub publication: PackagePublication,
+    /// The report this call sealed, or `None` where it selected a package an
+    /// earlier build produced.
+    ///
+    /// `None` is not "no report": a reused package keeps the one sealed beside
+    /// it, describing the build that made those bytes. It says that *this*
+    /// call assembled and encoded nothing, which is what the caller needs to
+    /// describe its own run.
+    pub sealed: Option<RunReport>,
+}
+
+/// `elapsed` as an observation, saturated rather than wrapped.
+///
+/// A package write long enough to overflow would run for some five hundred
+/// thousand years, so the saturation guards a nonsense clock rather than a
+/// reachable case.
+fn observed(elapsed: Duration) -> Measured {
+    Measured::Observed {
+        value: u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX),
+    }
+}
+
 /// Preflighted package generation and immutable selection boundary.
 pub trait PreparedPackageWriter: std::fmt::Debug + Send + Sync {
     /// Reconciles durable package state before cache or worker work begins.
@@ -161,7 +272,7 @@ pub trait PreparedPackageWriter: std::fmt::Debug + Send + Sync {
     /// [`BuildError::Audio`] for PCM assembly failure, [`BuildError::Tool`] for
     /// encoding or probing failure, [`BuildError::DurableState`] for unsafe
     /// publication state, or [`BuildError::Io`] for filesystem failure.
-    fn write(&self, request: &PackageWriteRequest<'_>) -> Result<PackagePublication, BuildError>;
+    fn write(&self, request: &PackageWriteRequest<'_>) -> Result<PackageWriteOutcome, BuildError>;
 }
 
 /// Tool preflight boundary that produces one prepared package writer.
@@ -209,7 +320,7 @@ impl PreparedPackageWriter for PreparedFileSystemPackageWriter {
         Ok(())
     }
 
-    fn write(&self, request: &PackageWriteRequest<'_>) -> Result<PackagePublication, BuildError> {
+    fn write(&self, request: &PackageWriteRequest<'_>) -> Result<PackageWriteOutcome, BuildError> {
         validate_cached_artifacts(request)?;
         let filesystem = OsDurableFileSystem;
         let roots = preview::roots(request.workspace, request.job_id)?;
@@ -221,7 +332,13 @@ impl PreparedPackageWriter for PreparedFileSystemPackageWriter {
             &self.toolchain.ffprobe,
             &self.toolchain.profiles,
         )? {
-            return publication(package);
+            // Nothing was assembled and nothing encoded: this call selected
+            // a package an earlier one produced, and the report sealed beside
+            // it already describes the build that made those bytes.
+            return Ok(PackageWriteOutcome {
+                publication: publication(package)?,
+                sealed: None,
+            });
         }
 
         let transaction = preview::start_transaction(
@@ -235,7 +352,13 @@ impl PreparedPackageWriter for PreparedFileSystemPackageWriter {
         )?;
         let stage = &transaction.stage_dir;
         let master_wav = managed::leaf(stage, manifest::MASTER_WAV_NAME)?;
+        // Rust PCM assembly only. The three timeline documents written below
+        // depend on `assembled` but touch no audio, and the loudness pass and
+        // the `ffprobe` validations are FFmpeg work this figure excludes —
+        // `docs/observability/RUN-REPORT-FIELDS.md` names what is left out.
+        let assembly_started = Instant::now();
         let assembled = assembly::assemble(request.cached_artifacts, &master_wav)?;
+        let assembly_elapsed = assembly_started.elapsed();
 
         // Normalized before the master is probed and before either encode, so
         // the bytes ffprobe validates and the bytes both lossy outputs derive
@@ -244,12 +367,17 @@ impl PreparedPackageWriter for PreparedFileSystemPackageWriter {
         // master once the whole loudness decision rather than three.
         //
         // The references are provisional under `ADR-0001-D012`.
+        // Two FFmpeg passes, measure then apply, both unconditional. This is
+        // plausibly the largest single span in the package path, which is why
+        // it is measured rather than folded into the encode figure it precedes.
+        let normalize_started = Instant::now();
         let normalization = export::normalize_master(
             &self.toolchain.ffmpeg,
             &self.toolchain.profiles,
             &master_wav,
             assembled.total_frames,
         )?;
+        let normalize_elapsed = normalize_started.elapsed();
 
         // Written before the encodes, so a package that reaches the encoder has
         // its whole text surface already staged. All three are ordinary files
@@ -297,11 +425,16 @@ impl PreparedPackageWriter for PreparedFileSystemPackageWriter {
                 &master_wav,
             )?,
         ));
+        // Summed over both formats and covering the encodes only: each
+        // format's `ffprobe` validation below is what proves the output, not
+        // what produced it.
+        let mut encode_elapsed = Duration::ZERO;
         for (format, name) in [
             (EncodedFormat::M4a, manifest::M4A_NAME),
             (EncodedFormat::Mp3, manifest::MP3_NAME),
         ] {
             let destination = managed::leaf(stage, name)?;
+            let encode_started = Instant::now();
             performed.push((
                 RecordedTool::Ffmpeg,
                 export::encode(
@@ -312,6 +445,7 @@ impl PreparedPackageWriter for PreparedFileSystemPackageWriter {
                     &destination,
                 )?,
             ));
+            encode_elapsed += encode_started.elapsed();
             performed.push((
                 RecordedTool::Ffprobe,
                 export::probe(
@@ -331,6 +465,16 @@ impl PreparedPackageWriter for PreparedFileSystemPackageWriter {
             .collect();
 
         let joins = assess_replacement_joins(request)?;
+        let mut sealed = request.run_report.clone();
+        PackageTimings {
+            assembly_micros: observed(assembly_elapsed),
+            normalize_micros: observed(normalize_elapsed),
+            encode_micros: observed(encode_elapsed),
+        }
+        .apply(&mut sealed);
+        let report_path = managed::leaf(stage, RUN_REPORT_NAME)?;
+        write_json_atomically(&filesystem, &report_path, &sealed)?;
+
         let manifest_path = managed::leaf(stage, manifest::MANIFEST_NAME)?;
         manifest::write(
             &filesystem,
@@ -349,11 +493,14 @@ impl PreparedPackageWriter for PreparedFileSystemPackageWriter {
                 },
             },
         )?;
-        publication(preview::publish_transaction(
-            &filesystem,
-            &roots,
-            &transaction,
-        )?)
+        Ok(PackageWriteOutcome {
+            publication: publication(preview::publish_transaction(
+                &filesystem,
+                &roots,
+                &transaction,
+            )?)?,
+            sealed: Some(sealed),
+        })
     }
 }
 
@@ -638,6 +785,7 @@ mod tests {
             job_id: "job",
             plan: &plan,
             cached_artifacts: &[],
+            run_report: &RunReport::unmeasured("job", "job", &"0".repeat(64), 1),
         })
         .expect_err("missing package artifacts must be refused");
 
@@ -671,6 +819,7 @@ mod tests {
                 segments: vec![plan.segments[0].clone()],
             },
             cached_artifacts: &[artifact],
+            run_report: &RunReport::unmeasured("job", "job", &"0".repeat(64), 1),
         })
         .expect_err("an artifact from another plan position must be refused");
 
@@ -703,6 +852,7 @@ mod tests {
             job_id: "job",
             plan: &one_segment_plan,
             cached_artifacts: &[artifact],
+            run_report: &RunReport::unmeasured("job", "job", &"0".repeat(64), 1),
         })
         .expect_err("an artifact outside the managed cache must be refused");
 
@@ -735,6 +885,7 @@ mod tests {
             job_id: "job",
             plan: &one_segment_plan,
             cached_artifacts: &[artifact],
+            run_report: &RunReport::unmeasured("job", "job", &"0".repeat(64), 1),
         })
         .expect_err("a cache root outside the workspace must be refused");
 

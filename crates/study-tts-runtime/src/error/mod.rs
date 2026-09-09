@@ -132,6 +132,38 @@ pub enum BuildError {
 }
 
 impl BuildError {
+    /// The class of failure, as ADR-0001 §14's `error_class` names it.
+    ///
+    /// A closed vocabulary and never a formatted message. Several variants
+    /// carry a path — [`IoError`] always does — and a run report is a
+    /// published document that `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md`
+    /// keeps host paths out of. A `Debug` string would put one there the first
+    /// time a build failed on a governed root.
+    ///
+    /// Exhaustive, so a new variant is a compile error here rather than a
+    /// failure that reports someone else's class.
+    #[must_use]
+    pub fn class(&self) -> &'static str {
+        match self {
+            Self::Io(_) => "io",
+            Self::Lesson(_) => "lesson",
+            Self::Takes(_) => "takes",
+            Self::Plan(_) => "plan",
+            Self::Voice(_) => "voice",
+            Self::VoiceProfile(_) => "voice_profile",
+            Self::Rights(_) => "rights",
+            Self::Publication(_) => "publication",
+            Self::Cache(_) => "cache",
+            Self::Audio(_) => "audio",
+            Self::Tool(_) => "tool",
+            Self::ManagedPath(_) => "managed_path",
+            Self::DurableState(_) => "durable_state",
+            Self::Synthesis(_) => "synthesis",
+            Self::WorkerBundle(_) => "worker_bundle",
+            Self::ModelArtifacts(_) => "model_artifacts",
+        }
+    }
+
     /// Returns governed recovery advice when the routing table establishes it.
     pub fn remedy(&self) -> Option<RemedyAdvice> {
         match self {

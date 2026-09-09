@@ -432,9 +432,9 @@ pub(crate) fn publish_transaction(
     require_transaction_plan(&transaction.stage_dir, plan_matches)?;
     let manifest_path = transaction.stage_dir.join(manifest::MANIFEST_NAME);
     let manifest_blake3 = hash_file(&manifest_path)?;
-    // Every artifact plus the manifest: seven files, from the one list
+    // Every artifact plus the manifest: eight files, from the one list
     // `manifest` owns, so a format added there cannot be published unflushed
-    // here. `validate_package` above has already confirmed all six exist and
+    // here. `validate_package` above has already confirmed all seven exist and
     // hash to what the manifest records.
     let artifacts: Vec<PathBuf> = manifest::PACKAGE_ARTIFACT_NAMES
         .iter()

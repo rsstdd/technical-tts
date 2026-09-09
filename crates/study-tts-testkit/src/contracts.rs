@@ -20,10 +20,11 @@ use std::{
 
 use study_tts_core::{JobDocument, JobState, ManifestDigest, RenderPlan, SelectedPackageIdentity};
 use study_tts_runtime::{
-    BackendDescriptor, BackendError, BuildError, CachePublisher, CacheResolveRequest,
-    FileSystemCachePublisher, FileSystemJobRepository, IoError, JobOwnership, JobRepository,
-    PackagePreflightRequest, PackagePrepareRequest, PackagePublication, PackageWriteRequest,
-    PackageWriter, PreparedPackageWriter, StagedAudioProducer, SynthesisReport, SynthesisRequest,
+    BackendDescriptor, BackendError, BuildError, BuildStage, CachePublisher, CacheResolveRequest,
+    ExecutorMeasurements, FileSystemCachePublisher, FileSystemJobRepository, IoError, JobOwnership,
+    JobRepository, PackagePreflightRequest, PackagePrepareRequest, PackagePublication,
+    PackageWriteOutcome, PackageWriteRequest, PackageWriter, PreparedPackageWriter,
+    ReportCompletion, RunReport, StagedAudioProducer, SynthesisReport, SynthesisRequest,
     TtsExecutor, ValidatedCachedArtifact, WorkerConfiguration, WorkerTtsExecutor,
 };
 
@@ -73,6 +74,14 @@ impl<E: TtsExecutor> TtsExecutor for RecordingTtsExecutor<E> {
     fn descriptor(&self) -> BackendDescriptor {
         self.events.record("executor.descriptor");
         self.inner.descriptor()
+    }
+
+    /// Forwarded rather than defaulted. Taking the default here would report
+    /// nothing for a wrapped backend that had a real answer, and no test of
+    /// the executor underneath would notice.
+    fn process_measurements(&self) -> ExecutorMeasurements {
+        self.events.record("executor.process_measurements");
+        self.inner.process_measurements()
     }
 
     fn capacity(&self) -> usize {
@@ -162,7 +171,7 @@ impl PreparedPackageWriter for RecordingPreparedPackageWriter {
         self.inner.prepare(request)
     }
 
-    fn write(&self, request: &PackageWriteRequest<'_>) -> Result<PackagePublication, BuildError> {
+    fn write(&self, request: &PackageWriteRequest<'_>) -> Result<PackageWriteOutcome, BuildError> {
         self.events.record("package.write");
         self.inner.write(request)
     }
@@ -199,6 +208,18 @@ impl<R: JobRepository> JobRepository for RecordingJobRepository<R> {
         self.inner.replace(workspace, document)
     }
 
+    fn record_stage(
+        &self,
+        workspace: &Path,
+        job_id: &str,
+        build_attempt: u32,
+        stage: BuildStage,
+    ) -> Result<(), BuildError> {
+        self.events.record(format!("job.record_stage:{stage:?}"));
+        self.inner
+            .record_stage(workspace, job_id, build_attempt, stage)
+    }
+
     fn retain_inputs(
         &self,
         workspace: &Path,
@@ -208,6 +229,16 @@ impl<R: JobRepository> JobRepository for RecordingJobRepository<R> {
     ) -> Result<(), BuildError> {
         self.events.record("job.retain_inputs");
         self.inner.retain_inputs(workspace, job_id, lesson, plan)
+    }
+
+    fn retain_run_report(
+        &self,
+        workspace: &Path,
+        job_id: &str,
+        report: &RunReport,
+    ) -> Result<(), BuildError> {
+        self.events.record("job.retain_run_report");
+        self.inner.retain_run_report(workspace, job_id, report)
     }
 
     fn retained_lesson(
@@ -289,6 +320,28 @@ impl JobRepository for InterruptingJobRepository {
             ));
         }
         self.inner.replace(workspace, document)
+    }
+
+    fn record_stage(
+        &self,
+        workspace: &Path,
+        job_id: &str,
+        build_attempt: u32,
+        stage: BuildStage,
+    ) -> Result<(), BuildError> {
+        self.inner
+            .record_stage(workspace, job_id, build_attempt, stage)
+    }
+
+    // Delegated rather than interrupted: this double injects a failure at one
+    // durable *state* write, and a report is not a state.
+    fn retain_run_report(
+        &self,
+        workspace: &Path,
+        job_id: &str,
+        report: &RunReport,
+    ) -> Result<(), BuildError> {
+        self.inner.retain_run_report(workspace, job_id, report)
     }
 
     fn retain_inputs(
@@ -416,7 +469,7 @@ impl PreparedPackageWriter for FakePackageWriter {
         Ok(())
     }
 
-    fn write(&self, request: &PackageWriteRequest<'_>) -> Result<PackagePublication, BuildError> {
+    fn write(&self, request: &PackageWriteRequest<'_>) -> Result<PackageWriteOutcome, BuildError> {
         self.calls
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -429,7 +482,7 @@ impl PreparedPackageWriter for FakePackageWriter {
             .get(&plan_hash)
             .cloned()
         {
-            return Ok(publication);
+            return Ok(no_work_outcome(publication));
         }
 
         let package_dir = self.root.join("packages").join(&plan_hash);
@@ -479,7 +532,21 @@ impl PreparedPackageWriter for FakePackageWriter {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(plan_hash, publication.clone());
-        Ok(publication)
+        // The fake performs no assembly and no encoding, so it reports none
+        // rather than a fabricated duration a consumer might assert on.
+        Ok(no_work_outcome(publication))
+    }
+}
+
+/// An outcome saying this call assembled and encoded nothing.
+///
+/// The fake performs neither on either branch, so it seals nothing and lets
+/// the caller describe its own run rather than handing back a fabricated pair
+/// of durations a consumer might assert on.
+fn no_work_outcome(publication: PackagePublication) -> PackageWriteOutcome {
+    PackageWriteOutcome {
+        publication,
+        sealed: None,
     }
 }
 
@@ -492,6 +559,10 @@ pub enum FakeJobCall {
     Load(String),
     /// A document in the named state replaced the authoritative one.
     Replace(JobState),
+    /// A build stage was recorded in the diagnostic log.
+    RecordStage(BuildStage),
+    /// A run report was retained, complete or not.
+    RetainRunReport(ReportCompletion),
     /// The lesson and plan were retained for the named job.
     RetainInputs(String),
     /// The retained lesson was read back for the named job.
@@ -565,6 +636,33 @@ impl JobRepository for InMemoryJobRepository {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(document.job_id.clone(), document.clone());
+        Ok(())
+    }
+
+    fn record_stage(
+        &self,
+        _workspace: &Path,
+        _job_id: &str,
+        _build_attempt: u32,
+        stage: BuildStage,
+    ) -> Result<(), BuildError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(FakeJobCall::RecordStage(stage));
+        Ok(())
+    }
+
+    fn retain_run_report(
+        &self,
+        _workspace: &Path,
+        _job_id: &str,
+        report: &RunReport,
+    ) -> Result<(), BuildError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(FakeJobCall::RetainRunReport(report.completion));
         Ok(())
     }
 
@@ -797,7 +895,7 @@ pub fn run_package_writer_contract_scenario(
     preflight: &PackagePreflightRequest<'_>,
     prepare: &PackagePrepareRequest<'_>,
     write: &PackageWriteRequest<'_>,
-) -> Result<[PackagePublication; 2], BuildError> {
+) -> Result<[PackageWriteOutcome; 2], BuildError> {
     let writer = writer.preflight(preflight)?;
     writer.prepare(prepare)?;
     let first = writer.write(write)?;

@@ -57,6 +57,7 @@ pub use error::{
     VoiceProfileError, WorkerBundleError, WorkerLockfileErrorReason, WorkerLockfileLocus,
     WorkerRequirementFault,
 };
+pub use job_events::BuildStage;
 pub use job_repository::{FileSystemJobRepository, JobOwnership, JobRepository};
 pub use model_gate::{
     DECLARED_MODEL_ARTIFACTS, DeclaredArtifact, PINNED_MODEL_REVISION, ProvenModel,
@@ -64,8 +65,8 @@ pub use model_gate::{
 };
 pub use package_port::{
     FileSystemPackageWriter, PACKAGE_WRITER_CONTRACT_VERSION, PackagePreflightRequest,
-    PackagePrepareRequest, PackagePublication, PackageWriteRequest, PackageWriter,
-    PreparedPackageWriter,
+    PackagePrepareRequest, PackagePublication, PackageTimings, PackageWriteOutcome,
+    PackageWriteRequest, PackageWriter, PreparedPackageWriter,
 };
 pub use pipeline::{
     BuildRequest, BuildResult, PreviewServiceBundle, ResumeRequest, build_preview,
@@ -74,18 +75,20 @@ pub use pipeline::{
 };
 pub use prune::{PruneCandidate, live_cache_keys, prune_candidates};
 pub use run_report::{
-    Aggregation, Fidelity, FieldSemantics, Measured, MeasuredProcess, MeasurementClock,
-    MeasurementUnit, RUN_REPORT_LAYOUT_VERSION, RUN_REPORT_SCHEMA_STEM, RUN_REPORT_SCHEMA_VERSION,
-    ReportField, RunReport, RunReportLayout, RunResources, SynthesisTotals, Unavailable,
-    WorstSegment, milli_real_time_factor,
+    Aggregation, CacheOutcome, Fidelity, FieldSemantics, Measured, MeasuredProcess,
+    MeasurementClock, MeasurementUnit, RUN_REPORT_LAYOUT_VERSION, RUN_REPORT_SCHEMA_STEM,
+    RUN_REPORT_SCHEMA_VERSION, ReportCompletion, ReportField, RunReport, RunReportLayout,
+    RunReportSegment, RunResources, SynthesisTotals, Unavailable, WorstSegment,
+    milli_real_time_factor,
 };
 pub use schemas::{
     MANIFEST_SCHEMA_VERSION, PUBLISHED_SCHEMAS, PublishedSchema, SCHEMA_DIRECTORY,
     WORKER_PROTOCOL_SCHEMA_VERSION,
 };
 pub use synthesis::{
-    BackendDescriptor, BackendError, BackendValidationError, DriftedIdentity, SynthesisReport,
-    SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, validate_executor_request,
+    BackendDescriptor, BackendError, BackendValidationError, DriftedIdentity, ExecutorMeasurements,
+    SynthesisReport, SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor,
+    validate_executor_request,
 };
 pub use voice_gate::{admit_voice_root, resolve_voice_conditioning};
 pub use worker_bundle::{

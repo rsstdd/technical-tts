@@ -24,7 +24,7 @@ The required order is fixed because each stage consumes a validated artifact fro
 12. Invoke FFmpeg with a pinned discrete argument vector to encode transaction-local `lesson.m4a`, then `lesson.mp3`, each from the master WAV and never from the other.
 13. Invoke ffprobe with discrete arguments and require one mono `pcm_f32le`, `aac`, and `mp3` stream for the master and the two exports respectively.
 14. Checksum all six outputs and atomically write the transaction-local `manifest.json` with the written timeline, executable, version, executed-argument, and normalized argument-profile provenance for every invocation, `text_renderer_version` from `timeline::TEXT_RENDERER_VERSION`, and `release_status: private_preview`. `text_renderer_version` is what step 9 needs to answer its question about the three text documents: FFmpeg produces none of them, so no tool identity moves when the rules that render them change.
-15. Flush all six package files and the manifest, then the package directory, rename the complete directory to `previews/<lesson-id>/packages/<manifest-blake3>/` without replacement, then atomically replace and directory-sync `current.json`. The journal makes a crash after package durability but before selection finishable by the next build.
+15. Flush all seven package files and the manifest, then the package directory, rename the complete directory to `previews/<lesson-id>/packages/<manifest-blake3>/` without replacement, then atomically replace and directory-sync `current.json`. The journal makes a crash after package durability but before selection finishable by the next build.
 
 ```mermaid
 flowchart LR

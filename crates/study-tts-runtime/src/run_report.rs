@@ -26,6 +26,13 @@ use study_tts_core::{CANONICAL_SAMPLE_RATE, SchemaVersion};
 /// File-name stem of the published run-report schema.
 pub const RUN_REPORT_SCHEMA_STEM: &str = "run-report";
 
+/// The file name this document carries wherever it is written.
+///
+/// One spelling for both places it lands: `jobs/<job-id>/` while a build is in
+/// progress or has failed, and inside the published package once it is sealed.
+/// They are the same document at two moments, so they share a name.
+pub(crate) const RUN_REPORT_NAME: &str = "run-report.json";
+
 /// Version of the published run-report schema.
 ///
 /// `1.0` at its first publication, carrying the `1.0-skeleton` layout label
@@ -33,13 +40,13 @@ pub const RUN_REPORT_SCHEMA_STEM: &str = "run-report";
 /// `MANIFEST_SCHEMA_VERSION` sets: later E2-S4 steps add measured stages to
 /// this document, so the label must not claim a stability they are going to
 /// take away.
-pub const RUN_REPORT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(1, 0);
+pub const RUN_REPORT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(2, 0);
 
 /// The `schema_version` a `run-report.json` this build writes carries.
-pub const RUN_REPORT_LAYOUT_VERSION: &str = "1.0-skeleton";
+pub const RUN_REPORT_LAYOUT_VERSION: &str = "2.0-skeleton";
 
 /// Microseconds in one millisecond, the scale a milli-ratio is expressed in.
-const MICROSECONDS_PER_MILLISECOND: u64 = 1_000;
+pub(crate) const MICROSECONDS_PER_MILLISECOND: u64 = 1_000;
 
 /// What a measured number counts.
 ///
@@ -131,6 +138,15 @@ pub enum Aggregation {
     Minimum,
     /// The largest observation over the run's segments.
     Maximum,
+    /// One segment's own observation, combining nothing. Distinct from
+    /// [`Aggregation::Total`]: the run's totals already sum these rows, so a
+    /// reader who adds them again double-counts the build.
+    Segment,
+    /// One reading taken at a stated moment, with no claim about any other.
+    /// Unlike [`Aggregation::Maximum`], nothing guarantees the run never went
+    /// higher: the kernel keeps a high-water mark for resident memory and none
+    /// for open descriptors.
+    PointInTime,
 }
 
 /// How much a number can be trusted on this platform.
@@ -196,6 +212,20 @@ pub enum ReportField {
     PeakResidentMemory,
     /// Open file descriptors held by the worker.
     OpenHandles,
+    /// Time inside the worker's synthesis call for one segment.
+    SegmentSynthesisWallTime,
+    /// Audio the worker generated for one segment.
+    SegmentGeneratedAudio,
+    /// Times one segment's synthesis was retried.
+    SegmentRetries,
+    /// Time the backend spent starting and loading its model.
+    ModelLoadDuration,
+    /// Time spent assembling segment audio into the master.
+    AssemblyDuration,
+    /// Time spent normalizing that master's loudness.
+    NormalizeDuration,
+    /// Time spent encoding both lossy outputs from that master.
+    EncodeDuration,
 }
 
 impl ReportField {
@@ -209,7 +239,7 @@ impl ReportField {
     /// self-consistent — it does not prove the array is complete. That
     /// remaining gap is why the two live adjacent rather than apart, and it is
     /// the same gap the hand-maintained remedy samples in `error` carry.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 18] = [
         Self::WallTime,
         Self::SynthesisWallTime,
         Self::GeneratedAudio,
@@ -221,6 +251,13 @@ impl ReportField {
         Self::WorkerRestarts,
         Self::PeakResidentMemory,
         Self::OpenHandles,
+        Self::SegmentSynthesisWallTime,
+        Self::SegmentGeneratedAudio,
+        Self::SegmentRetries,
+        Self::ModelLoadDuration,
+        Self::AssemblyDuration,
+        Self::NormalizeDuration,
+        Self::EncodeDuration,
     ];
 
     /// This field's position in [`ReportField::ALL`].
@@ -244,6 +281,13 @@ impl ReportField {
             Self::WorkerRestarts => 8,
             Self::PeakResidentMemory => 9,
             Self::OpenHandles => 10,
+            Self::SegmentSynthesisWallTime => 11,
+            Self::SegmentGeneratedAudio => 12,
+            Self::SegmentRetries => 13,
+            Self::ModelLoadDuration => 14,
+            Self::AssemblyDuration => 15,
+            Self::NormalizeDuration => 16,
+            Self::EncodeDuration => 17,
         }
     }
 
@@ -320,13 +364,50 @@ impl ReportField {
                 aggregation: Aggregation::Maximum,
                 fidelity: Fidelity::Approximate,
             },
+            // `/proc/<pid>/fd` lists what is open at the instant it is read
+            // and the kernel keeps no high-water mark for descriptors, so this
+            // is one reading and not a run-wide figure of any kind.
             Self::OpenHandles => FieldSemantics {
                 unit: MeasurementUnit::Count,
                 clock: MeasurementClock::ProcDescriptors,
                 measured_process: MeasuredProcess::Worker,
-                aggregation: Aggregation::Total,
+                aggregation: Aggregation::PointInTime,
                 fidelity: Fidelity::Approximate,
             },
+            Self::SegmentSynthesisWallTime => FieldSemantics {
+                aggregation: Aggregation::Segment,
+                ..elapsed
+            },
+            Self::SegmentGeneratedAudio => FieldSemantics {
+                aggregation: Aggregation::Segment,
+                ..audio
+            },
+            // E5-S3 owns retry, timeout, and lifecycle. No code path retries a
+            // segment yet, so zero is this build's shape rather than an
+            // observation, and the clock says so — the same reading
+            // `ReportField::WorkerRestarts` carries for the same reason.
+            Self::SegmentRetries => FieldSemantics {
+                unit: MeasurementUnit::Count,
+                clock: MeasurementClock::Structural,
+                measured_process: MeasuredProcess::Worker,
+                aggregation: Aggregation::Segment,
+                fidelity: Fidelity::Exact,
+            },
+            // Deliberately not inside any real-time factor: ADR-0001 §3.4
+            // excludes one-time installation and model download from the
+            // ratio, so this is the figure that explains a slow build without
+            // moving the number the budget is written against.
+            Self::ModelLoadDuration => elapsed,
+            // Supervisor, not worker: assembly is this binary's own PCM work
+            // and encoding is FFmpeg running under it. Reading either against
+            // `docs/perf/BUDGETS.md`'s worker figures would compare two
+            // different machines' worth of work.
+            Self::AssemblyDuration | Self::NormalizeDuration | Self::EncodeDuration => {
+                FieldSemantics {
+                    measured_process: MeasuredProcess::Supervisor,
+                    ..elapsed
+                }
+            }
         }
     }
 }
@@ -348,6 +429,17 @@ pub enum Unavailable {
     /// No audio was generated, so a ratio over it has no value. Distinct from a
     /// ratio of zero, which would claim synthesis took no time.
     NoAudioGenerated,
+    /// The work was reused rather than performed: a segment came from the
+    /// cache and no synthesis ran, or a package an earlier build produced was
+    /// selected and nothing was assembled or encoded. Distinct from a duration
+    /// of zero, which would claim the work happened instantly.
+    ReusedFromCache,
+    /// The executor ran synthesis with no separate worker process, so there
+    /// was nothing to sample. Distinct from
+    /// [`Unavailable::NotExposedByEnvironment`], which says the platform
+    /// withheld a counter: here the platform would have supplied one and no
+    /// process existed to ask about.
+    NoWorkerProcess,
 }
 
 /// A number this environment may or may not have been able to observe.
@@ -373,6 +465,46 @@ pub enum Measured {
         /// Why no value is present.
         reason: Unavailable,
     },
+}
+
+/// Whether this build's worker produced a segment or reused one.
+///
+/// `DELIVERY-PLAN.md` E2-S4 task 2 requires the outcome per segment. It is
+/// read from whether the cache ran the producer closure, which is the only
+/// place the distinction survives: [`crate::CachePublisher::resolve`] returns
+/// the same validated artifact either way, deliberately, so that reused audio
+/// and fresh audio are indistinguishable to everything downstream of it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub enum CacheOutcome {
+    /// The worker synthesized this segment during this build.
+    Synthesized,
+    /// A published cache entry supplied it and no synthesis ran.
+    Reused,
+}
+
+/// What one planned segment cost this build.
+///
+/// The five facts `DELIVERY-PLAN.md` E2-S4 task 2 names. Built from planned
+/// identities and the resolved cache artifact, never from the validated
+/// lesson: `spoken_text` and `display_text` sit on `PlannedSegment` beside the
+/// `id` this carries, and the guarantee that neither reaches a published
+/// document is that this type has nowhere to put them.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct RunReportSegment {
+    /// Identity of the segment within its lesson.
+    pub segment_id: String,
+    /// Take this build rendered.
+    pub take: u32,
+    /// Whether the worker produced this segment or the cache supplied it.
+    pub cache_outcome: CacheOutcome,
+    /// Times this segment's synthesis was retried.
+    pub retry_count: u32,
+    /// Time inside the worker's synthesis call, absent for a reused segment.
+    pub synthesis_wall_micros: Measured,
+    /// Audio this segment generated, excluding the pause written after it.
+    pub audio_frames: u64,
 }
 
 /// The single worst segment by real-time factor, with the audio that produced
@@ -495,6 +627,21 @@ impl schemars::JsonSchema for RunReportLayout {
     }
 }
 
+/// Whether a report describes a build that finished.
+///
+/// A reader cannot otherwise tell a report sealed into a published package
+/// from one written where a build stopped, and the two carry the same fields
+/// with very different meanings: an incomplete report's totals cover the work
+/// that happened before the failure, not the work the lesson asked for.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub enum ReportCompletion {
+    /// The build finished and this report was sealed into its package.
+    Complete,
+    /// The build stopped, and this is what it had measured.
+    Incomplete,
+}
+
 /// What one build measured.
 ///
 /// Carries identifiers, timings, and counts only. It names no file, quotes no
@@ -512,8 +659,29 @@ pub struct RunReport {
     pub lesson_id: String,
     /// Plan hash the build rendered from.
     pub plan_hash: String,
+    /// Whether the build this describes finished.
+    pub completion: ReportCompletion,
+    /// Class of the failure that ended an incomplete build.
+    ///
+    /// `None` on a complete report, and never a message: several failure
+    /// classes carry a path, and `BuildError::class` is the closed vocabulary
+    /// that keeps one out of a published document.
+    pub error_class: Option<String>,
     /// Elapsed time for the whole build.
     pub wall_micros: u64,
+    /// Time the backend spent starting and loading its model, where the
+    /// backend has a process that can report it.
+    pub model_load_micros: Measured,
+    /// Time spent assembling segment audio into the master, absent when this
+    /// build selected a package an earlier one produced.
+    pub assembly_micros: Measured,
+    /// Time spent normalizing that master's loudness, absent for the same
+    /// reason.
+    pub normalize_micros: Measured,
+    /// Time spent encoding both lossy outputs, absent for the same reason.
+    pub encode_micros: Measured,
+    /// One row per planned segment, in the order the plan renders them.
+    pub segments: Vec<RunReportSegment>,
     /// What the worker did.
     pub synthesis: SynthesisTotals,
     /// What the build cost the machine.
@@ -549,6 +717,117 @@ pub fn milli_real_time_factor(wall_micros: u64, audio_frames: u64) -> Measured {
     }
 }
 
+/// Rolls one build's segment rows up into the totals the document publishes.
+///
+/// Only the segments this build's worker produced contribute. A reused segment
+/// is real audio in the master but no work by this run, so counting it would
+/// report a real-time factor for synthesis that never happened — and the
+/// second build of any lesson is all reuse, which is where that error would
+/// have lived unnoticed.
+#[must_use]
+pub(crate) fn synthesis_totals(segments: &[RunReportSegment]) -> SynthesisTotals {
+    let mut synthesized_count = 0_u32;
+    let mut wall_micros = 0_u64;
+    let mut audio_frames = 0_u64;
+    let mut shortest: Option<u64> = None;
+    let mut longest: Option<u64> = None;
+    let mut worst: Option<WorstSegment> = None;
+
+    for segment in segments {
+        if segment.cache_outcome != CacheOutcome::Synthesized {
+            continue;
+        }
+        let Measured::Observed { value: micros } = segment.synthesis_wall_micros else {
+            continue;
+        };
+
+        synthesized_count = synthesized_count.saturating_add(1);
+        wall_micros = wall_micros.saturating_add(micros);
+        audio_frames = audio_frames.saturating_add(segment.audio_frames);
+        shortest =
+            Some(shortest.map_or(segment.audio_frames, |held| held.min(segment.audio_frames)));
+        longest = Some(longest.map_or(segment.audio_frames, |held| held.max(segment.audio_frames)));
+
+        let Measured::Observed { value: ratio } =
+            milli_real_time_factor(micros, segment.audio_frames)
+        else {
+            continue;
+        };
+        if worst
+            .as_ref()
+            .is_none_or(|held| ratio > held.real_time_factor_milli)
+        {
+            worst = Some(WorstSegment {
+                segment_id: segment.segment_id.clone(),
+                take: segment.take,
+                wall_micros: micros,
+                audio_frames: segment.audio_frames,
+                real_time_factor_milli: ratio,
+            });
+        }
+    }
+
+    SynthesisTotals {
+        segments_synthesized_count: synthesized_count,
+        wall_micros,
+        audio_frames,
+        aggregate_real_time_factor_milli: milli_real_time_factor(wall_micros, audio_frames),
+        segment_audio_minimum_frames: generated_or_absent(shortest),
+        segment_audio_maximum_frames: generated_or_absent(longest),
+        worst_segment: worst,
+    }
+}
+
+/// An extreme over the segments the worker produced, or the reason there is
+/// none.
+///
+/// A build that reused everything generated no audio, which is a different
+/// statement from a shortest segment of zero frames.
+fn generated_or_absent(frames: Option<u64>) -> Measured {
+    frames.map_or(
+        Measured::Unavailable {
+            reason: Unavailable::NoAudioGenerated,
+        },
+        |value| Measured::Observed { value },
+    )
+}
+
+impl RunReport {
+    /// A report for a build that has measured nothing yet.
+    ///
+    /// Every measurement is absent with a reason rather than zero, because a
+    /// build that has not run has observed nothing — which is a different
+    /// statement from observing none. The package writer takes a report to
+    /// seal, so this is what a caller hands it before any stage has run.
+    #[must_use]
+    pub fn unmeasured(job_id: &str, lesson_id: &str, plan_hash: &str, build_attempt: u32) -> Self {
+        let absent = Measured::Unavailable {
+            reason: Unavailable::StageNotReached,
+        };
+        Self {
+            schema_version: RunReportLayout::current(),
+            job_id: job_id.to_owned(),
+            build_attempt,
+            lesson_id: lesson_id.to_owned(),
+            plan_hash: plan_hash.to_owned(),
+            completion: ReportCompletion::Incomplete,
+            error_class: None,
+            wall_micros: 0,
+            model_load_micros: absent,
+            assembly_micros: absent,
+            normalize_micros: absent,
+            encode_micros: absent,
+            segments: Vec::new(),
+            synthesis: synthesis_totals(&[]),
+            resources: RunResources {
+                peak_resident_kib: absent,
+                open_handles_count: absent,
+                worker_restarts_count: 0,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,10 +846,27 @@ mod tests {
             build_attempt: _,
             lesson_id: _,
             plan_hash: _,
+            completion: _,
+            error_class: _,
             wall_micros: _,
+            model_load_micros: _,
+            assembly_micros: _,
+            normalize_micros: _,
+            encode_micros: _,
+            segments,
             synthesis,
             resources,
         } = report;
+        for segment in segments {
+            let RunReportSegment {
+                segment_id: _,
+                take: _,
+                cache_outcome: _,
+                retry_count: _,
+                synthesis_wall_micros: _,
+                audio_frames: _,
+            } = segment;
+        }
         let SynthesisTotals {
             segments_synthesized_count: _,
             wall_micros: _,
@@ -596,7 +892,24 @@ mod tests {
             build_attempt: 1,
             lesson_id: "lesson".to_owned(),
             plan_hash: "0".repeat(64),
+            completion: ReportCompletion::Incomplete,
+            error_class: Some("io".to_owned()),
             wall_micros: 0,
+            model_load_micros: Measured::Unavailable {
+                reason: Unavailable::NoWorkerProcess,
+            },
+            assembly_micros: Measured::Unavailable {
+                reason: Unavailable::StageNotReached,
+            },
+            normalize_micros: Measured::Unavailable {
+                reason: Unavailable::StageNotReached,
+            },
+            encode_micros: Measured::Unavailable {
+                reason: Unavailable::StageNotReached,
+            },
+            // A build that reached no stage synthesized no segment, so the
+            // rows are empty rather than fabricated.
+            segments: Vec::new(),
             synthesis: SynthesisTotals {
                 segments_synthesized_count: 0,
                 wall_micros: 0,
