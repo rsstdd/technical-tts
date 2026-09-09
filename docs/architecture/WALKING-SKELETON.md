@@ -271,10 +271,11 @@ The lesson fixture is no longer among them. E1-S1 published the lesson schema an
 New preview manifests use proposed `4.0-skeleton`. They retain E2-S2's take-selection and join
 surface, add the producing build attempt, checksum `run-report.json` as the seventh package
 artifact, and record every tool argument with its staging root replaced by `{staging}`.
-[`E2-S4-INTERFACE-CHANGE-002.md`](E2-S4-INTERFACE-CHANGE-002.md) records the breaking manifest and
-package-writer moves and [`E2-INTERFACE-CHANGE-001.md`](E2-INTERFACE-CHANGE-001.md) the redaction
-that carried the manifest to `4.0`; both remain unsigned, so the accepted G1 charter still records
-the effective `2.0-skeleton` / package-writer `2.0` pair.
+[`E2-INTERFACE-CHANGE-001.md`](E2-INTERFACE-CHANGE-001.md) records the redaction that carried the
+manifest to `4.0`; it is **Accepted** and signed 2026-09-09, and the G1 charter's `manifest` row
+now reads `4.0-skeleton`. [`E2-S4-INTERFACE-CHANGE-002.md`](E2-S4-INTERFACE-CHANGE-002.md) records
+the `3.0-skeleton` and package-writer moves and remains Proposed, so `3.0-skeleton` was never an
+effective version and the charter's `package_writer` row still reads `e0.package-writer.2.0`.
 
 Reconciliation accepts strict `0.1-skeleton` and `0.2-skeleton` two-artifact manifests, the strict
 `2.0-skeleton` six-artifact manifest, and the `3.0-skeleton` manifest that published absolute

@@ -3,7 +3,7 @@
 ## Identification
 
 - Record ID: `E2-INTERFACE-CHANGE-001`
-- Status: **Proposed.** No row in §Approval is signed.
+- Status: **Accepted 2026-09-09.** Every row in §Approval is signed.
 - Contract owner: T-AUDIO (`manifest`)
 - Engineering owner: Engineering owner
 - Affected-track reviewers: T-AUDIO, T-RUNTIME
@@ -153,20 +153,36 @@ Whether a package should be content-addressed at all is a question the Proposed
   **No requalification.** Qualification measures the worker, and no synthesis input moves.
 - Walking skeleton result: recorded at approval.
 
-## What this record does not do to the freeze charter
+## What this signature moves in the freeze charter, and what it does not
 
-`docs/architecture/G1-FREEZE-CHARTER.md`'s `manifest` row stays at `2.0-skeleton` and its
-`package_writer` row at `e0.package-writer.2.0`. Those are the versions the last **accepted**
-record — `E2-S2-INTERFACE-CHANGE-001`, signed 2026-09-04 — made effective. The charter's §Status
-moves a row on a record's acceptance date, and this record is Proposed, so signing it is what
-carries that row to `4.0-skeleton`, not merging the code.
+`docs/architecture/G1-FREEZE-CHARTER.md`'s `manifest` row moves from `2.0-skeleton` to
+`4.0-skeleton`, effective on this record's acceptance date, and its §Status records the amendment
+as it records `E2-S1-INTERFACE-CHANGE-001`'s.
 
-That leaves a gap the charter's own §The inventory is derived rule creates and this record cannot
-close: the rule promises that every `*_SCHEMA_VERSION` constant in `crates/*/src/*.rs` appears in
-the charter as a frozen row or in §Deliberately not frozen with a reason, and
-`RUN_REPORT_SCHEMA_VERSION` now exists and appears in neither. Freezing it at a version no
-signature authorizes would be the wrong repair. It is the engineering owner's decision, and it is
-E2-S4's to make rather than this record's — noted here because it was found here.
+**The charter skips `3.0-skeleton`, and that is the accurate entry rather than a gap.** The charter
+records the version in force, and `3.0-skeleton` never was: `E2-S4-INTERFACE-CHANGE-002` introduced
+it and remains Proposed, so no signature ever made it effective. It was implemented, merged, and
+superseded without being authorized. The row therefore moves `2.0-skeleton` → `4.0-skeleton` in one
+step, and a reader who looks for a `3.0` acceptance will correctly find none.
+
+**This signature accepts the `4.0-skeleton` layout entire, including two things it did not
+argue for.** A layout cannot be half-accepted. `build_attempt` and the `run_report` artifact came
+from `E2-S4-INTERFACE-CHANGE-002`, whose reasoning no signature had reviewed; accepting `4.0`
+accepts the document that carries them. Stated plainly because it is a real widening of what the
+contract owner is signing, and because the alternative — refusing to move the row while the code
+emits the version — leaves the charter describing a manifest nobody writes.
+
+**Two things this signature does not move.** `package_writer` stays at `e0.package-writer.2.0`:
+`E2-S4-INTERFACE-CHANGE-002` owns that contract, it is a Rust API rather than the manifest, and it
+is still Proposed. And no `run-report` row is added, because `E2-S4-INTERFACE-CHANGE-001` owns that
+contract and is also still Proposed.
+
+That second one leaves a gap the charter's own §The inventory is derived rule creates and this
+record cannot close: the rule promises that every `*_SCHEMA_VERSION` constant in `crates/*/src/*.rs`
+appears in the charter as a frozen row or in §Deliberately not frozen with a reason, and
+`RUN_REPORT_SCHEMA_VERSION` appears in neither. Freezing it at a version no signature authorizes
+would be the wrong repair. It is E2-S4's to close, not this record's — noted here because it was
+found here.
 
 ## Open questions
 
@@ -181,12 +197,24 @@ refused rather than read deserves a decision before a fourth arrives.
 
 ## Approval
 
-| Role | Decision | Signature |
+**Every row below is signed.** Each records a decision a role made and the date it was made.
+
+Ross Todd holds every role listed. `docs/governance/PROJECT-EXECUTION-CHARTER.md` permits that for
+a personal project and requires each approval to name its role and accepted risk separately, which
+is why the rows stay separate although one person signed them all.
+
+The T-AUDIO row carries the widening §What this signature moves in the freeze charter states: it
+accepts the `4.0-skeleton` document entire, `build_attempt` and the `run_report` artifact included,
+though `E2-S4-INTERFACE-CHANGE-002` argued for those and is not itself signed by this.
+
+| Role | Decision sought | Status |
 |---|---|---|
-| Contract owner (T-AUDIO) | Accept `manifest` `4.0-skeleton` and the amended meaning of a recorded argument | |
-| Engineering owner | Accept the empty migration and the reuse comparison that makes the old layout unreusable | |
-| Affected-track reviewer (T-RUNTIME) | Accept the pinned encode staging name and the bounded identity claim | |
-| Effective version and date | `manifest` `4.0-skeleton`, on signature | |
+| Contract owner (T-AUDIO) | Accept `manifest` `4.0-skeleton` and the amended meaning of a recorded argument, including the `3.0-skeleton` fields the layout inherits | Accepted — Ross Todd, 2026-09-09 |
+| Engineering owner | Accept the empty migration, and that every existing published package is superseded and rebuilt while no cache entry is stranded | Accepted — Ross Todd, 2026-09-09 |
+| Affected-track reviewer (T-RUNTIME) | Accept the pinned encode staging name and the bounded identity claim: two builds differ only by the sealed run report | Accepted — Ross Todd, 2026-09-09 |
+| Affected-track reviewer (T-AUDIO) | Accept that `3.0-skeleton` stays readable, is never reusable, and needs no frozen decoder | Accepted — Ross Todd, 2026-09-09 |
+
+- Effective version and date: `manifest` `4.0-skeleton`, effective 2026-09-09.
 
 ## Amendments
 

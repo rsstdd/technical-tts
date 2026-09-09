@@ -190,10 +190,13 @@ pub const PUBLISHED_SCHEMAS: [PublishedSchema; 8] = [
 /// the version effective in the accepted freeze charter.
 ///
 /// `4.0`, following `4.0-skeleton`, replaces absolute staging roots in recorded
-/// tool arguments with `{staging}`. It is the current implementation described
-/// by the unsigned, **Proposed**
-/// `docs/architecture/E2-INTERFACE-CHANGE-001.md`; validation enforces that
-/// semantic change rather than trusting the version label.
+/// tool arguments with `{staging}`. A semantic change with no field change, so
+/// **Breaking contract** once more, recorded in
+/// `docs/architecture/E2-INTERFACE-CHANGE-001.md`, **Accepted** and signed
+/// 2026-09-09; validation enforces the change rather than trusting the version
+/// label. That signature carried the G1 charter's `manifest` row here from
+/// `2.0-skeleton`, skipping the `3.0` above, which no signature made
+/// effective.
 pub const MANIFEST_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(4, 0);
 
 /// Version of the published worker-protocol schema.
