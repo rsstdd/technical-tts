@@ -414,6 +414,18 @@ fn accepts_lesson(bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+fn accepts_approval(bytes: &[u8]) -> Result<(), String> {
+    serde_json::from_slice::<study_tts_core::ApprovalRecord>(bytes)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn accepts_preview_release(bytes: &[u8]) -> Result<(), String> {
+    serde_json::from_slice::<study_tts_core::PreviewReleaseRecord>(bytes)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 fn accepts_takes(bytes: &[u8]) -> Result<(), String> {
     study_tts_core::ValidatedTakes::from_json(bytes)
         .map(|_| ())
@@ -624,11 +636,21 @@ fn collect_numeric_property_names(schema: &Value, found: &mut Vec<String>) {
     }
 }
 
-const VALID_EXAMPLES: [ValidExample; 6] = [
+const VALID_EXAMPLES: [ValidExample; 8] = [
     (
         LESSON_SCHEMA_STEM,
         "fixtures/lessons/e0-s0-two-segment.json",
         accepts_lesson,
+    ),
+    (
+        study_tts_core::APPROVAL_SCHEMA_STEM,
+        "fixtures/contracts/e2-s6-approval-valid.json",
+        accepts_approval,
+    ),
+    (
+        study_tts_core::PREVIEW_RELEASE_SCHEMA_STEM,
+        "fixtures/contracts/e2-s6-preview-release-valid.json",
+        accepts_preview_release,
     ),
     (
         study_tts_core::TAKES_SCHEMA_STEM,
@@ -657,7 +679,17 @@ const VALID_EXAMPLES: [ValidExample; 6] = [
     ),
 ];
 
-const INVALID_EXAMPLES: [InvalidExample; 12] = [
+const INVALID_EXAMPLES: [InvalidExample; 14] = [
+    (
+        study_tts_core::APPROVAL_SCHEMA_STEM,
+        "fixtures/contracts/e2-s6-approval-uppercase-digest.json",
+        &["/manifest_blake3"],
+    ),
+    (
+        study_tts_core::PREVIEW_RELEASE_SCHEMA_STEM,
+        "fixtures/contracts/e2-s6-preview-release-uppercase-digest.json",
+        &["/approval_blake3"],
+    ),
     (
         RUN_REPORT_SCHEMA_STEM,
         "fixtures/contracts/e2-s4-run-report-foreign-layout.json",
@@ -1012,7 +1044,7 @@ fn t3_e1_every_published_schema_claims_the_uri_its_documents_name() {
 /// agree with any schema it was handed, including one that grew a required
 /// field nobody meant to add — which is the change this table exists to make
 /// impossible to land quietly.
-const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 54] = [
+const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 56] = [
     (
         "job 1.0",
         "/",
@@ -1075,6 +1107,30 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 54] = [
             "speaker",
             "spoken_text",
             "style",
+        ],
+    ),
+    (
+        "approval 1.0",
+        "/",
+        &[
+            "checklist_version",
+            "disposition",
+            "lesson_id",
+            "manifest_blake3",
+            "playback_environment",
+            "reviewer",
+            "reviewer_role",
+            "schema_version",
+        ],
+    ),
+    (
+        "preview-release 1.0",
+        "/",
+        &[
+            "approval_blake3",
+            "lesson_id",
+            "manifest_blake3",
+            "schema_version",
         ],
     ),
     (

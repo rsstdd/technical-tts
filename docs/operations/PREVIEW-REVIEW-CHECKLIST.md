@@ -3,6 +3,24 @@
 The checklist a reviewer fills when judging a private preview package. `DELIVERY-PLAN.md` §5
 requires it by M2, owned and approved by the project owner.
 
+## Checklist version
+
+**Checklist version: `1.0`.**
+
+Mirrored by `study_tts_core::PREVIEW_REVIEW_CHECKLIST_VERSION`, which every approval record names
+so a reader can tell which criteria a reviewer answered.
+`t1_e2_checklist_version_matches_the_checklist_document` fails if the two drift apart.
+
+Adding a criterion moves the minor; removing or redefining one moves the major, because an approval
+recorded under the old version answered a question this version no longer asks.
+
+**Moving this version invalidates nothing.** A stored approval keeps the version it answered and
+stays exactly as valid as it was — it is a true record of what was asked at the time. The only
+thing that invalidates an approval is the package content changing, which
+`study_tts_runtime::approved_package` detects because an approval is stored under the digest of
+the manifest it judged. Deciding that a checklist move should force re-review is a judgment for
+whoever moves it, not a rule this repository enforces.
+
 It exists because the criteria drifted. Four listening reviews have been taken against four
 different criteria sets — `e1-s4-minimal-package-generation-v1` used Joins, Pauses, Encoding,
 Continuity, and Text integrity; `e1-s5-canonical-json-authoring-v1` used the same five reworded;
@@ -13,8 +31,9 @@ record should cite this file and record findings against it rather than restate 
 
 ## Scope
 
-This covers the **private preview package** — the six artifacts a preview generation writes, judged
-as a whole by a person who listened to it.
+This covers the **private preview package** — the seven artifacts a preview generation writes,
+judged as a whole by a person who listened to it. It was six until E2-S4 sealed `run-report.json`
+into the package and the manifest began checksumming it.
 
 It is not the E1-S3 blinded qualification listening. That set is rendered by the `listening-render`
 example, reviewed against `review-sheet.json`, and verified by
@@ -58,6 +77,7 @@ One row per segment. Every cell answered.
 |---|---|
 | Content | A word spoken that is not in the segment's `spoken_text`, or one omitted |
 | Pronunciation | Anything said wrong: a term, a name, an acronym, a number |
+| Protected terms | A term the lesson declared protected, spoken as anything other than its declared form |
 | Voice | Drift in timbre or identity, within the segment or against its neighbours |
 | Joins | A click, truncation, overlap, or audible discontinuity at either boundary |
 | Loudness | Level shifting so the segments do not read as one recording |

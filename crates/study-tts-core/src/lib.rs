@@ -22,6 +22,7 @@
 //! architecture, the governing document under `docs/governance/` is named by
 //! the module that implements it, and names that module in return.
 
+mod approval;
 mod canonical;
 mod contract;
 mod digest;
@@ -38,6 +39,11 @@ mod tool;
 mod verification;
 mod voice;
 
+pub use approval::{
+    APPROVAL_SCHEMA_STEM, APPROVAL_SCHEMA_VERSION, ApprovalDigest, ApprovalDisposition,
+    ApprovalRecord, MalformedApprovalDigest, PREVIEW_RELEASE_SCHEMA_STEM,
+    PREVIEW_RELEASE_SCHEMA_VERSION, PREVIEW_REVIEW_CHECKLIST_VERSION, PreviewReleaseRecord,
+};
 pub use canonical::{CanonicalValue, canonical_bytes, canonical_digest};
 pub use contract::{
     ContractChange, ContractDescriptor, ContractId, ContractVersion, ContractVersionError,

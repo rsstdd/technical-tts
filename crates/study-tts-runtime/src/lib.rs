@@ -5,6 +5,7 @@
 //! Every gate runs before any tool or synthesis work, so a refusal names the
 //! policy that refused rather than the first thing that happened to break.
 
+mod approval;
 mod assembly;
 mod audio_edges;
 mod authoring;
@@ -38,6 +39,7 @@ mod worker_executor;
 mod worker_launcher;
 mod worker_protocol;
 
+pub use approval::{ApprovalRequest, approve_preview, approved_package, publish_preview_release};
 pub use audio_edges::{
     CalibrationSource, EdgeConditioning, JoinContinuity, JoinSide, JoinTolerance,
     MAX_SEGMENT_AUDIO_MS, MAX_TRANSITION_RAMP_MS, ProvisionalCalibration, REQUIRED_EDGE_SILENCE_MS,

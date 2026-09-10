@@ -758,6 +758,24 @@ mod tests {
                 owner: RemedyOwner::Runtime,
                 action: "preserve the staging attempt and repair quarantine before retrying",
             },
+            // Rowless deliberately: `docs/governance/ROUTING-TABLES.md` routes
+            // "Production publication" to the project owner, and a private
+            // preview is not that. The owner is the same person; the row is
+            // not the same decision.
+            DurableStateError::MalformedApproval { .. }
+            | DurableStateError::UnsupportedApproval { .. }
+            | DurableStateError::ApprovalManifestMismatch { .. } => Expected::Rowless {
+                owner: RemedyOwner::Runtime,
+                action: "preserve the approval record and run reconciliation",
+            },
+            DurableStateError::PreviewNotApproved { .. } => Expected::Rowless {
+                owner: RemedyOwner::ProjectOwner,
+                action: "review the generation and record an approval before releasing it",
+            },
+            DurableStateError::ApprovedPackageMissing { .. } => Expected::Rowless {
+                owner: RemedyOwner::ProjectOwner,
+                action: "render the named generation, or approve the one this workspace holds",
+            },
             DurableStateError::MalformedJobLock { .. }
             | DurableStateError::IncompatibleJobLock { .. }
             | DurableStateError::MalformedJobSnapshot { .. }

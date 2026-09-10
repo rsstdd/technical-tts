@@ -16,15 +16,17 @@ use std::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use study_tts_core::{
-    CacheKey, JobState, LessonError, MAX_LESSON_JSON_BYTES, PlanError, ReleaseError, RenderPlan,
+    ApprovalDisposition, ApprovalRecord, CacheKey, JobState, LessonError, MAX_LESSON_JSON_BYTES,
+    ManifestDigest, PlanError, ReleaseError, RenderPlan,
 };
 use study_tts_runtime::{
-    BackendDescriptor, BackendError, BuildError, BuildRequest, CacheOutcome, DurableStateError,
-    FileSystemCachePublisher, FileSystemPackageWriter, IoError, JoinContinuity, JoinTolerance,
-    ManagedPathError, Measured, PreviewServiceBundle, PublicationError, ReportCompletion,
-    ResumeRequest, RunReport, SynthesisReport, SynthesisRequest, ToolError, TtsExecutor,
-    Unavailable, build_preview, build_preview_with_services, load_lesson, normalize_master_output,
-    publish, resume_preview, validate_m4a_output, validate_production_manifest,
+    ApprovalRequest, BackendDescriptor, BackendError, BuildError, BuildRequest, CacheOutcome,
+    DurableStateError, FileSystemCachePublisher, FileSystemPackageWriter, IoError, JoinContinuity,
+    JoinTolerance, ManagedPathError, Measured, PreviewServiceBundle, PublicationError,
+    ReportCompletion, ResumeRequest, RunReport, SynthesisReport, SynthesisRequest, ToolError,
+    TtsExecutor, Unavailable, approve_preview, approved_package, build_preview,
+    build_preview_with_services, load_lesson, normalize_master_output, publish,
+    publish_preview_release, resume_preview, validate_m4a_output, validate_production_manifest,
 };
 use study_tts_testkit::{
     DeterministicToneWorker, FIXTURE_VOICE_PROFILES, InterruptingJobRepository,
@@ -915,6 +917,237 @@ fn t4_e2_a_recorded_argument_names_no_path_outside_the_package() {
     assert!(
         survived,
         "the non-path arguments must survive redaction unchanged"
+    );
+}
+
+/// Every byte inside a package directory, as a comparable value.
+///
+/// Name and content of every entry, sorted, so an added file is as visible as
+/// a changed one — a test that hashed only the artifacts it expected would
+/// miss an approval dropped in beside them, which is the failure this guards.
+fn digest_directory(directory: &Path) -> std::collections::BTreeMap<String, blake3::Hash> {
+    std::fs::read_dir(directory)
+        .expect("a published package directory is readable")
+        .map(|entry| {
+            let entry = entry.expect("read a package directory entry");
+            let bytes = std::fs::read(entry.path()).expect("read a package file");
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                blake3::hash(&bytes),
+            )
+        })
+        .collect()
+}
+
+/// The manifest digest that names a published package directory.
+fn package_manifest_digest(result: &study_tts_runtime::BuildResult) -> ManifestDigest {
+    let name = result
+        .package_dir
+        .file_name()
+        .expect("a package directory has a name")
+        .to_str()
+        .expect("a package directory name is UTF-8");
+    ManifestDigest::try_from(name.to_owned())
+        .expect("a package directory is named by its manifest digest")
+}
+
+/// Approves a built package as the project owner would.
+fn approve(workspace: &Path, result: &study_tts_runtime::BuildResult) -> ApprovalRecord {
+    approve_preview(
+        workspace,
+        &ApprovalRequest {
+            lesson_id: "e0-s0-walking-skeleton",
+            manifest_blake3: &package_manifest_digest(result),
+            reviewer: "Ross Todd",
+            reviewer_role: "project owner",
+            playback_environment: "monitors, treated room",
+            disposition: ApprovalDisposition::Accepted,
+        },
+    )
+    .expect("a reviewed package can be approved")
+}
+
+/// A rebuilt package is not covered by the approval of the one it replaced.
+///
+/// E2-S6 task 6 — "invalidate approval through checksum mismatch when build
+/// content changes". Nothing compares content to do it: an approval is stored
+/// under the digest of the manifest it judged, and a package directory is
+/// named by that same digest, so a retake produces a generation with no
+/// approval beside it.
+///
+/// Rejects the wrong implementation this repository would otherwise reach for
+/// — an approval keyed by lesson, which would silently carry a reviewer's
+/// judgment of one recording onto a different one.
+#[test]
+fn t4_e2_content_change_invalidates_prior_approval() {
+    let (workspace, first, worker) = run_skeleton();
+    approve(workspace.path(), &first);
+
+    assert!(
+        approved_package(workspace.path(), "e0-s0-walking-skeleton")
+            .expect("an approved package reads back")
+            .is_some(),
+        "the generation just approved must read as approved"
+    );
+
+    let mut retaken = build_request(&walking_skeleton_fixture(), workspace.path());
+    retaken.retakes = std::collections::BTreeMap::from([("seg-0002".to_owned(), 1)]);
+    let second = build_preview(retaken, &worker).expect("the requested retake builds");
+    assert_ne!(
+        first.package_dir, second.package_dir,
+        "a retake must publish a new generation, or this proves nothing"
+    );
+
+    assert!(
+        approved_package(workspace.path(), "e0-s0-walking-skeleton")
+            .expect("an unapproved generation reads back as unapproved")
+            .is_none(),
+        "a reviewer's judgment of one recording must not carry onto another"
+    );
+}
+
+/// A preview cannot be released without the human approval that reviewed it.
+///
+/// E2-S6 task 7, on the only reading that is not a cycle: approval cannot gate
+/// *writing* a package, because a reviewer needs a package to listen to. It
+/// gates declaring one released.
+#[test]
+fn t3_e2_private_preview_requires_human_approval_record() {
+    let (workspace, _result, _worker) = run_skeleton();
+
+    let refusal = publish_preview_release(workspace.path(), "e0-s0-walking-skeleton")
+        .expect_err("an unapproved preview cannot be released");
+
+    assert!(
+        matches!(
+            refusal,
+            BuildError::DurableState(ref error)
+                if matches!(**error, DurableStateError::PreviewNotApproved { .. })
+        ),
+        "releasing an unapproved preview must name the missing approval: {refusal:?}"
+    );
+
+    // The gate must precede the write, not merely accompany it. A late gate
+    // would leave a release record on disk beside its own refusal, and the
+    // assertion above would still pass.
+    assert!(
+        !workspace
+            .path()
+            .join("previews/e0-s0-walking-skeleton/release.json")
+            .exists(),
+        "a refused release must leave no release record behind"
+    );
+}
+
+/// Approving and releasing a preview does not make it production-verified.
+///
+/// The risk this story introduces: E2-S6 gives a preview an approval and a
+/// release record, and both words sound like production. They are not. A
+/// reviewer answered `PREVIEW-REVIEW-CHECKLIST.md`; production additionally
+/// requires every gate in `RELEASE-PROFILES.md` §3, ASR verification among
+/// them, and no listening session can stand in for one.
+///
+/// Characterizes `ReleaseClaim::validate_as_production`, which refuses on the
+/// profile before it ever looks at gate evidence — so this asserts the refusal
+/// survives the new state, rather than testing code this story added.
+#[test]
+fn t3_e2_private_preview_cannot_claim_production_verification() {
+    let (workspace, result, _worker) = run_skeleton();
+    approve(workspace.path(), &result);
+    publish_preview_release(workspace.path(), "e0-s0-walking-skeleton")
+        .expect("an approved preview releases");
+
+    let refusal = publish(&result).expect_err("a released preview is still not production");
+
+    assert!(
+        matches!(
+            refusal,
+            BuildError::Publication(PublicationError::Release(
+                ReleaseError::PrivateProfileCannotClaimProduction
+            ))
+        ),
+        "approval must not be mistaken for production verification: {refusal:?}"
+    );
+}
+
+/// The release record reaches the manifest and the approval, and neither
+/// reaches back.
+///
+/// `DELIVERY-PLAN.md`'s M2 acceptance requires human approval recorded
+/// "without a checksum cycle". Asserted on the field lists rather than by
+/// scanning bytes for a digest: a type with no field able to hold a release
+/// digest cannot close the loop however it is populated, and a byte scan would
+/// pass for a cycle spelled any other way.
+#[test]
+fn t3_e2_release_record_references_manifest_and_approval_without_cycle() {
+    let (workspace, result, _worker) = run_skeleton();
+    let approval = approve(workspace.path(), &result);
+
+    let release = publish_preview_release(workspace.path(), "e0-s0-walking-skeleton")
+        .expect("an approved preview releases");
+
+    assert_eq!(release.manifest_blake3, package_manifest_digest(&result));
+    let stored = workspace
+        .path()
+        .join("previews/e0-s0-walking-skeleton/approvals")
+        .join(format!(
+            "{}.json",
+            package_manifest_digest(&result).as_str()
+        ));
+    let recorded = blake3::hash(&std::fs::read(&stored).expect("read the stored approval"));
+    assert_eq!(
+        release.approval_blake3.as_str(),
+        recorded.to_hex().as_str(),
+        "the release must name the approval document a reader will open"
+    );
+
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(&result.manifest).expect("read the manifest"))
+            .expect("parse the manifest");
+    assert!(
+        manifest
+            .as_object()
+            .expect("a manifest is an object")
+            .keys()
+            .all(|field| { !field.contains("approval") && !field.contains("release_record") }),
+        "the manifest must carry no field able to name its approval or release"
+    );
+
+    let ApprovalRecord {
+        schema_version: _,
+        lesson_id: _,
+        manifest_blake3: _,
+        checklist_version: _,
+        reviewer: _,
+        reviewer_role: _,
+        playback_environment: _,
+        disposition: _,
+    } = approval;
+}
+
+/// Approving a package leaves every byte of it alone.
+///
+/// This is E2-S6 task 5 — "never mutate the approved build manifest to attach
+/// its approval" — and it is the invariant the whole story rests on. A package
+/// directory is named by the BLAKE3 of its own manifest, so attaching an
+/// approval to the manifest would change the name of the thing being approved:
+/// the reviewer would sign one identity and the tree would hold another.
+///
+/// The approval therefore names the manifest and the manifest cannot name the
+/// approval. Rejects the obvious wrong implementation — an `approval` field
+/// added to `manifest.json`, or an approval file dropped inside the immutable
+/// package directory, either of which this digest would catch.
+#[test]
+fn t4_e2_approving_a_manifest_does_not_mutate_it() {
+    let (workspace, result, _worker) = run_skeleton();
+    let before = digest_directory(&result.package_dir);
+
+    approve(workspace.path(), &result);
+
+    assert_eq!(
+        before,
+        digest_directory(&result.package_dir),
+        "approving a package must not change a single byte inside it"
     );
 }
 

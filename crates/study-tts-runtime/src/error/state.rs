@@ -698,6 +698,71 @@ pub enum DurableStateError {
         tool: &'static str,
     },
 
+    /// A preview was released without the human approval that reviews it.
+    #[error(
+        "the published preview for lesson `{lesson_id}` carries no accepting approval; review \
+         the generation and record an approval before releasing it"
+    )]
+    PreviewNotApproved {
+        /// Lesson whose selected package has no accepting approval.
+        lesson_id: String,
+    },
+
+    /// A stored approval declares a layout this build cannot read.
+    #[error(
+        "approval record `{}` declares a layout this build cannot read; preserve it for runtime \
+         reconciliation rather than editing its version",
+        path.display()
+    )]
+    UnsupportedApproval {
+        /// Approval document declaring the unreadable layout.
+        path: PathBuf,
+        /// Which part of the version comparison refused it.
+        #[source]
+        source: study_tts_core::SchemaVersionError,
+    },
+
+    /// A stored approval does not parse as the current approval layout.
+    #[error(
+        "approval record `{}` is not a valid approval document; preserve it for runtime \
+         reconciliation rather than editing it",
+        path.display()
+    )]
+    MalformedApproval {
+        /// Approval document that failed to parse.
+        path: PathBuf,
+        /// Underlying decode failure.
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// A stored approval names a manifest other than the one selecting it.
+    #[error(
+        "approval record `{}` names manifest `{recorded}` but is stored for `{selected}`; \
+         preserve both for runtime reconciliation",
+        path.display()
+    )]
+    ApprovalManifestMismatch {
+        /// Approval document whose contents contradict its location.
+        path: PathBuf,
+        /// Manifest digest the document records.
+        recorded: String,
+        /// Manifest digest whose approval this file claims to be.
+        selected: String,
+    },
+
+    /// An approval names a package generation this workspace does not hold.
+    #[error(
+        "no package for lesson `{lesson_id}` carries manifest `{manifest_blake3}`; render the \
+         package before approving it, or approve the generation that exists"
+    )]
+    ApprovedPackageMissing {
+        /// Lesson the approval names.
+        lesson_id: String,
+        /// Manifest digest no package directory carries.
+        manifest_blake3: String,
+    },
+
     /// A current package manifest records an absolute host path in a tool
     /// argument.
     #[error(
@@ -836,6 +901,30 @@ impl DurableStateError {
             Self::QuarantineFailed { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::Runtime,
                 "preserve the staging attempt and repair quarantine before retrying",
+                None,
+            )),
+            // The project owner owns review and approval per
+            // `docs/governance/ROUTING-TABLES.md`, and this refusal is theirs
+            // to act on: nothing about the build is wrong, the generation they
+            // named is simply not the one this workspace holds.
+            // Integrity refusals: `docs/governance/ROUTING-TABLES.md` §Failure
+            // routing sends state and checksum corruption to reconciliation,
+            // and never to deleting the record that disagrees.
+            Self::MalformedApproval { .. }
+            | Self::UnsupportedApproval { .. }
+            | Self::ApprovalManifestMismatch { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::Runtime,
+                "preserve the approval record and run reconciliation",
+                None,
+            )),
+            Self::PreviewNotApproved { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::ProjectOwner,
+                "review the generation and record an approval before releasing it",
+                None,
+            )),
+            Self::ApprovedPackageMissing { .. } => Some(RemedyAdvice::new(
+                RemedyOwner::ProjectOwner,
+                "render the named generation, or approve the one this workspace holds",
                 None,
             )),
             Self::MalformedJobLock { .. }
