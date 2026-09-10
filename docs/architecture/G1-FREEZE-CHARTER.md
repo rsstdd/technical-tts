@@ -13,8 +13,14 @@ the change procedure and makes their recorded `1.0` versions effective on that d
 makes that version effective on that date. It moves the row from `2.0-skeleton` in one step:
 `3.0-skeleton` was implemented under `E2-S4-INTERFACE-CHANGE-002`, which is still Proposed, so no
 signature ever made that version effective and the charter records none. The `package_writer` row
-is unaffected and stays at `e0.package-writer.2.0`, and `RUN_REPORT_SCHEMA_VERSION` still appears
-in neither list below — both wait on E2-S4's records.
+is unaffected and stays at `e0.package-writer.2.0`.
+
+**Three published-schema constants appear in neither list below**, and each waits on a signature
+rather than on a decision: `RUN_REPORT_SCHEMA_VERSION` on `E2-S4-INTERFACE-CHANGE-001`, and
+`APPROVAL_SCHEMA_VERSION` and `PREVIEW_RELEASE_SCHEMA_VERSION` on `E2-S6-INTERFACE-CHANGE-001`.
+§The inventory is derived promises they appear here; adding a frozen row at a version no signature
+has made effective would be the wrong way to keep that promise, so the gap is recorded instead.
+Signing those two records closes it.
 
 Successor to [`PROVISIONAL-CONTRACT-BASELINE.md`](PROVISIONAL-CONTRACT-BASELINE.md), which set the
 E0-S4 baseline and said in its own words that it claimed no production contract and made no
