@@ -49,6 +49,13 @@ const TRANSACTION_IDENTITY_VERSION: &str = "0.3-skeleton-transaction";
 const CURRENT_RECORD_NAME: &str = "current.json";
 const JOURNAL_RECORD_NAME: &str = "publication.json";
 const PACKAGES_DIRECTORY: &str = "packages";
+
+/// Where a package's approval is stored, beside `packages/` not inside it.
+///
+/// `crate::approval` owns why: a package directory is named by the BLAKE3 of
+/// its own manifest and published by rename, so an approval written into it
+/// would falsify that name.
+pub(crate) const APPROVALS_DIRECTORY: &str = "approvals";
 const STAGING_DIRECTORY: &str = "staging";
 
 /// Managed roots needed by one lesson's package publication.
@@ -518,7 +525,12 @@ fn read_journal(path: &Path, lesson_id: &str) -> Result<Option<PublicationJourna
     Ok(Some(journal))
 }
 
-fn read_current(
+/// The package `current.json` selects, without asking which plan produced it.
+///
+/// [`current_manifest_digest`] answers a different question — whether the
+/// selection matches *this build's* plan — and needs a plan hash to do it.
+/// Approval asks only which generation a reviewer would be listening to.
+pub(crate) fn read_current(
     roots: &PreviewRoots,
     lesson_id: &str,
 ) -> Result<Option<PublishedPackage>, BuildError> {

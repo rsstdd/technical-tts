@@ -31,9 +31,11 @@
 
 use serde_json::Value;
 use study_tts_core::{
-    AuthoredLesson, JOB_SCHEMA_VERSION, JobDocument, LESSON_SCHEMA_STEM, LESSON_SCHEMA_VERSION,
-    PLAN_SCHEMA_STEM, PLAN_SCHEMA_VERSION, RenderPlan, SchemaVersion, TAKES_SCHEMA_STEM,
-    TAKES_SCHEMA_VERSION, TakesDocument, VERIFICATION_SCHEMA_STEM, VERIFICATION_SCHEMA_VERSION,
+    APPROVAL_SCHEMA_STEM, APPROVAL_SCHEMA_VERSION, ApprovalRecord, AuthoredLesson,
+    JOB_SCHEMA_VERSION, JobDocument, LESSON_SCHEMA_STEM, LESSON_SCHEMA_VERSION, PLAN_SCHEMA_STEM,
+    PLAN_SCHEMA_VERSION, PREVIEW_RELEASE_SCHEMA_STEM, PREVIEW_RELEASE_SCHEMA_VERSION,
+    PreviewReleaseRecord, RenderPlan, SchemaVersion, TAKES_SCHEMA_STEM, TAKES_SCHEMA_VERSION,
+    TakesDocument, VERIFICATION_SCHEMA_STEM, VERIFICATION_SCHEMA_VERSION,
     VerificationIdentityRecord, schema_file_name, schema_uri,
 };
 
@@ -121,7 +123,7 @@ impl PublishedSchema {
 /// `t3_e1_generated_schemas_match_checked_in_files` compares this list against
 /// the contents of `schemas/` in both directions: a file with no entry and an
 /// entry with no file each fail it.
-pub const PUBLISHED_SCHEMAS: [PublishedSchema; 8] = [
+pub const PUBLISHED_SCHEMAS: [PublishedSchema; 10] = [
     PublishedSchema {
         stem: LESSON_SCHEMA_STEM,
         version: LESSON_SCHEMA_VERSION,
@@ -156,6 +158,16 @@ pub const PUBLISHED_SCHEMAS: [PublishedSchema; 8] = [
         stem: RUN_REPORT_SCHEMA_STEM,
         version: RUN_REPORT_SCHEMA_VERSION,
         generate: || schema_of::<RunReport>(),
+    },
+    PublishedSchema {
+        stem: APPROVAL_SCHEMA_STEM,
+        version: APPROVAL_SCHEMA_VERSION,
+        generate: || schema_of::<ApprovalRecord>(),
+    },
+    PublishedSchema {
+        stem: PREVIEW_RELEASE_SCHEMA_STEM,
+        version: PREVIEW_RELEASE_SCHEMA_VERSION,
+        generate: || schema_of::<PreviewReleaseRecord>(),
     },
     PublishedSchema {
         stem: "worker-protocol",

@@ -419,6 +419,18 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`crate::DurableStateError::JobPlanHashMismatch`] are
 /// [`resume_preview`]'s alone: a build has its lesson and plan in hand rather
 /// than reading them back.
+///
+/// The approval refusals cannot be returned here, because a build neither
+/// reads nor writes an approval:
+/// [`crate::DurableStateError::ApprovedPackageMissing`]
+/// belongs to [`crate::approve_preview`], which names a package that must
+/// already exist; [`crate::DurableStateError::MalformedApproval`],
+/// [`crate::DurableStateError::UnsupportedApproval`], and
+/// [`crate::DurableStateError::ApprovalManifestMismatch`] to
+/// [`crate::approved_package`], which reads one back; and
+/// [`crate::DurableStateError::PreviewNotApproved`] to
+/// [`crate::publish_preview_release`], which requires one. Rendering a package
+/// is what a reviewer needs *before* any of them can apply.
 pub fn build_preview(
     request: BuildRequest,
     executor: &dyn TtsExecutor,

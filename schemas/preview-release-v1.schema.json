@@ -1,0 +1,49 @@
+{
+  "$defs": {
+    "ApprovalDigest": {
+      "description": "BLAKE3 over a stored approval document's bytes, as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "ManifestDigest": {
+      "description": "BLAKE3 over an immutable package manifest's bytes, as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "description": "A document layout version, written as <major>.<minor> in decimal with no leading zeros. Each component is additionally bounded below 65536, which the pattern cannot express and the parser enforces.",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$(?![\\s\\S])",
+      "type": "string"
+    }
+  },
+  "$id": "https://schemas.study-tts.example/preview-release-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The record that declares one reviewed generation released as a preview.\n\n**This is the third document, and the reference still runs one way.** It\nnames the manifest and the approval; neither names it, and neither has a\nfield that could. `DELIVERY-PLAN.md`'s M2 acceptance requires the approval\nrecorded \"without a checksum cycle\", and a cycle here is not merely absent\nbut unrepresentable —\n`t3_e2_release_record_references_manifest_and_approval_without_cycle`\nasserts that on the field lists rather than by scanning bytes.",
+  "properties": {
+    "approval_blake3": {
+      "$ref": "#/$defs/ApprovalDigest",
+      "description": "BLAKE3 of the approval document that reviewed that manifest."
+    },
+    "lesson_id": {
+      "description": "Lesson this release covers.",
+      "type": "string"
+    },
+    "manifest_blake3": {
+      "$ref": "#/$defs/ManifestDigest",
+      "description": "BLAKE3 of the released `manifest.json`."
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion",
+      "description": "Layout of this document."
+    }
+  },
+  "required": [
+    "schema_version",
+    "lesson_id",
+    "manifest_blake3",
+    "approval_blake3"
+  ],
+  "title": "PreviewReleaseRecord",
+  "type": "object"
+}

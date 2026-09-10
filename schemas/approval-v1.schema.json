@@ -1,0 +1,79 @@
+{
+  "$defs": {
+    "ApprovalDisposition": {
+      "description": "What a reviewer decided about a package.\n\nClosed, and refused at the boundary rather than defaulted: an approval\ndocument carrying a disposition this build does not know is not an\napproval, and treating it as a rejection would be as wrong as treating it\nas an acceptance.",
+      "oneOf": [
+        {
+          "const": "accepted",
+          "description": "The reviewer accepted this package.",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "description": "The reviewer rejected it. Recorded, never deleted: a rejection is the\nevidence that a generation was judged and found wanting.",
+          "type": "string"
+        }
+      ]
+    },
+    "ManifestDigest": {
+      "description": "BLAKE3 over an immutable package manifest's bytes, as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "description": "A document layout version, written as <major>.<minor> in decimal with no leading zeros. Each component is additionally bounded below 65536, which the pattern cannot express and the parser enforces.",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$(?![\\s\\S])",
+      "type": "string"
+    }
+  },
+  "$id": "https://schemas.study-tts.example/approval-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One person's decision about one immutable package.\n\n**The reference runs one way only.** This names the manifest; the manifest\nhas no field able to name this. `DELIVERY-PLAN.md`'s M2 acceptance requires\nhuman approval recorded \"without a checksum cycle\", and the cycle is\nprevented by construction rather than by assertion — there is no field here\na release digest could occupy, and none in the manifest an approval digest\ncould.\n\nIt records the decision, not the findings. The per-segment observations a\nreviewer made live in the checklist they filled and the evidence record that\ncites it; duplicating them here would create a second place for them to\ndisagree.",
+  "properties": {
+    "checklist_version": {
+      "$ref": "#/$defs/SchemaVersion",
+      "description": "Checklist version whose criteria the reviewer answered."
+    },
+    "disposition": {
+      "$ref": "#/$defs/ApprovalDisposition",
+      "description": "What they decided."
+    },
+    "lesson_id": {
+      "description": "Lesson the reviewed package renders.",
+      "type": "string"
+    },
+    "manifest_blake3": {
+      "$ref": "#/$defs/ManifestDigest",
+      "description": "BLAKE3 of the reviewed `manifest.json`.\n\nThe whole package in one value: the manifest checksums every artifact,\nand the package directory is named by this digest. Recording the\nartifact digests again would duplicate what this already covers, and\ngive them somewhere to drift."
+    },
+    "playback_environment": {
+      "description": "Hardware and room, which the checklist requires because \"laptop\nspeakers and monitors do not hear the same faults\".",
+      "type": "string"
+    },
+    "reviewer": {
+      "description": "Who listened.",
+      "type": "string"
+    },
+    "reviewer_role": {
+      "description": "The role they signed in, per `docs/governance/ROUTING-TABLES.md`.",
+      "type": "string"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion",
+      "description": "Layout of this document."
+    }
+  },
+  "required": [
+    "schema_version",
+    "lesson_id",
+    "manifest_blake3",
+    "checklist_version",
+    "reviewer",
+    "reviewer_role",
+    "playback_environment",
+    "disposition"
+  ],
+  "title": "ApprovalRecord",
+  "type": "object"
+}
