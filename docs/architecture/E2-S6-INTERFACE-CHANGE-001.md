@@ -3,7 +3,7 @@
 ## Identification
 
 - Record ID: `E2-S6-INTERFACE-CHANGE-001`
-- Status: **Proposed.** No row in §Approval is signed.
+- Status: **Accepted 2026-09-11.** Every row in §Approval is signed.
 - Contract owner: T-CLI (`approval`, `preview_release`)
 - Engineering owner: Engineering owner
 - Affected-track reviewers: T-CLI, T-AUDIO, T-RUNTIME
@@ -181,14 +181,17 @@ approved, released preview still cannot claim production.
 
 ## Approval
 
+**Every row below is signed.** Each records a decision a role made and the date it was made.
+
 | Role | Decision sought | Status |
 |---|---|---|
-| Contract owner (T-CLI) | Accept `approval` `1.0` and `preview_release` `1.0` as published documents, and the decision-not-findings shape | |
-| Engineering owner | Accept two new published schemas, the empty migration, and that no identity moves | |
-| Affected-track reviewer (T-AUDIO) | Accept that neither document enters the package, and that package identity is unchanged by approval | |
-| Affected-track reviewer (T-RUNTIME) | Accept the gate placement in `publish_preview_release` and the interpretation of task 7 | |
-| Project owner | Accept `PREVIEW-REVIEW-CHECKLIST.md` `1.0` as the checklist `DELIVERY-PLAN.md` §5 requires by M2 | |
-| Effective version and date | `approval` `1.0` and `preview_release` `1.0`, on signature | |
+| Contract owner (T-CLI) | Accept `approval` `1.0` and `preview_release` `1.0` as published documents, and the decision-not-findings shape |Accepted — Ross Todd, 2026-09-11 |
+| Engineering owner | Accept two new published schemas, the empty migration, and that no identity moves |Accepted — Ross Todd, 2026-09-11 |
+| Affected-track reviewer (T-AUDIO) | Accept that neither document enters the package, and that package identity is unchanged by approval |Accepted — Ross Todd, 2026-09-11 |
+| Affected-track reviewer (T-RUNTIME) | Accept the gate placement in `publish_preview_release` and the interpretation of task 7 |Accepted — Ross Todd, 2026-09-11 |
+| Project owner | Accept `PREVIEW-REVIEW-CHECKLIST.md` `1.0` as the checklist `DELIVERY-PLAN.md` §5 requires by M2 |Accepted — Ross Todd, 2026-09-11 |
+
+- Effective version and date: `approval` `1.0` and `preview_release` `1.0`, effective 2026-09-11.
 
 ## Amendments
 

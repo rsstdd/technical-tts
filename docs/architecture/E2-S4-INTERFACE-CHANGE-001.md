@@ -3,7 +3,7 @@
 ## Identification
 
 - Record ID: `E2-S4-INTERFACE-CHANGE-001`
-- Status: **Proposed.** No row in §Approval is signed.
+- Status: **Accepted 2026-09-11.** Every row in §Approval is signed.
 - Contract owner: T-CLI (structured output and run reports)
 - Engineering owner: Engineering owner
 - Affected-track reviewers: T-CLI, T-RUNTIME, T-AUDIO
@@ -254,18 +254,21 @@ value means only "what the worker held when synthesis finished". It was previous
 
 ## Approval
 
+**Every row below is signed.** Each records a decision a role made and the date it was made.
+
 Ross Todd holds every role listed. `docs/governance/PROJECT-EXECUTION-CHARTER.md` permits that for
 a personal project and requires each approval to name its role and accepted risk separately, which
 is why the rows stay separate.
 
 | Role | Decision sought | Status |
 |---|---|---|
-| Project owner | Accept a new published document at `3.0-skeleton` | |
-| Contract owner (T-CLI) | Accept `run-report` as the eighth published schema, and the seventeen required root fields recorded for it | |
-| Affected track (T-RUNTIME) | Accept that **package identity moves** at the third amendment, because the manifest checksums the report, while no synthesis, verification, plan, takes, or cache identity moves and no cache entry is stranded; and that a `2.0-skeleton` report stays readable through a frozen decoder and can never be reused | |
-| Affected track (T-AUDIO) | Accept that the report publishes both an aggregate and a worst-segment real-time factor, and claims comparability to `docs/perf/BUDGETS.md`'s baseline only narrowly | |
-| Engineering owner | Accept the answer to the freeze charter's delegated question: `events.ndjson` stays unpublished and `JOB_EVENT_SCHEMA_VERSION` does not move | |
-| Effective version and date | `run-report` `3.0` added, on signature | |
+| Project owner | Accept a new published document at `3.0-skeleton` |Accepted — Ross Todd, 2026-09-11 |
+| Contract owner (T-CLI) | Accept `run-report` as the eighth published schema, and the seventeen required root fields recorded for it |Accepted — Ross Todd, 2026-09-11 |
+| Affected track (T-RUNTIME) | Accept that **package identity moves** at the third amendment, because the manifest checksums the report, while no synthesis, verification, plan, takes, or cache identity moves and no cache entry is stranded; and that a `2.0-skeleton` report stays readable through a frozen decoder and can never be reused |Accepted — Ross Todd, 2026-09-11 |
+| Affected track (T-AUDIO) | Accept that the report publishes both an aggregate and a worst-segment real-time factor, and claims comparability to `docs/perf/BUDGETS.md`'s baseline only narrowly |Accepted — Ross Todd, 2026-09-11 |
+| Engineering owner | Accept the answer to the freeze charter's delegated question: `events.ndjson` stays unpublished and `JOB_EVENT_SCHEMA_VERSION` does not move |Accepted — Ross Todd, 2026-09-11 |
+
+- Effective version and date: `run-report` `3.0`, layout `3.0-skeleton`, effective 2026-09-11.
 
 ## Amendments
 

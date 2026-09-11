@@ -3,7 +3,7 @@
 ## Identification
 
 - Record ID: `E2-S4-INTERFACE-CHANGE-003`
-- Status: **Proposed.** No row in §Approval is signed.
+- Status: **Accepted 2026-09-11.** Every row in §Approval is signed.
 - Contract owners: T-RUNTIME (`job_state`) and T-WORKER (`tts_executor`)
 - Engineering owner: Engineering owner
 - Affected-track reviewers: T-CLI, T-RUNTIME, T-WORKER
@@ -79,14 +79,18 @@ Neither version is a synthesis input and neither moves a cache key.
 
 ## Approval
 
+**Every row below is signed.** Each records a decision a role made and the date it was made.
+
 | Role | Decision sought | Status |
 |---|---|---|
-| Project owner | Accept the two frozen Rust-port moves without changing the accepted G1 charter before signature | |
-| Contract owner (T-RUNTIME) | Accept `job_state` `2.0` and the two required repository methods | |
-| Contract owner (T-WORKER) | Accept `tts_executor` `4.0` and the required `environment` method | |
-| Affected track (T-CLI) | Accept the report and event capabilities exposed through those ports | |
-| Engineering owner | Accept that no identity or durable schema moves under this record | |
-| Effective version and date | `job_state` `2.0` and `tts_executor` `4.0`, on signature | |
+| Project owner | Accept the two frozen Rust-port moves without changing the accepted G1 charter before signature |Accepted — Ross Todd, 2026-09-11 |
+| Contract owner (T-RUNTIME) | Accept `job_state` `2.0` and the two required repository methods |Accepted — Ross Todd, 2026-09-11 |
+| Contract owner (T-WORKER) | Accept `tts_executor` `4.0` and the required `environment` method |Accepted — Ross Todd, 2026-09-11 |
+| Affected track (T-CLI) | Accept the report and event capabilities exposed through those ports |Accepted — Ross Todd, 2026-09-11 |
+| Engineering owner | Accept that no identity or durable schema moves under this record |Accepted — Ross Todd, 2026-09-11 |
+
+- Effective version and date: `job_state` `2.0` and `tts_executor` `e1.tts-executor.4.0`,
+  effective 2026-09-11.
 
 ## Amendments
 

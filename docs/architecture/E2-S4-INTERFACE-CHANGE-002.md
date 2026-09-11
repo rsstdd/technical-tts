@@ -3,7 +3,8 @@
 ## Identification
 
 - Record ID: `E2-S4-INTERFACE-CHANGE-002`
-- Status: **Proposed.** No row in §Approval is signed.
+- Status: **Accepted 2026-09-11.** Every row in §Approval is signed, and the `manifest` clause
+  was superseded before signature — see §Amendments.
 - Contract owner: T-AUDIO, which owns both contracts this record moves
 - Engineering owner: Engineering owner
 - Affected-track reviewers: T-AUDIO, T-CLI, T-RUNTIME
@@ -195,14 +196,20 @@ with this.
 
 ## Approval
 
+**Every row below is signed.** Each records a decision a role made and the date it was made.
+
 | Role | Decision | Signature |
 |---|---|---|
-| Contract owner (T-AUDIO) | Accept `e0.package-writer.3.0`, `PackageWriteOutcome` with its closed `PackageDisposition`, failure timings, and `manifest` `3.0-skeleton` with its seventh artifact and build-attempt join | |
-| Engineering owner | Accept the empty migration, on the evidence that no durable artifact records this contract version | |
-| Affected-track reviewers (T-CLI, T-RUNTIME) | Accept the two supervisor timings and the stated exclusions | |
-| Effective version and date | `e0.package-writer.3.0` and `manifest` `3.0-skeleton`, on signature | |
+| Contract owner (T-AUDIO) | Accept `e0.package-writer.3.0`, `PackageWriteOutcome` with its closed `PackageDisposition`, and failure timings. The `manifest` `3.0-skeleton` this row originally sought is **not part of this signature**: accepted `E2-INTERFACE-CHANGE-001` carried the manifest to `4.0-skeleton` on 2026-09-09, seventh artifact and build-attempt join included, and signing `3.0` now would move the charter backwards | Accepted — Ross Todd, 2026-09-11 |
+| Engineering owner | Accept the empty migration, on the evidence that no durable artifact records this contract version |Accepted — Ross Todd, 2026-09-11 |
+| Affected-track reviewers (T-CLI, T-RUNTIME) | Accept the two supervisor timings and the stated exclusions |Accepted — Ross Todd, 2026-09-11 |
+
+- Effective version and date: `e0.package-writer.3.0`, effective 2026-09-11. **`manifest` is
+  unchanged by this signature** and stays at the `4.0-skeleton` accepted `E2-INTERFACE-CHANGE-001`
+  made effective 2026-09-09.
 
 ## Amendments
 
 | Date | Amendment | Approval |
 |---|---|---|
+| 2026-09-11 | **The `manifest` clause is dropped from this record's effect, at signature.** This record was written when the manifest's next layout was `3.0-skeleton` and it argued for that layout. `E2-INTERFACE-CHANGE-001` was accepted and signed 2026-09-09 while this record was still Proposed; it amends the charter's `manifest` row to `4.0-skeleton` **from `2.0-skeleton` in one step**, stating in as many words that `3.0-skeleton` "was implemented under the still-Proposed `E2-S4-INTERFACE-CHANGE-002`, so no signature ever made that version effective and the charter records none". Its T-AUDIO row accepts the `4.0-skeleton` document entire, `build_attempt` and the `run_report` artifact included, so the substance this record argued for is already effective under a later signature. Signing `manifest` `3.0-skeleton` today would make an earlier layout effective after a later one and move the charter backwards, so the signature carries `e0.package-writer.3.0` alone. Nothing in §Version and compatibility is rewritten: what this record proposed, and why, stays readable. | Accepted — Ross Todd, 2026-09-11 |

@@ -11,16 +11,23 @@ the change procedure and makes their recorded `1.0` versions effective on that d
 
 `E2-INTERFACE-CHANGE-001`, accepted 2026-09-09, amends the `manifest` row to `4.0-skeleton` and
 makes that version effective on that date. It moves the row from `2.0-skeleton` in one step:
-`3.0-skeleton` was implemented under `E2-S4-INTERFACE-CHANGE-002`, which is still Proposed, so no
-signature ever made that version effective and the charter records none. The `package_writer` row
-is unaffected and stays at `e0.package-writer.2.0`.
+`3.0-skeleton` was implemented under `E2-S4-INTERFACE-CHANGE-002`, which was still Proposed on that
+date, so no signature ever made that version effective and the charter records none. The
+`package_writer` row was unaffected that day and stayed at `e0.package-writer.2.0`; the paragraph
+below moves it.
 
-**Three published-schema constants appear in neither list below**, and each waits on a signature
-rather than on a decision: `RUN_REPORT_SCHEMA_VERSION` on `E2-S4-INTERFACE-CHANGE-001`, and
-`APPROVAL_SCHEMA_VERSION` and `PREVIEW_RELEASE_SCHEMA_VERSION` on `E2-S6-INTERFACE-CHANGE-001`.
-§The inventory is derived promises they appear here; adding a frozen row at a version no signature
-has made effective would be the wrong way to keep that promise, so the gap is recorded instead.
-Signing those two records closes it.
+`E2-S4-INTERFACE-CHANGE-001`, `-002`, `-003`, and `E2-S6-INTERFACE-CHANGE-001`, all accepted and
+signed 2026-09-11, amend four rows and add three. `run_report` `3.0-skeleton`, `approval` `1.0`, and
+`preview_release` `1.0` are frozen rows below. Until today this paragraph recorded them as a gap
+instead: their constants waited on a signature rather than on a decision, and adding a frozen row
+at a version no signature had made effective would have been the wrong way to keep §The inventory
+is derived's promise. The signatures exist now, so the rows do. `tts_executor` moves to
+`e1.tts-executor.4.0` for a required `environment` method, `job_state` to `2.0` for two required
+repository methods, and
+`package_writer` to `e0.package-writer.3.0`. **The `manifest` row does not move with
+`package_writer`**, although `E2-S4-INTERFACE-CHANGE-002` originally sought both: that record's
+manifest clause was superseded by `E2-INTERFACE-CHANGE-001` before it was signed, and the row stays
+at the `4.0-skeleton` made effective 2026-09-09.
 
 Successor to [`PROVISIONAL-CONTRACT-BASELINE.md`](PROVISIONAL-CONTRACT-BASELINE.md), which set the
 E0-S4 baseline and said in its own words that it claimed no production contract and made no
@@ -72,10 +79,13 @@ in §Deliberately not frozen with the reason. Nothing is omitted for being unint
 | `verification` / `1.0` | T-CORE | E4 ASR verification | `schemas/verification-v1.schema.json`; `VerificationContext`, `VerificationKey` | as above | `t2_e1_every_verification_input_changes_the_verification_key`; `t2_e1_a_verification_input_never_changes_the_synthesis_key` | Verification identities are **disjoint** from synthesis by construction, so re-running ASR never re-runs synthesis | Unused in production until E4 |
 | `manifest` / `4.0-skeleton` | T-AUDIO | Package consumers, publication gate | `schemas/manifest-v4.schema.json` | as above | `t3_e1_published_schema_required_fields_match_the_recorded_surface`; E1-S4 package suite | Records what produced a package; `text_renderer_version` and, since E2-S2, `take_selection_source` make a change that alters package bytes without altering audio rebuild rather than reuse | `3.0-skeleton` stays readable but is never reusable. A rebuild writes a `4.0-skeleton` package beside it and leaves the old package untouched. Earlier layouts remain readable under their frozen decoders and are likewise never rewritten or reused |
 | `worker-protocol` / `2.0` | T-WORKER | Rust supervisor, Python worker | `schemas/worker-protocol-v2.schema.json`; `worker_protocol.rs` ↔ `worker/study_tts_worker/protocol.py` | as above, enforced at both ends | `t3_e1_both_protocol_ends_decide_the_committed_cases_alike` over `fixtures/contracts/e1-s1-worker-protocol-cases.ndjson` | Protocol interpretation is a worker-bundle input, therefore synthesis-affecting | Both ends move together or not at all |
-| `tts_executor` / `e1.tts-executor.3.0` | T-WORKER | Preview orchestration | `study_tts_runtime::TtsExecutor` and `BackendDescriptor` | `ContractDescriptor::assess_successor` | `run_tts_executor_contract_scenario`, against the fake in T4 and the real worker in the T5 instrument | Every `BackendDescriptor` field but `contract_version` and `max_text_bytes` reaches every synthesis key | E5-S2 pools above capacity one |
+| `tts_executor` / `e1.tts-executor.4.0` | T-WORKER | Preview orchestration | `study_tts_runtime::TtsExecutor` and `BackendDescriptor` | `ContractDescriptor::assess_successor` | `run_tts_executor_contract_scenario`, against the fake in T4 and the real worker in the T5 instrument | Every `BackendDescriptor` field but `contract_version` and `max_text_bytes` reaches every synthesis key; `environment()` reaches the run report and no key | Implementations are updated at compile time: `environment()` is required, so no implementation can take a default and report nothing. E5-S2 pools above capacity one |
 | `cache_publication` / `e0.cache-publication.2.0` | T-AUDIO | Orchestration, assembly, manifest | `CachePublisher`, `CacheResolveRequest`, `ValidatedCachedArtifact` | as above | `run_cache_contract_scenario`, against `FakeCachePublisher` and `FileSystemCachePublisher` | Acceptance changes affect reuse; speech-affecting ones need synthesis-identity review | E2-S2, E4 prune/recovery |
-| `package_writer` / `e0.package-writer.2.0` | T-AUDIO | Orchestration, job state | `PackageWriter`, `PackagePublication` | as above | `run_package_writer_contract_scenario`, against the fake and — since E1-S4 — `FileSystemPackageWriter` | Tool profile and `text_renderer_version` gate reuse | E2-S3 |
-| `job_state` / `1.0` | T-CORE / T-RUNTIME | Orchestration, resume | `JobRepository` (claim, load, replace, retain_inputs, retained_lesson, retained_plan, validate_preview_selection), `JobOwnership` | as above; the port carries the `job` document's version rather than a second one | as the `job` row, plus `t4_e2_interrupt_after_cache_publish_reconciles_on_resume`, `t4_e2_resume_regenerates_only_missing_or_invalid_segments`, `t4_e2_resume_refuses_a_job_package_that_disagrees_with_selected_output`, and `t4_e2_resume_refuses_a_selected_package_for_a_different_job_plan` through the real adapter | Durable state only | E4-S4 and E5 recovery |
+| `package_writer` / `e0.package-writer.3.0` | T-AUDIO | Orchestration, job state | `PackageWriter`, `PackagePublication` | as above | `run_package_writer_contract_scenario`, against the fake and — since E1-S4 — `FileSystemPackageWriter` | Tool profile and `text_renderer_version` gate reuse | E2-S3 |
+| `job_state` / `2.0` | T-CORE / T-RUNTIME | Orchestration, resume | `JobRepository` (claim, load, replace, retain_inputs, retained_lesson, retained_plan, validate_preview_selection), `JobOwnership` | as above; the port carries the `job` document's version rather than a second one | as the `job` row, plus `t4_e2_interrupt_after_cache_publish_reconciles_on_resume`, `t4_e2_resume_regenerates_only_missing_or_invalid_segments`, `t4_e2_resume_refuses_a_job_package_that_disagrees_with_selected_output`, and `t4_e2_resume_refuses_a_selected_package_for_a_different_job_plan` through the real adapter | Durable state only | E4-S4 and E5 recovery |
+| `run_report` / `3.0-skeleton` | T-CLI | Operators, M2 acceptance, ADR-0002's waiver | `schemas/run-report-v3.schema.json`; `study_tts_runtime::RunReport` | as above | `t3_e1_published_schema_required_fields_match_the_recorded_surface`; `t1_e2_run_report_units_and_missing_values_follow_schema` | None. No field reaches a synthesis, plan, cache, takes, or verification key. Package identity moves, because the manifest checksums the sealed report | `2.0-skeleton` stays readable through a frozen decoder and is never reusable: the package holding one is preserved and rebuilt, never refused |
+| `approval` / `1.0` | T-CLI | Release gating, preview review | `schemas/approval-v1.schema.json`; `study_tts_core::ApprovalRecord` | as above | `t3_e1_published_schema_required_fields_match_the_recorded_surface`; `t3_e2_private_preview_requires_human_approval_record` | None. An approval is stored under the digest of the manifest it judged, so a content change invalidates it with no comparison | Empty. Nothing published an approval before this version |
+| `preview_release` / `1.0` | T-CLI | Release gating | `schemas/preview-release-v1.schema.json`; `study_tts_core::PreviewReleaseRecord` | as above | `t3_e1_published_schema_required_fields_match_the_recorded_surface`; `t3_e2_release_record_references_manifest_and_approval_without_cycle` | None. Neither document enters the package, so package identity is unchanged by approval | Empty. Nothing published a preview release before this version |
 | `synthesis_identity` / `e1-s5-v1` | T-CORE | Every cache key | `SYNTHESIS_IDENTITY_VERSION`; `SynthesisContext` | Moves whenever the **input list** changes — that is the lever it exists to be | `t2_e1_every_speech_affecting_field_changes_synthesis_key`, exhaustive by destructuring | Invalidates every cache entry when it moves | Entries under an old version stop being addressed; none is re-keyed or deleted |
 | `cache_schema` / `3.0` | T-AUDIO | Cache entry records | `CACHE_SCHEMA_VERSION`; `ArtifactProvenance` | A required field is a Breaking move | Cache acceptance suite | Itself a synthesis-key input, so a move invalidates reuse | As above |
 | `verification_identity` / `e1-s1-v1` | T-CORE | E4 verification keys | `VERIFICATION_IDENTITY_VERSION` | as `synthesis_identity` | `t2_e1_every_verification_input_changes_the_verification_key` | Invalidates verification results only | Unused until E4 |
