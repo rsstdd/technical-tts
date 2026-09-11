@@ -62,7 +62,13 @@ gained a callable capability. The version is not a synthesis input and moves no 
 |---|---|---|
 | Project owner | Accept the two frozen Rust-port moves without changing the accepted G1 charter before signature | |
 | Contract owner (T-RUNTIME) | Accept `job_state` `2.0` and the two required repository methods | |
-| Contract owner (T-WORKER) | Accept `tts_executor` `3.1` as a compatible defaulted extension | |
+| Contract owner (T-WORKER) | Accept `tts_executor` `4.0` and the required `environment` method | |
 | Affected track (T-CLI) | Accept the report and event capabilities exposed through those ports | |
 | Engineering owner | Accept that no identity or durable schema moves under this record | |
-| Effective version and date | `job_state` `2.0` and `tts_executor` `3.1`, on signature | |
+| Effective version and date | `job_state` `2.0` and `tts_executor` `4.0`, on signature | |
+
+## Amendments
+
+| Date | Amendment | Approval |
+|---|---|---|
+| 2026-09-10 | **`tts_executor` moves to `4.0`, and the move is breaking.** Accepted ADR-0002's waiver retains a hardware identity and a thread budget in every run report, and neither can travel through `ExecutorMeasurements`: `Measured` carries a `u64` and `ReportField` declares a unit for every member, so an identity is not representable there and a budget would be a number with no clock. `TtsExecutor::environment() -> ExecutorEnvironment` is added **required**, not defaulted — §Change classes puts a required addition under **Breaking contract**, and a default would let a real worker answer nothing while the report still claimed to carry ADR-0002's data. Every implementation and both delegating wrappers now answer deliberately; `RecordingTtsExecutor` records the call so the shared contract suite proves it forwards. `ExecutorMeasurements` keeps its three numeric fields unchanged. `WorkerConfiguration::for_bundle` and `for_protocol_fake` require a `HardwareEnvironmentId`, so an operator names the governed environment rather than a host path being inferred. No worker frame, no `worker-protocol` version, and no synthesis or cache identity moves: `BackendDescriptor` is untouched, which is what keeps every cache key still. | |
