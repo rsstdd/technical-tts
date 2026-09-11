@@ -1,0 +1,265 @@
+# Evidence Report: m2-acceptance-lesson-render-v2
+
+- Status: Proposed
+- Supersedes: `m2-acceptance-lesson-render-v1`
+- Governing story/gate: issue #80, an M2 acceptance gap found by audit and not a
+  `DELIVERY-PLAN.md` Version 3 story; gate M2/G3
+- Hypothesis or decision: whether the five-minute canonical lesson still renders end to end through
+  the real Chatterbox worker after E2-S4 moved the run report to `3.0-skeleton`, and whether the
+  package it publishes carries every measure accepted ADR-0002's waiver retains
+- Owner: Engineering owner
+- Date/time and timezone: rendered 2026-09-11, 08:56:05 to 09:23:13 CEST (UTC+02:00)
+- Environment ID: `reference-wsl2-d9d550f06b783405`, per `docs/operations/REFERENCE-ENVIRONMENT.md`
+
+**Why this record exists.** `m2-acceptance-lesson-render-v1` measured the 2026-09-06 render and
+said, accurately, that the run report M2 requires did not exist. E2-S4 built it, moved `run-report`
+to `3.0` / `3.0-skeleton`, and in doing so moved package identity, because the manifest checksums
+the sealed report. The listening disposition v1 carries was taken against a package this build can
+no longer produce. So the render was repeated and this record measures the result.
+
+**Status stays `Proposed`**, and for one reason only: **§Listening is unfilled.** Every machine
+measurement below is complete. A human listening session against
+`docs/operations/PREVIEW-REVIEW-CHECKLIST.md` `1.0` has not been taken against this package, and
+nothing in this file may be read as one.
+
+## Acceptance criteria, stated before the results
+
+| # | Criterion | Where it comes from |
+|---|---|---|
+| AC5 | Render through the real worker on the reference environment and keep the package | `DELIVERY-PLAN.md:738` M2 acceptance |
+| AC6 | A human listening review against the checklist | ADR-0001 §17.5; `PREVIEW-REVIEW-CHECKLIST.md` `1.0` |
+| AC7 | Record the measured render time and resulting cache growth | issue #80; `OQ-12` sets no budget |
+| AC8 | The package emits a **complete run report** carrying every measure ADR-0002 retains | `DELIVERY-PLAN.md:738`; ADR-0002 `:77`, whose waiver is live |
+
+AC8 is new here. v1 could not answer it and said so; it is the reason this render was taken.
+
+A pass on AC5 is the artifact set under
+`previews/m2-durable-publication/packages/<manifest digest>/` with a manifest that validates. AC7
+carries no threshold — OQ-12 sets none — so its rows record measurements rather than verdicts.
+
+## Provenance
+
+| Input | Identity/revision | URI | Checksum |
+|---|---|---|---|
+| Lesson rendered | `m2-durable-publication`, lesson schema `3.1`, 34 segments | `fixtures/lessons/m2-durable-publication.json` | `b34ace96a262376a892116a92871d71660721e1855362d4bee6dd5bffda1af81` |
+| Loudness references applied | `PROVISIONAL_LOUDNESS_TARGET_LUFS` `-27.0`, `PROVISIONAL_TRUE_PEAK_CEILING_DBTP` `-1.0` | `docs/adr/deviations/ADR-0001-D012-provisional-loudness-and-discontinuity.md` | `5928a42451d6de2ee241bfbed06161469b6d03eb8365d3a950250c2c913015c2` |
+| Launcher configuration | schema `1.1`, CPU device, `threads` 4, seed 42 | `worker/launcher.json` | `147385c95b4b46d4e732b58e191b96ba92d56f063a6c0f77153d31d98ac8b905` |
+| Worker bundle identity | `1af4e1713ee3eb7e96d6d0f4d2845f741e78e8a87dd320796f1e561f0f179d05` | Computed by `WorkerBundle::verified_hash` at launch | — |
+| Model | `ResembleAI/chatterbox` at `1b475dffa71fb191cb6d5901215eb6f55635a9b6` | Governed model root; `PINNED_MODEL_REVISION` | — |
+| Voice profile | `owner-fallback-v1`, resolved at `VoiceUse::PrivateSynthesis` | Governed voice root | — |
+| FFmpeg / ffprobe | `/usr/bin/ffmpeg` and `/usr/bin/ffprobe` | Recorded in the manifest's `tools` object | — |
+
+**All three pinned inputs hash to the values `m2-acceptance-lesson-render-v1` recorded.** That is
+load-bearing for §Determinism below: the inputs did not move, so a byte difference in the output
+would have to come from the code.
+
+Context references, pinned by nothing here because no result below was measured against their
+bytes: `docs/adr/ADR-0001-production-rust-study-guide-tts.md`,
+`docs/adr/ADR-0002-model-hardware-voice-format-qualification.md`,
+`docs/adr/deviations/ADR-0001-D002-constrained-development-performance-gate.md`, `DELIVERY-PLAN.md`,
+`docs/operations/REFERENCE-ENVIRONMENT.md`, `docs/operations/PREVIEW-REVIEW-CHECKLIST.md`,
+`docs/architecture/E2-S4-INTERFACE-CHANGE-001.md`, `docs/architecture/E2-INTERFACE-CHANGE-001.md`.
+
+## Procedure
+
+```bash
+cargo run --release --package study-tts-testkit --example package-render -- \
+  --bundle-root . \
+  --model-root data/models/chatterbox \
+  --voice-root data/voices \
+  --lesson fixtures/lessons/m2-durable-publication.json \
+  --output-root data/qualification/m2-package-2026-09-11-085605
+```
+
+The same invocation v1 records, against a fresh `--output-root`. `package-render` refuses an
+existing one, so the run began with an empty workspace and synthesized all 34 segments: no cache
+entry was reused, which makes the cache figure a growth-from-zero measurement.
+
+**The 2026-09-06 package was not touched.** It remains at
+`data/qualification/m2-package-2026-09-06-211122`, and no file under it has been modified since
+2026-09-07. Its immutability is what v1 pins and this record does not disturb.
+
+## Results
+
+### AC5 — the package
+
+| Measurement | Threshold | Result | Pass/fail |
+|---|---|---|---|
+| Artifacts published | 7 | 7: `master_wav`, `m4a`, `mp3`, `transcript`, `captions`, `chapters`, **`run_report`** | Pass |
+| Files in the package directory | 8 | 8: the seven above plus `manifest.json` | Pass |
+| Package identity equals `manifest.json` BLAKE3 | equal | `301c4cf8c944468edd3d05fd35801b5a39b0107ad4bde0ecfd412325dc68e5af`, recomputed from the file | Pass |
+| Manifest layout | `4.0-skeleton` | `4.0-skeleton` | Pass |
+| Master duration | about five minutes | 309.30 s, 7,423,200 frames | Pass |
+| Master format | mono, 24 kHz, 32-bit IEEE float | `pcm_f32le`, 24 000 Hz, 1 channel | Pass |
+| Segments rendered | 34 | 34, all `selected_take` 0, `take_selection_source` `implicit` | Pass |
+| `join_continuity` | empty with no retake | `[]` | Pass |
+| Release status | `private_preview` | `private_preview` | Pass |
+| File modes | owner-only | `0600` on all eight | Pass |
+
+`plan_hash` `9ac74305ded21d1182c28306a4ff0396b1115d700b54895c0931427d2b44e285`, identical to v1's;
+text renderer `1.0-skeleton-text-renderer`.
+
+### AC8 — the run report, which is why this render was taken
+
+`run-report.json`, 12,623 bytes, `schema_version` `3.0-skeleton`, `completion` `complete`,
+34 segment rows, 0 join findings. ADR-0002 `:77` retains six measures until its waiver expires.
+**All six are present and observed:**
+
+| ADR-0002 measure | Field | Value |
+|---|---|---|
+| Per-run wall time | `wall_micros` | 1,627,547,877 µs — 27 min 07.55 s |
+| RTF | `synthesis.aggregate_real_time_factor_milli` | `observed` 5 709 — 5.709× |
+| Peak RAM | `resources.peak_resident_kib` | `observed` 5,520,888 KiB — 5.27 GiB |
+| Thread budget | `resources.thread_budget.worker` | 1 worker process, 4 native threads, 1 interop thread |
+| Worker identity | `worker_bundle_hash` | `1af4e1713ee3eb7e96d6d0f4d2845f741e78e8a87dd320796f1e561f0f179d05` |
+| Hardware identity | `hardware_environment_id` | `reference-wsl2-d9d550f06b783405` |
+
+**v1 carried five of the six and no thread budget or identities, and peak RAM was among its listed
+limitations.** All four gaps are closed. The thread budget is not a measurement but a declaration,
+and the declaration is checkable against its source: `worker/launcher.json` above declares
+`threads` 4, and the report publishes `native_threads_per_worker_count` 4.
+
+Other published figures: `model_load_micros` 16.08 s, `assembly_micros` 5.87 s,
+`normalize_micros` 5.48 s, `encode_micros` 6.66 s, `open_handles_count` 5,
+`worker_restarts_count` 0. Worst segment `seg-0016`, take 0, 31.27 s of wall for 120,000 frames,
+RTF 6.254 — against an aggregate of 5.709, so the slowest segment is 9.5% off the mean rather than
+an outlier.
+
+### AC5 — loudness
+
+Applied from the manifest verbatim:
+
+```text
+loudnorm=I=-27.0:TP=-1.0:LRA=7.0:measured_I=-34.50:measured_TP=-9.92:measured_LRA=5.70:
+measured_thresh=-45.25:offset=-0.18:linear=true:print_format=json
+```
+
+| Measurement | Threshold | Result | Pass/fail |
+|---|---|---|---|
+| Normalization type | `linear` | `linear`; the build published, and `LoudnessNotLinear` refuses anything else | Pass |
+| Published integrated loudness | `-27.0` LUFS target | `-27.02` LUFS | Pass |
+| Published true peak | at or below `-1.0` dBTP | `-2.42` dBTP, 1.42 dB of margin | Pass |
+| Published loudness range | `7.0` LU | `5.70` LU | Pass |
+
+Measured by re-analysing the published master with the same filter, which reports it as this
+render's *input*. Every figure equals v1's, which §Determinism explains.
+
+### AC7 — render time and durable cost
+
+| Measurement | This render | v1, 2026-09-06 |
+|---|---|---|
+| Wall time | 27 min 07.55 s | 33 min 08 s |
+| Whole-build ratio to audio | 5.26× real time | 6.43× |
+| Synthesis wall | 1,607.75 s of the 1,627.55 s total | — |
+| Aggregate RTF | 5.709 | not published |
+| Cache | 25.83 MiB — **5.01 MiB per audio-minute** | 5.01 MiB per audio-minute |
+| Packages | 36.01 MiB — 6.99 MiB per audio-minute | — |
+| Jobs | 0.08 MiB | — |
+| Total durable | 61.92 MiB — **12.01 MiB per audio-minute** | 11.99 MiB per audio-minute |
+
+The cache figure is identical to v1's to the same two decimals, which follows from §Determinism:
+the same segment bytes were published. Total durable cost rose by 0.02 MiB per audio-minute, which
+is the sealed run report — 12,623 bytes across 5.155 audio-minutes is 0.0023 MiB per audio-minute
+in the package, and the rest is the job directory's partial report.
+
+The render is **5 min 59 s faster than v1** on the same inputs and the same machine. Nothing here
+establishes why, and this record does not guess: wall time is not a controlled measurement, the two
+runs were taken five days apart, and `docs/perf/BUDGETS.md`'s baseline is not what either measured.
+
+### Determinism — six of seven artifacts are byte-identical to the 2026-09-06 render
+
+| Artifact | BLAKE3 | Same as v1 |
+|---|---|---|
+| `lesson.wav` | `06a786e9dc039b8ed00412b64b772a514491149d142e50adbf47ce4a5b91ea79` | **yes** |
+| `lesson.m4a` | `221ce362703d592741be088ae0e4d99264c726c65b43ced50e5f7e77a2130e47` | **yes** |
+| `lesson.mp3` | `80535a2d27ce77b36028d126746230e2bdd621ef4670e5f115435c14f4b102a2` | **yes** |
+| `transcript.txt` | `849aac8c9abcc02eb020eddfec03e04a8054a7094f11ef6e3289ad5ab51e632b` | **yes** |
+| `transcript.vtt` | `84fa853a7c3a4bd7b28209433a677e09434114df707d74bc35cb9717de7a4247` | **yes** |
+| `chapters.ffmetadata` | `38811e1d8e32dd973fbd404d74453439bbb3b81209a13f8d8f0f4998d2b0c703` | **yes** |
+| `run-report.json` | — | new; no counterpart |
+| `manifest.json` | `301c4cf8c944468edd3d05fd35801b5a39b0107ad4bde0ecfd412325dc68e5af` | **no** — v1 was `c07575fead79dc123d092cf746ee96680a62fdde1c03c673fdb326e69625486c` |
+
+The master digest was recomputed from the 2026-09-06 package directly rather than read from v1, so
+this row is a comparison of bytes and not of two transcriptions.
+
+**This is `E2-INTERFACE-CHANGE-001`'s prediction, met exactly.** Its T-RUNTIME approval row accepts
+"the bounded identity claim: two builds differ only by the sealed run report". Five days apart,
+across a manifest move from `2.0-skeleton` to `4.0-skeleton`, a run report from nothing to
+`3.0-skeleton`, and an executor contract from `3.0` to `4.0`, every byte of audio, text, and
+chapter metadata is unchanged. The package identity moved because the manifest moved, and for no
+other reason.
+
+It also bounds what a listening session could newly find — see §Listening.
+
+## Raw artifacts
+
+| Artifact | Governed location | Checksum (BLAKE3) | Retention |
+|---|---|---|---|
+| `lesson.wav` | `m2-package-2026-09-11-085605/workspace/previews/m2-durable-publication/packages/301c4cf8…/` beneath the governed root | `06a786e9dc039b8ed00412b64b772a514491149d142e50adbf47ce4a5b91ea79` | Governed root; not committed |
+| `lesson.m4a` | as above | `221ce362703d592741be088ae0e4d99264c726c65b43ced50e5f7e77a2130e47` | as above |
+| `lesson.mp3` | as above | `80535a2d27ce77b36028d126746230e2bdd621ef4670e5f115435c14f4b102a2` | as above |
+| `transcript.txt` | as above | `849aac8c9abcc02eb020eddfec03e04a8054a7094f11ef6e3289ad5ab51e632b` | as above |
+| `transcript.vtt` | as above | `84fa853a7c3a4bd7b28209433a677e09434114df707d74bc35cb9717de7a4247` | as above |
+| `chapters.ffmetadata` | as above | `38811e1d8e32dd973fbd404d74453439bbb3b81209a13f8d8f0f4998d2b0c703` | as above |
+| `run-report.json` | as above; checksummed by the manifest as the seventh artifact | recorded in `manifest.json` `artifacts.run_report` | as above |
+| `manifest.json` | as above; its digest names the package directory | `301c4cf8c944468edd3d05fd35801b5a39b0107ad4bde0ecfd412325dc68e5af` | as above |
+
+No audio, transcript, or voice reference is committed. The governed root is outside Git.
+
+## Listening — AC6, NOT TAKEN
+
+**This section is empty on purpose and the record cannot be accepted while it is.**
+
+No listening session has been held against package `301c4cf8…`. Nothing above substitutes for one:
+every figure in this record is a machine measurement, and ADR-0001 §17.5 makes the human review a
+gate condition precisely because automated checks cannot reach what it judges.
+
+Two facts the reviewer should have before the session, both established above rather than asserted:
+
+- **The audio is byte-identical to the material approved on 2026-09-07.** All six media and text
+  artifacts hash to the same values. A session against this package listens to the same bytes v1's
+  session listened to.
+- **The master is quiet on purpose**, at `-27.02` LUFS, roughly 11 dB below ordinary spoken-word
+  level, because that is the loudest this voice reference permits beneath the `-1.0` dBTP ceiling
+  `ADR-0001-D012` sets. A finding of "too quiet" would restate a recorded constraint.
+
+**What those two facts do not settle is a governance question this record must not answer:** whether
+M2 requires a fresh full session against the new package, or whether a disposition recorded against
+the new manifest digest suffices given that the bytes under it are unchanged. v1's attribution row
+binds its disposition to "the seven in §Raw artifacts", and six of those seven are the same bytes
+while the seventh — the manifest — is not. The owner decides; this record records the decision and
+the session, whichever way it goes.
+
+Until then, fill the subsections v1 carries — Attribution, Per-segment findings, Package review,
+Disposition — transcribing the criteria of `PREVIEW-REVIEW-CHECKLIST.md` `1.0` rather than
+restating them, which is the drift that checklist exists to stop. `1.0` is the version
+`E2-S6-INTERFACE-CHANGE-001` made effective on 2026-09-11 and adds the "Protected terms" criterion
+the file never had, so this session answers one criterion more than v1's did.
+
+## Deviations and limitations
+
+- **The record is unsigned and §Listening is unfilled.** That is the only thing standing between
+  this record and M2's render obligation.
+- **One delivery style.** Every segment is `calm_explanatory`, one of four the `3.1` schema
+  declares, because the launcher parameterises exactly one and the worker refuses every other by
+  name. Issue #80's AC2 asks for delivery-style variety; it stays open until E5-S1 freezes
+  per-voice loudness references. Unchanged from v1.
+- **`take_selection_source` is `implicit`.** No take was explicitly accepted, so this package cannot
+  back a production claim, and `release_status` is `private_preview` by construction. Unchanged
+  from v1.
+- **Wall time is not a controlled measurement.** See AC7.
+- **Interruption and retake are not exercised here.** M2 acceptance also requires that the lesson
+  survive interruption and support a selected retake. `package-render` does neither; those conjuncts
+  are proved by `t4_e2_interrupt_after_cache_publish_reconciles_on_resume` and the E2-S2 retake
+  suite, and by `e2-s2-retake-listening-review-v1` for the retake material. This record does not
+  claim them.
+
+## Review
+
+| Role | Decision sought | Status |
+|---|---|---|
+| Engineering owner | Accept the render, the run report's six retained measures, and the determinism result | |
+| Reviewer (AC6) | Record the listening session and its disposition | |
+| Project owner | Accept or refuse the package for private preview | |
+
+Unsigned. No row above may be filled by anyone who did not perform the act it names.
