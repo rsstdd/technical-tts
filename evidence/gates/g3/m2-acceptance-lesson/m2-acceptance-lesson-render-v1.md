@@ -21,8 +21,16 @@ finding. All three are recorded below.
 §Accepting a record at its gate accepts a story's record once, at the gate it serves, and this one
 serves M2. `DELIVERY-PLAN.md:738` states M2 acceptance over a lesson that also survives
 interruption, supports a selected retake, emits a complete run report, and records immutable
-human approval without a checksum cycle. The run report is **E2-S4** (issue #17) and does not
-exist. So the signature this record still lacks is one nobody is yet in a position to give.
+human approval without a checksum cycle. The run report is **E2-S4** (issue #17), and when this
+record was written it did not exist.
+
+**It exists now, and that does not unblock this record.** The 2026-09-06 package is immutable and
+its seven artifacts, listed in §Raw artifacts, carry no `run-report.json`. E2-S4 also moved the
+report to `3.0-skeleton`, and the manifest checksums the report, so the package identity a new
+render produces differs from the one judged here. The listening disposition below remains bound to
+the package it was taken against. What this record still lacks is a signature over a *current*
+package: a new render, reviewed and approved through the M2 process, which is gate execution rather
+than E2-S4 production work.
 
 ## Acceptance criteria, stated before the results
 
@@ -330,7 +338,10 @@ take-zero selection backing a production claim. `release_status` remains `privat
   qualification and run reports" while its waiver stands. This record carries five of the six;
   `package-render` observes no memory. The structured run report is **E2-S4**'s subject (issue
   #17), and this is a concrete requirement for it rather than an omission to be filled in by hand
-  afterwards.
+  afterwards. **E2-S4 has since discharged it**: `run-report` `3.0-skeleton` retains the thread
+  budget, worker identity, and hardware identity alongside wall time, RTF, and peak RAM, which
+  `t1_e2_run_report_retains_distinct_waiver_identities_and_thread_budget` pins. A render taken
+  after that change carries all six; this one predates it.
 - **One delivery style.** Issue #80's AC2 asks for "segment-role and delivery-style variety". The
   lesson carries 16 of the 17 declared roles and three recall prompts, each with a 2 500 ms
   response interval, but every segment is `calm_explanatory` — one of four styles the `3.1` schema
