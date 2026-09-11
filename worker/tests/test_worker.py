@@ -598,7 +598,7 @@ class SeedOrdering(unittest.TestCase):
     a real backend would only make expensive.
     """
 
-    def _load_with_recorders(self, seed: int) -> list[str]:
+    def _load_with_recorders(self, seed: int, threads: int = 1) -> list[str]:
         """Runs `_load_backend` against recording backends, returning the calls."""
         calls: list[str] = []
 
@@ -617,13 +617,27 @@ class SeedOrdering(unittest.TestCase):
 
             return called
 
+        def record_argument(label: str):
+            """Records the call *and* its first argument, as `label(value)`.
+
+            The thread pins are the only calls here whose argument is itself a
+            published fact: Rust declares both in every run report under
+            accepted ADR-0002's waiver, so a recorder that discarded them would
+            let this module change a number Rust keeps claiming.
+            """
+
+            def called(argument: object = None, **_keywords: object) -> None:
+                calls.append(f"{label}({argument})")
+
+            return called
+
         model = unittest.mock.Mock()
         model.sr = worker_module.CANONICAL_SAMPLE_RATE_HZ
         torch = Recorder(
             "torch",
             manual_seed=record("torch.manual_seed"),
-            set_num_threads=record("torch.set_num_threads"),
-            set_num_interop_threads=record("torch.set_num_interop_threads"),
+            set_num_threads=record_argument("torch.set_num_threads"),
+            set_num_interop_threads=record_argument("torch.set_num_interop_threads"),
         )
         numpy = Recorder("numpy", random=Recorder("numpy.random", seed=record("numpy.seed")))
         chatterbox = Recorder("chatterbox")
@@ -653,7 +667,7 @@ class SeedOrdering(unittest.TestCase):
         ), unittest.mock.patch.object(
             worker_module, "_voice_conditioning", lambda *_: {"owner-fallback-v1": "d" * 64}
         ):
-            worker_module._load_backend({"seed": seed, "device": "cpu"}, threads=1)
+            worker_module._load_backend({"seed": seed, "device": "cpu"}, threads=threads)
 
         return calls
 
@@ -669,6 +683,38 @@ class SeedOrdering(unittest.TestCase):
                 construction,
                 f"{generator} must precede model construction, got {calls}",
             )
+
+    def test_the_thread_pins_match_the_budget_rust_publishes(self) -> None:
+        """The two numbers Rust declares in every run report are set here.
+
+        `WorkerThreadBudget` in `crates/study-tts-runtime/src/run_report.rs`
+        publishes `native_threads_per_worker_count` and
+        `interop_threads_per_worker_count` as declared facts, retained by
+        accepted ADR-0002's waiver. The native allowance travels from
+        `worker/launcher.json`; the interop count does not travel at all —
+        Rust hardcodes one because this module pins one.
+
+        This is the assertion that keeps those agreeing. Changing either call
+        below without moving `WorkerThreadBudget::interop_threads_per_worker_count`
+        would leave every run report publishing a number this worker no longer
+        uses, which is worse than publishing none.
+        """
+        calls = self._load_with_recorders(seed=7, threads=4)
+
+        self.assertIn(
+            "torch.set_num_threads(4)",
+            calls,
+            "the native allowance must be the one the launcher declared, got "
+            f"{calls}",
+        )
+        self.assertIn(
+            "torch.set_num_interop_threads(1)",
+            calls,
+            "the interop pin must stay one, or "
+            "WorkerThreadBudget::interop_threads_per_worker_count in "
+            "crates/study-tts-runtime/src/run_report.rs must move with it, got "
+            f"{calls}",
+        )
 
     def test_the_seed_a_lifetime_uses_is_the_one_its_launcher_records(self) -> None:
         recorded: list[int] = []

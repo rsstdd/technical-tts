@@ -898,6 +898,7 @@ mod tests {
                 &"0".repeat(64),
                 1,
                 crate::ReportCompletion::Complete,
+                &crate::run_report::RunEnvironment::fixture(),
             ),
             run_started: Instant::now(),
         })
@@ -939,6 +940,7 @@ mod tests {
                 &"0".repeat(64),
                 1,
                 crate::ReportCompletion::Complete,
+                &crate::run_report::RunEnvironment::fixture(),
             ),
             run_started: Instant::now(),
         })
@@ -979,6 +981,7 @@ mod tests {
                 &"0".repeat(64),
                 1,
                 crate::ReportCompletion::Complete,
+                &crate::run_report::RunEnvironment::fixture(),
             ),
             run_started: Instant::now(),
         })
@@ -1019,6 +1022,7 @@ mod tests {
                 &"0".repeat(64),
                 1,
                 crate::ReportCompletion::Complete,
+                &crate::run_report::RunEnvironment::fixture(),
             ),
             run_started: Instant::now(),
         })

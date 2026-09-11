@@ -105,6 +105,35 @@
         }
       ]
     },
+    "DeclaredThreadBudget": {
+      "description": "Whether a worker thread allowance applies to this build at all.\n\nAn in-process backend has no worker process, so it has no worker thread\nbudget — and saying so is different from declaring 1/1/1, which would\npublish an allowance nothing enforces. `Measured` is not the vehicle for\nthis: these are declared counts, and \"not applicable\" is not a failure to\nobserve.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A worker process ran under this declared allowance.",
+          "properties": {
+            "worker": {
+              "$ref": "#/$defs/WorkerThreadBudget"
+            }
+          },
+          "required": [
+            "worker"
+          ],
+          "type": "object"
+        },
+        {
+          "const": "in_process",
+          "description": "The backend ran inside the supervisor, so no worker allowance applies.",
+          "type": "string"
+        }
+      ]
+    },
+    "HardwareEnvironmentId": {
+      "description": "Governed environment label: bounded printable ASCII with no whitespace and no path separator. Configured provenance, proved by docs/operations/REFERENCE-ENVIRONMENT.md rather than by this value.",
+      "maxLength": 128,
+      "pattern": "^[!-.0-9:-\\[\\]-~]+$(?![\\s\\S])",
+      "type": "string"
+    },
     "JoinFinding": {
       "additionalProperties": false,
       "description": "One provisional join-discontinuity finding requiring human review.\n\nThe ratios remain in the manifest. This report carries only the segment\npair whose measured continuity is outside the provisional band, so it does\nnot publish a second copy of the measurement or promote that band to a\nproduction threshold.",
@@ -204,7 +233,7 @@
       ]
     },
     "RunReportLayout": {
-      "const": "2.0-skeleton",
+      "const": "3.0-skeleton",
       "type": "string"
     },
     "RunReportSegment": {
@@ -264,6 +293,10 @@
           "$ref": "#/$defs/Measured",
           "description": "High-water resident memory of the worker."
         },
+        "thread_budget": {
+          "$ref": "#/$defs/DeclaredThreadBudget",
+          "description": "Thread allowance this build declared, in its three dimensions.\n\nThe third fact accepted ADR-0002's waiver retains. Declared rather than\nsampled, so unlike its neighbours here it is not [`Measured`]."
+        },
         "worker_restarts_count": {
           "description": "Times the worker was restarted. Structurally zero at pool size one.",
           "format": "uint32",
@@ -275,7 +308,8 @@
       "required": [
         "peak_resident_kib",
         "open_handles_count",
-        "worker_restarts_count"
+        "worker_restarts_count",
+        "thread_budget"
       ],
       "type": "object"
     },
@@ -368,6 +402,44 @@
         }
       ]
     },
+    "WorkerBundleHash": {
+      "description": "BLAKE3 over the worker bundle's declared inputs and runtime ABI (ADR-0001 12.5), as 64 lowercase hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])",
+      "type": "string"
+    },
+    "WorkerThreadBudget": {
+      "additionalProperties": false,
+      "description": "The worker thread allowance a build declared, in its three dimensions.\n\n**Declared, never sampled**, which is why these are plain counts rather\nthan [`Measured`]: the build chose them before the worker started, so an\n\"unavailable\" reading is not a state this can be in.\n\nThree numbers rather than one, because one would hide which limit binds.\n`worker/launcher.json` sets the native allowance, ADR-0001 §10.1 keeps pool\nsize at one until measured evidence authorizes more, and the worker pins its\nown interop count — a single figure could not say which of those changed.",
+      "properties": {
+        "interop_threads_per_worker_count": {
+          "description": "Interop threads each worker was allowed, pinned by the worker itself.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "native_threads_per_worker_count": {
+          "description": "Native threads each worker was allowed, from `worker/launcher.json`.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "worker_processes_count": {
+          "description": "Worker processes the build was allowed to run at once.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "worker_processes_count",
+        "native_threads_per_worker_count",
+        "interop_threads_per_worker_count"
+      ],
+      "type": "object"
+    },
     "WorstSegment": {
       "additionalProperties": false,
       "description": "The single worst segment by real-time factor, with the audio that produced\nit.\n\nShaped differently from the aggregate deliberately.\n`evidence/gates/g0/e0-s3/e0-s3-g0-requalification-torch-2-10-0-v1.md` found\nthat \"a single RTF number is not meaningful for this backend unless the\nutterance length is stated beside it\" — the fitted cost is a fixed\nper-take charge plus a marginal rate — so the worst ratio is a fact about\none utterance and carries that utterance's length.",
@@ -415,7 +487,7 @@
       "type": "object"
     }
   },
-  "$id": "https://schemas.study-tts.example/run-report-v2.schema.json",
+  "$id": "https://schemas.study-tts.example/run-report-v3.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "What one build measured.\n\nCarries identifiers, timings, and counts only. It names no file, quotes no\nlesson text, and holds no voice-reference path.",
@@ -438,6 +510,10 @@
     "encode_micros": {
       "$ref": "#/$defs/Measured",
       "description": "Time spent encoding both lossy outputs, absent for the same reason."
+    },
+    "hardware_environment_id": {
+      "$ref": "#/$defs/HardwareEnvironmentId",
+      "description": "Governed label of the machine this build ran on.\n\nThe other half of the same waiver sentence. See\n[`HardwareEnvironmentId`] for why it is a label rather than a probe."
     },
     "job_id": {
       "description": "Job this build belongs to.",
@@ -493,6 +569,10 @@
       "maximum": 18446744073709551615,
       "minimum": 0,
       "type": "integer"
+    },
+    "worker_bundle_hash": {
+      "$ref": "#/$defs/WorkerBundleHash",
+      "description": "Identity of the executable worker bundle behind this build.\n\nRequired by accepted ADR-0002's waiver, which retains \"worker identity\"\nin every run report until it expires. Separate from\n[`RunReport::hardware_environment_id`] because that sentence names the\ntwo independently, and a build can change one without the other."
     }
   },
   "required": [
@@ -501,6 +581,8 @@
     "build_attempt",
     "lesson_id",
     "plan_hash",
+    "worker_bundle_hash",
+    "hardware_environment_id",
     "completion",
     "wall_micros",
     "model_load_micros",

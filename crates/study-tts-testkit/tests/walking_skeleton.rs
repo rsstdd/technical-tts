@@ -21,11 +21,11 @@ use study_tts_core::{
 };
 use study_tts_runtime::{
     ApprovalRequest, BackendDescriptor, BackendError, BuildError, BuildRequest, CacheOutcome,
-    DurableStateError, FileSystemCachePublisher, FileSystemPackageWriter, IoError, JoinContinuity,
-    JoinTolerance, ManagedPathError, Measured, PreviewServiceBundle, PublicationError,
-    ReportCompletion, ResumeRequest, RunReport, SynthesisReport, SynthesisRequest, ToolError,
-    TtsExecutor, Unavailable, approve_preview, approved_package, build_preview,
-    build_preview_with_services, load_lesson, normalize_master_output, publish,
+    DurableStateError, FileSystemCachePublisher, FileSystemPackageWriter, HardwareEnvironmentId,
+    IoError, JoinContinuity, JoinTolerance, ManagedPathError, Measured, PreviewServiceBundle,
+    PublicationError, ReportCompletion, ResumeRequest, RunReport, SynthesisReport,
+    SynthesisRequest, ToolError, TtsExecutor, Unavailable, approve_preview, approved_package,
+    build_preview, build_preview_with_services, load_lesson, normalize_master_output, publish,
     publish_preview_release, resume_preview, validate_m4a_output, validate_production_manifest,
 };
 use study_tts_testkit::{
@@ -251,6 +251,60 @@ fn write_lesson_with_id(root: &Path, file_name: &str, lesson_id: &str) -> std::p
     path
 }
 
+/// An executor whose environment answer differs every time it is asked.
+///
+/// The gate reads the environment once and `BuildProgress` carries that
+/// snapshot, so a report must name the *first* answer. Against an executor
+/// that answers identically every time — every other one in this suite — a
+/// pipeline that dropped the snapshot and re-read later is indistinguishable
+/// from one that kept it, so no assertion on a stable value can prove the
+/// ordering. This can.
+struct DriftingEnvironmentWorker {
+    inner: DeterministicToneWorker,
+    reads: AtomicUsize,
+}
+
+impl DriftingEnvironmentWorker {
+    fn new() -> Self {
+        Self {
+            inner: DeterministicToneWorker::default(),
+            reads: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl TtsExecutor for DriftingEnvironmentWorker {
+    fn descriptor(&self) -> BackendDescriptor {
+        self.inner.descriptor()
+    }
+
+    /// A different label on every call, numbered by how many have happened.
+    fn environment(&self) -> study_tts_runtime::ExecutorEnvironment {
+        let read = self.reads.fetch_add(1, Ordering::SeqCst);
+        study_tts_runtime::ExecutorEnvironment {
+            hardware_environment_id: HardwareEnvironmentId::parse(&format!("drifting-read-{read}"))
+                .expect("a numbered label is publishable"),
+            thread_budget: study_tts_runtime::DeclaredThreadBudget::InProcess,
+        }
+    }
+
+    fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
+
+    fn validate(&self, request: &SynthesisRequest) -> Result<(), BackendError> {
+        self.inner.validate(request)
+    }
+
+    fn synthesize<'a>(
+        &'a self,
+        request: SynthesisRequest,
+        destination: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<SynthesisReport, BackendError>> + Send + 'a>> {
+        self.inner.synthesize(request, destination)
+    }
+}
+
 struct PausingWorker {
     inner: DeterministicToneWorker,
     first_request: AtomicBool,
@@ -304,6 +358,11 @@ impl PausingWorker {
 impl TtsExecutor for PausingWorker {
     fn descriptor(&self) -> BackendDescriptor {
         self.inner.descriptor()
+    }
+
+    /// Forwarded: this wrapper pauses synthesis, not the backend's identity.
+    fn environment(&self) -> study_tts_runtime::ExecutorEnvironment {
+        self.inner.environment()
     }
 
     fn capacity(&self) -> usize {
@@ -1125,6 +1184,39 @@ fn t3_e2_release_record_references_manifest_and_approval_without_cycle() {
     } = approval;
 }
 
+/// The report names the environment the gate read, not one read later.
+///
+/// Accepted ADR-0002's waiver retains a hardware identity in every run report,
+/// and *which* read it comes from is what makes the value honest: the gate
+/// takes one snapshot beside the descriptor the plan was built from, and
+/// `BuildProgress` carries it so a complete and an incomplete report agree.
+///
+/// Rejects the wrong implementation the plan warned about — dropping the
+/// snapshot and calling `executor.environment()` again where the report is
+/// built. No assertion against a stable executor can catch that, because a
+/// second read of a constant answers the same thing.
+#[test]
+fn t4_e2_a_report_names_the_environment_read_at_the_gate() {
+    let workspace = TempDir::new().expect("create drifting-environment workspace");
+    let worker = DriftingEnvironmentWorker::new();
+
+    let result = build_preview(
+        build_request(&walking_skeleton_fixture(), workspace.path()),
+        &worker,
+    )
+    .expect("the build should succeed");
+
+    assert!(
+        worker.reads.load(Ordering::SeqCst) >= 1,
+        "the build must ask the executor for its environment at all"
+    );
+    assert_eq!(
+        result.run_report.hardware_environment_id.as_str(),
+        "drifting-read-0",
+        "the report must carry the gate's snapshot, not a later read"
+    );
+}
+
 /// Approving a package leaves every byte of it alone.
 ///
 /// This is E2-S6 task 5 — "never mutate the approved build manifest to attach
@@ -1461,6 +1553,27 @@ fn t4_e2_run_report_records_every_segment_and_cache_outcome() {
             "{label}: the report and the manifest name one plan"
         );
 
+        // Accepted ADR-0002's waiver retains a worker identity, a hardware
+        // identity, and a thread budget in every run report. Asserted against
+        // what the executor actually answered rather than against constants,
+        // because a pipeline that wrote a fixture value — or read the
+        // descriptor a second time and answered for another environment —
+        // would satisfy a constant and still publish the wrong provenance.
+        let executor_environment = worker.environment();
+        assert_eq!(
+            report.worker_bundle_hash,
+            worker.descriptor().worker_bundle_hash,
+            "{label}: the report must publish the bundle the build planned from"
+        );
+        assert_eq!(
+            report.hardware_environment_id, executor_environment.hardware_environment_id,
+            "{label}: the report must publish the environment the executor ran in"
+        );
+        assert_eq!(
+            report.resources.thread_budget, executor_environment.thread_budget,
+            "{label}: the report must publish the allowance the executor declared"
+        );
+
         // Task 2, "every segment": the same segments the package records, in
         // the order the plan renders them.
         let recorded: Vec<String> = report
@@ -1579,6 +1692,26 @@ fn t4_e2_run_report_excludes_sensitive_fixture_content() {
         !published.contains(workspace.path().to_str().expect("a UTF-8 workspace path")),
         "the run report names the workspace it built in"
     );
+
+    // `hardware_environment_id` is the one field a caller supplies as free
+    // text, so it is the one that could reintroduce what issue #82 removed.
+    // The type is the guard, not the writer: a path-shaped label cannot be
+    // constructed, so it cannot reach the report to be filtered out later.
+    let refused = [
+        "/governed/models",
+        "relative/path",
+        "windows\\path",
+        "has space",
+        "",
+    ];
+    for candidate in refused {
+        assert!(
+            HardwareEnvironmentId::parse(candidate).is_err(),
+            "`{candidate}` must not be constructible, so it can never be published"
+        );
+    }
+    HardwareEnvironmentId::parse("reference-wsl2-d9d550f06b783405")
+        .expect("the governed reference environment's own identifier is publishable");
 }
 
 /// Every event line a build wrote, in append order.
@@ -1852,6 +1985,27 @@ fn t4_e2_failed_run_preserves_partial_report_in_job_directory() {
         "both segments resolved before the interruption, so both are recorded"
     );
     assert_eq!(report["job_id"], SKELETON_JOB_ID);
+
+    // ADR-0002's waiver retains its three facts in *every* run report, not only
+    // a sealed one. The gate reads them once and `BuildProgress` carries the
+    // snapshot, so a build that died after the attempt opened still says which
+    // environment it died in — an incomplete report that omitted them would be
+    // the report a reader most needs and least has.
+    assert_eq!(
+        report["hardware_environment_id"],
+        Value::from("fake-in-process-executor"),
+        "a partial report names the environment the failed build ran in"
+    );
+    assert!(
+        report["worker_bundle_hash"].is_string(),
+        "a partial report names the worker bundle behind the failed build"
+    );
+    assert_eq!(
+        report["resources"]["thread_budget"],
+        Value::from("in_process"),
+        "a partial report declares the allowance, in-process here because the \
+         fake backend has no worker to budget"
+    );
 }
 
 #[test]

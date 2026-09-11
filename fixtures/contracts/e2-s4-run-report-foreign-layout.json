@@ -100,6 +100,15 @@
       "observation": "unavailable",
       "reason": "not_exposed_by_environment"
     },
-    "worker_restarts_count": 0
-  }
+    "worker_restarts_count": 0,
+    "thread_budget": {
+      "worker": {
+        "worker_processes_count": 1,
+        "native_threads_per_worker_count": 4,
+        "interop_threads_per_worker_count": 1
+      }
+    }
+  },
+  "worker_bundle_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+  "hardware_environment_id": "reference-wsl2-d9d550f06b783405"
 }

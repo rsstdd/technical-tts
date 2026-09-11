@@ -31,9 +31,35 @@ only piece of this vocabulary that reaches the wire.
 | `resources.worker_restarts_count` | count | structural | worker | total | exact |
 | `resources.peak_resident_kib` | kibibytes | `/proc/<pid>/status` | worker | maximum | **approximate** |
 | `resources.open_handles_count` | count | `/proc/<pid>/fd` | worker | **point in time** | **approximate** |
+| `resources.thread_budget.worker.worker_processes_count` | count | structural | worker | total | exact |
+| `resources.thread_budget.worker.native_threads_per_worker_count` | count | structural | worker | **per worker** | exact |
+| `resources.thread_budget.worker.interop_threads_per_worker_count` | count | structural | worker | **per worker** | exact |
 | `segments[].synthesis_wall_micros` | microseconds | monotonic elapsed | worker | **segment** | exact |
 | `segments[].audio_frames` | frames | frame count | worker | **segment** | exact |
 | `segments[].retry_count` | count | structural | worker | **segment** | exact |
+
+## What the waiver retains, and what is a label rather than a number
+
+Accepted ADR-0002 retains "per-run wall time, RTF, peak-RAM, thread-budget, worker identity, and
+hardware identity" in every run report until its waiver expires.
+`docs/adr/deviations/ADR-0001-D002-constrained-development-performance-gate.md`, approved through
+that ADR, restates it as five with a single "environment identity"; the controlling decision names
+the two identities separately and this document follows it.
+
+`worker_bundle_hash` and `hardware_environment_id` are **identifiers, not measurements**, so they
+carry no row above: `ReportField` declares a unit for every member it names, and neither has one.
+`study_tts_runtime::HardwareEnvironmentId` is what keeps the second publishable — a bounded
+printable label with no whitespace and no path separator, so a caller reaching for a directory name
+is refused rather than truncated. It is **configured provenance**:
+`docs/operations/REFERENCE-ENVIRONMENT.md` §Environment ID is what proves a label describes a real
+qualified machine, and the type proves only that the label is safe to publish.
+
+`resources.thread_budget` is **declared, never sampled**. Its three numbers were fixed before the
+worker started — the native allowance from `worker/launcher.json`, pool size one until ADR-0001
+§10.1's measured evidence authorizes more, and the interop count pinned by
+`torch.set_num_interop_threads(1)` in `worker/study_tts_worker/worker.py`. `in_process` is the
+fourth possibility and not a missing value: a backend running inside the supervisor has no worker
+allowance, and declaring 1/1/1 would publish a ceiling nothing enforces.
 
 Every number's unit is repeated in its own name — `_micros`, `_frames`, `_count`, `_kib`,
 `_milli` — following the convention `pause_after_ms` and `total_frames` already set.

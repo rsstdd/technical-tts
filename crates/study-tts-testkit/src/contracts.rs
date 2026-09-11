@@ -21,12 +21,12 @@ use std::{
 use study_tts_core::{JobDocument, JobState, ManifestDigest, RenderPlan, SelectedPackageIdentity};
 use study_tts_runtime::{
     BackendDescriptor, BackendError, BuildError, BuildStage, CachePublisher, CacheResolveRequest,
-    ExecutorMeasurements, FileSystemCachePublisher, FileSystemJobRepository, IoError, JobOwnership,
-    JobRepository, PackageDisposition, PackagePreflightRequest, PackagePrepareRequest,
-    PackagePublication, PackageWriteFailure, PackageWriteOutcome, PackageWriteRequest,
-    PackageWriter, PreparedPackageWriter, ReportCompletion, RunReport, StagedAudioProducer,
-    SynthesisReport, SynthesisRequest, TtsExecutor, ValidatedCachedArtifact, WorkerConfiguration,
-    WorkerTtsExecutor,
+    ExecutorEnvironment, ExecutorMeasurements, FileSystemCachePublisher, FileSystemJobRepository,
+    IoError, JobOwnership, JobRepository, PackageDisposition, PackagePreflightRequest,
+    PackagePrepareRequest, PackagePublication, PackageWriteFailure, PackageWriteOutcome,
+    PackageWriteRequest, PackageWriter, PreparedPackageWriter, ReportCompletion, RunReport,
+    StagedAudioProducer, SynthesisReport, SynthesisRequest, TtsExecutor, ValidatedCachedArtifact,
+    WorkerConfiguration, WorkerTtsExecutor,
 };
 
 /// Thread-safe ordered observations shared by recording seam adapters.
@@ -83,6 +83,16 @@ impl<E: TtsExecutor> TtsExecutor for RecordingTtsExecutor<E> {
     fn process_measurements(&self) -> ExecutorMeasurements {
         self.events.record("executor.process_measurements");
         self.inner.process_measurements()
+    }
+
+    /// Forwarded, and recorded so the contract suite proves it was.
+    ///
+    /// A wrapper that answered for itself would report an environment the
+    /// wrapped backend never ran in, and accepted ADR-0002's waiver makes that
+    /// a published claim rather than a diagnostic.
+    fn environment(&self) -> ExecutorEnvironment {
+        self.events.record("executor.environment");
+        self.inner.environment()
     }
 
     fn capacity(&self) -> usize {

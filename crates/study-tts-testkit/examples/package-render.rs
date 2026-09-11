@@ -40,6 +40,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &configuration.voice_root,
         &configuration.workspace,
         VoiceUse::PrivateSynthesis,
+        study_tts_testkit::reference_hardware_environment_id(),
     )?;
     let executor = WorkerTtsExecutor::start(&launch)?;
     let bundle = executor.descriptor().worker_bundle_hash.as_str().to_owned();

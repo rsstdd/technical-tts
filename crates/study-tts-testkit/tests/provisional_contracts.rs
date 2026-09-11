@@ -150,6 +150,14 @@ fn build_request(workspace: &Path) -> study_tts_runtime::BuildRequest {
 struct ZeroCapacityExecutor;
 
 impl TtsExecutor for ZeroCapacityExecutor {
+    /// In-process and never started, so no worker allowance applies.
+    fn environment(&self) -> study_tts_runtime::ExecutorEnvironment {
+        study_tts_runtime::ExecutorEnvironment {
+            hardware_environment_id: study_tts_testkit::reference_hardware_environment_id(),
+            thread_budget: study_tts_runtime::DeclaredThreadBudget::InProcess,
+        }
+    }
+
     fn descriptor(&self) -> BackendDescriptor {
         // Identical to the deterministic tone executor's identity except for
         // capacity, so a refusal in this suite is attributable to capacity
@@ -372,6 +380,7 @@ fn t4_e0_every_provisional_seam_has_a_fake() {
         plan.plan_hash.as_str(),
         1,
         ReportCompletion::Complete,
+        &study_tts_testkit::reference_run_environment(),
     );
     let write = PackageWriteRequest {
         workspace: workspace.path(),
@@ -454,6 +463,7 @@ fn t4_e1_the_real_package_writer_passes_the_shared_contract() {
         plan.plan_hash.as_str(),
         1,
         ReportCompletion::Complete,
+        &study_tts_testkit::reference_run_environment(),
     );
     report.segments = plan
         .segments

@@ -960,6 +960,7 @@ mod tests {
             plan_hash.as_str(),
             1,
             ReportCompletion::Complete,
+            &crate::run_report::RunEnvironment::fixture(),
         );
         report.segments.push(RunReportSegment {
             segment_id: segment.segment_id.clone(),

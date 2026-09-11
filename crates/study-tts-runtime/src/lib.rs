@@ -78,20 +78,21 @@ pub use pipeline::{
 };
 pub use prune::{PruneCandidate, live_cache_keys, prune_candidates};
 pub use run_report::{
-    Aggregation, CacheOutcome, Fidelity, FieldSemantics, JoinFinding, MAX_RUN_REPORT_JSON_BYTES,
+    Aggregation, CacheOutcome, DeclaredThreadBudget, Fidelity, FieldSemantics,
+    HardwareEnvironmentId, JoinFinding, MAX_RUN_REPORT_JSON_BYTES, MalformedHardwareEnvironmentId,
     Measured, MeasuredProcess, MeasurementClock, MeasurementUnit, RUN_REPORT_LAYOUT_VERSION,
-    RUN_REPORT_SCHEMA_STEM, RUN_REPORT_SCHEMA_VERSION, ReportCompletion, ReportField, RunReport,
-    RunReportLayout, RunReportSegment, RunResources, SynthesisTotals, Unavailable, WorstSegment,
-    milli_real_time_factor,
+    RUN_REPORT_SCHEMA_STEM, RUN_REPORT_SCHEMA_VERSION, ReportCompletion, ReportField,
+    RunEnvironment, RunReport, RunReportLayout, RunReportSegment, RunResources, SynthesisTotals,
+    Unavailable, WorkerThreadBudget, WorstSegment, milli_real_time_factor,
 };
 pub use schemas::{
     MANIFEST_SCHEMA_VERSION, PUBLISHED_SCHEMAS, PublishedSchema, SCHEMA_DIRECTORY,
     WORKER_PROTOCOL_SCHEMA_VERSION,
 };
 pub use synthesis::{
-    BackendDescriptor, BackendError, BackendValidationError, DriftedIdentity, ExecutorMeasurements,
-    SynthesisReport, SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor,
-    validate_executor_request,
+    BackendDescriptor, BackendError, BackendValidationError, DriftedIdentity, ExecutorEnvironment,
+    ExecutorMeasurements, SynthesisReport, SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION,
+    TtsExecutor, validate_executor_request,
 };
 pub use voice_gate::{admit_voice_root, resolve_voice_conditioning};
 pub use worker_bundle::{

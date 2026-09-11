@@ -28,11 +28,13 @@ use study_tts_core::{
 
 use crate::model_gate::verify_model_artifacts;
 use crate::process;
-use crate::run_report::{Measured, Unavailable};
+use crate::run_report::{
+    DeclaredThreadBudget, HardwareEnvironmentId, Measured, Unavailable, WorkerThreadBudget,
+};
 use crate::synthesis::{
-    BackendDescriptor, BackendError, BackendValidationError, DriftedIdentity, ExecutorMeasurements,
-    SynthesisReport, SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor,
-    validate_executor_request,
+    BackendDescriptor, BackendError, BackendValidationError, DriftedIdentity, ExecutorEnvironment,
+    ExecutorMeasurements, SynthesisReport, SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION,
+    TtsExecutor, validate_executor_request,
 };
 use crate::voice_gate::admit_voice_root;
 use crate::worker_bundle::{WORKER_ENTRY_MODULE, WORKER_PACKAGE_ROOT, WorkerBundle};
@@ -97,6 +99,12 @@ pub struct WorkerConfiguration {
     staging_root: PathBuf,
     /// Native threads this worker may use, from `worker/launcher.json`.
     threads: NonZeroU32,
+    /// Governed label of the machine this worker runs on.
+    ///
+    /// Supplied by the caller because only the operator knows which governed
+    /// environment record describes this machine; nothing here probes for it.
+    /// Accepted ADR-0002's waiver requires it in every run report.
+    hardware_environment_id: HardwareEnvironmentId,
     /// Identity of the bundle this worker must confirm it is.
     worker_bundle_hash: WorkerBundleHash,
     /// Model repository the backend loads from.
@@ -138,6 +146,12 @@ pub struct WorkerConfiguration {
 #[derive(Debug)]
 pub struct WorkerTtsExecutor {
     descriptor: BackendDescriptor,
+    /// The environment this worker started in, as ADR-0002's waiver keeps it.
+    ///
+    /// Captured at [`WorkerTtsExecutor::start`] because the configuration does
+    /// not outlive it, and answered from here rather than re-derived, so the
+    /// report describes the environment the build actually ran under.
+    environment: ExecutorEnvironment,
     /// Voice profiles the worker said it had loaded.
     ///
     /// Kept here rather than on [`BackendDescriptor`], deliberately. The
@@ -206,6 +220,7 @@ impl WorkerConfiguration {
         voice_root: &Path,
         staging_root: &Path,
         requested: VoiceUse,
+        hardware_environment_id: HardwareEnvironmentId,
     ) -> Result<Self, BuildError> {
         // Identity before anything else, so a bundle that cannot be identified
         // never reaches the point of having a launchable configuration at all.
@@ -254,6 +269,7 @@ impl WorkerConfiguration {
             environment: launcher.child_environment(model_root, voice_root),
             staging_root,
             threads: launcher.threads,
+            hardware_environment_id,
             worker_bundle_hash,
             model_repository: launcher.model_repository.clone(),
             model_revision: proven.revision,
@@ -292,6 +308,13 @@ impl WorkerConfiguration {
     ///
     /// # Errors
     ///
+    /// The fake ignores `threads` — it loads no model and spawns no pool — but
+    /// takes it so a test can declare an allowance other than one and prove the
+    /// number reaches the run report rather than a constant that happens to
+    /// match. `for_bundle` reads the real value from `worker/launcher.json`.
+    ///
+    /// # Errors
+    ///
     /// [`crate::WorkerBundleError::ProtocolFakeNamedAGovernedRoot`] when
     /// `environment` names either governed-root variable, whatever value it
     /// carries: a stand-in root and a real one are indistinguishable here, and
@@ -302,6 +325,8 @@ impl WorkerConfiguration {
         environment: BTreeMap<String, String>,
         staging_root: PathBuf,
         deadline: Duration,
+        hardware_environment_id: HardwareEnvironmentId,
+        threads: NonZeroU32,
     ) -> Result<Self, BuildError> {
         // By name and not by value, because a stand-in root and a real one are
         // the same string to this constructor and only the caller knows which
@@ -327,7 +352,8 @@ impl WorkerConfiguration {
             arguments,
             environment,
             staging_root,
-            threads: NonZeroU32::MIN,
+            threads,
+            hardware_environment_id,
             worker_bundle_hash: PROTOCOL_FAKE_BUNDLE_HASH
                 .parse()
                 .expect("the protocol fake's identity is a well-formed digest"),
@@ -570,6 +596,14 @@ impl WorkerTtsExecutor {
         }
 
         Ok(Self {
+            environment: ExecutorEnvironment {
+                hardware_environment_id: configuration.hardware_environment_id.clone(),
+                thread_budget: DeclaredThreadBudget::Worker(WorkerThreadBudget {
+                    worker_processes_count: NonZeroU32::MIN,
+                    native_threads_per_worker_count: configuration.threads,
+                    interop_threads_per_worker_count: NonZeroU32::MIN,
+                }),
+            },
             declared_voices: capabilities.voices.iter().cloned().collect(),
             declared_styles: capabilities.styles.iter().cloned().collect(),
             descriptor: BackendDescriptor {
@@ -832,6 +866,18 @@ fn sampled(value: Option<u64>) -> Measured {
 }
 
 impl TtsExecutor for WorkerTtsExecutor {
+    /// Declared, never sampled: every number was fixed before the process
+    /// started. The native allowance comes from `worker/launcher.json` and
+    /// reaches Torch as `torch.set_num_threads` in
+    /// `worker/study_tts_worker/worker.py`; the interop count is pinned to one
+    /// beside it by `torch.set_num_interop_threads(1)` and is not configurable
+    /// from here, so a second knob would be a value nothing reads. Pool size is
+    /// one until ADR-0001 §10.1's measured evidence authorizes more, which is
+    /// what [`WorkerTtsExecutor::capacity`] returns.
+    fn environment(&self) -> ExecutorEnvironment {
+        self.environment.clone()
+    }
+
     /// Samples the live worker, which is the process holding Torch.
     ///
     /// `docs/architecture/E2-S4-INTERFACE-CHANGE-001.md` §G-B fixes when this
@@ -983,6 +1029,8 @@ mod tests {
             Path::new("/governed/voices"),
             Path::new("/staging"),
             VoiceUse::PrivateSynthesis,
+            HardwareEnvironmentId::parse("reference-wsl2-d9d550f06b783405")
+                .expect("the governed reference environment's identifier is publishable"),
         )
         .expect_err("a bundle whose interpreter is absent cannot be launched");
 
@@ -1013,6 +1061,9 @@ mod tests {
                 BTreeMap::from([((*variable).to_owned(), "/unused/root".to_owned())]),
                 PathBuf::from("/unused/staging"),
                 Duration::from_secs(1),
+                HardwareEnvironmentId::parse("reference-wsl2-d9d550f06b783405")
+                    .expect("the governed reference environment's identifier is publishable"),
+                NonZeroU32::MIN,
             )
             .expect_err("the protocol fake must refuse a governed-root variable");
 

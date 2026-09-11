@@ -10,6 +10,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::{self, Write},
+    num::NonZeroU32,
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Output, Stdio},
     thread,
@@ -23,9 +24,9 @@ use study_tts_core::{
 };
 use study_tts_runtime::{
     BackendError, BackendValidationError, BuildError, BuildRequest, CachePublisher,
-    CacheResolveRequest, DriftedIdentity, FileSystemCachePublisher, MAX_WORKER_FRAME_BYTES,
-    MAX_WORKER_REQUEST_ID_BYTES, SynthesisRequest, THREAD_ENVIRONMENT, TtsExecutor,
-    WORKER_PROTOCOL_SCHEMA_VERSION, WORKER_PROTOCOL_VERSION, WorkerConfiguration,
+    CacheResolveRequest, DeclaredThreadBudget, DriftedIdentity, FileSystemCachePublisher,
+    MAX_WORKER_FRAME_BYTES, MAX_WORKER_REQUEST_ID_BYTES, SynthesisRequest, THREAD_ENVIRONMENT,
+    TtsExecutor, WORKER_PROTOCOL_SCHEMA_VERSION, WORKER_PROTOCOL_VERSION, WorkerConfiguration,
     WorkerFailureCode, WorkerInitializationIdentities, WorkerLauncher, WorkerRequestFrame,
     WorkerResponseFrame, WorkerTtsExecutor, build_preview, parse_worker_request,
     parse_worker_response,
@@ -737,6 +738,52 @@ fn read_recursively(root: &Path) -> BTreeSet<String> {
 /// The bundle hash is the fake's own: `fake-ndjson-worker` refuses to
 /// initialize under any other, which is the same refusal the real worker owes
 /// when it is asked to be a bundle it is not.
+/// The product executor answers for the environment it was configured with.
+///
+/// Accepted ADR-0002's waiver retains a hardware identity and a thread budget
+/// in every run report until it expires. The T1 tests prove the report *type*
+/// can carry them; this proves the real [`WorkerTtsExecutor`] reports its own
+/// configured values, against the executable protocol fake rather than an
+/// in-process stand-in — the fake declares `InProcess` and would hide a
+/// pipeline that never asked a worker anything.
+///
+/// The allowance is four, not one, so a constant that happened to match the
+/// default cannot pass. Pool size is one structurally, and interop is pinned by
+/// `torch.set_num_interop_threads(1)` in `worker/study_tts_worker/worker.py`.
+#[test]
+fn t4_e2_worker_executor_reports_configured_environment_and_thread_budget() {
+    let configuration = fake_worker_configuration("deterministic");
+    let executor = WorkerTtsExecutor::start(&configuration).expect("the protocol fake initializes");
+
+    let environment = executor.environment();
+    assert_eq!(
+        environment.hardware_environment_id,
+        study_tts_testkit::reference_hardware_environment_id(),
+        "the executor must report the environment it was configured with"
+    );
+
+    let DeclaredThreadBudget::Worker(budget) = environment.thread_budget else {
+        panic!("a worker-backed executor declares a worker allowance, not in-process");
+    };
+    assert_eq!(
+        (
+            budget.worker_processes_count.get(),
+            budget.native_threads_per_worker_count.get(),
+            budget.interop_threads_per_worker_count.get(),
+        ),
+        (1, FAKE_WORKER_THREAD_ALLOWANCE.get(), 1),
+        "the declared allowance must travel from the configuration, not a constant"
+    );
+}
+
+/// The native thread allowance the protocol fake declares.
+///
+/// Deliberately not one. A budget assertion against `1` cannot tell a value
+/// that travelled from the configuration from a constant that happens to match,
+/// and `WorkerTtsExecutor::environment` reporting the wrong number is exactly
+/// what accepted ADR-0002's waiver would then record in every run report.
+const FAKE_WORKER_THREAD_ALLOWANCE: NonZeroU32 = NonZeroU32::new(4).expect("four is non-zero");
+
 fn fake_worker_configuration(behavior: &str) -> WorkerConfiguration {
     fake_worker_configuration_tagged(behavior, "untagged")
 }
@@ -765,6 +812,8 @@ fn fake_worker_configuration_tagged(behavior: &str, tag: &str) -> WorkerConfigur
         // `t5_e1_worker_output_cannot_escape_staging_root`.
         PathBuf::from("/unused/staging"),
         FAKE_SESSION_DEADLINE,
+        study_tts_testkit::reference_hardware_environment_id(),
+        FAKE_WORKER_THREAD_ALLOWANCE,
     )
     .expect("an empty environment names no governed root")
 }
@@ -1567,6 +1616,8 @@ fn t4_e1_the_launcher_thread_allowance_reaches_the_worker_process() {
         environment,
         PathBuf::from("/unused/staging"),
         FAKE_SESSION_DEADLINE,
+        study_tts_testkit::reference_hardware_environment_id(),
+        FAKE_WORKER_THREAD_ALLOWANCE,
     )
     .expect("the stripped environment names no governed root");
 
@@ -2001,6 +2052,8 @@ fn t4_e1_a_worker_starts_with_only_the_environment_it_was_declared() {
         declared.clone(),
         PathBuf::from("/unused/staging"),
         FAKE_SESSION_DEADLINE,
+        study_tts_testkit::reference_hardware_environment_id(),
+        FAKE_WORKER_THREAD_ALLOWANCE,
     )
     .expect("the declared environment names no governed root");
     let executor = WorkerTtsExecutor::start(&configuration).expect("the protocol fake initializes");

@@ -25,8 +25,9 @@ use crate::{
     export::{ExportProfiles, ToolExecution},
     managed,
     run_report::{
-        CacheOutcome, JoinFinding, MAX_RUN_REPORT_JSON_BYTES, Measured, RUN_REPORT_NAME,
-        ReportCompletion, RunReport,
+        CacheOutcome, JoinFinding, LEGACY_RUN_REPORT_LAYOUT_VERSION, LegacyRunReport,
+        MAX_RUN_REPORT_JSON_BYTES, Measured, RUN_REPORT_NAME, ReportCompletion, RunReport,
+        RunReportSegment,
     },
     timeline::{TEXT_RENDERER_VERSION, Timeline},
     tools::ToolIdentity,
@@ -1095,8 +1096,14 @@ pub(crate) fn validate_package(
     for artifact in &manifest.artifacts {
         validate_artifact(package_dir, &manifest_path, artifact)?;
     }
+    // Readable, and reusable only at the current layout. A package whose
+    // report predates ADR-0002's three waiver facts cannot answer them, so
+    // reusing it would publish a manifest checksumming a report that says less
+    // than this build's contract requires — while refusing to *read* it would
+    // strand the workspace it sits in.
+    let mut report_layout = ReportLayoutRead::Current;
     if manifest.build_attempt.is_some() {
-        validate_run_report(package_dir, &manifest)?;
+        report_layout = validate_run_report(package_dir, &manifest)?;
     }
     for recorded in &manifest.executions {
         if recorded.arguments.is_empty() {
@@ -1122,7 +1129,8 @@ pub(crate) fn validate_package(
         // record, and E2-S4's run report is produced by no tool at all.
         // Without these two, `current.json` would keep selecting a package
         // naming a host path, or one checksumming a report it never held.
-        manifest.redacted_arguments
+        report_layout == ReportLayoutRead::Current
+            && manifest.redacted_arguments
             && records_every_artifact(&manifest)
             && tools_match(&manifest, &expected)
             && manifest.text_renderer_version.as_deref() == Some(expected.text_renderer_version)
@@ -1132,40 +1140,170 @@ pub(crate) fn validate_package(
 }
 
 /// Validates the checksummed report as the completion record of this manifest.
-fn validate_run_report(package_dir: &Path, manifest: &PackageRecord) -> Result<(), BuildError> {
+/// Which report layout a package carries, once its joins have been checked.
+///
+/// Reuse needs the distinction and recovery must not: a package sealed under
+/// the superseded layout is intact, and `preview::current_for_build`
+/// propagates an `Err` rather than rebuilding, so returning one here would make
+/// every package written before ADR-0002's fields unrecoverable instead of
+/// merely stale.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReportLayoutRead {
+    /// The layout this build writes, and the only one it may reuse.
+    Current,
+    /// A valid `2.0-skeleton` report: readable, never reusable.
+    Superseded,
+}
+
+/// Just the declared layout, read before the document it selects a shape for.
+#[derive(Deserialize)]
+struct DeclaredReportLayout {
+    schema_version: String,
+}
+
+/// The parts of a run report the manifest is joined against.
+///
+/// Borrowed rather than owned, and shared by both layouts, so the rules exist
+/// once. A second copy for the frozen layout would be a set of checks nobody
+/// re-reads when the current ones change.
+struct RunReportJoin<'a> {
+    job_id: &'a str,
+    build_attempt: u32,
+    lesson_id: &'a str,
+    plan_hash: &'a str,
+    completion: ReportCompletion,
+    segments: &'a [RunReportSegment],
+    join_findings: &'a [JoinFinding],
+}
+
+fn validate_run_report(
+    package_dir: &Path,
+    manifest: &PackageRecord,
+) -> Result<ReportLayoutRead, BuildError> {
     let report_path = managed::leaf(package_dir, RUN_REPORT_NAME)?;
     let bytes = read_bounded_bytes(&report_path, MAX_RUN_REPORT_JSON_BYTES)?;
-    let report: RunReport = serde_json::from_slice(&bytes).map_err(|source| {
-        DurableStateError::MalformedPackageRunReport {
-            path: report_path.clone(),
-            source,
+    let malformed = |source| DurableStateError::MalformedPackageRunReport {
+        path: report_path.clone(),
+        source,
+    };
+
+    // The layout is read before the document is, so a superseded report reaches
+    // its own frozen shape rather than failing the current one's required
+    // fields and reading as corruption.
+    let declared: DeclaredReportLayout = serde_json::from_slice(&bytes).map_err(malformed)?;
+    if declared.schema_version == LEGACY_RUN_REPORT_LAYOUT_VERSION {
+        let legacy: LegacyRunReport = serde_json::from_slice(&bytes).map_err(malformed)?;
+        // Destructured whole rather than read field by field. The members this
+        // join does not use are modelled so `deny_unknown_fields` can refuse a
+        // document that grew one and so a missing one is refused too; naming
+        // them here is what says they exist to be *refused*, not read.
+        let LegacyRunReport {
+            schema_version,
+            job_id,
+            build_attempt,
+            lesson_id,
+            plan_hash,
+            completion,
+            wall_micros,
+            model_load_micros,
+            assembly_micros,
+            normalize_micros,
+            encode_micros,
+            segments,
+            join_findings,
+            synthesis,
+            resources,
+        } = legacy;
+        // Touched, not used, in the idiom `parse_stored_manifest` already uses
+        // for a field decoded only so the boundary can refuse a document
+        // without it. These members exist so `deny_unknown_fields` refuses a
+        // grown document and a missing one is refused too; the join below reads
+        // none of them.
+        let _ = (
+            &schema_version,
+            wall_micros,
+            &model_load_micros,
+            &assembly_micros,
+            &normalize_micros,
+            &encode_micros,
+            &synthesis,
+            resources.peak_resident_kib,
+            resources.open_handles_count,
+            resources.worker_restarts_count,
+        );
+        join_run_report(
+            &RunReportJoin {
+                job_id: &job_id,
+                build_attempt,
+                lesson_id: &lesson_id,
+                plan_hash: &plan_hash,
+                completion,
+                segments: &segments,
+                join_findings: &join_findings,
+            },
+            manifest,
+            &report_path,
+        )?;
+        return Ok(ReportLayoutRead::Superseded);
+    }
+
+    let report: RunReport = serde_json::from_slice(&bytes).map_err(malformed)?;
+    join_run_report(
+        &RunReportJoin {
+            job_id: &report.job_id,
+            build_attempt: report.build_attempt,
+            lesson_id: &report.lesson_id,
+            plan_hash: &report.plan_hash,
+            completion: report.completion,
+            segments: &report.segments,
+            join_findings: &report.join_findings,
+        },
+        manifest,
+        &report_path,
+    )?;
+    Ok(ReportLayoutRead::Current)
+}
+
+/// Refuses a report that does not describe the manifest checksumming it.
+///
+/// A checksum proves the bytes are the ones the manifest recorded; these
+/// checks prove they describe *this* build. Both layouts answer them, because
+/// a superseded report that contradicts its manifest is corruption whatever
+/// its version says.
+fn join_run_report(
+    report: &RunReportJoin<'_>,
+    manifest: &PackageRecord,
+    report_path: &Path,
+) -> Result<(), BuildError> {
+    let identity_mismatch = || -> BuildError {
+        DurableStateError::PackageRunReportIdentityMismatch {
+            path: report_path.to_path_buf(),
         }
-    })?;
+        .into()
+    };
 
     if report.segments.len() > MAX_LESSON_SEGMENTS
         || report.join_findings.len() > MAX_LESSON_SEGMENTS
     {
-        return Err(
-            DurableStateError::PackageRunReportSegmentCountExceeded { path: report_path }.into(),
-        );
+        return Err(DurableStateError::PackageRunReportSegmentCountExceeded {
+            path: report_path.to_path_buf(),
+        }
+        .into());
     }
     if report.completion != ReportCompletion::Complete {
-        return Err(DurableStateError::PackageRunReportIncomplete { path: report_path }.into());
+        return Err(DurableStateError::PackageRunReportIncomplete {
+            path: report_path.to_path_buf(),
+        }
+        .into());
     }
     if report.job_id != manifest.lesson_id || report.lesson_id != manifest.lesson_id {
-        return Err(
-            DurableStateError::PackageRunReportIdentityMismatch { path: report_path }.into(),
-        );
+        return Err(identity_mismatch());
     }
     if report.plan_hash != manifest.plan_hash.as_str() {
-        return Err(
-            DurableStateError::PackageRunReportIdentityMismatch { path: report_path }.into(),
-        );
+        return Err(identity_mismatch());
     }
     if Some(report.build_attempt) != manifest.build_attempt {
-        return Err(
-            DurableStateError::PackageRunReportIdentityMismatch { path: report_path }.into(),
-        );
+        return Err(identity_mismatch());
     }
     if report.segments.len() != manifest.segments.len()
         || report
@@ -1182,9 +1320,10 @@ fn validate_run_report(package_dir: &Path, manifest: &PackageRecord) -> Result<(
                         }
             })
     {
-        return Err(
-            DurableStateError::PackageRunReportSegmentMismatch { path: report_path }.into(),
-        );
+        return Err(DurableStateError::PackageRunReportSegmentMismatch {
+            path: report_path.to_path_buf(),
+        }
+        .into());
     }
 
     let expected_findings: Vec<JoinFinding> = manifest
@@ -1199,9 +1338,11 @@ fn validate_run_report(package_dir: &Path, manifest: &PackageRecord) -> Result<(
         })
         .collect();
     if report.join_findings != expected_findings {
-        return Err(DurableStateError::PackageRunReportJoinMismatch { path: report_path }.into());
+        return Err(DurableStateError::PackageRunReportJoinMismatch {
+            path: report_path.to_path_buf(),
+        }
+        .into());
     }
-
     Ok(())
 }
 
@@ -1699,6 +1840,7 @@ mod tests {
             plan_hash.as_str(),
             1,
             ReportCompletion::Complete,
+            &crate::run_report::RunEnvironment::fixture(),
         );
         report.segments.push(RunReportSegment {
             segment_id: "segment".to_owned(),
@@ -1787,6 +1929,42 @@ mod tests {
             serde_json::to_vec_pretty(&manifest).expect("serialize historical manifest"),
         )
         .expect("write historical manifest");
+    }
+
+    /// Rewrites a package's run report as the superseded layout, checksum and
+    /// all.
+    ///
+    /// Demoted from a report this build actually wrote rather than
+    /// hand-authored, so what the frozen shape reads is a document that really
+    /// existed — the same reason the manifest demotions above do it this way.
+    fn demote_test_run_report(package: &Path) {
+        let report_path = package.join(RUN_REPORT_NAME);
+        let mut report: Value =
+            serde_json::from_slice(&std::fs::read(&report_path).expect("read test run report"))
+                .expect("parse test run report");
+        let document = report.as_object_mut().expect("a run report is an object");
+        document.insert(
+            "schema_version".to_owned(),
+            Value::from(LEGACY_RUN_REPORT_LAYOUT_VERSION),
+        );
+        // The three fields the superseded layout did not carry.
+        document.remove("worker_bundle_hash");
+        document.remove("hardware_environment_id");
+        document
+            .get_mut("resources")
+            .and_then(Value::as_object_mut)
+            .expect("a run report records its resources")
+            .remove("thread_budget");
+        let bytes = serde_json::to_vec_pretty(&report).expect("serialize demoted run report");
+        std::fs::write(&report_path, &bytes).expect("write demoted run report");
+
+        // The manifest checksums the report, so the demotion has to move the
+        // recorded digest with it or this would prove an integrity failure
+        // instead of a layout one.
+        rewrite_test_manifest(package, |manifest| {
+            manifest["artifacts"]["run_report"]["blake3"] =
+                Value::from(blake3::hash(&bytes).to_hex().to_string());
+        });
     }
 
     fn rewrite_test_manifest(package: &Path, update: impl FnOnce(&mut Value)) {
@@ -1963,6 +2141,76 @@ mod tests {
             BuildError::DurableState(error)
                 if matches!(*error, DurableStateError::DurableRecordTooLarge { .. })
         ));
+    }
+
+    /// A package whose run report predates ADR-0002's waiver facts is kept.
+    ///
+    /// Readable and never reusable, which are different questions and have
+    /// different failure modes. `preview::current_for_build` propagates an
+    /// `Err` rather than rebuilding, so a superseded report read as corruption
+    /// would make every package written before this change unrecoverable —
+    /// which is exactly what returning `Err` here would do.
+    ///
+    /// Rejects the obvious wrong implementation: moving `RunReportLayout` to
+    /// `3.0-skeleton` and letting the current parser refuse everything older.
+    #[test]
+    fn t4_e2_a_package_with_a_superseded_run_report_is_preserved_and_rebuilt() {
+        let workspace = TempDir::new().expect("create superseded-report workspace");
+        let package = workspace.path().join("package");
+        write_test_package(&package);
+        demote_test_run_report(&package);
+
+        assert!(
+            validate_package(&package, "lesson", None, None)
+                .expect("a superseded report must still parse and validate"),
+            "a package this build did not write must stay readable"
+        );
+
+        let (ffmpeg, ffprobe) = test_tool_identities();
+        let profiles = export::export_profiles();
+        assert!(
+            !validate_package(
+                &package,
+                "lesson",
+                None,
+                Some(expectations(&ffmpeg, &ffprobe, &profiles)),
+            )
+            .expect("a superseded report is valid without being reusable"),
+            "a report that cannot answer ADR-0002's waiver must not be reused"
+        );
+    }
+
+    /// A superseded report is read through a bounded shape, not a lenient one.
+    ///
+    /// `rust-review` §Types, traits, coherence allows exactly one lenient
+    /// deserialization boundary in this crate — `export::ProbeResponse`, for
+    /// tool output — and a superseded layout of a format this project defines
+    /// is not it. Without `deny_unknown_fields` on the frozen shape, a report
+    /// carrying a field nobody wrote decodes silently and its package is
+    /// preserved as valid; the byte ceiling bounds size, not shape.
+    #[test]
+    fn t4_e2_a_superseded_run_report_with_an_unknown_field_is_refused() {
+        let workspace = TempDir::new().expect("create unknown-field workspace");
+        let package = workspace.path().join("package");
+        write_test_package(&package);
+        demote_test_run_report(&package);
+        rewrite_test_run_report(&package, |report| {
+            report
+                .as_object_mut()
+                .expect("a run report is an object")
+                .insert("unrecognized".to_owned(), Value::from(1));
+        });
+
+        let error = validate_package(&package, "lesson", None, None)
+            .expect_err("a superseded report carrying an unknown field must be refused");
+        assert!(
+            matches!(
+                error,
+                BuildError::DurableState(ref error)
+                    if matches!(**error, DurableStateError::MalformedPackageRunReport { .. })
+            ),
+            "an unknown field must be a malformed-report refusal: {error:?}"
+        );
     }
 
     /// The layout that published absolute staging paths stays readable, and

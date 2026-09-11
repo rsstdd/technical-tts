@@ -35,7 +35,8 @@ use study_tts_core::{
     LanguageTag, VoiceConditioningHash,
 };
 use study_tts_runtime::{
-    BackendDescriptor, BackendError, SynthesisReport, SynthesisRequest,
+    BackendDescriptor, BackendError, DeclaredThreadBudget, ExecutorEnvironment,
+    HardwareEnvironmentId, RunEnvironment, SynthesisReport, SynthesisRequest,
     TTS_EXECUTOR_CONTRACT_VERSION, TtsExecutor, validate_executor_request,
 };
 
@@ -156,7 +157,47 @@ impl FakeTtsExecutor {
     }
 }
 
+/// The governed reference environment's identifier, for tests and examples.
+///
+/// One spelling, so a test asserting on a published report and an example
+/// rendering one cannot disagree about which environment they claim.
+/// `docs/operations/REFERENCE-ENVIRONMENT.md` §Environment ID is where the
+/// value comes from.
+#[must_use]
+pub fn reference_hardware_environment_id() -> HardwareEnvironmentId {
+    HardwareEnvironmentId::parse("reference-wsl2-d9d550f06b783405")
+        .expect("the governed reference environment's identifier is publishable")
+}
+
+/// A worker-shaped environment for a test that publishes a report.
+#[must_use]
+pub fn reference_run_environment() -> RunEnvironment {
+    RunEnvironment {
+        worker_bundle_hash: "1"
+            .repeat(64)
+            .try_into()
+            .expect("a 64-character hexadecimal digest is a worker bundle hash"),
+        hardware_environment_id: reference_hardware_environment_id(),
+        thread_budget: DeclaredThreadBudget::InProcess,
+    }
+}
+
 impl TtsExecutor for FakeTtsExecutor {
+    /// In-process, so no worker thread allowance applies.
+    ///
+    /// [`DeclaredThreadBudget::InProcess`] exists for exactly this: the fake
+    /// synthesizes a tone on the supervisor's own threads, and declaring 1/1/1
+    /// would publish an allowance nothing enforces. The hardware label is a
+    /// fixed stand-in for the same reason the bundle and model identities
+    /// above are — recognizable, well-formed, and not describing a machine.
+    fn environment(&self) -> ExecutorEnvironment {
+        ExecutorEnvironment {
+            hardware_environment_id: HardwareEnvironmentId::parse("fake-in-process-executor")
+                .expect("the fake's stand-in label is publishable"),
+            thread_budget: DeclaredThreadBudget::InProcess,
+        }
+    }
+
     fn descriptor(&self) -> BackendDescriptor {
         self.touch_count.fetch_add(1, Ordering::SeqCst);
         BackendDescriptor {

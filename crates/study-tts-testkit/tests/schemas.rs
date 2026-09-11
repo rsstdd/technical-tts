@@ -1044,7 +1044,7 @@ fn t3_e1_every_published_schema_claims_the_uri_its_documents_name() {
 /// agree with any schema it was handed, including one that grew a required
 /// field nobody meant to add — which is the change this table exists to make
 /// impossible to land quietly.
-const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 56] = [
+const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 58] = [
     (
         "job 1.0",
         "/",
@@ -1431,13 +1431,14 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 56] = [
         &["output", "seed", "style", "take", "text", "voice"],
     ),
     (
-        "run-report 2.0",
+        "run-report 3.0",
         "/",
         &[
             "assembly_micros",
             "build_attempt",
             "completion",
             "encode_micros",
+            "hardware_environment_id",
             "job_id",
             "join_findings",
             "lesson_id",
@@ -1449,35 +1450,50 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 56] = [
             "segments",
             "synthesis",
             "wall_micros",
+            "worker_bundle_hash",
         ],
     ),
     (
-        "run-report 2.0",
+        "run-report 3.0",
+        "/$defs/DeclaredThreadBudget/oneOf/0",
+        &["worker"],
+    ),
+    (
+        "run-report 3.0",
+        "/$defs/WorkerThreadBudget",
+        &[
+            "interop_threads_per_worker_count",
+            "native_threads_per_worker_count",
+            "worker_processes_count",
+        ],
+    ),
+    (
+        "run-report 3.0",
         "/$defs/JoinFinding",
         &["earlier_segment_id", "later_segment_id"],
     ),
     (
-        "run-report 2.0",
+        "run-report 3.0",
         "/$defs/Measured/oneOf/0",
         &["observation", "value"],
     ),
     (
-        "run-report 2.0",
+        "run-report 3.0",
         "/$defs/Measured/oneOf/1",
         &["observation", "reason"],
     ),
     (
-        "run-report 2.0",
+        "run-report 3.0",
         "/$defs/ReportCompletion/oneOf/1",
         &["incomplete"],
     ),
     (
-        "run-report 2.0",
+        "run-report 3.0",
         "/$defs/ReportCompletion/oneOf/1/properties/incomplete",
         &["error_class"],
     ),
     (
-        "run-report 2.0",
+        "run-report 3.0",
         "/$defs/RunReportSegment",
         &[
             "audio_frames",
@@ -1489,16 +1505,17 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 56] = [
         ],
     ),
     (
-        "run-report 2.0",
+        "run-report 3.0",
         "/$defs/RunResources",
         &[
             "open_handles_count",
             "peak_resident_kib",
+            "thread_budget",
             "worker_restarts_count",
         ],
     ),
     (
-        "run-report 2.0",
+        "run-report 3.0",
         "/$defs/SynthesisTotals",
         &[
             "aggregate_real_time_factor_milli",
@@ -1510,7 +1527,7 @@ const PUBLISHED_REQUIRED_SURFACE: [(&str, &str, &[&str]); 56] = [
         ],
     ),
     (
-        "run-report 2.0",
+        "run-report 3.0",
         "/$defs/WorstSegment",
         &[
             "audio_frames",

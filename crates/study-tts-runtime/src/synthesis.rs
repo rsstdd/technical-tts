@@ -19,7 +19,7 @@ use study_tts_core::{
 };
 use thiserror::Error;
 
-use crate::run_report::{Measured, Unavailable};
+use crate::run_report::{DeclaredThreadBudget, HardwareEnvironmentId, Measured, Unavailable};
 
 /// Mirrors the executor version in the E0-S4 provisional contract baseline.
 ///
@@ -43,7 +43,28 @@ use crate::run_report::{Measured, Unavailable};
 /// nothing new and keeps working. It moves no cache entry: every field of
 /// [`BackendDescriptor`] but this one and `max_text_bytes` is a
 /// speech-affecting synthesis-key input, and this one is neither.
-pub const TTS_EXECUTOR_CONTRACT_VERSION: &str = "e1.tts-executor.3.1";
+///
+/// Raised to `4.0` by E2-S4's ADR-0002 work: [`TtsExecutor::environment`] is
+/// **required**, not defaulted, so every implementation and every delegating
+/// wrapper must answer deliberately. §Change classes puts a required addition
+/// under **Breaking contract**, and a default here would let a real worker
+/// silently omit data accepted ADR-0002 obliges it to retain. It still moves
+/// no cache entry, for the reason the `3.1` note gives.
+pub const TTS_EXECUTOR_CONTRACT_VERSION: &str = "e1.tts-executor.4.0";
+
+/// What environment one executor ran in, as ADR-0002's waiver requires.
+///
+/// Separate from [`ExecutorMeasurements`] because these are declared facts and
+/// those are sampled numbers: `Measured` carries a `u64` and cannot hold a
+/// label, and `ReportField` declares a unit for every member. Folding an
+/// identity into either would have made both untrue.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutorEnvironment {
+    /// Governed label of the machine this executor ran on.
+    pub hardware_environment_id: HardwareEnvironmentId,
+    /// Thread allowance it declared, or that none applies.
+    pub thread_budget: DeclaredThreadBudget,
+}
 
 /// What one executor's own process cost this build.
 ///
@@ -573,6 +594,17 @@ pub trait TtsExecutor: Send + Sync {
     fn process_measurements(&self) -> ExecutorMeasurements {
         ExecutorMeasurements::default()
     }
+
+    /// The environment this executor ran in.
+    ///
+    /// Required rather than defaulted, unlike
+    /// [`TtsExecutor::process_measurements`] beside it. Accepted ADR-0002's
+    /// waiver retains a hardware identity and a
+    /// thread budget in every run report until it expires, and a default would
+    /// let a real worker answer nothing while the report still claimed to carry
+    /// them. A delegating wrapper must forward this for the same reason it must
+    /// forward measurements.
+    fn environment(&self) -> ExecutorEnvironment;
 
     /// Returns the number of requests this executor may run concurrently.
     fn capacity(&self) -> usize;

@@ -21,7 +21,10 @@
 //! invariant rather than a scrubber.
 
 use serde::{Deserialize, Serialize};
-use study_tts_core::{CANONICAL_SAMPLE_RATE, MAX_LESSON_SEGMENTS, SchemaVersion};
+use std::num::NonZeroU32;
+
+use study_tts_core::{CANONICAL_SAMPLE_RATE, MAX_LESSON_SEGMENTS, SchemaVersion, WorkerBundleHash};
+use thiserror::Error;
 
 use crate::BuildErrorClass;
 
@@ -44,10 +47,26 @@ pub const MAX_RUN_REPORT_JSON_BYTES: usize = 16 * 1024 * 1024;
 /// the breaking per-segment, package-stage, typed-completion, and advisory-join
 /// fields. The suffix follows `MANIFEST_SCHEMA_VERSION`: the layout remains
 /// provisional even though the breaking change required a major increment.
-pub const RUN_REPORT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(2, 0);
+///
+/// `3.0` follows for accepted ADR-0002's waiver: `worker_bundle_hash`,
+/// `hardware_environment_id`, and `resources.thread_budget` are required, and
+/// §Change classes calls a required field a **Breaking contract**. The major
+/// moves rather than folding into `2.0`, because `2.0` is published on `main`
+/// and `E2-INTERFACE-CHANGE-001` settled that an unsigned version is kept out
+/// of the charter's effective history without becoming reusable for a
+/// different layout.
+pub const RUN_REPORT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(3, 0);
 
 /// The `schema_version` a `run-report.json` this build writes carries.
-pub const RUN_REPORT_LAYOUT_VERSION: &str = "2.0-skeleton";
+pub const RUN_REPORT_LAYOUT_VERSION: &str = "3.0-skeleton";
+
+/// The layout published before ADR-0002's three waiver facts were required.
+///
+/// Read, never written. A package sealed under it stays readable so
+/// reconciliation can recover the workspace it sits in, and can never be
+/// reused, because its report cannot answer what the waiver now requires.
+/// `manifest::validate_run_report` is where both halves happen.
+pub const LEGACY_RUN_REPORT_LAYOUT_VERSION: &str = "2.0-skeleton";
 
 /// Microseconds in one millisecond, the scale a milli-ratio is expressed in.
 pub(crate) const MICROSECONDS_PER_MILLISECOND: u64 = 1_000;
@@ -146,6 +165,11 @@ pub enum Aggregation {
     /// [`Aggregation::Total`]: the run's totals already sum these rows, so a
     /// reader who adds them again double-counts the build.
     Segment,
+    /// One worker's own allowance, not a sum across the pool. Distinct from
+    /// [`Aggregation::Total`]: multiplying by the process count gives the
+    /// run's ceiling, so a reader who treats this as the total under-reports
+    /// it whenever the pool grows past one.
+    PerWorker,
     /// One reading taken at a stated moment, with no claim about any other.
     /// Unlike [`Aggregation::Maximum`], nothing guarantees the run never went
     /// higher: the kernel keeps a high-water mark for resident memory and none
@@ -230,6 +254,192 @@ pub enum ReportField {
     NormalizeDuration,
     /// Time spent encoding both lossy outputs from that master.
     EncodeDuration,
+    /// Worker processes this build was allowed to run at once.
+    WorkerProcesses,
+    /// Native threads each worker was allowed.
+    NativeThreadsPerWorker,
+    /// Interop threads each worker was allowed.
+    InteropThreadsPerWorker,
+}
+
+/// Longest publishable hardware environment identifier, in bytes.
+///
+/// Generous against the one identifier that exists —
+/// `reference-wsl2-d9d550f06b783405` is 32 bytes — and small enough that a
+/// caller who reached for a path or a command line is refused rather than
+/// truncated.
+pub const MAX_HARDWARE_ENVIRONMENT_ID_BYTES: usize = 128;
+
+/// The governed environment a build ran in, as a label.
+///
+/// **Configured provenance, not a machine attestation.** The value is supplied
+/// by whoever launched the build; `docs/operations/REFERENCE-ENVIRONMENT.md` is
+/// what proves a given label describes a real qualified machine. This type
+/// proves only that the label is safe to publish.
+///
+/// That safety is the point. ADR-0002's waiver requires a hardware identity in
+/// every run report, and the obvious way to produce one — a directory name, a
+/// hostname, a path — is exactly what
+/// `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Storage and access keeps
+/// out of published documents and what issue #82 spent a change removing. A
+/// caller reaching for a path cannot construct one of these.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct HardwareEnvironmentId(String);
+
+impl HardwareEnvironmentId {
+    /// Accepts a bounded, path-free, printable label.
+    ///
+    /// # Errors
+    ///
+    /// [`MalformedHardwareEnvironmentId`] when the label is empty, longer than
+    /// [`MAX_HARDWARE_ENVIRONMENT_ID_BYTES`], or carries anything but printable
+    /// ASCII — which excludes whitespace — or carries a path separator. The
+    /// remedy is the project owner's: name the governed environment record
+    /// rather than the directory it happens to sit in.
+    pub fn parse(label: &str) -> Result<Self, MalformedHardwareEnvironmentId> {
+        let usable = !label.is_empty()
+            && label.len() <= MAX_HARDWARE_ENVIRONMENT_ID_BYTES
+            && label.bytes().all(|byte| byte.is_ascii_graphic())
+            && !label.contains(['/', '\\']);
+        if usable {
+            return Ok(Self(label.to_owned()));
+        }
+        Err(MalformedHardwareEnvironmentId(label.to_owned()))
+    }
+
+    /// The label as it is written into a run report.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for HardwareEnvironmentId {
+    type Error = MalformedHardwareEnvironmentId;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<HardwareEnvironmentId> for String {
+    fn from(value: HardwareEnvironmentId) -> Self {
+        value.0
+    }
+}
+
+impl schemars::JsonSchema for HardwareEnvironmentId {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "HardwareEnvironmentId".into()
+    }
+
+    /// The published pattern is the parser's rule, so a consumer validating
+    /// against the schema alone refuses the same labels the type does rather
+    /// than discovering the difference at parse time.
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "Governed environment label: bounded printable ASCII with no \
+                            whitespace and no path separator. Configured provenance, proved by \
+                            docs/operations/REFERENCE-ENVIRONMENT.md rather than by this value.",
+            // Printable ASCII without the space, the slash, or the
+            // backslash — the parser's rule as a character class. The
+            // absolute-end guard is required as it is on
+            // `BLAKE3_HEX_PATTERN`: ECMAScript `$` also matches before a
+            // trailing newline, so a label ending in one would pass.
+                "pattern": r"^[!-.0-9:-\[\]-~]+$(?![\s\S])",
+            "maxLength": MAX_HARDWARE_ENVIRONMENT_ID_BYTES,
+        })
+    }
+}
+
+/// A hardware environment label that cannot be published.
+#[derive(Debug, Error)]
+#[error(
+    "hardware environment id `{0}` is not a bounded path-free printable label; name the governed \
+ environment record rather than a directory, host, or path"
+)]
+pub struct MalformedHardwareEnvironmentId(String);
+
+/// The worker thread allowance a build declared, in its three dimensions.
+///
+/// **Declared, never sampled**, which is why these are plain counts rather
+/// than [`Measured`]: the build chose them before the worker started, so an
+/// "unavailable" reading is not a state this can be in.
+///
+/// Three numbers rather than one, because one would hide which limit binds.
+/// `worker/launcher.json` sets the native allowance, ADR-0001 §10.1 keeps pool
+/// size at one until measured evidence authorizes more, and the worker pins its
+/// own interop count — a single figure could not say which of those changed.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct WorkerThreadBudget {
+    /// Worker processes the build was allowed to run at once.
+    pub worker_processes_count: NonZeroU32,
+    /// Native threads each worker was allowed, from `worker/launcher.json`.
+    pub native_threads_per_worker_count: NonZeroU32,
+    /// Interop threads each worker was allowed, pinned by the worker itself.
+    pub interop_threads_per_worker_count: NonZeroU32,
+}
+
+/// Whether a worker thread allowance applies to this build at all.
+///
+/// An in-process backend has no worker process, so it has no worker thread
+/// budget — and saying so is different from declaring 1/1/1, which would
+/// publish an allowance nothing enforces. `Measured` is not the vehicle for
+/// this: these are declared counts, and "not applicable" is not a failure to
+/// observe.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub enum DeclaredThreadBudget {
+    /// A worker process ran under this declared allowance.
+    Worker(WorkerThreadBudget),
+    /// The backend ran inside the supervisor, so no worker allowance applies.
+    InProcess,
+}
+
+/// The environment one build ran in, as ADR-0002's waiver requires it kept.
+///
+/// Three facts the accepted waiver names separately — worker identity,
+/// hardware identity, and the declared thread budget. They travel together
+/// because they are read together, once, at the gate: reading them later would
+/// let a mutable executor answer for an environment the build did not use.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RunEnvironment {
+    /// Identity of the executable worker bundle behind this build.
+    pub worker_bundle_hash: WorkerBundleHash,
+    /// Governed label of the machine it ran on.
+    pub hardware_environment_id: HardwareEnvironmentId,
+    /// Thread allowance the build declared, or that none applies.
+    pub thread_budget: DeclaredThreadBudget,
+}
+
+#[cfg(test)]
+impl RunEnvironment {
+    /// A recognizable environment for tests that do not exercise one.
+    ///
+    /// Test-only: production builds take theirs from the gate, and a
+    /// constructor that invented one would let a real report carry a label
+    /// nobody configured.
+    pub(crate) fn fixture() -> Self {
+        Self {
+            worker_bundle_hash: "1"
+                .repeat(64)
+                .try_into()
+                .expect("a 64-character hexadecimal digest is a worker bundle hash"),
+            hardware_environment_id: HardwareEnvironmentId::parse(
+                "reference-wsl2-d9d550f06b783405",
+            )
+            .expect("the governed reference environment's identifier is publishable"),
+            thread_budget: DeclaredThreadBudget::Worker(WorkerThreadBudget {
+                worker_processes_count: NonZeroU32::MIN,
+                native_threads_per_worker_count: NonZeroU32::new(4)
+                    .expect("four is a non-zero thread allowance"),
+                interop_threads_per_worker_count: NonZeroU32::MIN,
+            }),
+        }
+    }
 }
 
 impl ReportField {
@@ -243,7 +453,7 @@ impl ReportField {
     /// self-consistent — it does not prove the array is complete. That
     /// remaining gap is why the two live adjacent rather than apart, and it is
     /// the same gap the hand-maintained remedy samples in `error` carry.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 21] = [
         Self::WallTime,
         Self::SynthesisWallTime,
         Self::GeneratedAudio,
@@ -262,6 +472,9 @@ impl ReportField {
         Self::AssemblyDuration,
         Self::NormalizeDuration,
         Self::EncodeDuration,
+        Self::WorkerProcesses,
+        Self::NativeThreadsPerWorker,
+        Self::InteropThreadsPerWorker,
     ];
 
     /// This field's position in [`ReportField::ALL`].
@@ -292,6 +505,9 @@ impl ReportField {
             Self::AssemblyDuration => 15,
             Self::NormalizeDuration => 16,
             Self::EncodeDuration => 17,
+            Self::WorkerProcesses => 18,
+            Self::NativeThreadsPerWorker => 19,
+            Self::InteropThreadsPerWorker => 20,
         }
     }
 
@@ -412,8 +628,85 @@ impl ReportField {
                     ..elapsed
                 }
             }
+            // Declared before the worker started rather than read from it, so
+            // the clock is structural and the fidelity exact: these are the
+            // numbers the build *chose*, and a build cannot be wrong about its
+            // own configuration the way it can be wrong about a sample.
+            Self::WorkerProcesses => FieldSemantics {
+                unit: MeasurementUnit::Count,
+                clock: MeasurementClock::Structural,
+                measured_process: MeasuredProcess::Worker,
+                aggregation: Aggregation::Total,
+                fidelity: Fidelity::Exact,
+            },
+            Self::NativeThreadsPerWorker | Self::InteropThreadsPerWorker => FieldSemantics {
+                unit: MeasurementUnit::Count,
+                clock: MeasurementClock::Structural,
+                measured_process: MeasuredProcess::Worker,
+                aggregation: Aggregation::PerWorker,
+                fidelity: Fidelity::Exact,
+            },
         }
     }
+}
+
+/// The `2.0-skeleton` report, frozen, for reading a package this build did not
+/// write.
+///
+/// Every field the superseded layout carried, so the boundary refuses an
+/// unknown one exactly as `StoredManifestV2` and `LegacyStoredManifest` do.
+/// A superseded layout is still a format this project defines, and
+/// `rust-review` §Types, traits, coherence allows one lenient boundary in this
+/// crate — `export::ProbeResponse`, for tool output — and no other.
+///
+/// Only `join_run_report`'s inputs are read from here. The rest is modelled to
+/// be *refused if absent or unknown*, not to be used, which is the difference
+/// between a frozen decoder and a lenient one.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub(crate) struct LegacyRunReport {
+    /// Layout label, already matched before this shape was selected.
+    pub(crate) schema_version: String,
+    /// Job this build belonged to.
+    pub(crate) job_id: String,
+    /// Attempt within that job.
+    pub(crate) build_attempt: u32,
+    /// Lesson it rendered.
+    pub(crate) lesson_id: String,
+    /// Plan it rendered from.
+    pub(crate) plan_hash: String,
+    /// Whether it finished.
+    pub(crate) completion: ReportCompletion,
+    /// Elapsed time from build entry through package production.
+    pub(crate) wall_micros: u64,
+    /// Time the backend spent starting and loading its model.
+    pub(crate) model_load_micros: Measured,
+    /// Time spent assembling segment audio into the master.
+    pub(crate) assembly_micros: Measured,
+    /// Time spent normalizing that master's loudness.
+    pub(crate) normalize_micros: Measured,
+    /// Time spent encoding both lossy outputs.
+    pub(crate) encode_micros: Measured,
+    /// Per-segment rows, unchanged by the `3.0` move.
+    pub(crate) segments: Vec<RunReportSegment>,
+    /// Advisory join findings, unchanged by the `3.0` move.
+    pub(crate) join_findings: Vec<JoinFinding>,
+    /// Run totals, unchanged by the `3.0` move.
+    pub(crate) synthesis: SynthesisTotals,
+    /// Process figures, which the `3.0` move gave a fourth member.
+    pub(crate) resources: LegacyRunResources,
+}
+
+/// The `2.0-skeleton` resources block: the three members before the budget.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub(crate) struct LegacyRunResources {
+    /// High-water resident memory of the worker.
+    pub(crate) peak_resident_kib: Measured,
+    /// Open file descriptors held by the worker.
+    pub(crate) open_handles_count: Measured,
+    /// Times the worker was restarted.
+    pub(crate) worker_restarts_count: u32,
 }
 
 /// Why a measurement this document expected is not present.
@@ -591,6 +884,11 @@ pub struct RunResources {
     pub open_handles_count: Measured,
     /// Times the worker was restarted. Structurally zero at pool size one.
     pub worker_restarts_count: u32,
+    /// Thread allowance this build declared, in its three dimensions.
+    ///
+    /// The third fact accepted ADR-0002's waiver retains. Declared rather than
+    /// sampled, so unlike its neighbours here it is not [`Measured`].
+    pub thread_budget: DeclaredThreadBudget,
 }
 
 /// The layout label a `run-report.json` this build writes carries.
@@ -683,6 +981,18 @@ pub struct RunReport {
     pub lesson_id: String,
     /// Plan hash the build rendered from.
     pub plan_hash: String,
+    /// Identity of the executable worker bundle behind this build.
+    ///
+    /// Required by accepted ADR-0002's waiver, which retains "worker identity"
+    /// in every run report until it expires. Separate from
+    /// [`RunReport::hardware_environment_id`] because that sentence names the
+    /// two independently, and a build can change one without the other.
+    pub worker_bundle_hash: WorkerBundleHash,
+    /// Governed label of the machine this build ran on.
+    ///
+    /// The other half of the same waiver sentence. See
+    /// [`HardwareEnvironmentId`] for why it is a label rather than a probe.
+    pub hardware_environment_id: HardwareEnvironmentId,
     /// Whether the build finished, with a required class only when it failed.
     pub completion: ReportCompletion,
     /// Elapsed time from build entry through package production, sampled
@@ -829,6 +1139,7 @@ impl RunReport {
         plan_hash: &str,
         build_attempt: u32,
         completion: ReportCompletion,
+        environment: &RunEnvironment,
     ) -> Self {
         let absent = Measured::Unavailable {
             reason: Unavailable::StageNotReached,
@@ -839,6 +1150,8 @@ impl RunReport {
             build_attempt,
             lesson_id: lesson_id.to_owned(),
             plan_hash: plan_hash.to_owned(),
+            worker_bundle_hash: environment.worker_bundle_hash.clone(),
+            hardware_environment_id: environment.hardware_environment_id.clone(),
             completion,
             wall_micros: 0,
             model_load_micros: absent,
@@ -852,6 +1165,7 @@ impl RunReport {
                 peak_resident_kib: absent,
                 open_handles_count: absent,
                 worker_restarts_count: 0,
+                thread_budget: environment.thread_budget,
             },
         }
     }
@@ -860,6 +1174,80 @@ impl RunReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-0002's waiver retains three facts, and this report keeps them apart.
+    ///
+    /// The accepted sentence names "thread-budget, **worker identity, and
+    /// hardware identity**" as three things. `ADR-0001-D002` summarizes them as
+    /// one "environment identity", but it is approved *through* ADR-0002 and
+    /// cannot merge what the controlling decision separates.
+    ///
+    /// Rejects the wrong implementation this story nearly shipped: one
+    /// composite identity carrying the worker bundle hash, with the hardware
+    /// half deferred to a follow-up. That satisfies the summary and leaves an
+    /// accepted obligation false, so the assertion is that the two identities
+    /// are present, distinct, and separately named.
+    #[test]
+    fn t1_e2_run_report_retains_distinct_waiver_identities_and_thread_budget() {
+        let report = RunReport::unmeasured(
+            "job",
+            "lesson",
+            &"0".repeat(64),
+            1,
+            ReportCompletion::Complete,
+            &RunEnvironment::fixture(),
+        );
+        let document = serde_json::to_value(&report).expect("a run report serializes");
+
+        assert_eq!(
+            document["worker_bundle_hash"],
+            serde_json::Value::from("1".repeat(64)),
+            "the worker identity must be published under its own name"
+        );
+        assert_eq!(
+            document["hardware_environment_id"],
+            serde_json::Value::from("reference-wsl2-d9d550f06b783405"),
+            "the hardware identity must be published under its own name"
+        );
+        assert_ne!(
+            document["worker_bundle_hash"], document["hardware_environment_id"],
+            "one value standing for both identities is the reading ADR-0002 forbids"
+        );
+
+        let budget = &document["resources"]["thread_budget"]["worker"];
+        assert_eq!(budget["worker_processes_count"], 1);
+        assert_eq!(budget["native_threads_per_worker_count"], 4);
+        assert_eq!(budget["interop_threads_per_worker_count"], 1);
+    }
+
+    /// A hardware identity is a label, and only a safe one may be published.
+    ///
+    /// `RIGHTS-DATA-ARTIFACT-POLICY.md` §Storage and access keeps host paths
+    /// out of published documents and issue #82 closed the last one. The type
+    /// is what keeps this field from becoming the next: a caller who reaches
+    /// for a directory name cannot construct one.
+    #[test]
+    fn t1_e2_a_hardware_environment_id_refuses_a_path_or_an_unbounded_label() {
+        HardwareEnvironmentId::parse("reference-wsl2-d9d550f06b783405")
+            .expect("the governed reference environment's own identifier is accepted");
+
+        let oversized = "x".repeat(MAX_HARDWARE_ENVIRONMENT_ID_BYTES + 1);
+        let refused: [&str; 7] = [
+            "",
+            " ",
+            "has space",
+            "relative/path",
+            "windows\\path",
+            "/absolute/path",
+            &oversized,
+        ];
+        for candidate in refused {
+            assert!(
+                HardwareEnvironmentId::parse(candidate).is_err(),
+                "`{candidate}` must not be publishable as a hardware identity"
+            );
+        }
+    }
 
     /// Every measured field, checked against the report that publishes them.
     ///
@@ -875,6 +1263,8 @@ mod tests {
             build_attempt: _,
             lesson_id: _,
             plan_hash: _,
+            worker_bundle_hash: _,
+            hardware_environment_id: _,
             completion: _,
             wall_micros: _,
             model_load_micros: _,
@@ -909,7 +1299,16 @@ mod tests {
             peak_resident_kib: _,
             open_handles_count: _,
             worker_restarts_count: _,
+            thread_budget,
         } = resources;
+        match thread_budget {
+            DeclaredThreadBudget::InProcess => {}
+            DeclaredThreadBudget::Worker(WorkerThreadBudget {
+                worker_processes_count: _,
+                native_threads_per_worker_count: _,
+                interop_threads_per_worker_count: _,
+            }) => {}
+        }
 
         ReportField::ALL.to_vec()
     }
@@ -921,6 +1320,8 @@ mod tests {
             build_attempt: 1,
             lesson_id: "lesson".to_owned(),
             plan_hash: "0".repeat(64),
+            worker_bundle_hash: RunEnvironment::fixture().worker_bundle_hash,
+            hardware_environment_id: RunEnvironment::fixture().hardware_environment_id,
             completion: ReportCompletion::Incomplete {
                 error_class: BuildErrorClass::Io,
             },
@@ -964,6 +1365,7 @@ mod tests {
                     reason: Unavailable::NotExposedByEnvironment,
                 },
                 worker_restarts_count: 0,
+                thread_budget: RunEnvironment::fixture().thread_budget,
             },
         }
     }
@@ -1061,6 +1463,7 @@ mod tests {
             &"0".repeat(64),
             1,
             ReportCompletion::Complete,
+            &RunEnvironment::fixture(),
         ))
         .expect("serialize complete report");
         complete["error_class"] = serde_json::json!("io");

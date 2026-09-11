@@ -39,7 +39,7 @@ use crate::{
     TtsExecutor, Unavailable,
     durable::read_bounded_bytes,
     export, io_error, managed,
-    run_report::{MICROSECONDS_PER_MILLISECOND, synthesis_totals},
+    run_report::{MICROSECONDS_PER_MILLISECOND, RunEnvironment, synthesis_totals},
     tools, voice_gate,
 };
 
@@ -625,6 +625,13 @@ pub fn resume_preview_with_services(
 /// What the gates produced and one attempt renders.
 struct GatedBuild {
     lesson: ValidatedLesson,
+    /// The environment the gate observed, carried rather than re-read.
+    ///
+    /// One snapshot, taken beside the descriptor the plan was built from. A
+    /// second read could answer for an environment this build never used, and
+    /// accepted ADR-0002's waiver requires the report to describe the one it
+    /// did.
+    environment: RunEnvironment,
     /// The exact bytes that were validated, retained beside `job.json`.
     lesson_bytes: Vec<u8>,
     plan: RenderPlan,
@@ -652,6 +659,12 @@ fn gate(
         voice_gate::resolve_speakers(voice_profile_root, &lesson, VoiceUse::PrivateSynthesis)?;
 
     let descriptor = services.executor.descriptor();
+    let executor_environment = services.executor.environment();
+    let environment = RunEnvironment {
+        worker_bundle_hash: descriptor.worker_bundle_hash.clone(),
+        hardware_environment_id: executor_environment.hardware_environment_id,
+        thread_budget: executor_environment.thread_budget,
+    };
     let context =
         descriptor.synthesis_context(lesson.language().clone(), voice_conditioning_hashes);
     // Selection precedes executor validation and tool preflight, so a stale
@@ -669,6 +682,7 @@ fn gate(
     })?;
     Ok(GatedBuild {
         lesson,
+        environment,
         lesson_bytes,
         plan,
         synthesis_requests,
@@ -699,6 +713,7 @@ fn render_attempt(
         gated.lesson.lesson_id().to_owned(),
         gated.plan.plan_hash.as_str().to_owned(),
         run_started,
+        gated.environment.clone(),
     );
     let job_id = progress.job_id.clone();
     match render_attempt_inner(
@@ -738,6 +753,9 @@ struct BuildProgress {
     job_id: String,
     plan_hash: String,
     started: Instant,
+    /// The gate's environment snapshot, so a report sealed on the failure path
+    /// carries the same three waiver facts a complete one does.
+    environment: RunEnvironment,
     build_attempt: Option<u32>,
     segments: Vec<RunReportSegment>,
     measurements: ExecutorMeasurements,
@@ -745,11 +763,17 @@ struct BuildProgress {
 }
 
 impl BuildProgress {
-    fn new(job_id: String, plan_hash: String, started: Instant) -> Self {
+    fn new(
+        job_id: String,
+        plan_hash: String,
+        started: Instant,
+        environment: RunEnvironment,
+    ) -> Self {
         Self {
             job_id,
             plan_hash,
             started,
+            environment,
             build_attempt: None,
             segments: Vec::new(),
             // Until a stage runs, nothing about it was observed. Every field
@@ -776,6 +800,8 @@ impl BuildProgress {
             build_attempt,
             lesson_id: self.job_id.clone(),
             plan_hash: self.plan_hash.clone(),
+            worker_bundle_hash: self.environment.worker_bundle_hash.clone(),
+            hardware_environment_id: self.environment.hardware_environment_id.clone(),
             completion,
             wall_micros: duration_micros(self.started.elapsed()),
             model_load_micros: self.measurements.model_load_micros,
@@ -795,6 +821,7 @@ impl BuildProgress {
                 // this is structural rather than observed, which
                 // `ReportField::WorkerRestarts` states as its clock.
                 worker_restarts_count: 0,
+                thread_budget: self.environment.thread_budget,
             },
         }
     }
