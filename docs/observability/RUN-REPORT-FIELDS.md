@@ -51,8 +51,9 @@ carry no row above: `ReportField` declares a unit for every member it names, and
 `study_tts_runtime::HardwareEnvironmentId` is what keeps the second publishable — a bounded
 printable label with no whitespace and no path separator, so a caller reaching for a directory name
 is refused rather than truncated. It is **configured provenance**:
-`docs/operations/REFERENCE-ENVIRONMENT.md` §Environment ID is what proves a label describes a real
-qualified machine, and the type proves only that the label is safe to publish.
+`docs/operations/REFERENCE-ENVIRONMENT.md`, which records the **Environment ID** in its header, is
+what proves a label describes a real qualified machine; the type proves only that the label is safe
+to publish.
 
 `resources.thread_budget` is **declared, never sampled**. Its three numbers were fixed before the
 worker started — the native allowance from `worker/launcher.json`, pool size one until ADR-0001

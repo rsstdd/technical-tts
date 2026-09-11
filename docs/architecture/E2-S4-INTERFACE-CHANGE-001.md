@@ -17,21 +17,28 @@ system of record for decisions. Issue #17 is the working record.
 
 ## Version and compatibility
 
-**One published schema is added.** It was first drafted at `1.0-skeleton`; the amendments below
-fold all E2-S4 fields into the still-unmerged contract at `2.0-skeleton`.
+**One published schema is added.** It was first drafted at `1.0-skeleton`, and the first amendment
+below folded the remaining E2-S4 fields into the still-unmerged contract at `2.0-skeleton`. The
+third amendment carries it to `3.0-skeleton`, which is what this section now describes; the rows it
+replaced are preserved in §Amendments rather than deleted.
 
 - Contract ID: `run-report`
-- Old version: none
-- New version: `2.0`, layout `2.0-skeleton`
-- Compatibility class: **new contract**. Nothing consumed it before, so nothing can break.
-- Required fields: fifteen at the root, listed in `PUBLISHED_REQUIRED_SURFACE` under
-  `run-report 2.0`
+- Old version: none at first publication; `2.0` at the third amendment
+- New version: `3.0`, layout `3.0-skeleton`
+- Compatibility class: **new contract** as first drafted, since nothing consumed it before. The
+  `2.0` → `3.0` move is a **Breaking contract** under
+  `docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` §Change classes, because three fields
+  become required.
+- Required fields: seventeen at the root, listed in `PUBLISHED_REQUIRED_SURFACE` under
+  `run-report 3.0`
 - Unknown-field behavior: refused. `#[serde(deny_unknown_fields)]` on every struct and on both
-  `Measured` variants; no `#[serde(other)]` anywhere.
+  `Measured` variants; no `#[serde(other)]` anywhere. The frozen `LegacyRunReport` decoder that
+  reads a `2.0-skeleton` report carries the same attribute and is exempt from nothing.
 - Unknown-version behavior: refused **at the parse**, not compared downstream. `schema_version` is
-  a `RunReportLayout` newtype whose `Deserialize` accepts only `2.0-skeleton` and whose published
+  a `RunReportLayout` newtype whose `Deserialize` accepts only `3.0-skeleton` and whose published
   schema emits that label as a `const`, so the schema and the parser refuse the same bytes at the
-  same field. `fixtures/contracts/e2-s4-run-report-foreign-layout.json` proves both halves.
+  same field. `fixtures/contracts/e2-s4-run-report-foreign-layout.json` proves both halves. The one
+  older layout that is still read arrives through its own decoder rather than through this newtype.
 
 **Why `-skeleton`.** `MANIFEST_SCHEMA_VERSION`'s own doc gives the reason and names this story:
 "E2-S3 and **E2-S4** will break this manifest again, so the label must not claim a stability they
@@ -51,8 +58,8 @@ document from `events.ndjson` and `publication.json`, which stay internal journa
 | **I-1** | Synthesis and cache keys | **Do not move** | Nothing here reaches a synthesis request or a cache key |
 | **I-2** | `plan_hash` | **Does not move** | No plan field is added or reinterpreted |
 | **I-3** | Package transaction identity | **Does not move** | `ExportProfiles::identities` is untouched |
-| **I-4** | Package identity | **Does not move** | No package artifact changes, so no digest moves |
-| **I-5** | Reuse of an existing package | **Unaffected** | `manifest::expected_executions` is untouched, so an existing package still matches |
+| **I-4** | Package identity | **Moves, at the third amendment** | It did not move at first publication, because no package artifact changed. The third amendment changes the sealed report's bytes, and `E2-S4-INTERFACE-CHANGE-002` made the manifest checksum them, so the manifest digest that names a package moves with them |
+| **I-5** | Reuse of an existing package | **Affected, at the third amendment** | `manifest::expected_executions` is still untouched, but `validate_run_report` now returns `ReportLayoutRead::Superseded` for a `2.0-skeleton` report and the reuse predicate requires `Current`, so such a package is preserved and rebuilt rather than reused. Refusing it instead would have made every package written before this change unrecoverable, since `preview::current_for_build` propagates an error and only rebuilds on `Ok(false)` |
 | **I-6** | `manifest` schema | **Moved, by `E2-S4-INTERFACE-CHANGE-002`** | Predicted here and made there: the manifest now checksums the sealed report, a **Breaking contract** move to `3.0-skeleton`. The run report joins the package as its seventh artifact, and reuse gained a check on the recorded artifact set so a six-artifact package cannot stand in for one holding seven |
 
 The pipeline now writes partial reports under the job and seals complete reports into packages.
@@ -194,8 +201,10 @@ completion and error class became one typed state, and join findings became requ
 ## Impact
 
 - **Synthesis identities affected:** none. See I-1.
-- **Existing artifacts:** no artifact is migrated or deleted. A `2.0-skeleton` manifest remains
-  readable but cannot satisfy current reuse because it has no run report.
+- **Existing artifacts:** no artifact is migrated or deleted, at first publication or at the third
+  amendment. A `2.0-skeleton` manifest remains readable but cannot satisfy current reuse because it
+  has no run report, and a `2.0-skeleton` *report* is likewise readable and never reusable: the
+  package holding it is preserved and rebuilt, never refused.
 - **Security, rights, and privacy:** no control is waived. The document is structurally incapable
   of carrying the three things the rights policy excludes.
 - **Determinism:** identities and ratios use canonical integer representations. Elapsed and sampled
@@ -251,12 +260,12 @@ is why the rows stay separate.
 
 | Role | Decision sought | Status |
 |---|---|---|
-| Project owner | Accept a new published document at `2.0-skeleton` | |
-| Contract owner (T-CLI) | Accept `run-report` as the eighth published schema, and the fifteen required root fields recorded for it | |
-| Affected track (T-RUNTIME) | Accept that no identity, package, cache entry, or existing schema moves, and that the manifest's move to `3.0-skeleton` is named but not made here | |
+| Project owner | Accept a new published document at `3.0-skeleton` | |
+| Contract owner (T-CLI) | Accept `run-report` as the eighth published schema, and the seventeen required root fields recorded for it | |
+| Affected track (T-RUNTIME) | Accept that **package identity moves** at the third amendment, because the manifest checksums the report, while no synthesis, verification, plan, takes, or cache identity moves and no cache entry is stranded; and that a `2.0-skeleton` report stays readable through a frozen decoder and can never be reused | |
 | Affected track (T-AUDIO) | Accept that the report publishes both an aggregate and a worst-segment real-time factor, and claims comparability to `docs/perf/BUDGETS.md`'s baseline only narrowly | |
 | Engineering owner | Accept the answer to the freeze charter's delegated question: `events.ndjson` stays unpublished and `JOB_EVENT_SCHEMA_VERSION` does not move | |
-| Effective version and date | `run-report` `2.0` added, on signature | |
+| Effective version and date | `run-report` `3.0` added, on signature | |
 
 ## Amendments
 

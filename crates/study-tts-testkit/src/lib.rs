@@ -161,8 +161,8 @@ impl FakeTtsExecutor {
 ///
 /// One spelling, so a test asserting on a published report and an example
 /// rendering one cannot disagree about which environment they claim.
-/// `docs/operations/REFERENCE-ENVIRONMENT.md` §Environment ID is where the
-/// value comes from.
+/// `docs/operations/REFERENCE-ENVIRONMENT.md` records it as the
+/// **Environment ID** in its header, and that is where this value comes from.
 #[must_use]
 pub fn reference_hardware_environment_id() -> HardwareEnvironmentId {
     HardwareEnvironmentId::parse("reference-wsl2-d9d550f06b783405")
