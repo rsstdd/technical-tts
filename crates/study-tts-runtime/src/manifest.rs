@@ -1158,6 +1158,10 @@ enum ReportLayoutRead {
 /// Just the declared layout, read before the document it selects a shape for.
 #[derive(Deserialize)]
 struct DeclaredReportLayout {
+    // No `deny_unknown_fields`, for the reason `StoredManifestVersion` states
+    // above: this pass only selects the strict decoder, and the decoder it
+    // selects reparses the same bytes with unknown-field rejection. Refusing
+    // here would refuse every report, since a report is all the other fields.
     schema_version: String,
 }
 
