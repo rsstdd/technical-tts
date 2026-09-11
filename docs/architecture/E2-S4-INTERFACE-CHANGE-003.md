@@ -28,15 +28,31 @@ This moves the Rust port only. `job.json` remains schema `1.0`; no field or stat
 `events.ndjson` remains an internal journal at `JOB_EVENT_SCHEMA_VERSION`. Adding the new
 `JobEventKind` variants is read-compatible because the envelope and prior variants are unchanged.
 
-### `tts_executor` — `e1.tts-executor.3.0` → `3.1`, compatible extension
+### `tts_executor` — `e1.tts-executor.3.0` → `4.0`, breaking
 
-`TtsExecutor::process_measurements` is a defaulted method returning `ExecutorMeasurements`. Existing
-in-process implementations continue to compile and honestly report `NoWorkerProcess`; the product
-worker overrides it with model-load elapsed time and bounded `/proc` samples. The method changes no
-request, response, backend descriptor, worker frame, or synthesis behavior.
+Two methods arrive, and they are classed differently because one is defaulted and one is not. The
+amendment below carries the contract from the `3.1` this section first described to `4.0`; that
+first move is kept here rather than deleted, because the `3.1` surface is what a reader of the
+`2c3166e` build sees.
 
-The minor version is required even though implementations need no edit: the frozen public surface
-gained a callable capability. The version is not a synthesis input and moves no cache key.
+`TtsExecutor::process_measurements` was the `3.1` **compatible extension**: a defaulted method
+returning `ExecutorMeasurements`. Existing in-process implementations continued to compile and
+honestly reported `NoWorkerProcess`; the product worker overrides it with model-load elapsed time
+and bounded `/proc` samples. The method changes no request, response, backend descriptor, worker
+frame, or synthesis behavior. A minor move was still required, because the frozen public surface
+gained a callable capability.
+
+`TtsExecutor::environment` is the `4.0` **breaking** addition: a **required** method returning
+`ExecutorEnvironment`, which carries the `HardwareEnvironmentId` and the `WorkerThreadBudget` that
+accepted ADR-0002's waiver retains in every run report.
+`docs/governance/INTERFACE-FREEZE-AND-CHANGE-CONTROL.md` §Change classes puts a required addition
+under **Breaking contract**, so the major moves. It is required rather than defaulted for the reason
+`synthesis.rs` already warns about: a wrapper that takes a default reports nothing and no test
+notices, and here that silence would be published as a declared fact under a live waiver. Making it
+required turns every implementation and every delegating wrapper into a compile error until it
+answers deliberately.
+
+Neither version is a synthesis input and neither moves a cache key.
 
 ## Identity and durable-state effect
 
@@ -53,8 +69,13 @@ gained a callable capability. The version is not a synthesis input and moves no 
   fake and filesystem implementations.
 - `t4_e2_a_build_records_one_event_for_every_stage_it_reached` and
   `t4_e2_a_failed_synthesis_retains_its_segment_and_event` exercise the event path.
-- The executor contract runs against the fake and product worker; the default is exercised by the
-  in-process fake, and worker measurements are covered by the worker executor tests.
+- The executor contract runs against the fake and product worker; `process_measurements`' default
+  is exercised by the in-process fake, and worker measurements are covered by the worker executor
+  tests.
+- `t4_e2_worker_executor_reports_configured_environment_and_thread_budget` proves the required
+  `environment` method answers with the identity and budget its configuration was given, and
+  `t4_e2_a_report_names_the_environment_read_at_the_gate` proves the pipeline reads it once and
+  publishes that read rather than a later one.
 
 ## Approval
 
