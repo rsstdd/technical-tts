@@ -17,10 +17,12 @@ to `3.0` / `3.0-skeleton`, and in doing so moved package identity, because the m
 the sealed report. The listening disposition v1 carries was taken against a package this build can
 no longer produce. So the render was repeated and this record measures the result.
 
-**Status stays `Proposed`**, and for one reason only: **§Listening is unfilled.** Every machine
-measurement below is complete. A human listening session against
-`docs/operations/PREVIEW-REVIEW-CHECKLIST.md` `1.0` has not been taken against this package, and
-nothing in this file may be read as one.
+**Status stays `Proposed`**, and §Listening says exactly why. No session was taken against this
+package. What §Listening records is the project owner's decision of 2026-09-11 that the 2026-09-07
+session carries forward, on the evidence in §Determinism that the audio is byte for byte the audio
+that session judged. One criterion is left unanswered by that carry-forward — "Protected terms",
+which `PREVIEW-REVIEW-CHECKLIST.md` `1.0` added after the session — and the record says so rather
+than treating the checklist as fully answered.
 
 ## Acceptance criteria, stated before the results
 
@@ -206,40 +208,83 @@ It also bounds what a listening session could newly find — see §Listening.
 
 No audio, transcript, or voice reference is committed. The governed root is outside Git.
 
-## Listening — AC6, NOT TAKEN
+## Listening — AC6, carried forward from 2026-09-07
 
-**This section is empty on purpose and the record cannot be accepted while it is.**
+**No session was held against this package, and this section does not claim one.** What it records
+is a decision the project owner made on 2026-09-11: that the 2026-09-07 session stands for package
+`301c4cf8…`, because the material it judged is byte for byte the material this package contains.
 
-No listening session has been held against package `301c4cf8…`. Nothing above substitutes for one:
-every figure in this record is a machine measurement, and ADR-0001 §17.5 makes the human review a
-gate condition precisely because automated checks cannot reach what it judges.
+### The decision, and what makes it available
 
-Two facts the reviewer should have before the session, both established above rather than asserted:
+§Determinism above establishes that all six media and text artifacts hash to the values the
+2026-09-06 package carries — the master digest recomputed from that package directly, not read from
+v1. Only `manifest.json` differs, and a manifest is not audio.
 
-- **The audio is byte-identical to the material approved on 2026-09-07.** All six media and text
-  artifacts hash to the same values. A session against this package listens to the same bytes v1's
-  session listened to.
-- **The master is quiet on purpose**, at `-27.02` LUFS, roughly 11 dB below ordinary spoken-word
-  level, because that is the loudest this voice reference permits beneath the `-1.0` dBTP ceiling
-  `ADR-0001-D012` sets. A finding of "too quiet" would restate a recorded constraint.
+`m2-acceptance-lesson-render-v1` §Attribution binds its disposition to "the seven in §Raw
+artifacts". Six of those seven are the same bytes here; the seventh is the manifest, which changed
+because it moved to `4.0-skeleton` and now checksums the sealed run report. The owner's judgment
+is that a disposition about how a lesson *sounds* is bound to the audio it was taken against, and
+that re-listening to identical bytes would produce a second record of the same act rather than new
+evidence.
 
-**What those two facts do not settle is a governance question this record must not answer:** whether
-M2 requires a fresh full session against the new package, or whether a disposition recorded against
-the new manifest digest suffices given that the bytes under it are unchanged. v1's attribution row
-binds its disposition to "the seven in §Raw artifacts", and six of those seven are the same bytes
-while the seventh — the manifest — is not. The owner decides; this record records the decision and
-the session, whichever way it goes.
+**Decision:** Ross Todd, project owner, 2026-09-11 — the 2026-09-07 disposition carries forward to
+package `301c4cf8…`. Recorded here rather than by amending v1, which is superseded and immutable.
 
-Until then, fill the subsections v1 carries — Attribution, Per-segment findings, Package review,
-Disposition — transcribing the criteria of `PREVIEW-REVIEW-CHECKLIST.md` `1.0` rather than
-restating them, which is the drift that checklist exists to stop. `1.0` is the version
-`E2-S6-INTERFACE-CHANGE-001` made effective on 2026-09-11 and adds the "Protected terms" criterion
-the file never had, so this session answers one criterion more than v1's did.
+### What carried forward, transcribed from the session that produced it
+
+Taken **2026-09-07, 18:17 CEST (UTC+02:00)**, on built-in laptop speakers, by Ross Todd as code
+owner and project owner, against `docs/operations/PREVIEW-REVIEW-CHECKLIST.md` as it then stood.
+
+- **Disposition: approved for private preview. No finding of any kind**, across all 34 segments.
+- `Loudness` was answered **`not reachable`** on every row, not `none`: built-in speakers do not
+  resolve fine level drift, and `none` would claim a judgment the equipment could not make.
+- The production-scope box was **not available** and was not left blank by oversight.
+  `take_selection_source` is `implicit` and every segment holds take 0, and the checklist forbids a
+  generated take-zero selection backing a production claim. That is still true of this package.
+- The three recall prompts — `seg-0006`, `seg-0016`, `seg-0026` — each carry a 2 500 ms response
+  interval, and ADR-0001 §13.2's interval was judged sufficient at those rows.
+- `lesson.mp3`'s encoder-artifact item was left **unchecked as not reachable** on that equipment.
+
+The full 34-row finding table, with timecodes computed from the published manifest, is in
+`m2-acceptance-lesson-render-v1` §Per-segment findings. It is not copied here: the rows describe
+bytes this package shares, and a transcription would be a second copy that could drift from the
+record that actually holds the session.
+
+### Re-measured against this package, not assumed
+
+Three of v1's six package-review items were answered by measurement rather than by ear, and
+measurement does not carry forward on an identity argument — it was taken over different files, one
+of which changed. Each was re-run against `301c4cf8…`:
+
+| Item | Result on this package |
+|---|---|
+| Chapters and captions align with the audio | 34 VTT cues, 34 manifest segments, 34 chapters |
+| WAV, M4A, and MP3 all play | All three decode end to end under FFmpeg with **zero errors**, at 309.30 s, 309.30 s, and 309.36 s — the MP3's 60 ms being encoder frame padding |
+| No source text, diagnostic data, or voice-reference path leaks into artifact metadata | Only muxer-written tags: `encoder=Lavf60.16.100` on each, plus M4A brand and handler fields. No lesson text, no path, no diagnostic value |
+
+The figures match v1's, which is what six byte-identical artifacts predict — but they were measured,
+not inferred.
+
+### What this carry-forward does not cover
+
+- **The run report is new and no listening judged it.** It is not audio and no checklist criterion
+  reaches it; §AC8 measures it instead.
+- **`PREVIEW-REVIEW-CHECKLIST.md` `1.0`**, made effective 2026-09-11 by
+  `E2-S6-INTERFACE-CHANGE-001`, adds a **"Protected terms"** criterion the file did not carry on
+  2026-09-07. The carried session could not have answered it, and this record does not pretend
+  otherwise. **That criterion is unanswered for this package** and is the one thing a future session
+  would add.
+- **Everything v1's session could not arbitrate still cannot be**: fine level drift and encoder
+  artifacts beyond built-in speakers, any join between two performances, and the provisional
+  loudness references themselves, which stay provisional under `ADR-0001-D012` until ADR-0003 is
+  accepted. This record does not promote them.
 
 ## Deviations and limitations
 
-- **The record is unsigned and §Listening is unfilled.** That is the only thing standing between
-  this record and M2's render obligation.
+- **The record is unsigned, and its AC6 rests on a carried-forward session rather than a session
+  taken against this package.** §Listening states the decision, who made it, and on what evidence.
+  The one criterion the carry-forward cannot answer — `PREVIEW-REVIEW-CHECKLIST.md` `1.0`'s
+  "Protected terms" — is named there rather than counted as answered.
 - **One delivery style.** Every segment is `calm_explanatory`, one of four the `3.1` schema
   declares, because the launcher parameterises exactly one and the worker refuses every other by
   name. Issue #80's AC2 asks for delivery-style variety; it stays open until E5-S1 freezes
@@ -259,7 +304,9 @@ the file never had, so this session answers one criterion more than v1's did.
 | Role | Decision sought | Status |
 |---|---|---|
 | Engineering owner | Accept the render, the run report's six retained measures, and the determinism result | |
-| Reviewer (AC6) | Record the listening session and its disposition | |
+| Reviewer (AC6) | Accept that the 2026-09-07 session carries forward to this package on byte-identical audio, and that "Protected terms" is unanswered | Decided — Ross Todd, 2026-09-11; see §Listening |
 | Project owner | Accept or refuse the package for private preview | |
 
-Unsigned. No row above may be filled by anyone who did not perform the act it names.
+Unsigned. No row above may be filled by anyone who did not perform the act it names. The AC6 row
+records a **decision about** a session, not a session: the act it names is the judgment that
+identical bytes need not be judged twice, and that is the act Ross Todd performed on 2026-09-11.
