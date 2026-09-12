@@ -46,12 +46,24 @@ fn t4_e2_doctor_reports_drvfs_tools_checksums_and_core_budget() {
     );
     let said = String::from_utf8(report.stdout).expect("stdout is UTF-8");
 
+    // One per bullet of ADR-0001 §14's list, so a check that is dropped is a
+    // failure here rather than an absence nobody notices.
     for subject in [
+        "WSL2 and supported Ubuntu version",
+        "supported OS and architecture",
+        "the workspace is writable",
         "DrvFS",
+        "free disk space",
+        "gcc",
+        "cmake",
+        "python3",
         "FFmpeg",
         "ffprobe",
+        "worker runtime and locked dependencies",
         "checksums",
+        "GPU or CPU device",
         "physical-core topology",
+        "offline mode",
     ] {
         assert!(said.contains(subject), "`doctor` reports {subject}: {said}");
     }

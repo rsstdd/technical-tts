@@ -82,8 +82,8 @@ impl PackageToolchain {
         // filesystem only.
         let ffmpeg_path = tools::resolve("FFmpeg", ffmpeg_executable)?;
         let ffprobe_path = tools::resolve("ffprobe", ffprobe_executable)?;
-        let ffmpeg = tools::identify("FFmpeg", ffmpeg_path)?;
-        let ffprobe = tools::identify("ffprobe", ffprobe_path)?;
+        let ffmpeg = tools::identify("FFmpeg", ffmpeg_path, "-version")?;
+        let ffprobe = tools::identify("ffprobe", ffprobe_path, "-version")?;
         let profiles = export::export_profiles();
         let encoder_preflight =
             export::preflight_encoder(&ffmpeg, &profiles.ffmpeg_encoders, export::MP3_ENCODER)?;

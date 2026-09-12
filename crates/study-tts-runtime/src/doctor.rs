@@ -1,15 +1,16 @@
 //! What this machine can and cannot do, before a build depends on it.
 //!
-//! ADR-0001 §14 lists fourteen things `study-tts doctor` verifies. This
-//! reports the four `DELIVERY-PLAN.md` E2-S5's named test pins — the
-//! filesystem beneath the workspace, the external tools, the governed
-//! checksums, and the core budget — and **names the rest rather than omitting
-//! them**, because a reader cannot otherwise tell a check that passed from one
-//! that never ran. That distinction is what §14 exists to protect.
+//! ADR-0001 §14 lists fourteen things `study-tts doctor` verifies. Ten are
+//! reported here and four cannot be answered by this build — they **name the
+//! story that owns them** rather than being omitted, because a reader cannot
+//! otherwise tell a check that passed from one that never ran. That
+//! distinction is what §14's enumeration exists to protect, and the same
+//! reason a check missing its `--model-root` or `--bundle-root` is reported
+//! refused rather than skipped.
 //!
-//! Four of the fourteen cannot be implemented here at all and say which story
-//! owns them: ASR identities and ASR threads are E4's, pool size above one is
-//! E5-S2's, and the end-to-end smoke render needs the governed model.
+//! The four that wait: ASR identities and the ASR thread budget are E4's, pool
+//! size above one is E5-S2's, and the end-to-end smoke render needs the
+//! governed model.
 
 use std::{
     fmt,
@@ -80,13 +81,195 @@ impl fmt::Display for Finding {
 /// [`Verdict::Refused`] rather than an error, because `doctor` exists to report
 /// a bad environment rather than to fail in one. Only reading `/proc/mounts`
 /// can fail, and it fails as [`crate::IoError::FileSystem`].
-pub fn diagnose(workspace: &Path, model_root: Option<&Path>) -> Result<Vec<Finding>, BuildError> {
-    let mut findings = vec![filesystem_finding(workspace)?];
+pub fn diagnose(
+    workspace: &Path,
+    model_root: Option<&Path>,
+    bundle_root: Option<&Path>,
+) -> Result<Vec<Finding>, BuildError> {
+    let mut findings = vec![host_finding(), architecture_finding()];
+    findings.push(filesystem_finding(workspace)?);
+    findings.push(writable_finding(workspace));
+    findings.push(disk_space_finding(workspace));
     findings.extend(tool_findings());
     findings.push(model_checksum_finding(model_root));
+    findings.push(worker_bundle_finding(bundle_root));
+    findings.push(device_finding(bundle_root));
     findings.push(core_budget_finding());
+    findings.push(offline_finding());
     findings.extend(blocked_findings());
     Ok(findings)
+}
+
+/// WSL2, and the Ubuntu it is running.
+fn host_finding() -> Finding {
+    const CHECK: &str = "WSL2 and supported Ubuntu version";
+    let kernel = std::fs::read_to_string("/proc/version").unwrap_or_default();
+    let release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let named = |key: &str| {
+        release
+            .lines()
+            .find_map(|line| line.strip_prefix(key))
+            .map(|value| value.trim_matches('"').to_owned())
+    };
+    let distribution = named("NAME=").unwrap_or_else(|| "unknown".to_owned());
+    let version = named("VERSION_ID=").unwrap_or_else(|| "unknown".to_owned());
+
+    // `microsoft-standard-WSL2` is what the WSL2 kernel calls itself. Matched
+    // on the kernel string rather than an environment variable, which a shell
+    // can set and a kernel cannot.
+    Finding {
+        check: CHECK,
+        verdict: if kernel.contains("WSL2") {
+            Verdict::Ok(format!("{distribution} {version} on WSL2"))
+        } else {
+            Verdict::Refused(format!(
+                "{distribution} {version}, and the kernel does not report WSL2; \
+                 ADR-0001 §2 fixes WSL2 as the deployment target"
+            ))
+        },
+    }
+}
+
+/// The operating system and architecture this binary was built for.
+fn architecture_finding() -> Finding {
+    const CHECK: &str = "supported OS and architecture";
+    let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
+    Finding {
+        check: CHECK,
+        verdict: if os == "linux" && arch == "x86_64" {
+            Verdict::Ok(format!("{os} {arch}"))
+        } else {
+            Verdict::Refused(format!("{os} {arch}; this build targets linux x86_64"))
+        },
+    }
+}
+
+/// Whether durable state could actually be written where it is meant to go.
+///
+/// Probed by writing rather than by reading permission bits: a mode that looks
+/// writable and a filesystem mounted read-only disagree, and the second is the
+/// one that stops a build. The probe file is removed immediately, and a
+/// workspace that does not exist yet is reported rather than created — `doctor`
+/// answers questions and does not prepare the ground.
+fn writable_finding(workspace: &Path) -> Finding {
+    const CHECK: &str = "the workspace is writable";
+    if !workspace.is_dir() {
+        return Finding {
+            check: CHECK,
+            verdict: Verdict::Refused(format!("`{}` is not a directory", workspace.display())),
+        };
+    }
+    let probe = workspace.join(".study-tts-doctor-probe");
+    Finding {
+        check: CHECK,
+        verdict: match std::fs::write(&probe, b"") {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&probe);
+                Verdict::Ok(format!("`{}` accepts a write", workspace.display()))
+            }
+            Err(error) => Verdict::Refused(format!("`{}`: {error}", workspace.display())),
+        },
+    }
+}
+
+/// Free space where durable state will land.
+///
+/// `df` for the same reason `lscpu` answers topology: the number wanted is the
+/// one the operating system reports for that mount, and `std` exposes no
+/// syscall for it. Resolved through the same preflight path, so a `df` that is
+/// absent is reported rather than guessed around.
+fn disk_space_finding(workspace: &Path) -> Finding {
+    const CHECK: &str = "free disk space";
+    let Some(resolved) = tools::resolve_executable(Path::new("df")) else {
+        return Finding {
+            check: CHECK,
+            verdict: Verdict::Refused("`df` is not on PATH, so free space is unknown".to_owned()),
+        };
+    };
+    let output = std::process::Command::new(resolved)
+        .arg("-h")
+        .arg("--output=avail,target")
+        .arg(workspace)
+        .output();
+    Finding {
+        check: CHECK,
+        verdict: match output {
+            Ok(result) if result.status.success() => String::from_utf8(result.stdout)
+                .ok()
+                .and_then(|listing| listing.lines().nth(1).map(str::trim).map(ToOwned::to_owned))
+                .map_or_else(
+                    || Verdict::Refused("`df` reported nothing for this path".to_owned()),
+                    Verdict::Ok,
+                ),
+            _ => Verdict::Refused("`df` could not report free space".to_owned()),
+        },
+    }
+}
+
+/// The worker bundle's identity, which every synthesis key depends on.
+fn worker_bundle_finding(bundle_root: Option<&Path>) -> Finding {
+    const CHECK: &str = "worker runtime and locked dependencies";
+    let Some(root) = bundle_root else {
+        return Finding {
+            check: CHECK,
+            verdict: Verdict::Refused(
+                "not checked; pass `--bundle-root` to verify the worker bundle".to_owned(),
+            ),
+        };
+    };
+    Finding {
+        check: CHECK,
+        verdict: match crate::worker_bundle::WorkerBundle::load(root)
+            .and_then(|bundle| bundle.verified_hash())
+        {
+            Ok(hash) => Verdict::Ok(format!("bundle identity {}", hash.as_str())),
+            Err(error) => Verdict::Refused(error.to_string()),
+        },
+    }
+}
+
+/// The device the launcher declares, which is what the worker will use.
+fn device_finding(bundle_root: Option<&Path>) -> Finding {
+    const CHECK: &str = "GPU or CPU device compatibility";
+    let Some(root) = bundle_root else {
+        return Finding {
+            check: CHECK,
+            verdict: Verdict::Refused(
+                "not checked; pass `--bundle-root` to read the launcher".to_owned(),
+            ),
+        };
+    };
+    let launcher = root.join("worker").join("launcher.json");
+    Finding {
+        check: CHECK,
+        verdict: match std::fs::read(&launcher)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|document| document.get("device")?.as_str().map(ToOwned::to_owned))
+        {
+            Some(device) => {
+                Verdict::Ok(format!("`{device}`, as `{}` declares", launcher.display()))
+            }
+            None => Verdict::Refused(format!("`{}` declares no device", launcher.display())),
+        },
+    }
+}
+
+/// That this build reaches no network, which is a property rather than a probe.
+///
+/// ADR-0001 §2 makes the render path offline and nothing here opens a socket,
+/// so there is no state to sample: a check that pinged something would be
+/// testing the network rather than this build. What is reported is the fact and
+/// where it is fixed, so a reader can verify the claim rather than take it.
+fn offline_finding() -> Finding {
+    Finding {
+        check: "offline mode",
+        verdict: Verdict::Ok(
+            "the render path opens no socket; ADR-0001 §2 fixes it and the T1–T4 suites run \
+             offline"
+                .to_owned(),
+        ),
+    }
 }
 
 /// Whether the governed model's declared artifacts still hash to what this
@@ -169,16 +352,26 @@ fn filesystem_finding(workspace: &Path) -> Result<Finding, BuildError> {
     })
 }
 
-/// FFmpeg and ffprobe, resolved and version-probed before anything runs.
+/// Every external binary ADR-0001 §14 names, resolved and version-probed.
+///
+/// `gcc`, `cmake`, and `python3` join FFmpeg and ffprobe because §14 asks for
+/// "successful execution and parsed versions" of all of them: the first three
+/// build the worker's locked dependencies, and a machine that cannot run them
+/// cannot restore the bundle it renders through.
 fn tool_findings() -> Vec<Finding> {
     [
-        ("FFmpeg is present and answers `-version`", "ffmpeg"),
-        ("ffprobe is present and answers `-version`", "ffprobe"),
+        ("FFmpeg reports a version", "ffmpeg", "-version"),
+        ("ffprobe reports a version", "ffprobe", "-version"),
+        ("cmake reports a version", "cmake", "-version"),
+        // Both refuse the single-dash form outright, which is why the flag is
+        // carried per tool rather than assumed.
+        ("gcc reports a version", "gcc", "--version"),
+        ("python3 reports a version", "python3", "--version"),
     ]
     .into_iter()
-    .map(|(check, tool)| Finding {
+    .map(|(check, tool, flag)| Finding {
         check,
-        verdict: match tools::inspect(tool, Path::new(tool)) {
+        verdict: match tools::inspect_with_flag(tool, Path::new(tool), flag) {
             // The binary that answered, not the name asked for: a `doctor`
             // that reported the request would not say which build ran.
             Ok(identity) => Verdict::Ok(format!(

@@ -111,6 +111,9 @@ enum Command {
         /// that said nothing would read like one that passed.
         #[arg(long)]
         model_root: Option<PathBuf>,
+        /// Root holding `worker/`, to verify the bundle and read the launcher.
+        #[arg(long)]
+        bundle_root: Option<PathBuf>,
     },
     /// Accept the current package's takes as an explicit selection.
     #[command(subcommand)]
@@ -337,9 +340,15 @@ fn run(command: Command, quiet: bool) -> Result<String, BuildError> {
         Command::Doctor {
             workspace,
             model_root,
+            bundle_root,
         } => {
             let model = model_root.map(|root| workspace_root(&root)).transpose()?;
-            run_doctor(&workspace_root(&workspace)?, model.as_deref())
+            let bundle = bundle_root.map(|root| workspace_root(&root)).transpose()?;
+            run_doctor(
+                &workspace_root(&workspace)?,
+                model.as_deref(),
+                bundle.as_deref(),
+            )
         }
         Command::Takes(TakesCommand::Accept {
             workspace,
@@ -632,8 +641,12 @@ fn workspace_root(workspace: &Path) -> Result<PathBuf, BuildError> {
 /// A refused check is reported, not raised: `doctor` exists to describe a bad
 /// environment rather than to fail in one, and an operator running it has
 /// already been refused by something else.
-fn run_doctor(workspace: &Path, model_root: Option<&Path>) -> Result<String, BuildError> {
-    let findings = diagnose(workspace, model_root)?;
+fn run_doctor(
+    workspace: &Path,
+    model_root: Option<&Path>,
+    bundle_root: Option<&Path>,
+) -> Result<String, BuildError> {
+    let findings = diagnose(workspace, model_root, bundle_root)?;
     let refused = findings
         .iter()
         .filter(|finding| matches!(finding.verdict, study_tts_runtime::Verdict::Refused(_)))

@@ -61,7 +61,26 @@ pub(crate) struct ToolIdentity {
 /// can record — an unsuccessful exit or empty output alike, since a manifest
 /// that names no version cannot say what produced the build.
 pub(crate) fn inspect(tool: &str, requested: &Path) -> Result<ToolIdentity, BuildError> {
-    identify(tool, resolve(tool, requested)?)
+    inspect_with_flag(tool, requested, "-version")
+}
+
+/// [`inspect`] for a tool that spells its version flag differently.
+///
+/// FFmpeg and cmake answer `-version`; `gcc` and `python3` answer `--version`
+/// and refuse the single-dash form outright. The flag is a parameter rather
+/// than a guess per tool, so every probe still crosses the one supervised
+/// spawn — deadline, process group, bounded capture — that `rust-production`
+/// requires, instead of a second unsupervised path for the awkward two.
+///
+/// # Errors
+///
+/// The failures [`inspect`] documents.
+pub(crate) fn inspect_with_flag(
+    tool: &str,
+    requested: &Path,
+    flag: &str,
+) -> Result<ToolIdentity, BuildError> {
+    identify(tool, resolve(tool, requested)?, flag)
 }
 
 /// Resolves one request to a binary without running anything.
@@ -92,9 +111,10 @@ pub(crate) fn resolve(tool: &str, requested: &Path) -> Result<PathBuf, BuildErro
 pub(crate) fn identify(
     tool: &str,
     resolved_executable: PathBuf,
+    flag: &str,
 ) -> Result<ToolIdentity, BuildError> {
     let mut command = Command::new(&resolved_executable);
-    command.arg("-version");
+    command.arg(flag);
     let invocation = ToolInvocation::new(tool, ToolOperation::VersionProbe, &resolved_executable);
     let output =
         process::run(invocation, command, VERSION_PROBE_POLICY).map_err(|error| match error {
