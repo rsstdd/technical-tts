@@ -19,14 +19,17 @@ use study_tts_core::{
     REQUIRED_PRODUCTION_GATES, ReleaseClaim, ReleaseError, ValidatedTakes, VoiceUse,
 };
 use study_tts_runtime::{
-    ApprovalRequest, BuildError, BuildRequest, BuildResult, FileSystemJobRepository,
-    HardwareEnvironmentId, JobRepository, PublicationError, ResumeRequest, WorkerConfiguration,
-    WorkerTtsExecutor, accept_current_takes, approve_preview, build_preview, current_run_report,
-    diagnose, live_cache_keys, load_lesson, prune_candidates, resume_preview, scaffold_lesson,
+    ApprovalRequest, BuildError, BuildRequest, BuildResult, FileSystemCachePublisher,
+    FileSystemJobRepository, FileSystemPackageWriter, HardwareEnvironmentId, JobRepository,
+    PreviewServiceBundle, PublicationError, ResumeRequest, WorkerConfiguration, WorkerTtsExecutor,
+    accept_current_takes, approve_preview, build_preview_with_services, current_run_report,
+    diagnose, live_cache_keys, load_lesson, prune_candidates, resume_preview_with_services,
+    scaffold_lesson,
 };
 
 mod exit;
 mod output;
+mod progress;
 mod recovery;
 
 use exit::ExitClass;
@@ -298,7 +301,7 @@ enum LessonCommand {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let name = cli.command.name();
-    match run(cli.command) {
+    match run(cli.command, cli.json) {
         Ok(report) => {
             if cli.json {
                 println!("{}", CommandOutput::succeeded(name, report).to_json());
@@ -326,7 +329,7 @@ fn main() -> ExitCode {
 }
 
 /// Runs one command, returning what to tell the author on success.
-fn run(command: Command) -> Result<String, BuildError> {
+fn run(command: Command, quiet: bool) -> Result<String, BuildError> {
     match command {
         Command::Lesson(lesson) => run_lesson(lesson),
         Command::Publish { .. } => Err(refuse_publication()),
@@ -372,12 +375,18 @@ fn run(command: Command) -> Result<String, BuildError> {
             workspace,
             roots,
             retakes,
-        } => render_lesson(&lesson, &workspace_root(&workspace)?, &roots, retakes),
+        } => render_lesson(
+            &lesson,
+            &workspace_root(&workspace)?,
+            &roots,
+            retakes,
+            quiet,
+        ),
         Command::Resume {
             job_id,
             workspace,
             roots,
-        } => resume_job(&job_id, &workspace_root(&workspace)?, &roots),
+        } => resume_job(&job_id, &workspace_root(&workspace)?, &roots, quiet),
     }
 }
 
@@ -404,7 +413,18 @@ fn parse_hardware_environment(value: &str) -> Result<HardwareEnvironmentId, Stri
 /// [`VoiceUse::PrivateSynthesis`] — a preview renders a lesson, not a voice
 /// qualification. `WorkerConfiguration::for_bundle` owns all three, which is
 /// why this function is four lines and not forty.
-fn start_worker(workspace: &Path, roots: &WorkerRoots) -> Result<WorkerTtsExecutor, BuildError> {
+fn start_worker(
+    workspace: &Path,
+    roots: &WorkerRoots,
+    quiet: bool,
+) -> Result<WorkerTtsExecutor, BuildError> {
+    // Model loading is the longest silence a build has, and it happens here
+    // rather than in the pipeline — `WorkerTtsExecutor::start` spans the spawn
+    // and the `initialize` exchange that loads the model, so the stage port
+    // never sees it.
+    if !quiet {
+        eprintln!("  loading the model");
+    }
     let configuration = WorkerConfiguration::for_bundle(
         &workspace_root(&roots.bundle_root)?,
         &workspace_root(&roots.model_root)?,
@@ -422,9 +442,14 @@ fn render_lesson(
     workspace: &Path,
     roots: &WorkerRoots,
     retakes: Vec<(String, u32)>,
+    quiet: bool,
 ) -> Result<String, BuildError> {
-    let executor = start_worker(workspace, roots)?;
-    let result = build_preview(
+    let executor = start_worker(workspace, roots, quiet)?;
+    let jobs = FileSystemJobRepository;
+    let reporting = progress::ReportingJobs::new(&jobs, quiet);
+    let cache = FileSystemCachePublisher;
+    let packages = FileSystemPackageWriter;
+    let result = build_preview_with_services(
         BuildRequest {
             lesson_path: lesson.to_path_buf(),
             workspace: workspace.to_path_buf(),
@@ -433,15 +458,29 @@ fn render_lesson(
             voice_profile_root: workspace_root(&roots.voice_root)?,
             retakes: retakes.into_iter().collect(),
         },
-        &executor,
+        PreviewServiceBundle {
+            executor: &executor,
+            cache: &cache,
+            packages: &packages,
+            jobs: &reporting,
+        },
     )?;
     Ok(describe_package(&result))
 }
 
 /// Resumes an interrupted job.
-fn resume_job(job_id: &str, workspace: &Path, roots: &WorkerRoots) -> Result<String, BuildError> {
-    let executor = start_worker(workspace, roots)?;
-    let result = resume_preview(
+fn resume_job(
+    job_id: &str,
+    workspace: &Path,
+    roots: &WorkerRoots,
+    quiet: bool,
+) -> Result<String, BuildError> {
+    let executor = start_worker(workspace, roots, quiet)?;
+    let jobs = FileSystemJobRepository;
+    let reporting = progress::ReportingJobs::new(&jobs, quiet);
+    let cache = FileSystemCachePublisher;
+    let packages = FileSystemPackageWriter;
+    let result = resume_preview_with_services(
         ResumeRequest {
             job_id: job_id.to_owned(),
             workspace: workspace.to_path_buf(),
@@ -449,7 +488,12 @@ fn resume_job(job_id: &str, workspace: &Path, roots: &WorkerRoots) -> Result<Str
             ffprobe_executable: PathBuf::from("ffprobe"),
             voice_profile_root: workspace_root(&roots.voice_root)?,
         },
-        &executor,
+        PreviewServiceBundle {
+            executor: &executor,
+            cache: &cache,
+            packages: &packages,
+            jobs: &reporting,
+        },
     )?;
     Ok(describe_package(&result))
 }
