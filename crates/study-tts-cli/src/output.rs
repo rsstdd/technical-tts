@@ -73,6 +73,11 @@ enum Outcome {
         exit_code: u8,
         /// What the refusal says, already redacted by the error type itself.
         message: String,
+        /// A command that answers this refusal, when its §Failure routing row
+        /// has one. Absent rather than empty when nothing does, so a caller
+        /// can tell "no advice" from "advice that is blank".
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recovery_command: Option<&'static str>,
     },
 }
 
@@ -99,6 +104,7 @@ impl CommandOutput {
                 error_class: error.class(),
                 exit_code: ExitClass::of(error) as u8,
                 message,
+                recovery_command: crate::recovery::command_for(error),
             },
         }
     }

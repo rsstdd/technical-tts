@@ -38,6 +38,19 @@ methods under `crates/study-tts-runtime/src/error/`. The test
 `error::tests::t1_e0_governed_remedy_mappings_are_exhaustive` pins owner, action, and routing-row
 names with exhaustive matches so a new refusal cannot inherit advice without review.
 
+**The rows below are also mirrored by `crates/study-tts-cli/src/recovery.rs`**, which adds the
+`study-tts` invocation that answers a row where one exists. It is the CLI's rather than the
+runtime's because a command is a surface this repository publishes and the runtime cannot call:
+E2-S5 task 3 asks for "safe recovery commands", and an error type naming one could not keep it
+true. Three rows are answered — `Worker protocol or containment failure`, `Invalid or over-range
+audio`, and `State or checksum corruption`. The rest are answered by a person rather than an
+invocation, and `recovery.rs` records why for each.
+
+**`Invalid lesson or schema` is a row nothing routes to.** It is listed below and
+`BuildError::Lesson` returns no remedy, so no refusal can reach it and no advice can be offered for
+it. Recorded rather than removed: the row describes a real failure and the gap is in the mapping,
+not in the table.
+
 | Failure | Immediate action | Owner | Publication effect |
 |---|---|---|---|
 | Invalid lesson or schema | Reject before worker startup | Core | Blocked |

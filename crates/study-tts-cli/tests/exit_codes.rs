@@ -135,3 +135,47 @@ fn t4_e2_publish_is_refused_with_named_missing_gates() {
         "a refusal is reported exactly once: {said}"
     );
 }
+
+/// A refusal that has a governed remedy names a command to run next.
+///
+/// E2-S5 task 3: "Map failure classes to documented exit codes and safe
+/// recovery **commands**." The exit code says what kind of failure it was;
+/// this says what to do about it, and both come from the same place —
+/// `docs/governance/ROUTING-TABLES.md` §Failure routing, through
+/// `BuildError::remedy`.
+///
+/// Driven through a containment refusal because that is the one a caller can
+/// provoke without a worker, a model, or a package: pointing a workspace at a
+/// path outside itself is refused by `managed::` before anything runs.
+#[test]
+fn t4_e2_failure_names_safe_recovery_command() {
+    let workspace = TempDir::new().expect("create a workspace");
+    let escaping = workspace.path().join("..").join("outside");
+
+    let refused = study_tts(&[
+        "inspect",
+        "--workspace",
+        &escaping.display().to_string(),
+        "a/../../escape",
+    ]);
+
+    assert_ne!(
+        refused.status.code(),
+        Some(0),
+        "a job id that escapes its root is refused"
+    );
+
+    let said = String::from_utf8(refused.stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        said.contains("try: study-tts"),
+        "a governed refusal names a command to run next: {said}"
+    );
+
+    // The advice must not replace the refusal, only follow it. An operator
+    // who is told what to run and not what went wrong cannot judge whether
+    // running it is safe.
+    assert!(
+        said.lines().count() > 1,
+        "the refusal itself still comes first: {said}"
+    );
+}

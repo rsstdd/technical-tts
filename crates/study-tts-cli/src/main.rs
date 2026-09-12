@@ -27,6 +27,7 @@ use study_tts_runtime::{
 
 mod exit;
 mod output;
+mod recovery;
 
 use exit::ExitClass;
 use output::CommandOutput;
@@ -267,14 +268,14 @@ fn main() -> ExitCode {
         // tell a lesson it should fix from a tool it should install.
         // [`ExitClass::of`] is the mapping and ADR-0001 §7.3 is its vocabulary.
         Err(refusal) => {
-            let described = describe(&refusal);
             if cli.json {
-                println!(
-                    "{}",
-                    CommandOutput::refused(name, &refusal, described).to_json()
-                );
+                // The refusal alone. A structured reader gets the command from
+                // `recovery_command`, and repeating it inside `message` would
+                // give two places for one answer to drift.
+                let record = CommandOutput::refused(name, &refusal, describe_refusal(&refusal));
+                println!("{}", record.to_json());
             } else {
-                eprintln!("{described}");
+                eprintln!("{}", describe(&refusal));
             }
             ExitClass::of(&refusal).code()
         }
@@ -665,6 +666,15 @@ fn load_accepted_takes(paths: &[PathBuf]) -> Result<Vec<ValidatedTakes>, BuildEr
 /// remedy owner, so restating it here would only give the two spellings room to
 /// disagree.
 fn describe(error: &BuildError) -> String {
+    let described = describe_refusal(error);
+    match recovery::command_for(error) {
+        Some(command) => format!("{described}\n  try: {command}"),
+        None => described,
+    }
+}
+
+/// The refusal itself, before any recovery advice is appended.
+fn describe_refusal(error: &BuildError) -> String {
     match error {
         BuildError::Lesson(diagnostic) => describe_lesson(diagnostic),
         BuildError::Publication(PublicationError::Release(
