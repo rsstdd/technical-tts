@@ -317,6 +317,44 @@ would be the wrong answer, because `none` claims a judgment was made about terms
 applicable` says correctly that there were none to judge. The distinction is the one v1 already drew
 between `none` and `not reachable`, applied to a third case.
 
+## The approval record — M2's "immutable human approval"
+
+`DELIVERY-PLAN.md:740` requires that the lesson "records immutable human approval without a checksum
+cycle". Until 2026-09-12 nothing could satisfy it on real material:
+`study_tts_runtime::approve_preview` existed and was tested, and `E2-S6-INTERFACE-CHANGE-001`
+signed its contract, but no operator path called it — E2-S5 owns the CLI and has not landed. A
+contract nothing has run against a real package has recorded nothing.
+
+`crates/study-tts-testkit/examples/approve-preview.rs` closes that, on the same reasoning
+`package-render` gives for existing: the approval is written through the path production will use,
+so what this gate reads is what a build produces.
+
+Written 2026-09-12 to
+`previews/m2-durable-publication/approvals/301c4cf8….json`, mode `0600`:
+
+| Field | Value |
+|---|---|
+| `schema_version` | `1.0` — the version `E2-S6-INTERFACE-CHANGE-001` made effective 2026-09-11 |
+| `manifest_blake3` | `301c4cf8c944468edd3d05fd35801b5a39b0107ad4bde0ecfd412325dc68e5af` |
+| `checklist_version` | `1.0` |
+| `reviewer` / role | Ross Todd, project owner |
+| `playback_environment` | built-in laptop speakers; session taken 2026-09-07, carried forward 2026-09-11 on byte-identical audio |
+| `disposition` | `accepted` |
+
+**The playback field names the carried session rather than a session on 2026-09-12**, because that
+is what happened. §Listening holds the reasoning; this document holds the decision, and the two must
+not disagree about which ears produced it.
+
+**"Without a checksum cycle" is met by construction, not by assertion.** The approval names the
+manifest digest and the manifest has no field an approval digest could occupy, so no cycle is
+representable. The document is keyed by that digest rather than by lesson, which is why approving
+this generation could not overwrite the record of another — a property
+`t4_e2_content_change_invalidates_prior_approval` already pins.
+
+**Not released.** `publish_preview_release` is a second decision under E2-S6 task 7 and the
+instrument deliberately does not call it: folding both into one command would let a reviewer release
+by approving. `release.json` does not exist for this lesson.
+
 ## Deviations and limitations
 
 - **The record is unsigned, and its AC6 rests on a carried-forward session rather than a session
