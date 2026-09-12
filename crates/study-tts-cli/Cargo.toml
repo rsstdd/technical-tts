@@ -22,11 +22,18 @@ workspace = true
 # subcommands and non-interactive use". The two workspace crates carry every
 # other decision: this binary parses arguments, calls two functions, and
 # formats refusals.
+# E2-S5 is the story for `serde` and `serde_json`: ADR-0001 §7.3 requires
+# `--json` on every command, and the envelope in `output.rs` is what carries
+# it. Both are already in `Cargo.lock` through the workspace crates, so this
+# fetches nothing — which matters because CI builds offline.
 [dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 study-tts-core = { version = "0.1.0", path = "../study-tts-core" }
 study-tts-runtime = { version = "0.1.0", path = "../study-tts-runtime" }
 
 [dev-dependencies]
+serde_json = "1.0.151"
 study-tts-testkit = { version = "0.1.0", path = "../study-tts-testkit" }
 tempfile = "3.27.0"

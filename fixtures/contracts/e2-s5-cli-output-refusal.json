@@ -1,0 +1,8 @@
+{
+  "output_version": "1.0-cli-output",
+  "command": "lesson validate",
+  "outcome": "refused",
+  "error_class": "lesson",
+  "exit_code": 2,
+  "message": "refused `malformed.json`\n  reason: lesson JSON is invalid: EOF while parsing an object at line 1 column 1"
+}

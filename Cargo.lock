@@ -515,6 +515,8 @@ name = "study-tts-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "serde",
+ "serde_json",
  "study-tts-core",
  "study-tts-runtime",
  "study-tts-testkit",
