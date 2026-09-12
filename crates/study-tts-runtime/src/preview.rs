@@ -565,6 +565,25 @@ fn resolved_roots(workspace: &Path, lesson_id: &str) -> Result<Option<PreviewRoo
     }))
 }
 
+/// The `manifest.json` of the package a lesson currently selects.
+///
+/// What `takes_accept` reads, and the same read-only resolution
+/// [`current_run_report`] uses: a caller asking which package is current must
+/// not create the layout it asks about.
+///
+/// # Errors
+///
+/// The containment and durable-state errors [`read_current`] documents.
+pub(crate) fn current_package_manifest(
+    workspace: &Path,
+    lesson_id: &str,
+) -> Result<Option<PathBuf>, BuildError> {
+    let Some(roots) = resolved_roots(workspace, lesson_id)? else {
+        return Ok(None);
+    };
+    Ok(read_current(&roots, lesson_id)?.map(|package| package.manifest))
+}
+
 /// The package `current.json` selects, without asking which plan produced it.
 ///
 /// [`current_manifest_digest`] answers a different question — whether the

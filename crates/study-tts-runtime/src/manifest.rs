@@ -14,7 +14,7 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use study_tts_core::{
     AudioDigest, CANONICAL_SAMPLE_RATE, CacheKey, MAX_LESSON_SEGMENTS, PlanHash, ReleaseStatus,
-    RenderPlan, TakeSelectionSource, ToolProfileHash,
+    RenderPlan, SelectedTake, TakeSelectionSource, ToolProfileHash,
 };
 
 use crate::{
@@ -719,6 +719,13 @@ struct RecordedSegment {
     segment_id: String,
     /// The entry this segment was assembled from.
     cache_key: CacheKey,
+    /// Digest of the audio this segment published.
+    ///
+    /// Decoded by every layout and, until `takes accept`, read by none — the
+    /// three `let _ = &segment.audio_blake3` touches this replaces were what
+    /// said so. A take selection binds an approval to the bytes it approved,
+    /// which is the first thing that needs it.
+    audio_blake3: AudioDigest,
     /// The take-zero entry from which the selected take was derived.
     synthesis_base_key: CacheKey,
     /// Selected take recorded by layouts that carry one.
@@ -795,20 +802,18 @@ impl From<StoredManifest> for PackageRecord {
             segments: manifest
                 .segments
                 .into_iter()
-                .map(|segment| {
-                    let _ = &segment.audio_blake3;
-                    RecordedSegment {
-                        segment_id: segment.segment_id,
-                        cache_key: segment.cache_key,
-                        synthesis_base_key: segment.synthesis_base_key,
-                        selected_take: Some(segment.selected_take),
-                        frames: segment.frames,
-                        written: Some(WrittenPosition {
-                            start_frame: segment.start_frame,
-                            pause_after_ms: segment.pause_after_ms,
-                            pause_frames: segment.pause_frames,
-                        }),
-                    }
+                .map(|segment| RecordedSegment {
+                    segment_id: segment.segment_id,
+                    audio_blake3: segment.audio_blake3,
+                    cache_key: segment.cache_key,
+                    synthesis_base_key: segment.synthesis_base_key,
+                    selected_take: Some(segment.selected_take),
+                    frames: segment.frames,
+                    written: Some(WrittenPosition {
+                        start_frame: segment.start_frame,
+                        pause_after_ms: segment.pause_after_ms,
+                        pause_frames: segment.pause_frames,
+                    }),
                 })
                 .collect(),
             artifacts: PACKAGE_ARTIFACT_NAMES
@@ -923,20 +928,18 @@ impl From<StoredManifestV2> for PackageRecord {
             total_frames: Some(total_frames),
             segments: segments
                 .into_iter()
-                .map(|segment| {
-                    let _ = &segment.audio_blake3;
-                    RecordedSegment {
-                        segment_id: segment.segment_id,
-                        cache_key: segment.cache_key,
-                        synthesis_base_key: segment.synthesis_base_key,
-                        selected_take: Some(segment.selected_take),
-                        frames: segment.frames,
-                        written: Some(WrittenPosition {
-                            start_frame: segment.start_frame,
-                            pause_after_ms: segment.pause_after_ms,
-                            pause_frames: segment.pause_frames,
-                        }),
-                    }
+                .map(|segment| RecordedSegment {
+                    segment_id: segment.segment_id,
+                    audio_blake3: segment.audio_blake3,
+                    cache_key: segment.cache_key,
+                    synthesis_base_key: segment.synthesis_base_key,
+                    selected_take: Some(segment.selected_take),
+                    frames: segment.frames,
+                    written: Some(WrittenPosition {
+                        start_frame: segment.start_frame,
+                        pause_after_ms: segment.pause_after_ms,
+                        pause_frames: segment.pause_frames,
+                    }),
                 })
                 .collect(),
             artifacts: PACKAGE_ARTIFACT_NAMES_V2
@@ -998,10 +1001,11 @@ fn legacy_record<T>(
             .segments
             .into_iter()
             .map(|segment| {
-                let _ = (&segment.audio_blake3, segment.pause_after_ms);
+                let _ = segment.pause_after_ms;
                 let synthesis_base_key = segment.cache_key.clone();
                 RecordedSegment {
                     segment_id: segment.segment_id,
+                    audio_blake3: segment.audio_blake3,
                     cache_key: segment.cache_key,
                     synthesis_base_key,
                     selected_take: None,
@@ -1393,6 +1397,40 @@ fn records_every_artifact(manifest: &PackageRecord) -> bool {
             .iter()
             .any(|recorded| recorded.required_name == *required)
     })
+}
+
+/// The take selection a published package records, one entry per segment.
+///
+/// What `takes accept` writes. The manifest is the only place that holds all
+/// three values a [`SelectedTake`] needs together — the segment, the take-zero
+/// entry it derives from, and the entry actually assembled — because it is the
+/// document that records what a build published rather than what it planned.
+///
+/// A layout that records no `selected_take` contributes take zero, which is
+/// what those layouts meant: `selected_take` was added when retakes were, and
+/// a package written before them selected the only take it had.
+///
+/// # Errors
+///
+/// [`DurableStateError::UnsupportedPackageManifest`] for a layout this build
+/// cannot decode, [`DurableStateError::MalformedPackageManifest`] for one it
+/// cannot parse, otherwise [`crate::IoError::FileSystem`].
+pub(crate) fn recorded_selections(manifest_path: &Path) -> Result<Vec<SelectedTake>, BuildError> {
+    let bytes =
+        std::fs::read(manifest_path).map_err(|error| crate::io_error(manifest_path, error))?;
+    let version: StoredManifestVersion = parse_manifest(&bytes, manifest_path)?;
+    let record = parse_stored_manifest(&bytes, manifest_path, &version.schema_version)?;
+    Ok(record
+        .segments
+        .into_iter()
+        .map(|segment| SelectedTake {
+            segment_id: segment.segment_id,
+            synthesis_base_key: segment.synthesis_base_key,
+            selected_take: segment.selected_take.unwrap_or(0),
+            selected_cache_key: segment.cache_key,
+            audio_blake3: segment.audio_blake3,
+        })
+        .collect())
 }
 
 /// Every cache entry the published package at `manifest_path` was assembled

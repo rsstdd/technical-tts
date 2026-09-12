@@ -1010,6 +1010,82 @@ fn package_manifest_digest(result: &study_tts_runtime::BuildResult) -> ManifestD
         .expect("a package directory is named by its manifest digest")
 }
 
+/// An accepted takes document is published, and a later build would honour it.
+///
+/// E2-S5 task 1's "takes acceptance". Until this landed nothing in the tree
+/// wrote a `TakesDocument`: `ValidatedTakes` could read one and the pipeline
+/// would apply one found beside the lesson, but the only way to produce one
+/// was by hand. That is why `take_selection_source` has been `implicit` on
+/// every package this project has built, and why both M2 records name it as
+/// what puts a production claim out of reach.
+///
+/// The durable *ordering* is not re-proved here. `accept_current_takes` writes
+/// through `write_json_atomically`, whose file-then-rename-then-parent
+/// sequence is already pinned through a crash-injection seam by the
+/// `t4_e0_durable_json_replacement_flushes_file_then_rename_then_parent`
+/// test in `durable.rs`. Re-asserting it would mean
+/// adding an injection point to this path to test something already tested.
+///
+/// What is proved is what is new: the document names the package's own
+/// selections, and the reader a later build uses accepts it. The wrong
+/// implementation this rejects is the plausible one — writing the selections
+/// without validating them, which produces a file that parses and that
+/// `ValidatedTakes` then refuses on the next build, when the operator has
+/// already moved on.
+#[test]
+fn t4_e2_an_accepted_takes_document_is_published_durably() {
+    let (workspace, result, _worker) = run_skeleton();
+    let destination = workspace.path().join("e0-s0-walking-skeleton.takes.json");
+
+    let document = study_tts_runtime::accept_current_takes(
+        workspace.path(),
+        "e0-s0-walking-skeleton",
+        &destination,
+    )
+    .expect("the current package's takes are acceptable")
+    .expect("the skeleton published a package to accept");
+
+    assert!(destination.is_file(), "the document is on disk");
+
+    // The reader a later build uses, on the bytes actually written rather than
+    // on the value in hand: a document that only validates in memory is one
+    // the next build refuses.
+    let written = std::fs::read(&destination).expect("read the written document");
+    let validated = study_tts_core::ValidatedTakes::from_json(&written)
+        .expect("a later build accepts what this wrote");
+
+    assert_eq!(
+        validated.selections().len(),
+        document.selections.len(),
+        "every selection survived the write"
+    );
+
+    // The selections are the package's own, not a fresh guess at them.
+    let manifest: Value = serde_json::from_slice(
+        &std::fs::read(&result.manifest).expect("read the package manifest"),
+    )
+    .expect("the manifest is JSON");
+    let recorded = manifest["segments"]
+        .as_array()
+        .expect("the manifest records segments");
+    assert_eq!(
+        document.selections.len(),
+        recorded.len(),
+        "one selection per published segment"
+    );
+    for (selection, segment) in document.selections.iter().zip(recorded) {
+        assert_eq!(
+            selection.segment_id, segment["segment_id"],
+            "the selection names the segment the package published"
+        );
+        assert_eq!(
+            selection.selected_cache_key.as_str(),
+            segment["cache_key"],
+            "and the entry that segment was assembled from"
+        );
+    }
+}
+
 /// Approves a built package as the project owner would.
 fn approve(workspace: &Path, result: &study_tts_runtime::BuildResult) -> ApprovalRecord {
     approve_preview(
