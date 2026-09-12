@@ -1,6 +1,6 @@
 # Evidence Report: m2-acceptance-lesson-render-v2
 
-- Status: Proposed
+- Status: **Accepted 2026-09-12** at the M2 gate. Every row in §Review is signed.
 - Supersedes: `m2-acceptance-lesson-render-v1`
 - Governing story/gate: issue #80, an M2 acceptance gap found by audit and not a
   `DELIVERY-PLAN.md` Version 3 story; gate M2/G3
@@ -17,12 +17,17 @@ to `3.0` / `3.0-skeleton`, and in doing so moved package identity, because the m
 the sealed report. The listening disposition v1 carries was taken against a package this build can
 no longer produce. So the render was repeated and this record measures the result.
 
-**Status stays `Proposed`**, and §Listening says exactly why. No session was taken against this
-package. What §Listening records is the project owner's decision of 2026-09-11 that the 2026-09-07
-session carries forward, on the evidence in §Determinism that the audio is byte for byte the audio
-that session judged. The one criterion `PREVIEW-REVIEW-CHECKLIST.md` `1.0` added after that session,
-"Protected terms", is answered `not applicable` by inspection and shown to be so, rather than left
-open or quietly counted as clean.
+**Accepted at the M2 gate on 2026-09-12**, which is the gate this record serves and the only place
+`evidence/README.md` §Accepting a record at its gate allows it to be accepted. §M2 acceptance states
+the six conjuncts and what discharges each; `e2-s2-retake-listening-review-v1` is accepted in the
+same act and discharges conjunct 3.
+
+No listening session was taken against this package and §Listening does not claim one. What it
+records is the project owner's decision of 2026-09-11 that the 2026-09-07 session carries forward,
+on the evidence in §Determinism that the audio is byte for byte the audio that session judged. The
+one criterion `PREVIEW-REVIEW-CHECKLIST.md` `1.0` added after that session, "Protected terms", is
+answered `not applicable` by inspection and shown to be so, rather than left open or quietly counted
+as clean.
 
 ## Acceptance criteria, stated before the results
 
@@ -355,6 +360,49 @@ this generation could not overwrite the record of another — a property
 instrument deliberately does not call it: folding both into one command would let a reviewer release
 by approving. `release.json` does not exist for this lesson.
 
+## M2 acceptance, conjunct by conjunct
+
+`DELIVERY-PLAN.md:740` states M2 as six conjuncts. This gate review accepts them together, so each
+is stated with what discharges it rather than left to a reader to assemble.
+
+| # | Conjunct | Discharged by |
+|---|---|---|
+| 1 | A reviewed five-minute canonical lesson produces the complete package | This record, §AC5. 309.30 s, eight files, seven artifacts, manifest `4.0-skeleton`, package `301c4cf8…` |
+| 2 | Survives interruption | `t4_e2_interrupt_after_cache_publish_reconciles_on_resume` and `t4_e2_interrupt_before_rename_preserves_prior_state`, through the real filesystem at the write boundary |
+| 3 | Supports a selected retake | `e2-s2-retake-listening-review-v1`, accepted at this gate. See §The retake conjunct below |
+| 4 | Emits a complete run report | This record, §AC8. `3.0-skeleton`, `complete`, all six measures accepted ADR-0002 retains |
+| 5 | Records immutable human approval without a checksum cycle | This record, §The approval record. `approvals/301c4cf8….json`, schema `1.0`, written 2026-09-12 |
+| 6 | Remains mechanically identified as non-production | `release_status` `private_preview` and `take_selection_source` `implicit`, which the checklist makes a bar to any production claim |
+
+### The retake conjunct, and why three-segment material discharges it
+
+Conjunct 3 is the only one whose evidence is not this lesson, and the reason is a property of the
+build rather than a convenience.
+
+`e2-s2-retake-listening-review-v1` demonstrated a selected retake on `e1-s4-three-segment` and was
+listened to and signed 2026-09-05. Its §What this material cannot arbitrate records, verified rather
+than inferred, that **the retake produced byte-identical audio to the take it replaced**: all six
+BLAKE3 digests match across the two generations. The cause is in the source — `take` is an
+ADR-0001 §12.5 synthesis-key input but not a model input, the worker seeds generation from `seed`
+alone, and this bundle is characterized `reproducible`.
+
+**So no build of this project can currently produce a retake that sounds different**, on three
+segments or on thirty-four. Re-running the retake on `m2-durable-publication` would exercise the
+same mechanism, produce the same bytes, and put a listener in front of audio they had already
+judged. It would add a second generation and a second package identity and answer nothing new.
+
+The alternative — treating the conjunct as unproved until a non-`reproducible` bundle exists — would
+block M2 on a capability the architecture deliberately does not have yet, and the E2-S2 record
+already said so: the limit "is not a defect in the E2-S2 acceptance criteria, all of which concern
+take identity, artifact preservation, and join assessment, and all of which this material
+exercises."
+
+**What stays unproved, and is recorded rather than assumed:** no human listening has verified a
+retake *join* — a boundary between two different performances. That needs material this build cannot
+produce without moving the seed, which invalidates the takes selection with
+`TakesError::StaleSynthesisBaseKey`. It belongs to whoever schedules that session when a bundle can
+produce it, and M2 does not require it.
+
 ## Deviations and limitations
 
 - **The record is unsigned, and its AC6 rests on a carried-forward session rather than a session
@@ -379,10 +427,16 @@ by approving. `release.json` does not exist for this lesson.
 
 | Role | Decision sought | Status |
 |---|---|---|
-| Engineering owner | Accept the render, the run report's six retained measures, and the determinism result | |
-| Reviewer (AC6) | Accept that the 2026-09-07 session carries forward to this package on byte-identical audio, and that "Protected terms" is unanswered | Decided — Ross Todd, 2026-09-11; see §Listening |
-| Project owner | Accept or refuse the package for private preview | |
+| Engineering owner | Accept the render, the run report's six retained measures, and the determinism result | Accepted — Ross Todd, 2026-09-12 |
+| Reviewer (AC6) | Accept that the 2026-09-07 session carries forward to this package on byte-identical audio, and that "Protected terms" is not applicable to this material | Decided — Ross Todd, 2026-09-11; see §Listening |
+| Project owner | Accept the package for private preview, and M2's six conjuncts as §M2 acceptance states them | Accepted — Ross Todd, 2026-09-12 |
 
-Unsigned. No row above may be filled by anyone who did not perform the act it names. The AC6 row
-records a **decision about** a session, not a session: the act it names is the judgment that
-identical bytes need not be judged twice, and that is the act Ross Todd performed on 2026-09-11.
+**Every row above is signed.** No row may be filled by anyone who did not perform the act it names.
+The AC6 row records a **decision about** a session, not a session: the act it names is the judgment
+that identical bytes need not be judged twice, and that is the act Ross Todd performed on
+2026-09-11.
+
+- Effective: **M2 accepted 2026-09-12**, against package
+  `301c4cf8c944468edd3d05fd35801b5a39b0107ad4bde0ecfd412325dc68e5af`.
+  `e2-s2-retake-listening-review-v1` is accepted at this gate in the same act, discharging
+  conjunct 3.

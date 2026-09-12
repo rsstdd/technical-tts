@@ -1,6 +1,6 @@
 # E2-S2 — Retake human listening review
 
-- Status: Proposed
+- Status: **Accepted 2026-09-12** at the M2 gate, alongside `m2-acceptance-lesson-render-v2`.
 - Governing story/gate: `DELIVERY-PLAN.md` E2-S2; gate M2/G3
 - Hypothesis or decision: ADR-0001 §11.4's human listening obligation over a requested
   alternate performance and the joins either side of it
@@ -13,11 +13,19 @@ Opened at the story's implementation, per `evidence/README.md` §Accepting a rec
 Every field below that a machine can derive is filled from the rendered material and verified
 against it. The listening session was taken on 2026-09-05 and its findings are recorded below.
 
-Status remains `Proposed`. A story keeps one record, accumulating findings as they are made, and
-is accepted once at the gate it serves against the bytes that gate approved. This record's gate is
-M2, whose acceptance criterion names a **five-minute canonical lesson**; this material is the
-three-segment, 14.96-second `e1-s4-three-segment` lesson. So the findings below stand, and the
-acceptance they support is not yet available to grant.
+**Accepted 2026-09-12 at the M2 gate.** A story keeps one record, accumulating findings as they are
+made, and is accepted once at the gate it serves. This record's gate is M2, whose acceptance
+criterion names a **five-minute canonical lesson**; this material is the three-segment,
+14.96-second `e1-s4-three-segment` lesson, and when this paragraph was written the acceptance it
+supports was not yet available to grant.
+
+It was granted at the M2 gate review of 2026-09-12, which accepted this record alongside
+`m2-acceptance-lesson-render-v2`. This record discharges M2's third conjunct, "supports a selected
+retake", and the reasoning is recorded there under §The retake conjunct: §What this material cannot
+arbitrate below establishes that a retake produces byte-identical audio under a `reproducible`
+bundle, so re-running it on the five-minute lesson would exercise the same mechanism, produce the
+same bytes, and answer nothing new. The findings below stand unchanged; nothing in this record was
+amended at acceptance.
 
 **§What this material cannot arbitrate governed the session.** The retake generation is
 byte-identical to the base generation, so listening to both was listening to one.
