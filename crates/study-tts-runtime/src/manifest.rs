@@ -1646,9 +1646,20 @@ fn validate_written_timeline(
 /// Whether a recorded package was produced by the toolchain this build would
 /// use, running what this build would run.
 fn tools_match(manifest: &PackageRecord, expected: &ReuseExpectations<'_>) -> bool {
+    // Version only. Where a tool is installed is provenance the manifest
+    // records and reuse does not read: the same binary under a different prefix
+    // produces the same bytes, and a different binary at the same path is
+    // caught by the version string, which carries the tool's own build. Issue
+    // #92 and `E2-INTERFACE-CHANGE-002`; `resolved_executable` stays a required
+    // manifest field and is still checked for shape at the parse.
     let identity_matches = |recorded: &StoredToolIdentity, tool: &ToolIdentity| {
-        recorded.resolved_executable == tool.resolved_executable.display().to_string()
-            && recorded.version == tool.version
+        // Touched, not compared, in the idiom `parse_stored_manifest` already
+        // uses for a field decoded only so the boundary can refuse a document
+        // without it. `resolved_executable` is a required field of published
+        // `manifest 4.0` and `deny_unknown_fields` refuses a manifest missing
+        // it; naming it here is what says it exists to be *recorded*, not read.
+        let _ = &recorded.resolved_executable;
+        recorded.version == tool.version
     };
     if !identity_matches(&manifest.ffmpeg, expected.ffmpeg)
         || !identity_matches(&manifest.ffprobe, expected.ffprobe)
@@ -2574,6 +2585,66 @@ mod tests {
     /// encode ran twice, or that an execution was recorded against the other
     /// binary. Each case below is a package whose profile set is identical to a
     /// complete one.
+    /// A toolchain that moved on disk does not strand a published package.
+    ///
+    /// Issue #92: reuse compared the recorded `resolved_executable` against the
+    /// live tool, so reinstalling the same FFmpeg under a different prefix —
+    /// a distro change, a container, a second machine — rebuilt every package
+    /// for no difference in what the package contains. `version` is what tracks
+    /// the binary that produced the bytes, and it still gates reuse.
+    ///
+    /// The wrong implementation this rejects: comparing the path "to be safe",
+    /// which is safe against nothing. The same path holds a different binary
+    /// after an upgrade, and that case is caught by `version` here too.
+    #[test]
+    fn t4_e2_a_package_is_reused_after_its_toolchain_moves() {
+        let workspace = TempDir::new().expect("create manifest workspace");
+        let (ffmpeg, ffprobe) = test_tool_identities();
+        let profiles = export::export_profiles();
+        let package = workspace.path().join("package");
+        write_test_package(&package);
+
+        // The same tools, reached through a different prefix. Versions are
+        // untouched, so nothing about what produced the package has changed.
+        let moved = |tool: &ToolIdentity, name: &str| ToolIdentity {
+            resolved_executable: PathBuf::from(format!("/opt/ffmpeg/bin/{name}")),
+            version: tool.version.clone(),
+        };
+        let relocated_ffmpeg = moved(&ffmpeg, "ffmpeg");
+        let relocated_ffprobe = moved(&ffprobe, "ffprobe");
+
+        assert!(
+            validate_package(
+                &package,
+                "lesson",
+                None,
+                Some(expectations(
+                    &relocated_ffmpeg,
+                    &relocated_ffprobe,
+                    &profiles
+                )),
+            )
+            .expect("the package remains structurally valid"),
+            "a package must stay reusable when its toolchain only moved"
+        );
+
+        // The half that must still refuse: a genuinely different build.
+        let upgraded = ToolIdentity {
+            resolved_executable: ffmpeg.resolved_executable.clone(),
+            version: "ffmpeg version 2".to_owned(),
+        };
+        assert!(
+            !validate_package(
+                &package,
+                "lesson",
+                None,
+                Some(expectations(&upgraded, &ffprobe, &profiles)),
+            )
+            .expect("the package remains structurally valid"),
+            "a package built by a different tool version must not be reused"
+        );
+    }
+
     #[test]
     fn t4_e1_an_incomplete_tool_sequence_is_not_reusable() {
         let workspace = TempDir::new().expect("create manifest workspace");

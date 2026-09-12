@@ -39,13 +39,21 @@ const JOURNAL_SCHEMA_VERSION: &str = "0.1-skeleton-publication";
 /// refuse every `publication.json` an earlier build wrote. One document changed
 /// and one did not, so they now version separately.
 ///
-/// `0.3` is what E1-S4 made it: every argument profile rather than the M4A one,
+/// `0.3` was what E1-S4 made it: every argument profile rather than the M4A
+/// one,
 /// taken from [`ExportProfiles::identities`], plus
 /// [`timeline::TEXT_RENDERER_VERSION`], because two builds that would write
 /// different captions for one plan must not share a staging directory. Reuse is
 /// decided by `manifest::validate_package`, not here — this constant only
 /// separates concurrent work.
-const TRANSACTION_IDENTITY_VERSION: &str = "0.3-skeleton-transaction";
+///
+/// `0.4` drops both tool *paths*, keeping both tool versions. Issue #92 and
+/// `E2-INTERFACE-CHANGE-002`: where a binary is installed changes nothing a
+/// consumer can observe, so the same FFmpeg reached through `/usr/bin` and
+/// `/usr/local/bin` was naming two generations and stranding in-flight staging
+/// for nothing. `version` carries the tool name and its build string, which is
+/// what tracks a binary that would produce different bytes.
+const TRANSACTION_IDENTITY_VERSION: &str = "0.4-skeleton-transaction";
 const CURRENT_RECORD_NAME: &str = "current.json";
 const JOURNAL_RECORD_NAME: &str = "publication.json";
 const PACKAGES_DIRECTORY: &str = "packages";
@@ -140,9 +148,7 @@ struct TransactionIdentity<'a> {
     identity_version: &'static str,
     lesson_id: &'a str,
     plan_hash: &'a str,
-    ffmpeg_executable: String,
     ffmpeg_version: &'a str,
-    ffprobe_executable: String,
     ffprobe_version: &'a str,
     argument_profile_blake3: Vec<&'a str>,
     text_renderer_version: &'a str,
@@ -760,9 +766,7 @@ fn transaction_identity(
         identity_version: TRANSACTION_IDENTITY_VERSION,
         lesson_id,
         plan_hash: plan_hash.as_str(),
-        ffmpeg_executable: ffmpeg.resolved_executable.display().to_string(),
         ffmpeg_version: &ffmpeg.version,
-        ffprobe_executable: ffprobe.resolved_executable.display().to_string(),
         ffprobe_version: &ffprobe.version,
         argument_profile_blake3: profiles
             .identities()
@@ -1067,6 +1071,79 @@ mod tests {
             identity(timeline::TEXT_RENDERER_VERSION),
             identity("0.9-skeleton-text-renderer"),
             "a changed text renderer must name a new generation"
+        );
+    }
+
+    /// Where a tool is installed does not make a build a different generation.
+    ///
+    /// Issue #92: the executable path was a transaction-identity input, so the
+    /// same binary reached through `/usr/bin` and `/usr/local/bin` named two
+    /// generations and stranded in-flight staging for no difference a consumer
+    /// could observe. `version` is the input that tracks what changes output —
+    /// it carries the tool name and the distro build string — and it stays.
+    ///
+    /// The wrong implementation this rejects is the obvious one: keeping the
+    /// path "for provenance". Provenance belongs in the manifest, which records
+    /// it; an identity is what two builds must agree on to share a directory.
+    #[test]
+    fn t1_e2_a_transaction_identity_ignores_where_a_tool_was_installed() {
+        let plan_hash = PlanHash::from(blake3::hash(b"same plan"));
+        let profiles = crate::export::export_profiles();
+
+        let at = |directory: &str| {
+            let tools = |name: &str| ToolIdentity {
+                resolved_executable: PathBuf::from(format!("{directory}/{name}")),
+                version: format!("{name} version 6.1.1-3ubuntu5"),
+            };
+            (tools("ffmpeg"), tools("ffprobe"))
+        };
+
+        let (system_ffmpeg, system_ffprobe) = at("/usr/bin");
+        let (local_ffmpeg, local_ffprobe) = at("/usr/local/bin");
+
+        assert_eq!(
+            transaction_identity(
+                "lesson",
+                &plan_hash,
+                &system_ffmpeg,
+                &system_ffprobe,
+                &profiles,
+                timeline::TEXT_RENDERER_VERSION,
+            ),
+            transaction_identity(
+                "lesson",
+                &plan_hash,
+                &local_ffmpeg,
+                &local_ffprobe,
+                &profiles,
+                timeline::TEXT_RENDERER_VERSION,
+            ),
+            "the same tool at a different path must name one generation"
+        );
+
+        // The half that must still separate: a different build of the tool.
+        let upgraded = ToolIdentity {
+            resolved_executable: system_ffmpeg.resolved_executable.clone(),
+            version: "ffmpeg version 7.0".to_owned(),
+        };
+        assert_ne!(
+            transaction_identity(
+                "lesson",
+                &plan_hash,
+                &system_ffmpeg,
+                &system_ffprobe,
+                &profiles,
+                timeline::TEXT_RENDERER_VERSION,
+            ),
+            transaction_identity(
+                "lesson",
+                &plan_hash,
+                &upgraded,
+                &system_ffprobe,
+                &profiles,
+                timeline::TEXT_RENDERER_VERSION,
+            ),
+            "a different tool version must still name a new generation"
         );
     }
 
