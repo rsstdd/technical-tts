@@ -20,9 +20,9 @@ no longer produce. So the render was repeated and this record measures the resul
 **Status stays `Proposed`**, and §Listening says exactly why. No session was taken against this
 package. What §Listening records is the project owner's decision of 2026-09-11 that the 2026-09-07
 session carries forward, on the evidence in §Determinism that the audio is byte for byte the audio
-that session judged. One criterion is left unanswered by that carry-forward — "Protected terms",
-which `PREVIEW-REVIEW-CHECKLIST.md` `1.0` added after the session — and the record says so rather
-than treating the checklist as fully answered.
+that session judged. The one criterion `PREVIEW-REVIEW-CHECKLIST.md` `1.0` added after that session,
+"Protected terms", is answered `not applicable` by inspection and shown to be so, rather than left
+open or quietly counted as clean.
 
 ## Acceptance criteria, stated before the results
 
@@ -271,13 +271,51 @@ not inferred.
   reaches it; §AC8 measures it instead.
 - **`PREVIEW-REVIEW-CHECKLIST.md` `1.0`**, made effective 2026-09-11 by
   `E2-S6-INTERFACE-CHANGE-001`, adds a **"Protected terms"** criterion the file did not carry on
-  2026-09-07. The carried session could not have answered it, and this record does not pretend
-  otherwise. **That criterion is unanswered for this package** and is the one thing a future session
-  would add.
+  2026-09-07, so the carried session could not have answered it. It is answered **not applicable**
+  here, by inspection rather than by ear — see §Protected terms below.
 - **Everything v1's session could not arbitrate still cannot be**: fine level drift and encoder
   artifacts beyond built-in speakers, any join between two performances, and the provisional
   loudness references themselves, which stay provisional under `ADR-0001-D012` until ADR-0003 is
   accepted. This record does not promote them.
+
+### Protected terms — not applicable, and why that is not a dodge
+
+The criterion reads: "A term the lesson **declared** protected, spoken as anything other than its
+declared form." It is answered `not applicable` for this package on two independent grounds, both
+checkable without listening.
+
+**No lesson can declare a protected term.** `schemas/lesson-v3.schema.json` has no such field, and
+the word appears nowhere in `schemas/` or `crates/` outside one test's doc comment. The criterion
+names a declaration mechanism the lesson format does not have, so no lesson yet rendered could
+answer it as worded. That is a defect in the checklist rather than in this package, and it will
+misfire the same way on every lesson until the format gains the field or the criterion is reworded.
+
+**The substantive kind is absent from this material.** `study-tts-core/src/lesson.rs:3116` defines a
+protected term as one "ADR-0001 §9.3 forbids rewriting", and its examples are identifier-shaped:
+`Number.MAX_SAFE_INTEGER`, `std::collections::BTreeMap`, `O(n log n)`. Across all 34 segments of
+`m2-durable-publication`, every shape that could carry one is absent:
+
+| Shape searched in `spoken_text` | Occurrences |
+|---|---|
+| ALL-CAPS run of three or more | 0 |
+| Path or scope operator `::` | 0 |
+| Call or notation with `()` | 0 |
+| Backtick or code fence | 0 |
+| `snake_case` identifier | 0 |
+| `camelCase` identifier | 0 |
+| Dotted identifier | 0 |
+| Any digit | 0 |
+
+and `display_text` equals `spoken_text` on all 34 segments, so nothing is spoken in a form that
+differs from what is shown. The lesson is deliberately plain prose — it says "synchronize it" and
+"rename it over the destination" where a code-bearing lesson would say `fsync` and
+`RENAME_NOREPLACE`.
+
+**A session would not make this more answered.** There is no term in the material for the criterion
+to bite on, so a listener could only report the same absence this table reports. Recording `none`
+would be the wrong answer, because `none` claims a judgment was made about terms that exist; `not
+applicable` says correctly that there were none to judge. The distinction is the one v1 already drew
+between `none` and `not reachable`, applied to a third case.
 
 ## Deviations and limitations
 
