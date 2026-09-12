@@ -1286,13 +1286,86 @@ is available, so every track is serial and the `Solo schedule overload` risk row
 
 ### Before G3
 
-1. What does `publish` write, and who consumes it?
+1. **Answered by §11**, 2026-09-12. What `publish` writes, and who consumes it.
 2. Are captions a convenience artifact or an accessibility release requirement?
 3. Does distribution require signatures, public checksums, or watermark disclosure?
 4. What archive policy retains selected artifacts for byte-identical reconstruction?
+
+Questions 3 and 4 are distribution questions and §11 states why they stay open: nothing is
+distributed, so nothing yet needs signing, public checksums, or an archive policy. They become
+live the day question 1's answer changes, and §11 names what would change it.
 
 ### Before M3
 
 1. What backup reference machine or accepted recovery time protects qualification?
 2. Which lessons have distribution authorization?
 3. What rollback and recovery objectives govern release operations?
+
+
+## 11. Publication and distribution
+
+Answers §10's first *Before G3* question — **what `publish` writes, and who consumes it** — which
+`E2-INTERFACE-CHANGE-002` §Deliberately deferred and issue #82 task 6 both wait on. It does not
+answer questions 2 through 4; see §10.
+
+### `publish` writes nothing, and that is the specification
+
+`study_tts_runtime::publish` refuses every input it is given. It is not unimplemented: it asks
+`ReleaseClaim::private_preview().validate_as_production()`, which always fails with
+`PrivateProfileCannotClaimProduction`, and the refusal stays correct once production gates exist,
+because a preview is not the artifact that earns them.
+
+Twelve gates in `study_tts_core::release::REQUIRED_PRODUCTION_GATES` stand between a package and a
+publication — `long_form_soak`, `frozen_loudness_references`, `explicit_take_selection`,
+`rights_and_licensing`, and eight more, mirrored two-sidedly by
+`docs/governance/RELEASE-PROFILES.md` §3. None is met. E2-S5 task 7 requires the refusal to **name
+the missing ones** rather than state a claim, and that is the whole of `publish`'s version 1.0
+behavior.
+
+### Who consumes a preview: one person, on the machine that made it
+
+A private preview has exactly one consumer — the project owner, listening to decide whether the
+lesson is good. `docs/governance/RIGHTS-DATA-ARTIFACT-POLICY.md` §Classification fixes why the list
+is that short: "Private use and external distribution are separate permissions. A record permitting
+private narration does not permit publication." `owner-fallback-v1` carries the first permission
+under `rights-voice-owner-fallback-v2`. Nothing carries the second, and `OQ-05` records it as still
+owed.
+
+### A package does not leave the governed root
+
+**This is the decision the two open issues wait on, so it is stated plainly.** A package is a
+governed unit — a directory named by its own manifest digest, holding seven artifacts and a
+manifest, at mode `0600` beneath the workspace's `previews/` root, which
+§Storage and access keeps out of Git and off `/mnt/c`. **It stays there.** No version 1.0 operation
+copies, uploads, syncs, or exports a package, and `publish`, the only operation that could, refuses.
+
+What an owner may do with their own audio on their own devices is not a publication and is not
+governed here: playing `lesson.m4a` is use, not distribution. **What does not travel with it is the
+manifest**, because the manifest is the package's identity document rather than its content, and
+nothing outside the governed root reads one.
+
+**Consequences, which retire two deferrals:**
+
+- **Issue #82 task 6 and issue #92 step 3 are answered: the absolute `resolved_executable` may
+  stay.** `RIGHTS-DATA-ARTIFACT-POLICY.md` binds redaction *in the repository*, the manifest is
+  never committed, and it does not leave the machine that wrote it. Moving `manifest` to
+  `5.0-skeleton` to redact a path no consumer reads would buy nothing and would cost a major
+  version and a fifth frozen decoder.
+- **The redaction already done stands and is not reopened.** `E2-INTERFACE-CHANGE-001` removed the
+  operator's home directory from `tools.executions[].arguments[]` for a different reason that
+  survives this: those paths were *stale as well as private*, naming a staging directory
+  `publish_transaction` had already renamed away.
+
+### What would change this answer
+
+Any of the following, and each is a reason to revisit §11 rather than to work around it:
+
+1. A rights record granting external distribution for a lesson's source content and for
+   `owner-fallback-v1`, which would close `OQ-05` in the permissive direction.
+2. A second consumer of any kind — another person, another machine, a backup process, a sync — for
+   which `OQ-06`'s backup and recovery plan is the nearest live question.
+3. A production release, which requires all twelve gates and is `M3`'s subject rather than this
+   section's.
+
+Until one of those happens, a package has one reader on one machine, and the manifest's absolute
+paths are provenance nobody outside the build can see.
