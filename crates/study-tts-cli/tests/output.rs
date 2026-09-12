@@ -135,7 +135,7 @@ fn t4_e2_every_mvp_command_has_stable_structured_output() {
     let here = root.display().to_string();
     let digest = "a".repeat(64);
 
-    let invocations: [(&str, Vec<&str>); 10] = [
+    let invocations: [(&str, Vec<&str>); 12] = [
         (
             "lesson new",
             vec!["lesson", "new", "e2-s5-all", "--out", "new.json"],
@@ -148,6 +148,20 @@ fn t4_e2_every_mvp_command_has_stable_structured_output() {
             vec!["cache", "verify", "--workspace", &here],
         ),
         ("report", vec!["report", "--workspace", &here, "e2-s5-all"]),
+        ("doctor", vec!["doctor", "--workspace", &here]),
+        (
+            "takes accept",
+            vec![
+                "takes",
+                "accept",
+                "--workspace",
+                &here,
+                "--lesson-id",
+                "e2-s5-all",
+                "--out",
+                "accepted.takes.json",
+            ],
+        ),
         (
             "inspect",
             vec!["inspect", "--workspace", &here, "e2-s5-all"],

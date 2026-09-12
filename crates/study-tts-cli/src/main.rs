@@ -21,8 +21,8 @@ use study_tts_core::{
 use study_tts_runtime::{
     ApprovalRequest, BuildError, BuildRequest, BuildResult, FileSystemJobRepository,
     HardwareEnvironmentId, JobRepository, PublicationError, ResumeRequest, WorkerConfiguration,
-    WorkerTtsExecutor, approve_preview, build_preview, current_run_report, live_cache_keys,
-    load_lesson, prune_candidates, resume_preview, scaffold_lesson,
+    WorkerTtsExecutor, accept_current_takes, approve_preview, build_preview, current_run_report,
+    diagnose, live_cache_keys, load_lesson, prune_candidates, resume_preview, scaffold_lesson,
 };
 
 mod exit;
@@ -97,6 +97,21 @@ enum Command {
         #[command(flatten)]
         roots: WorkerRoots,
     },
+    /// Report what this machine can and cannot do.
+    Doctor {
+        /// The governed workspace durable state would live beneath.
+        #[arg(long)]
+        workspace: PathBuf,
+        /// Governed model root, to verify its declared artifacts.
+        ///
+        /// Optional, and its absence is reported rather than skipped: a check
+        /// that said nothing would read like one that passed.
+        #[arg(long)]
+        model_root: Option<PathBuf>,
+    },
+    /// Accept the current package's takes as an explicit selection.
+    #[command(subcommand)]
+    Takes(TakesCommand),
     /// Record a listening decision about a published package.
     ///
     /// This records a judgment already made against
@@ -142,6 +157,32 @@ enum Command {
         workspace: PathBuf,
         /// The job to read.
         job_id: String,
+    },
+}
+
+/// What can be done to a take selection.
+#[derive(Debug, Subcommand)]
+enum TakesCommand {
+    /// Write the current package's selections where a later build will read
+    /// them.
+    ///
+    /// ADR-0001 §7.3 spells a segment-scoped `takes accept <job-id> --segment
+    /// seg-0042`. That narrowing is **not provided**: a takes document carries
+    /// one selection per segment and `ValidatedTakes` refuses a partial one,
+    /// so accepting a single segment could only produce a document this build
+    /// would reject. Narrowing needs the other selections to come from
+    /// somewhere, which is a decision this story does not make.
+    Accept {
+        /// The governed workspace holding `previews/`.
+        #[arg(long)]
+        workspace: PathBuf,
+        /// The lesson whose current package to accept.
+        #[arg(long)]
+        lesson_id: String,
+        /// Where to write the document. A later build reads
+        /// `<lesson-stem>.takes.json` beside the lesson.
+        #[arg(long)]
+        out: PathBuf,
     },
 }
 
@@ -199,6 +240,8 @@ impl Command {
             Self::Publish { .. } => "publish",
             Self::Cache(CacheCommand::Prune { .. }) => "cache prune",
             Self::Cache(CacheCommand::Verify { .. }) => "cache verify",
+            Self::Takes(TakesCommand::Accept { .. }) => "takes accept",
+            Self::Doctor { .. } => "doctor",
             Self::Inspect { .. } => "inspect",
             Self::Report { .. } => "report",
             Self::Review { .. } => "review",
@@ -288,6 +331,18 @@ fn run(command: Command) -> Result<String, BuildError> {
         Command::Lesson(lesson) => run_lesson(lesson),
         Command::Publish { .. } => Err(refuse_publication()),
         Command::Cache(cache) => run_cache(cache),
+        Command::Doctor {
+            workspace,
+            model_root,
+        } => {
+            let model = model_root.map(|root| workspace_root(&root)).transpose()?;
+            run_doctor(&workspace_root(&workspace)?, model.as_deref())
+        }
+        Command::Takes(TakesCommand::Accept {
+            workspace,
+            lesson_id,
+            out,
+        }) => accept_takes(&workspace_root(&workspace)?, &lesson_id, &out),
         Command::Inspect { workspace, job_id } => {
             inspect_job(&workspace_root(&workspace)?, &job_id)
         }
@@ -522,6 +577,55 @@ fn workspace_root(workspace: &Path) -> Result<PathBuf, BuildError> {
         }
         .into()
     })
+}
+
+/// Reports what this machine can do, and what could not be checked.
+///
+/// Every finding is printed, including the blocked ones. A report that listed
+/// only what it could check would let a reader mistake an unrun check for a
+/// passing one, which is what ADR-0001 §14's enumeration exists to prevent.
+///
+/// A refused check is reported, not raised: `doctor` exists to describe a bad
+/// environment rather than to fail in one, and an operator running it has
+/// already been refused by something else.
+fn run_doctor(workspace: &Path, model_root: Option<&Path>) -> Result<String, BuildError> {
+    let findings = diagnose(workspace, model_root)?;
+    let refused = findings
+        .iter()
+        .filter(|finding| matches!(finding.verdict, study_tts_runtime::Verdict::Refused(_)))
+        .count();
+
+    let mut lines = vec![format!("environment for `{}`:", workspace.display())];
+    lines.extend(findings.iter().map(ToString::to_string));
+    lines.push(match refused {
+        0 => "nothing refused; blocked checks are named above".to_owned(),
+        1 => "1 check refused".to_owned(),
+        many => format!("{many} checks refused"),
+    });
+    Ok(lines.join("\n"))
+}
+
+/// Accepts the current package's takes, making the selection explicit.
+///
+/// The first operation in this project that can produce an explicit take
+/// selection. Every package built so far records `take_selection_source`
+/// `implicit`, which both M2 evidence records name as what keeps a production
+/// claim unavailable.
+fn accept_takes(workspace: &Path, lesson_id: &str, out: &Path) -> Result<String, BuildError> {
+    let destination = workspace_root(out)?;
+    match accept_current_takes(workspace, lesson_id, &destination)? {
+        Some(document) => Ok(format!(
+            "accepted {} selection{} for `{lesson_id}`: {}",
+            document.selections.len(),
+            if document.selections.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            destination.display()
+        )),
+        None => Ok(format!("no current package for `{lesson_id}` to accept")),
+    }
 }
 
 /// Reports what a job's durable record says, and nothing it does not hold.

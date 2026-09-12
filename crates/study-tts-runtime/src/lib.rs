@@ -12,6 +12,7 @@ mod authoring;
 mod cache;
 mod cache_port;
 mod distinct_map;
+mod doctor;
 mod durable;
 mod error;
 mod export;
@@ -29,6 +30,7 @@ mod prune;
 mod run_report;
 mod schemas;
 mod synthesis;
+mod takes_accept;
 mod timeline;
 mod tools;
 mod voice_gate;
@@ -51,6 +53,7 @@ pub use cache_port::{
     CACHE_PUBLICATION_CONTRACT_VERSION, CachePublisher, CacheResolveRequest,
     FileSystemCachePublisher, StagedAudioProducer,
 };
+pub use doctor::{Finding, Verdict, diagnose};
 pub use error::{
     AudioError, AudioFault, BuildError, BuildErrorClass, CacheEntryFault, CacheError,
     ConditioningContradiction, DurableStateError, EnvironmentMismatch, IoError, ManagedPathError,
@@ -95,6 +98,7 @@ pub use synthesis::{
     ExecutorMeasurements, SynthesisReport, SynthesisRequest, TTS_EXECUTOR_CONTRACT_VERSION,
     TtsExecutor, validate_executor_request,
 };
+pub use takes_accept::accept_current_takes;
 pub use voice_gate::{admit_voice_root, resolve_voice_conditioning};
 pub use worker_bundle::{
     BUNDLE_MANIFEST_PATH, BUNDLE_MANIFEST_SCHEMA_VERSION, BundleManifest, DeclaredStartupModule,
