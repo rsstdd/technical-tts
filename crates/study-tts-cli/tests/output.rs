@@ -110,3 +110,159 @@ fn t3_e2_cli_json_output_carries_no_lesson_content() {
         "neither may the human-readable refusal: {said}"
     );
 }
+
+/// Every command emits the envelope, and no command is exempt.
+///
+/// ADR-0001 §7.3: "Every command supports human-readable output and `--json`."
+/// A story that adds the flag command by command satisfies it until the
+/// eleventh command forgets, so this enumerates the surface rather than
+/// sampling it.
+///
+/// `render` and `resume` are driven to a refusal that happens **before** any
+/// worker starts — a bundle root with no `bundle-manifest.json` — so a T4 test
+/// covers them without a model, which `docs/testing/TEST-STRATEGY.md` forbids
+/// it from downloading.
+///
+/// The wrong implementation this rejects is the one this surface grew into:
+/// four commands added in one pass with no test of their own, because the
+/// envelope was proved on a single refusal and assumed for the rest.
+#[test]
+fn t4_e2_every_mvp_command_has_stable_structured_output() {
+    let workspace = TempDir::new().expect("create a workspace");
+    let root = workspace.path();
+    let absent = root.join("absent");
+    let absent = absent.display().to_string();
+    let here = root.display().to_string();
+    let digest = "a".repeat(64);
+
+    let invocations: [(&str, Vec<&str>); 10] = [
+        (
+            "lesson new",
+            vec!["lesson", "new", "e2-s5-all", "--out", "new.json"],
+        ),
+        ("lesson validate", vec!["lesson", "validate", "new.json"]),
+        ("publish", vec!["publish", "e2-s5-all"]),
+        ("cache prune", vec!["cache", "prune", "--workspace", &here]),
+        (
+            "cache verify",
+            vec!["cache", "verify", "--workspace", &here],
+        ),
+        ("report", vec!["report", "--workspace", &here, "e2-s5-all"]),
+        (
+            "inspect",
+            vec!["inspect", "--workspace", &here, "e2-s5-all"],
+        ),
+        (
+            "review",
+            vec![
+                "review",
+                "--workspace",
+                &here,
+                "--lesson-id",
+                "e2-s5-all",
+                "--manifest",
+                &digest,
+                "--reviewer",
+                "r",
+                "--reviewer-role",
+                "owner",
+                "--playback-environment",
+                "speakers",
+                "--disposition",
+                "accepted",
+            ],
+        ),
+        (
+            "render",
+            vec![
+                "render",
+                "new.json",
+                "--workspace",
+                &here,
+                "--bundle-root",
+                &absent,
+                "--model-root",
+                &absent,
+                "--voice-root",
+                &absent,
+                "--hardware-environment",
+                "test-env",
+            ],
+        ),
+        (
+            "resume",
+            vec![
+                "resume",
+                "e2-s5-all",
+                "--workspace",
+                &here,
+                "--bundle-root",
+                &absent,
+                "--model-root",
+                &absent,
+                "--voice-root",
+                &absent,
+                "--hardware-environment",
+                "test-env",
+            ],
+        ),
+    ];
+
+    // The table must cover the surface, not a subset of it. The first version
+    // of this test omitted `resume` — which is the failure it exists to
+    // prevent, committed inside the test itself. `--help` is the surface's own
+    // account of what exists, so it is what the table is checked against.
+    let help = String::from_utf8(study_tts_in(root, &["--help"]).stdout).expect("help is UTF-8");
+    let listed: Vec<&str> = help
+        .lines()
+        .skip_while(|line| !line.starts_with("Commands:"))
+        .skip(1)
+        .take_while(|line| !line.trim().is_empty())
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|name| *name != "help")
+        .collect();
+    assert!(!listed.is_empty(), "`--help` lists the commands: {help}");
+    for command in listed {
+        assert!(
+            invocations
+                .iter()
+                .any(|(name, _)| *name == command || name.starts_with(&format!("{command} "))),
+            "`{command}` is on the surface and absent from this table"
+        );
+    }
+
+    for (name, arguments) in invocations {
+        let mut with_json = vec!["--json"];
+        with_json.extend(arguments);
+        let output = study_tts_in(root, &with_json);
+
+        let emitted = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+        let record: serde_json::Value = serde_json::from_str(&emitted)
+            .unwrap_or_else(|error| panic!("`{name}` emitted no envelope: {error}; got {emitted}"));
+
+        assert_eq!(record["command"], name, "`{name}` names itself");
+        assert_eq!(
+            record["output_version"], "1.0-cli-output",
+            "`{name}` carries the envelope version"
+        );
+        assert!(
+            record["outcome"] == "succeeded" || record["outcome"] == "refused",
+            "`{name}` reports a closed outcome, got {}",
+            record["outcome"]
+        );
+
+        // A refusal carries its class and the exit code the process used, so a
+        // caller reading JSON and a caller reading `$?` cannot disagree.
+        if record["outcome"] == "refused" {
+            assert!(
+                record["error_class"].is_string(),
+                "`{name}` names the boundary that refused"
+            );
+            assert_eq!(
+                record["exit_code"].as_u64(),
+                output.status.code().map(|code| code as u64),
+                "`{name}` reports the exit code it actually left"
+            );
+        }
+    }
+}
