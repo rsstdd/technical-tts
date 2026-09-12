@@ -646,7 +646,7 @@ only at M2 against the five-minute lesson that criterion names. Interface record
 - `t4_e2_selected_artifact_survives_prune`
 - `t4_e2_production_rejects_implicit_take_selection`
 
-### Story E2-S3 — Audio validation and preview loudness
+### Story E2-S3 — Audio validation and preview loudness — Complete
 
 **Depends on:** E1-S4.
 
@@ -670,7 +670,7 @@ only at M2 against the five-minute lesson that criterion names. Interface record
 - `t4_e2_loudnorm_requires_linear_result`
 - `t3_e2_provisional_measurement_cannot_satisfy_production_calibration`
 
-### Story E2-S4 — Observability and run report
+### Story E2-S4 — Observability and run report — Complete
 
 **Depends on:** E2-S1. **Track:** T-CLI.
 

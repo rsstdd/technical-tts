@@ -29,6 +29,13 @@ repository methods, and
 manifest clause was superseded by `E2-INTERFACE-CHANGE-001` before it was signed, and the row stays
 at the `4.0-skeleton` made effective 2026-09-09.
 
+`E2-INTERFACE-CHANGE-002` and `E2-S3-INTERFACE-CHANGE-001`, both accepted and signed 2026-09-12,
+change no frozen row. `-002` makes `transaction_identity` `0.4-skeleton-transaction` effective and
+adds it to §Deliberately not frozen, closing the last gap in §The inventory is derived's promise:
+four `*_IDENTITY_VERSION` constants exist, three were frozen rows, and this one was in neither list
+from 2026-09-02 until today. `E2-S3-INTERFACE-CHANGE-001` moves no schema version at all — package
+identity moved when it landed, and the signature records that rather than changing it.
+
 Successor to [`PROVISIONAL-CONTRACT-BASELINE.md`](PROVISIONAL-CONTRACT-BASELINE.md), which set the
 E0-S4 baseline and said in its own words that it claimed no production contract and made no
 migration promise before G1. This is the record that ends that. `DELIVERY-PLAN.md` §Ownership
@@ -100,6 +107,7 @@ in §Deliberately not frozen with the reason. Nothing is omitted for being unint
 |---|---|
 | `JOB_EVENT_SCHEMA_VERSION` (`e2.job-event.0.1`) | An internal diagnostic line in `jobs/<job-id>/events.ndjson`, as `publication.json` is an internal journal. E2-S1 owns only the append-after-durable ordering it carries. **Decided 2026-09-08 by `E2-S4-INTERFACE-CHANGE-001`: it stays unfrozen and unpublished.** The run report is the document a consumer reads and the manifest will checksum, so that is where the contract belongs; the two have different readers, and `validate_event_file` refuses a foreign `schema_version`, so bumping this would reject every existing log for no gain. **Held on 2026-09-09**: E2-S4 task 1 added six stage variants and moved nothing, because an internally tagged enum reads every line whose tag it knows. Its shape remains unpromised |
 | `JOB_LOCK_SCHEMA_VERSION` (`0.1-skeleton-job-lock`) | The strict record inside `build.lock`, read by one module and never by a consumer. Its version exists so a record from another build is refused as `IncompatibleJobLock` rather than misread; nothing else depends on its shape, so it is not frozen |
+| `TRANSACTION_IDENTITY_VERSION` (`0.4-skeleton-transaction`) | Names a staging directory and nothing else. Read only by `preview.rs`, written into no manifest, package, cache entry, or report, and therefore seen by no consumer. Its version exists so a staging directory from another build is abandoned rather than resumed into, which is `JOB_LOCK_SCHEMA_VERSION`'s reason one row up. Moving it refuses in-flight work and breaks nothing, because there is nothing outside the build to break. **Decided 2026-09-12 by `E2-INTERFACE-CHANGE-002`**, which resolved its own G-A in this direction rather than the frozen list it first proposed |
 | `SCHEMA_VERSION_PATTERN` | A grammar, not a version. It constrains how a version is spelled and carries no compatibility promise of its own |
 | `PROTOCOL_FAKE_BUNDLE_HASH`, `PROTOCOL_FAKE_MODEL_ARTIFACTS_HASH` | Test identities. Fixed so a fake's keys are stable and reachable by no real bundle or model root; nothing in production reads them |
 | `PINNED_MODEL_REVISION`, `DECLARED_MODEL_ARTIFACTS` | Governed-backend content, not an interface. ADR-0002 owns the qualified revision, and changing it is a requalification rather than a version move |

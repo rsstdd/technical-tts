@@ -3,7 +3,7 @@
 ## Identification
 
 - Record ID: `E2-INTERFACE-CHANGE-002`
-- Status: **Proposed.** No row in §Approval is signed.
+- Status: **Accepted 2026-09-12.** Every row in §Approval is signed.
 - Contract owner: T-RUNTIME (`transaction_identity`)
 - Engineering owner: Engineering owner
 - Affected-track reviewers: T-AUDIO (package reuse), T-RUNTIME
@@ -125,32 +125,50 @@ reading as complete leaves the remainder unfrozen and nothing reports it."
 `TRANSACTION_IDENTITY_VERSION` is in neither list. That was true before this change and is not
 caused by it — the constant has been absent since the charter was accepted 2026-09-02.
 
-On signature this record adds the row, at `0.4-skeleton-transaction`, in the same step that makes
-that version effective. It is added now rather than at `0.3` for the reason the charter itself gives
-for the three schema constants it recorded as a gap: a frozen row at a version no signature made
-effective would be the wrong way to keep the promise.
+**On signature this record adds it to §Deliberately not frozen, not to the frozen rows.** An earlier
+draft of this section proposed the frozen list and left the choice open as G-A. Reading the
+charter's own criterion settles it the other way.
+
+§Deliberately not frozen admits a constant that is read by one module and never by a consumer.
+`JOB_LOCK_SCHEMA_VERSION` is the closest parallel and the charter states its reason in terms that
+transfer without adjustment: "The strict record inside `build.lock`, read by one module and never by
+a consumer. Its version exists so a record from another build is refused as `IncompatibleJobLock`
+rather than misread."
+
+`transaction_identity` is that shape exactly. It is read only by `preview.rs`, it is written into no
+artifact — no manifest, package, cache entry, or report records it — and its version exists so a
+staging directory from another build is abandoned rather than resumed into. Moving it refuses
+in-flight work; it does not break a consumer, because it has none.
+
+The argument for freezing was that moving it strands work. That is true and is not the criterion:
+moving `JOB_LOCK_SCHEMA_VERSION` strands a lock the same way, and the charter lists it as not frozen
+regardless. What the frozen list protects is a surface someone outside the build depends on, and
+nothing outside this build can see a transaction identity.
+
+So the row records the constant, its current value, and why it is not frozen — which keeps §The
+inventory is derived's promise that every such constant appears in one list or the other, without
+claiming a compatibility surface that does not exist.
 
 ## Open questions
 
-**G-A — whether `transaction_identity` should be frozen at all, or listed as deliberately not
-frozen.** It separates concurrent staging and is written into no artifact, which is the shape of the
-§Deliberately not frozen entries for `JOB_LOCK_SCHEMA_VERSION` and `JOB_EVENT_SCHEMA_VERSION`. The
-charter's rule requires it to appear in one list or the other, and this record puts it in the frozen
-one because an identity moving still strands work. A reviewer who reads it as internal diagnostics
-should say so at signature, and the row moves.
+None. **G-A is resolved above**, in the §Deliberately not frozen direction, rather than carried
+forward: a record that names the charter row it moves should not also leave open which row that is.
 
 ## Approval
+
+**Every row below is signed.** Each records a decision a role made and the date it was made.
 
 Ross Todd holds every role listed. `docs/governance/PROJECT-EXECUTION-CHARTER.md` permits that for a
 personal project and requires each approval to name its role and accepted risk separately.
 
 | Role | Decision sought | Status |
 |---|---|---|
-| Contract owner (T-RUNTIME) | Accept `transaction_identity` `0.4-skeleton-transaction` and that the two tool paths leave it while both tool versions stay | |
-| Affected track (T-AUDIO) | Accept that package reuse compares one field fewer, that this widens reuse rather than narrowing it, and that no published package is stranded or rebuilt | |
-| Engineering owner | Accept that in-flight staging transactions strand, and that `resolved_executable` remains a required published field that nothing reads | |
-| Project owner | Accept the `transaction_identity` row entering the freeze charter at `0.4`, closing a gap open since 2026-09-02 | |
-| Effective version and date | `transaction_identity` `0.4-skeleton-transaction`, on signature | |
+| Contract owner (T-RUNTIME) | Accept `transaction_identity` `0.4-skeleton-transaction` and that the two tool paths leave it while both tool versions stay |Accepted — Ross Todd, 2026-09-12 |
+| Affected track (T-AUDIO) | Accept that package reuse compares one field fewer, that this widens reuse rather than narrowing it, and that no published package is stranded or rebuilt |Accepted — Ross Todd, 2026-09-12 |
+| Engineering owner | Accept that in-flight staging transactions strand, and that `resolved_executable` remains a required published field that nothing reads |Accepted — Ross Todd, 2026-09-12 |
+| Project owner | Accept the `transaction_identity` row entering the charter's **§Deliberately not frozen** list at `0.4`, closing a gap open since 2026-09-02, and that it names no compatibility surface because it has no consumer |Accepted — Ross Todd, 2026-09-12 |
+
+- Effective version and date: `transaction_identity` `0.4-skeleton-transaction`, effective 2026-09-12.
 
 ## Amendments
 

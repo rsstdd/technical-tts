@@ -3,7 +3,7 @@
 ## Identification
 
 - Record ID: `E2-S3-INTERFACE-CHANGE-001`
-- Status: **Proposed.** No row in §Approval is signed.
+- Status: **Accepted 2026-09-12.** Every row in §Approval is signed.
 - Contract owner: T-RUNTIME (the package transaction and reuse comparison)
 - Engineering owner: Engineering owner
 - Affected-track reviewers: T-AUDIO, T-RUNTIME, T-CLI
@@ -162,6 +162,8 @@ unratified measure does not ratify it.
 
 ## Approval
 
+**Every row below is signed.** Each records a decision a role made and the date it was made.
+
 Ross Todd holds every role listed. `docs/governance/PROJECT-EXECUTION-CHARTER.md` permits that for a
 personal project and requires each approval to name its role and accepted risk separately, which is
 why the rows stay separate.
@@ -172,12 +174,15 @@ terms `ADR-0001-D012` sets.
 
 | Role | Decision sought | Status |
 |---|---|---|
-| Project owner | Accept that every existing published package is superseded and rebuilt, while every cache entry survives | |
-| Contract owner (T-RUNTIME) | Accept that package and transaction identity move with no schema version change, and the eight-entry reuse comparison | |
-| Affected track (T-AUDIO) | Accept `-27 LUFS`, `-1.0 dBTP`, and the `2.0` join band as provisional under `ADR-0001-D012`, on the measurements in §Measured loudness | |
-| Affected track (T-CLI) | Accept that open question G-A assigns advisory join findings to E2-S4's run report | |
-| Engineering owner | Accept `normalize_master_output` as a published T4 seam and the first `RemedyOwner::HumanReview` routing | |
-| Effective version and date | No schema version moves; package identity moves | |
+| Project owner | Accept that every existing published package is superseded and rebuilt, while every cache entry survives |Accepted — Ross Todd, 2026-09-12 |
+| Contract owner (T-RUNTIME) | Accept that package and transaction identity move with no schema version change, and the eight-entry reuse comparison |Accepted — Ross Todd, 2026-09-12 |
+| Affected track (T-AUDIO) | Accept `-27 LUFS`, `-1.0 dBTP`, and the `2.0` join band as provisional under `ADR-0001-D012`, on the measurements in §Measured loudness |Accepted — Ross Todd, 2026-09-12 |
+| Affected track (T-CLI) | Accept that open question G-A assigns advisory join findings to E2-S4's run report |Accepted — Ross Todd, 2026-09-12 |
+| Engineering owner | Accept `normalize_master_output` as a published T4 seam and the first `RemedyOwner::HumanReview` routing |Accepted — Ross Todd, 2026-09-12 |
+
+- Effective version and date: no schema version moves; package identity moves, effective 2026-09-12.
+  Its open question **G-A** — whether advisory join findings belong in E2-S4's run report — was
+  answered by E2-S4 shipping `join_findings`, and is discharged rather than carried forward.
 
 ## Amendments
 
