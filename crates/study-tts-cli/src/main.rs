@@ -90,6 +90,29 @@ enum Command {
         #[arg(long = "retake", value_parser = parse_retake)]
         retakes: Vec<(String, u32)>,
     },
+    /// Re-synthesize named segments of a job at a different take.
+    ///
+    /// ADR-0001 §7.3's spelling. The lesson comes from the job's own retained
+    /// copy — `jobs/<job-id>/lesson.json`, the bytes the build validated and
+    /// kept — so an operator names a job rather than re-finding the document
+    /// they rendered from.
+    ///
+    /// Not `resume`. `pipeline.rs`'s invariant A-1 makes resume replay the
+    /// retained plan and discover no takes, because "a rediscovering resume
+    /// would degrade a retake to take zero with nothing reporting it". A
+    /// retake needs a new plan, which is what a build produces.
+    Retake {
+        /// The job whose retained lesson to re-render.
+        job_id: String,
+        /// The governed workspace holding `jobs/`.
+        #[arg(long)]
+        workspace: PathBuf,
+        #[command(flatten)]
+        roots: WorkerRoots,
+        /// `<segment-id>=<take>`, repeatable.
+        #[arg(long = "segment", value_parser = parse_retake, required = true)]
+        segments: Vec<(String, u32)>,
+    },
     /// Resume a job that was interrupted.
     Resume {
         /// The job to resume.
@@ -253,6 +276,7 @@ impl Command {
             Self::Review { .. } => "review",
             Self::Render { .. } => "render",
             Self::Resume { .. } => "resume",
+            Self::Retake { .. } => "retake",
         }
     }
 }
@@ -396,6 +420,19 @@ fn run(command: Command, quiet: bool) -> Result<String, BuildError> {
             workspace,
             roots,
         } => resume_job(&job_id, &workspace_root(&workspace)?, &roots, quiet),
+        Command::Retake {
+            job_id,
+            workspace,
+            roots,
+            segments,
+        } => {
+            let workspace = workspace_root(&workspace)?;
+            // The retained lesson, not a path the operator re-supplies: the
+            // bytes the build validated are the ones a retake must re-render,
+            // and `resume` verifies that copy's digest for the same reason.
+            let lesson = workspace.join("jobs").join(&job_id).join("lesson.json");
+            render_lesson(&lesson, &workspace, &roots, segments, quiet)
+        }
     }
 }
 

@@ -135,7 +135,7 @@ fn t4_e2_every_mvp_command_has_stable_structured_output() {
     let here = root.display().to_string();
     let digest = "a".repeat(64);
 
-    let invocations: [(&str, Vec<&str>); 12] = [
+    let invocations: [(&str, Vec<&str>); 13] = [
         (
             "lesson new",
             vec!["lesson", "new", "e2-s5-all", "--out", "new.json"],
@@ -201,6 +201,25 @@ fn t4_e2_every_mvp_command_has_stable_structured_output() {
                 &absent,
                 "--hardware-environment",
                 "test-env",
+            ],
+        ),
+        (
+            "retake",
+            vec![
+                "retake",
+                "e2-s5-all",
+                "--workspace",
+                &here,
+                "--bundle-root",
+                &absent,
+                "--model-root",
+                &absent,
+                "--voice-root",
+                &absent,
+                "--hardware-environment",
+                "test-env",
+                "--segment",
+                "seg-0001=1",
             ],
         ),
         (
