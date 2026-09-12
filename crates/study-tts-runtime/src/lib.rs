@@ -76,6 +76,7 @@ pub use pipeline::{
     build_preview_with_services, load_lesson, normalize_master_output, publish, resume_preview,
     resume_preview_with_services, validate_m4a_output, validate_production_manifest,
 };
+pub use preview::current_run_report;
 pub use prune::{PruneCandidate, live_cache_keys, prune_candidates};
 pub use run_report::{
     Aggregation, CacheOutcome, DeclaredThreadBudget, Fidelity, FieldSemantics,

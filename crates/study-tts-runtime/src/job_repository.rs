@@ -225,7 +225,7 @@ impl JobRepository for FileSystemJobRepository {
     }
 
     fn load(&self, workspace: &Path, job_id: &str) -> Result<Option<JobDocument>, BuildError> {
-        let path = job_document_path(workspace, job_id)?;
+        let path = job_document_candidate(workspace, job_id)?;
         if !path.exists() {
             return Ok(None);
         }
@@ -454,6 +454,23 @@ fn job_directory(workspace: &Path, job_id: &str) -> Result<PathBuf, BuildError> 
 
 fn job_document_path(workspace: &Path, job_id: &str) -> Result<PathBuf, BuildError> {
     managed::leaf(&job_directory(workspace, job_id)?, JOB_DOCUMENT_NAME)
+}
+
+/// Where a job document *would* be, creating nothing on the way.
+///
+/// [`job_directory`] resolves through `managed::subdirectory`, which creates
+/// what is missing. A write needs that; a read does not, and `load` used it
+/// anyway — so asking whether a job existed created the directory that proved
+/// it did not. E2-S5's `inspect` is what made that visible, by letting an
+/// operator ask about any path they can type.
+///
+/// The containment guarantee is unchanged: `directory_candidate` refuses an
+/// unsafe or symlinked component exactly as `subdirectory` does, and only
+/// declines to create.
+fn job_document_candidate(workspace: &Path, job_id: &str) -> Result<PathBuf, BuildError> {
+    let jobs = managed::directory_candidate(workspace, "jobs")?;
+    let job_dir = managed::directory_candidate(&jobs, job_id)?;
+    managed::leaf(&job_dir, JOB_DOCUMENT_NAME)
 }
 
 fn validate_document(path: &Path, job_id: &str, document: &JobDocument) -> Result<(), BuildError> {

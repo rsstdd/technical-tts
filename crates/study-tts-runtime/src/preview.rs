@@ -18,11 +18,13 @@ use crate::{
     BuildError, DurableStateError,
     cache::{self, hash_file},
     durable::{
-        DurableFileSystem, RenameOutcome, publish_directory_noreplace, sync_directory_transaction,
-        write_json_atomically,
+        DurableFileSystem, RenameOutcome, publish_directory_noreplace, read_bounded_bytes,
+        sync_directory_transaction, write_json_atomically,
     },
     export::ExportProfiles,
-    io_error, managed, manifest, timeline,
+    io_error, managed, manifest,
+    run_report::{MAX_RUN_REPORT_JSON_BYTES, RUN_REPORT_NAME, RunReport},
+    timeline,
     tools::ToolIdentity,
 };
 
@@ -531,10 +533,78 @@ fn read_journal(path: &Path, lesson_id: &str) -> Result<Option<PublicationJourna
     Ok(Some(journal))
 }
 
+/// The governed roots as they *are*, creating none of them.
+///
+/// [`roots`] resolves through `managed::subdirectory`, which creates what is
+/// missing — right for a build, and wrong for a read, which would otherwise
+/// leave `jobs/`, `staging/`, and `quarantine/` behind in whatever directory an
+/// operator pointed a report at by mistake.
+///
+/// `Ok(None)` when the lesson has no preview directory, so a caller can tell
+/// "nothing here" from a refusal. The three roots a read does not follow are
+/// resolved rather than invented: they are the paths those roots *would* have,
+/// and `directory_candidate` refuses an unsafe component in each the same way.
+///
+/// # Errors
+///
+/// [`crate::ManagedPathError`] when any component is unsafe or a symlink.
+fn resolved_roots(workspace: &Path, lesson_id: &str) -> Result<Option<PreviewRoots>, BuildError> {
+    let previews = managed::directory_candidate(workspace, "previews")?;
+    let preview_dir = managed::directory_candidate(&previews, lesson_id)?;
+    if !preview_dir.is_dir() {
+        return Ok(None);
+    }
+    let jobs = managed::directory_candidate(workspace, "jobs")?;
+    let job_dir = managed::directory_candidate(&jobs, lesson_id)?;
+    Ok(Some(PreviewRoots {
+        staging_dir: managed::directory_candidate(&job_dir, STAGING_DIRECTORY)?,
+        job_dir,
+        packages_dir: managed::directory_candidate(&preview_dir, PACKAGES_DIRECTORY)?,
+        preview_dir,
+        quarantine_root: managed::directory_candidate(workspace, "quarantine")?,
+    }))
+}
+
 /// The package `current.json` selects, without asking which plan produced it.
 ///
 /// [`current_manifest_digest`] answers a different question — whether the
 /// selection matches *this build's* plan — and needs a plan hash to do it.
+/// The sealed run report of the package a lesson currently selects.
+///
+/// `DELIVERY-PLAN.md` E2-S5 task 1 names a `report` command, and the layout it
+/// would have to walk — `previews/<lesson-id>/current.json`, then the package
+/// directory that names — belongs to this module rather than to a caller.
+/// Exposed as a read so the CLI asks a question instead of reconstructing an
+/// answer, which is the boundary `crates/AGENTS.md` §Routing table draws.
+///
+/// `Ok(None)` when the lesson has no current package, which is different from
+/// a package whose report is missing: that is
+/// [`DurableStateError::MalformedPackageRunReport`], because a published
+/// package always seals one.
+///
+/// # Errors
+///
+/// [`crate::ManagedPathError`] when a component is unsafe, the durable-state
+/// errors [`read_current`] documents, and
+/// [`DurableStateError::MalformedPackageRunReport`] when the sealed bytes are
+/// not a report this build reads.
+pub fn current_run_report(
+    workspace: &Path,
+    lesson_id: &str,
+) -> Result<Option<RunReport>, BuildError> {
+    let Some(roots) = resolved_roots(workspace, lesson_id)? else {
+        return Ok(None);
+    };
+    let Some(package) = read_current(&roots, lesson_id)? else {
+        return Ok(None);
+    };
+    let path = managed::leaf(&package.package_dir, RUN_REPORT_NAME)?;
+    let bytes = read_bounded_bytes(&path, MAX_RUN_REPORT_JSON_BYTES)?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|source| DurableStateError::MalformedPackageRunReport { path, source }.into())
+}
+
 /// Approval asks only which generation a reviewer would be listening to.
 pub(crate) fn read_current(
     roots: &PreviewRoots,
@@ -977,9 +1047,7 @@ mod tests {
             audio_frames: Measured::Observed { value: 1 },
         });
         fs::write(
-            transaction
-                .stage_dir
-                .join(crate::run_report::RUN_REPORT_NAME),
+            transaction.stage_dir.join(RUN_REPORT_NAME),
             serde_json::to_vec_pretty(&report).expect("serialize run report"),
         )
         .expect("write run report");
