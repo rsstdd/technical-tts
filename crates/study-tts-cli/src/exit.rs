@@ -30,7 +30,7 @@ use study_tts_runtime::{BuildError, BuildErrorClass, IoError, RemedyOwner};
 /// learned this table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
-pub enum ExitClass {
+pub(crate) enum ExitClass {
     /// The operator gave something this build cannot accept.
     InvalidInput = 2,
     /// Something this build needs was not installed.
@@ -73,7 +73,7 @@ impl ExitClass {
     /// owner for those, and `MissingTool` says so in as many words — "its own
     /// message already names the remedy".
     #[must_use]
-    pub fn of(error: &BuildError) -> Self {
+    pub(crate) fn of(error: &BuildError) -> Self {
         if let Some(remedy) = error.remedy() {
             return Self::of_owner(remedy.owner());
         }
@@ -133,7 +133,7 @@ impl ExitClass {
     /// variants it maps from: the question each arm answers is "what should an
     /// operator do about this", and that is what an exit code is for.
     #[must_use]
-    pub const fn of_class(class: BuildErrorClass) -> Self {
+    const fn of_class(class: BuildErrorClass) -> Self {
         match class {
             // The operator authored or selected something this build refuses.
             BuildErrorClass::Lesson
@@ -178,7 +178,7 @@ impl ExitClass {
 
     /// The process status this class leaves behind.
     #[must_use]
-    pub fn code(self) -> ExitCode {
+    pub(crate) fn code(self) -> ExitCode {
         ExitCode::from(self as u8)
     }
 }

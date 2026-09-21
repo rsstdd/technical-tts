@@ -35,6 +35,24 @@ mod recovery;
 use exit::ExitClass;
 use output::CommandOutput;
 
+/// The services a preview build runs against on this machine.
+///
+/// Statics rather than four locals per command: all three are unit structs with
+/// no state to own, and the two build paths bound them identically — one
+/// spelling of "the real filesystem" more than there should be. The reporting
+/// decorator stays a local because it carries `quiet`, which is per-invocation.
+static JOBS: FileSystemJobRepository = FileSystemJobRepository;
+static CACHE: FileSystemCachePublisher = FileSystemCachePublisher;
+static PACKAGES: FileSystemPackageWriter = FileSystemPackageWriter;
+
+/// What this build spawns when nothing on the command line names a binary.
+///
+/// Resolved from `PATH` by `tools::inspect`, which records the binary that
+/// answered rather than the name requested. Named here so a future `--ffmpeg`
+/// or `--ffprobe` has one place to override instead of four.
+const FFMPEG: &str = "ffmpeg";
+const FFPROBE: &str = "ffprobe";
+
 /// Turns reviewed technical lessons into study-guide audio.
 #[derive(Debug, Parser)]
 #[command(name = "study-tts", version, about, long_about = None)]
@@ -491,23 +509,20 @@ fn render_lesson(
     quiet: bool,
 ) -> Result<String, BuildError> {
     let executor = start_worker(workspace, roots, quiet)?;
-    let jobs = FileSystemJobRepository;
-    let reporting = progress::ReportingJobs::new(&jobs, quiet);
-    let cache = FileSystemCachePublisher;
-    let packages = FileSystemPackageWriter;
+    let reporting = progress::ReportingJobs::new(&JOBS, quiet);
     let result = build_preview_with_services(
         BuildRequest {
             lesson_path: lesson.to_path_buf(),
             workspace: workspace.to_path_buf(),
-            ffmpeg_executable: PathBuf::from("ffmpeg"),
-            ffprobe_executable: PathBuf::from("ffprobe"),
+            ffmpeg_executable: PathBuf::from(FFMPEG),
+            ffprobe_executable: PathBuf::from(FFPROBE),
             voice_profile_root: workspace_root(&roots.voice_root)?,
             retakes: retakes.into_iter().collect(),
         },
         PreviewServiceBundle {
             executor: &executor,
-            cache: &cache,
-            packages: &packages,
+            cache: &CACHE,
+            packages: &PACKAGES,
             jobs: &reporting,
         },
     )?;
@@ -522,22 +537,19 @@ fn resume_job(
     quiet: bool,
 ) -> Result<String, BuildError> {
     let executor = start_worker(workspace, roots, quiet)?;
-    let jobs = FileSystemJobRepository;
-    let reporting = progress::ReportingJobs::new(&jobs, quiet);
-    let cache = FileSystemCachePublisher;
-    let packages = FileSystemPackageWriter;
+    let reporting = progress::ReportingJobs::new(&JOBS, quiet);
     let result = resume_preview_with_services(
         ResumeRequest {
             job_id: job_id.to_owned(),
             workspace: workspace.to_path_buf(),
-            ffmpeg_executable: PathBuf::from("ffmpeg"),
-            ffprobe_executable: PathBuf::from("ffprobe"),
+            ffmpeg_executable: PathBuf::from(FFMPEG),
+            ffprobe_executable: PathBuf::from(FFPROBE),
             voice_profile_root: workspace_root(&roots.voice_root)?,
         },
         PreviewServiceBundle {
             executor: &executor,
-            cache: &cache,
-            packages: &packages,
+            cache: &CACHE,
+            packages: &PACKAGES,
             jobs: &reporting,
         },
     )?;

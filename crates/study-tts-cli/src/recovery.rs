@@ -58,7 +58,7 @@ const RECOVERY: [(&str, &str); 3] = [
 /// whose row no command answers. Both leave the operator with the refusal's
 /// own message, which already names its remedy owner.
 #[must_use]
-pub fn command_for(error: &BuildError) -> Option<&'static str> {
+pub(crate) fn command_for(error: &BuildError) -> Option<&'static str> {
     let row = error.remedy()?.routing()?;
     RECOVERY
         .iter()

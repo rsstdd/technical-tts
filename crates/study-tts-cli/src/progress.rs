@@ -36,7 +36,7 @@ use study_tts_runtime::{BuildError, BuildStage, JobOwnership, JobRepository};
 ///
 /// Holds the real one rather than replacing it: durability, validation, and
 /// every refusal stay exactly where they were.
-pub struct ReportingJobs<'a> {
+pub(crate) struct ReportingJobs<'a> {
     inner: &'a dyn JobRepository,
     quiet: bool,
 }
@@ -49,7 +49,7 @@ impl<'a> ReportingJobs<'a> {
     /// noise, but the wrapper must still be in the chain so both modes run the
     /// same code path.
     #[must_use]
-    pub fn new(inner: &'a dyn JobRepository, quiet: bool) -> Self {
+    pub(crate) fn new(inner: &'a dyn JobRepository, quiet: bool) -> Self {
         Self { inner, quiet }
     }
 

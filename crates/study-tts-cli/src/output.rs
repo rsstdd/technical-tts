@@ -33,7 +33,7 @@ use crate::exit::ExitClass;
 ///
 /// Not a `SchemaVersion`: this is not a published document and comparing it is
 /// nobody's job but a reader's. See the module header.
-pub const CLI_OUTPUT_VERSION: &str = "1.0-cli-output";
+const CLI_OUTPUT_VERSION: &str = "1.0-cli-output";
 
 /// One command's result, in the shape `--json` emits.
 ///
@@ -43,7 +43,7 @@ pub const CLI_OUTPUT_VERSION: &str = "1.0-cli-output";
 /// value a refusal refused, because the most natural refusal to write is one
 /// that quotes it.
 #[derive(Debug, Serialize)]
-pub struct CommandOutput {
+pub(crate) struct CommandOutput {
     /// The envelope's own version, so a reader can tell which shape it holds.
     output_version: &'static str,
     /// The command that ran, as the operator spelled it.
@@ -84,7 +84,7 @@ enum Outcome {
 impl CommandOutput {
     /// Records a command that did its work.
     #[must_use]
-    pub fn succeeded(command: &'static str, summary: String) -> Self {
+    pub(crate) fn succeeded(command: &'static str, summary: String) -> Self {
         Self {
             output_version: CLI_OUTPUT_VERSION,
             command,
@@ -96,7 +96,7 @@ impl CommandOutput {
     /// rather than from the caller, so no command can report a class it did
     /// not raise.
     #[must_use]
-    pub fn refused(command: &'static str, error: &BuildError, message: String) -> Self {
+    pub(crate) fn refused(command: &'static str, error: &BuildError, message: String) -> Self {
         Self {
             output_version: CLI_OUTPUT_VERSION,
             command,
@@ -119,7 +119,7 @@ impl CommandOutput {
     /// a string, a non-finite float, and a failing custom implementation, and
     /// this type has no map, no float, and no hand-written `Serialize`.
     #[must_use]
-    pub fn to_json(&self) -> String {
+    pub(crate) fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).expect("the envelope contains only infallible values")
     }
 }
