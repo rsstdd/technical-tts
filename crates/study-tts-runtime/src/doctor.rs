@@ -17,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{BuildError, io_error, model_gate, tools};
+use crate::{BuildError, WORKER_LAUNCHER_PATH, WorkerLauncher, io_error, model_gate, tools};
 
 /// Filesystem types that must not host durable state.
 ///
@@ -49,11 +49,8 @@ pub enum Verdict {
     Ok(String),
     /// The environment does not, with what is wrong.
     Refused(String),
-    /// This build cannot answer it yet, and which story will.
-    Blocked {
-        /// The story that owns the check.
-        owner: &'static str,
-    },
+    /// This build cannot answer it yet, and which story owns the check.
+    Blocked(&'static str),
 }
 
 impl fmt::Display for Finding {
@@ -61,7 +58,7 @@ impl fmt::Display for Finding {
         match &self.verdict {
             Verdict::Ok(detail) => write!(formatter, "  ok       {}: {detail}", self.check),
             Verdict::Refused(detail) => write!(formatter, "  REFUSED  {}: {detail}", self.check),
-            Verdict::Blocked { owner } => {
+            Verdict::Blocked(owner) => {
                 write!(formatter, "  blocked  {}: owned by {owner}", self.check)
             }
         }
@@ -229,6 +226,13 @@ fn worker_bundle_finding(bundle_root: Option<&Path>) -> Finding {
 }
 
 /// The device the launcher declares, which is what the worker will use.
+///
+/// Read through [`WorkerLauncher::read`] rather than as free JSON. The launcher
+/// is a format this project defines, so its `schema_version` is a gate and not
+/// a field to skip past: an untyped read answers `ok` for a launcher whose
+/// major this build refuses, and an operator told the device is fine discovers
+/// otherwise at the first spawn. Reading it the way the pipeline reads it is
+/// also the only way this check can agree with the render it is clearing.
 fn device_finding(bundle_root: Option<&Path>) -> Finding {
     const CHECK: &str = "GPU or CPU device compatibility";
     let Some(root) = bundle_root else {
@@ -239,18 +243,19 @@ fn device_finding(bundle_root: Option<&Path>) -> Finding {
             ),
         };
     };
-    let launcher = root.join("worker").join("launcher.json");
     Finding {
         check: CHECK,
-        verdict: match std::fs::read(&launcher)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            .and_then(|document| document.get("device")?.as_str().map(ToOwned::to_owned))
-        {
-            Some(device) => {
-                Verdict::Ok(format!("`{device}`, as `{}` declares", launcher.display()))
-            }
-            None => Verdict::Refused(format!("`{}` declares no device", launcher.display())),
+        verdict: match WorkerLauncher::read(root) {
+            Ok(launcher) => Verdict::Ok(format!(
+                "`{}`, as `{}` declares",
+                launcher.device,
+                root.join(WORKER_LAUNCHER_PATH).display()
+            )),
+            // The same shape the model and tool checks above use: the typed
+            // error already names the artifact and separates an absent file
+            // from an unreadable one from an unsupported layout, so restating
+            // it here would be a second, coarser wording of one failure.
+            Err(error) => Verdict::Refused(error.to_string()),
         },
     }
 }
@@ -448,7 +453,78 @@ fn blocked_findings() -> Vec<Finding> {
     .into_iter()
     .map(|(check, owner)| Finding {
         check,
-        verdict: Verdict::Blocked { owner },
+        verdict: Verdict::Blocked(owner),
     })
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::path::PathBuf;
+
+    use tempfile::TempDir;
+
+    use super::{Verdict, device_finding};
+    use crate::WORKER_LAUNCHER_PATH;
+
+    #[test]
+    fn t2_e2_doctor_refuses_a_launcher_layout_this_build_cannot_read() -> Result<(), Box<dyn Error>>
+    {
+        // Deliberately partial — a device, a refused major, and nothing else.
+        // The assertion is what makes the partiality safe: it names the layout
+        // the launcher declares, so this passes only when the version gate
+        // refused, never when the shape check tripped over an absent `seed`.
+        // `WorkerBundleError::UnsupportedLauncher` documents that ordering as
+        // load-bearing, and a build that checked shape first would keep a bare
+        // `Refused(_)` assertion green. The verdict erases the typed error into
+        // a string, so a fragment of the message is the discrimination
+        // available at this boundary.
+        let root = TempDir::new()?;
+        let launcher = root.path().join(WORKER_LAUNCHER_PATH);
+        std::fs::create_dir_all(launcher.parent().ok_or("the launcher has a parent")?)?;
+        std::fs::write(
+            &launcher,
+            br#"{"schema_version": "99.0", "device": "cpu", "threads": 1}"#,
+        )?;
+
+        let finding = device_finding(Some(root.path()));
+
+        let Verdict::Refused(detail) = &finding.verdict else {
+            return Err(format!(
+                "an unsupported launcher major must not clear the device check: {:?}",
+                finding.verdict
+            )
+            .into());
+        };
+        assert!(
+            detail.contains("99.0"),
+            "the refusal names the layout the launcher declares: {detail}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn t2_e2_doctor_names_the_device_a_readable_launcher_declares() -> Result<(), Box<dyn Error>> {
+        // The checked-in launcher rather than a copy of one. `worker_launcher`
+        // keeps a single spelling of that record on purpose, and a second copy
+        // here would keep passing after the layout moved underneath it — which
+        // is the drift this check exists to catch on an operator's machine.
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+        let finding = device_finding(Some(&root));
+
+        let Verdict::Ok(detail) = &finding.verdict else {
+            return Err(format!(
+                "the launcher this repository ships clears the check: {:?}",
+                finding.verdict
+            )
+            .into());
+        };
+        assert!(
+            detail.contains("cpu"),
+            "the verdict names the device the launcher declares: {detail}"
+        );
+        Ok(())
+    }
 }
