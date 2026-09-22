@@ -74,6 +74,17 @@ impl ExitClass {
     /// message already names the remedy".
     #[must_use]
     pub(crate) fn of(error: &BuildError) -> Self {
+        // A worker bundle that cannot be loaded is a dependency to restore,
+        // whoever owns it. Every `WorkerBundleError` routes to the
+        // worker/runtime owner under the worker-failure row, so the owner
+        // rule below would report an absent `bundle-manifest.json` as a worker
+        // that failed — and a worker that never started has not. The class is
+        // decided before the owner is asked, which is what
+        // `t4_e2_each_failure_class_has_declared_exit_code` pins with a
+        // missing bundle.
+        if error.class() == BuildErrorClass::WorkerBundle {
+            return Self::MissingDependency;
+        }
         if let Some(remedy) = error.remedy() {
             return Self::of_owner(remedy.owner());
         }
@@ -153,16 +164,13 @@ impl ExitClass {
             // through `of_class`; `of` splits it first, because half of it is
             // the operator's to fix.
             //
-            // `DurableState` needs the same split and does not have it yet.
-            // `ApprovedPackageMissing` is the clearest case: its own message
-            // says "approve the generation that exists", which is the operator
-            // acting, and this reports their environment as incompatible. The
-            // fix is not a table — `DurableStateError` has 64 variants and a
-            // hand-written one would mis-class more than it helped. It is to
-            // derive the class from `BuildError::remedy`'s `RemedyOwner`,
-            // which already answers "who can act on this" and is pinned
-            // exhaustively by `t1_e0_governed_remedy_mappings_are_exhaustive`.
-            // E2-S5 task 3's recovery-command work is where that lands.
+            // `DurableState` is split the same way, by `of` asking the
+            // refusal's `RemedyOwner` first. What reaches here is the residue
+            // with no governed remedy — `NoJobToResume`, `NoJobToRetake` — and
+            // for those a job id the operator mistyped reports as an
+            // incompatible environment. A per-variant table would fix that at
+            // the cost of a second mapping to keep exhaustive; routing those
+            // variants through `RemedyAdvice` is the change that would not.
             BuildErrorClass::Io | BuildErrorClass::ManagedPath | BuildErrorClass::DurableState => {
                 Self::IncompatibleEnvironment
             }
@@ -195,35 +203,47 @@ mod tests {
     /// `ExitClass::of` would agree with any mapping, including a wrong one.
     #[test]
     fn t1_e2_every_refusal_class_maps_to_an_adr_exit_class() {
-        const CASES: [(BuildErrorClass, ExitClass); 16] = [
-            (BuildErrorClass::Lesson, ExitClass::InvalidInput),
-            (BuildErrorClass::Takes, ExitClass::InvalidInput),
-            (BuildErrorClass::Voice, ExitClass::InvalidInput),
-            (BuildErrorClass::VoiceProfile, ExitClass::InvalidInput),
-            (BuildErrorClass::Rights, ExitClass::InvalidInput),
-            (BuildErrorClass::Publication, ExitClass::InvalidInput),
-            (BuildErrorClass::Tool, ExitClass::MissingDependency),
-            (
-                BuildErrorClass::ModelArtifacts,
-                ExitClass::MissingDependency,
-            ),
-            (BuildErrorClass::WorkerBundle, ExitClass::MissingDependency),
-            (BuildErrorClass::Io, ExitClass::IncompatibleEnvironment),
-            (
-                BuildErrorClass::ManagedPath,
-                ExitClass::IncompatibleEnvironment,
-            ),
-            (
-                BuildErrorClass::DurableState,
-                ExitClass::IncompatibleEnvironment,
-            ),
-            (BuildErrorClass::Synthesis, ExitClass::WorkerFailure),
-            (BuildErrorClass::Cache, ExitClass::WorkerFailure),
-            (BuildErrorClass::Audio, ExitClass::AudioQualityFailure),
-            (BuildErrorClass::Plan, ExitClass::InternalError),
+        // The list is what runs; the `match` below is what makes a
+        // seventeenth class a compile error here rather than an arm this test
+        // never reached.
+        const CLASSES: [BuildErrorClass; 16] = [
+            BuildErrorClass::Io,
+            BuildErrorClass::Lesson,
+            BuildErrorClass::Takes,
+            BuildErrorClass::Plan,
+            BuildErrorClass::Voice,
+            BuildErrorClass::VoiceProfile,
+            BuildErrorClass::Rights,
+            BuildErrorClass::Publication,
+            BuildErrorClass::Cache,
+            BuildErrorClass::Audio,
+            BuildErrorClass::Tool,
+            BuildErrorClass::ManagedPath,
+            BuildErrorClass::DurableState,
+            BuildErrorClass::Synthesis,
+            BuildErrorClass::WorkerBundle,
+            BuildErrorClass::ModelArtifacts,
         ];
 
-        for (class, expected) in CASES {
+        for class in CLASSES {
+            let expected = match class {
+                BuildErrorClass::Lesson
+                | BuildErrorClass::Takes
+                | BuildErrorClass::Voice
+                | BuildErrorClass::VoiceProfile
+                | BuildErrorClass::Rights
+                | BuildErrorClass::Publication => ExitClass::InvalidInput,
+                BuildErrorClass::Tool
+                | BuildErrorClass::ModelArtifacts
+                | BuildErrorClass::WorkerBundle => ExitClass::MissingDependency,
+                BuildErrorClass::Io
+                | BuildErrorClass::ManagedPath
+                | BuildErrorClass::DurableState => ExitClass::IncompatibleEnvironment,
+                BuildErrorClass::Synthesis | BuildErrorClass::Cache => ExitClass::WorkerFailure,
+                BuildErrorClass::Audio => ExitClass::AudioQualityFailure,
+                BuildErrorClass::Plan => ExitClass::InternalError,
+            };
+
             assert_eq!(ExitClass::of_class(class), expected, "{class:?}");
         }
     }

@@ -42,9 +42,9 @@ names with exhaustive matches so a new refusal cannot inherit advice without rev
 `study-tts` invocation that answers a row where one exists. It is the CLI's rather than the
 runtime's because a command is a surface this repository publishes and the runtime cannot call:
 E2-S5 task 3 asks for "safe recovery commands", and an error type naming one could not keep it
-true. Three rows are answered — `Worker protocol or containment failure`, `Invalid or over-range
-audio`, and `State or checksum corruption`. The rest are answered by a person rather than an
-invocation, and `recovery.rs` records why for each.
+true. Four rows are answered — `Worker protocol or containment failure`, `Invalid or over-range
+audio`, `Human review finding`, and `State or checksum corruption`. The rest are answered by a
+person rather than an invocation, and `recovery.rs` records why for each.
 
 **`Invalid lesson or schema` is a row nothing routes to.** It is listed below and
 `BuildError::Lesson` returns no remedy, so no refusal can reach it and no advice can be offered for

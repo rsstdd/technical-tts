@@ -73,6 +73,32 @@ fn t4_e2_each_failure_class_has_declared_exit_code() {
         Some(2),
         "a lesson path that resolves to nothing is invalid input"
     );
+
+    // Missing dependency: a render whose worker bundle is not where it was
+    // told. The bundle is the first gate a render passes, so nothing else can
+    // refuse first, and the class is the one an operator installs their way
+    // out of rather than the one they edit their way out of.
+    let nowhere = workspace.path().join("nowhere");
+    let unbundled = study_tts(&[
+        "render",
+        &scaffold.display().to_string(),
+        "--workspace",
+        &workspace.path().display().to_string(),
+        "--bundle-root",
+        &nowhere.display().to_string(),
+        "--model-root",
+        &nowhere.display().to_string(),
+        "--voice-root",
+        &nowhere.display().to_string(),
+        "--hardware-environment",
+        "test-env",
+    ]);
+    assert_eq!(
+        unbundled.status.code(),
+        Some(3),
+        "an absent worker bundle exits as a missing dependency: {}",
+        String::from_utf8_lossy(&unbundled.stderr)
+    );
 }
 
 /// `publish` refuses, and the refusal names every gate a production release

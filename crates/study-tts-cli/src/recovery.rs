@@ -14,7 +14,7 @@
 //! disagree: a row with no runnable answer gets none rather than an invented
 //! one.
 
-use study_tts_runtime::BuildError;
+use study_tts_runtime::{BuildError, BuildErrorClass};
 
 /// A runnable answer for each `docs/governance/ROUTING-TABLES.md` §Failure
 /// routing row that has one.
@@ -36,7 +36,13 @@ use study_tts_runtime::BuildError;
 ///   carries it and `BuildError::Lesson` returns no remedy, so a command here
 ///   could never be offered. That one-sided gap is the runtime's to close or
 ///   to record; naming it from this side would only hide it.
-const RECOVERY: [(&str, &str); 3] = [
+///
+/// `Human review finding` is answered by `retake`, which is half of its
+/// action — "retake or accept with authority". The other half is `review`,
+/// and a command cannot choose between them: it offers the retake because
+/// that is the one that produces new material to judge, and accepting with
+/// authority is a decision the row leaves to the human-review owner.
+const RECOVERY: [(&str, &str); 4] = [
     (
         "Worker protocol or containment failure",
         "study-tts resume <job-id> --workspace <workspace>",
@@ -44,6 +50,10 @@ const RECOVERY: [(&str, &str); 3] = [
     (
         "Invalid or over-range audio",
         "study-tts resume <job-id> --workspace <workspace>",
+    ),
+    (
+        "Human review finding",
+        "study-tts retake <job-id> --workspace <workspace> --segment <segment-id>=<take>",
     ),
     (
         "State or checksum corruption",
@@ -59,6 +69,15 @@ const RECOVERY: [(&str, &str); 3] = [
 /// own message, which already names its remedy owner.
 #[must_use]
 pub(crate) fn command_for(error: &BuildError) -> Option<&'static str> {
+    // A bundle that cannot be loaded routes to the worker-failure row, whose
+    // answer is `resume` — and a resume starts by loading the same bundle. The
+    // refusal's own action ("restore the declared worker bundle input") is the
+    // useful sentence, so nothing is appended to it. Whether bundle refusals
+    // deserve their own routing row is the runtime's question; this only
+    // declines to offer a command that would refuse identically.
+    if error.class() == BuildErrorClass::WorkerBundle {
+        return None;
+    }
     let row = error.remedy()?.routing()?;
     RECOVERY
         .iter()
