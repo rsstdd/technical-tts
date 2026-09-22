@@ -373,6 +373,18 @@ pub enum DurableStateError {
         path: PathBuf,
     },
 
+    /// A retake named a job that retained no lesson to re-render.
+    ///
+    /// Its own variant rather than [`DurableStateError::NoJobToResume`]: the
+    /// remedy is the same and the message is not, and an operator told to
+    /// "resume" a job they asked to retake would look for a command they did
+    /// not run.
+    #[error("job `{job_id}` holds no retained lesson to retake; build the lesson first")]
+    NoJobToRetake {
+        /// The job that was asked to retake.
+        job_id: String,
+    },
+
     /// A cache-key owner did not release its lock within the bounded wait.
     #[error(
         "cache key `{cache_key}` remained locked at `{}` for {timeout_ms} ms; preserve all \
@@ -892,7 +904,9 @@ impl DurableStateError {
     /// Returns governed advice for the exact ownership or integrity refusal.
     pub(super) fn remedy(&self) -> Option<RemedyAdvice> {
         match self {
-            Self::LiveJobLock { .. } | Self::NoJobToResume { .. } => None,
+            Self::LiveJobLock { .. } | Self::NoJobToResume { .. } | Self::NoJobToRetake { .. } => {
+                None
+            }
             Self::CacheLockTimeout { .. } => Some(RemedyAdvice::new(
                 RemedyOwner::Runtime,
                 "preserve attempts and inspect the cache-key owner before retrying",

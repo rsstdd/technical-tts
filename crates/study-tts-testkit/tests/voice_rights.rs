@@ -347,9 +347,9 @@ fn t4_e0_voice_checksum_mismatch_blocks_use() {
             matches!(
                 error,
                 BuildError::VoiceProfile(VoiceProfileError::VoiceChecksumMismatch {
-                    ref path,
+                    record,
                     ..
-                }) if path == &tampered_path
+                }) if record == tampered
             ),
             "tampering `{tampered}` produced `{error}`"
         );
@@ -357,6 +357,15 @@ fn t4_e0_voice_checksum_mismatch_blocks_use() {
         assert!(
             message.contains(tampered) && message.contains("rights record"),
             "refusal must name the mismatched file and the remedy: `{message}`"
+        );
+        // E2-S5 task 4: the refusal is what `study-tts` prints by default, and
+        // ADR-0001 §14 keeps raw voice-reference paths out of it. The tampered
+        // file *is* the raw reference, so its path is the exact string that
+        // must be absent.
+        assert!(
+            !message.contains(&tampered_path.display().to_string())
+                && !message.contains(&voice_dir.display().to_string()),
+            "a refusal must not locate the raw voice reference: `{message}`"
         );
         assert_eq!(worker.synthesis_count(), 0);
     }

@@ -468,9 +468,38 @@ fn job_document_path(workspace: &Path, job_id: &str) -> Result<PathBuf, BuildErr
 /// unsafe or symlinked component exactly as `subdirectory` does, and only
 /// declines to create.
 fn job_document_candidate(workspace: &Path, job_id: &str) -> Result<PathBuf, BuildError> {
+    managed::leaf(
+        &job_directory_candidate(workspace, job_id)?,
+        JOB_DOCUMENT_NAME,
+    )
+}
+
+/// Where a job directory *would* be, creating nothing on the way.
+fn job_directory_candidate(workspace: &Path, job_id: &str) -> Result<PathBuf, BuildError> {
     let jobs = managed::directory_candidate(workspace, "jobs")?;
-    let job_dir = managed::directory_candidate(&jobs, job_id)?;
-    managed::leaf(&job_dir, JOB_DOCUMENT_NAME)
+    managed::directory_candidate(&jobs, job_id)
+}
+
+/// Where a job's retained lesson is, or `None` when the job holds none.
+///
+/// For a caller that must hand the lesson to a build *by path* — `retake`
+/// renders through `build_preview`, which reads a path — where
+/// [`JobRepository::retained_lesson`] returns bytes. The layout stays here
+/// with the writer that defined it: a caller spelling `jobs/<id>/lesson.json`
+/// for itself would break silently when the layout moved, and would step
+/// around `managed::`, which is what refuses a job id that is not a plain
+/// name and a symlink planted at any level.
+///
+/// # Errors
+///
+/// [`BuildError::ManagedPath`] when `job_id` or the layout beneath it is not
+/// a safe managed name.
+pub fn retained_lesson_path(workspace: &Path, job_id: &str) -> Result<Option<PathBuf>, BuildError> {
+    let path = managed::leaf(
+        &job_directory_candidate(workspace, job_id)?,
+        RETAINED_LESSON_NAME,
+    )?;
+    Ok(path.is_file().then_some(path))
 }
 
 fn validate_document(path: &Path, job_id: &str, document: &JobDocument) -> Result<(), BuildError> {

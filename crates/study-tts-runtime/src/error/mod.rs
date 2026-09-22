@@ -536,6 +536,7 @@ mod tests {
         match error {
             VoiceProfileError::MissingVoiceRecord { .. }
             | VoiceProfileError::VoiceRecordNotRegularFile { .. }
+            | VoiceProfileError::VoiceRecordUnreadable { .. }
             | VoiceProfileError::MissingVoiceProfileDirectory { .. }
             | VoiceProfileError::VoiceProfileNotDirectory { .. }
             | VoiceProfileError::VoiceProfileIdMismatch { .. }
@@ -747,9 +748,9 @@ mod tests {
 
     fn expected_durable_state_remedy(error: &DurableStateError) -> Expected {
         match error {
-            DurableStateError::LiveJobLock { .. } | DurableStateError::NoJobToResume { .. } => {
-                Expected::Unrouted
-            }
+            DurableStateError::LiveJobLock { .. }
+            | DurableStateError::NoJobToResume { .. }
+            | DurableStateError::NoJobToRetake { .. } => Expected::Unrouted,
             DurableStateError::CacheLockTimeout { .. } => Expected::Rowless {
                 owner: RemedyOwner::Runtime,
                 action: "preserve attempts and inspect the cache-key owner before retrying",
@@ -863,6 +864,7 @@ mod tests {
         // reaches an operator's diagnostics unnoticed.
         for operation in [
             ToolOperation::VersionProbe,
+            ToolOperation::HostProbe,
             ToolOperation::EncoderProbe,
             ToolOperation::M4aEncode,
             ToolOperation::M4aValidation,
@@ -875,6 +877,7 @@ mod tests {
         ] {
             let expected_label = match operation {
                 ToolOperation::VersionProbe => "version probe",
+                ToolOperation::HostProbe => "host probe",
                 ToolOperation::EncoderProbe => "encoder probe",
                 ToolOperation::M4aEncode => "M4A encode",
                 ToolOperation::M4aValidation => "M4A validation",
@@ -906,7 +909,7 @@ mod tests {
                 source: io::Error::other("filesystem failure"),
             }),
             BuildError::from(VoiceProfileError::MissingVoiceRecord {
-                profile_dir: PathBuf::from("voice"),
+                profile_id: "voice-v1".to_owned(),
                 record: "profile.json",
             }),
             BuildError::from(RightsError::MissingContentRightsDeclaration),
@@ -1066,12 +1069,17 @@ mod tests {
     fn t1_e0_governed_remedy_mappings_are_exhaustive() {
         for error in [
             VoiceProfileError::MissingVoiceRecord {
-                profile_dir: PathBuf::from("voice"),
+                profile_id: "voice-v1".to_owned(),
                 record: "profile.json",
             },
             VoiceProfileError::VoiceRecordNotRegularFile {
-                profile_dir: PathBuf::from("voice"),
+                profile_id: "voice-v1".to_owned(),
                 record: "consent.json",
+            },
+            VoiceProfileError::VoiceRecordUnreadable {
+                profile_id: "voice-v1".to_owned(),
+                record: "reference.wav",
+                source: io::Error::other("permission denied"),
             },
             VoiceProfileError::MissingVoiceProfileDirectory {
                 root: PathBuf::from("voices"),
@@ -1090,8 +1098,8 @@ mod tests {
                 name: "unspellable-voice-v1".to_owned(),
             },
             VoiceProfileError::VoiceChecksumMismatch {
-                profile_dir: PathBuf::from("voice"),
-                path: PathBuf::from("voice/reference.wav"),
+                profile_id: "voice-v1".to_owned(),
+                record: "reference.wav",
             },
         ] {
             let expected = expected_voice_profile_remedy(&error);

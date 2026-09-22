@@ -19,12 +19,12 @@ use study_tts_core::{
     REQUIRED_PRODUCTION_GATES, ReleaseClaim, ReleaseError, ValidatedTakes, VoiceUse,
 };
 use study_tts_runtime::{
-    ApprovalRequest, BuildError, BuildRequest, BuildResult, FileSystemCachePublisher,
-    FileSystemJobRepository, FileSystemPackageWriter, HardwareEnvironmentId, JobRepository,
-    PreviewServiceBundle, PublicationError, ResumeRequest, WorkerConfiguration, WorkerTtsExecutor,
-    accept_current_takes, approve_preview, build_preview_with_services, current_run_report,
-    diagnose, live_cache_keys, load_lesson, prune_candidates, resume_preview_with_services,
-    scaffold_lesson,
+    ApprovalRequest, BuildError, BuildRequest, BuildResult, DurableStateError,
+    FileSystemCachePublisher, FileSystemJobRepository, FileSystemPackageWriter,
+    HardwareEnvironmentId, JobRepository, PreviewServiceBundle, PublicationError, ResumeRequest,
+    WorkerConfiguration, WorkerTtsExecutor, accept_current_takes, approve_preview,
+    build_preview_with_services, current_run_report, diagnose, live_cache_keys, load_lesson,
+    prune_candidates, resume_preview_with_services, retained_lesson_path, scaffold_lesson,
 };
 
 mod exit;
@@ -87,14 +87,10 @@ enum Command {
     Cache(CacheCommand),
     /// Render a lesson into a private-preview package.
     ///
-    /// A retake is this command with `--retake`, which is how
-    /// `package-render` has always done it and what `BuildRequest::retakes`
-    /// takes. ADR-0001 §7.3 spells a job-scoped `retake <job-id> --segment`
-    /// instead, and that spelling is **not provided**: it would need the
-    /// job's retained lesson, which `JobRepository::retained_lesson` returns
-    /// as bytes while `build_preview` takes a path. Bridging the two is a
-    /// runtime change rather than a CLI one, so it is recorded here instead of
-    /// improvised.
+    /// `--retake` re-synthesizes named segments of *this* lesson at a chosen
+    /// take, which is what `BuildRequest::retakes` takes. `retake` is the
+    /// same operation addressed by job rather than by lesson path, rendering
+    /// the copy that job retained; use whichever names what you have.
     Render {
         /// The lesson document to render.
         lesson: PathBuf,
@@ -110,10 +106,14 @@ enum Command {
     },
     /// Re-synthesize named segments of a job at a different take.
     ///
-    /// ADR-0001 §7.3's spelling. The lesson comes from the job's own retained
-    /// copy — `jobs/<job-id>/lesson.json`, the bytes the build validated and
-    /// kept — so an operator names a job rather than re-finding the document
-    /// they rendered from.
+    /// ADR-0001 §7.3's command, with one departure: §7.3 spells
+    /// `--segment seg-0042` and this takes `--segment seg-0042=<take>`. A
+    /// take is a synthesis-key input, so "the next one" would have to be
+    /// discovered from the job's plan, and a retake that chose its own number
+    /// could not be repeated by spelling it. The lesson comes from the job's
+    /// own retained copy — the bytes the build validated and kept — so an
+    /// operator names a job rather than re-finding the document they rendered
+    /// from.
     ///
     /// Not `resume`. `pipeline.rs`'s invariant A-1 makes resume replay the
     /// retained plan and discover no takes, because "a rediscovering resume
@@ -155,6 +155,9 @@ enum Command {
         /// Root holding `worker/`, to verify the bundle and read the launcher.
         #[arg(long)]
         bundle_root: Option<PathBuf>,
+        /// Governed voice-profile root, to verify every profile's records.
+        #[arg(long)]
+        voice_root: Option<PathBuf>,
     },
     /// Accept the current package's takes as an explicit selection.
     #[command(subcommand)]
@@ -236,12 +239,6 @@ enum TakesCommand {
 /// What can be done to the cache.
 #[derive(Debug, Subcommand)]
 enum CacheCommand {
-    /// Report the cache entries no retention root refers to.
-    ///
-    /// Reports only. `AGENTS.md` §Ask first puts deleting a cache entry behind
-    /// the operator, and E2-S5 task 6 makes that the default rather than an
-    /// option: a command that deleted unless told otherwise would put an
-    /// irreversible act behind a forgotten flag.
     /// Report how many cache entries a retention root keeps alive.
     Verify {
         /// The governed workspace holding `cache/` and `previews/`.
@@ -253,6 +250,12 @@ enum CacheCommand {
         #[arg(long = "takes")]
         takes: Vec<PathBuf>,
     },
+    /// Report the cache entries no retention root refers to.
+    ///
+    /// Reports only. `AGENTS.md` §Ask first puts deleting a cache entry behind
+    /// the operator, and E2-S5 task 6 makes that the default rather than an
+    /// option: a command that deleted unless told otherwise would put an
+    /// irreversible act behind a forgotten flag.
     Prune {
         /// The governed workspace holding `cache/` and `previews/`.
         #[arg(long)]
@@ -383,13 +386,16 @@ fn run(command: Command, quiet: bool) -> Result<String, BuildError> {
             workspace,
             model_root,
             bundle_root,
+            voice_root,
         } => {
             let model = model_root.map(|root| workspace_root(&root)).transpose()?;
             let bundle = bundle_root.map(|root| workspace_root(&root)).transpose()?;
+            let voice = voice_root.map(|root| workspace_root(&root)).transpose()?;
             run_doctor(
                 &workspace_root(&workspace)?,
                 model.as_deref(),
                 bundle.as_deref(),
+                voice.as_deref(),
             )
         }
         Command::Takes(TakesCommand::Accept {
@@ -448,7 +454,13 @@ fn run(command: Command, quiet: bool) -> Result<String, BuildError> {
             // The retained lesson, not a path the operator re-supplies: the
             // bytes the build validated are the ones a retake must re-render,
             // and `resume` verifies that copy's digest for the same reason.
-            let lesson = workspace.join("jobs").join(&job_id).join("lesson.json");
+            // Located by the repository that wrote it, so the layout and the
+            // containment of `jobs/` stay in one place.
+            let lesson = retained_lesson_path(&workspace, &job_id)?.ok_or_else(|| {
+                BuildError::from(DurableStateError::NoJobToRetake {
+                    job_id: job_id.clone(),
+                })
+            })?;
             render_lesson(&lesson, &workspace, &roots, segments, quiet)
         }
     }
@@ -694,8 +706,9 @@ fn run_doctor(
     workspace: &Path,
     model_root: Option<&Path>,
     bundle_root: Option<&Path>,
+    voice_root: Option<&Path>,
 ) -> Result<String, BuildError> {
-    let findings = diagnose(workspace, model_root, bundle_root)?;
+    let findings = diagnose(workspace, model_root, bundle_root, voice_root)?;
     let refused = findings
         .iter()
         .filter(|finding| matches!(finding.verdict, study_tts_runtime::Verdict::Refused(_)))
@@ -779,8 +792,8 @@ fn run_cache(command: CacheCommand) -> Result<String, BuildError> {
         } => {
             // `dry_run` is read and discarded: this command has one behavior
             // and the flag exists so ADR-0001 §7.3's spelling is accepted
-            // rather than refused. Deleting is not implemented here at all,
-            // which is stronger than defaulting to not deleting.
+            // rather than refused. The destructive mode is issue #94's, by
+            // project-owner decision recorded in `DELIVERY-PLAN.md` §E2-S5.
             let accepted = load_accepted_takes(&takes)?;
             let candidates = prune_candidates(&workspace_root(&workspace)?, &accepted)?;
             if candidates.is_empty() {

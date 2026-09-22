@@ -216,7 +216,9 @@ fn holds_a_loadable_profile(candidate: &Path) -> bool {
 /// [`VoiceProfileError::VoiceChecksumMismatch`] when an artifact does not hash
 /// to the digest its record states, [`BuildError::Voice`] for a withdrawn
 /// consent, an unapproved rights decision, or a use outside the recorded
-/// scope, and [`IoError::ReadFile`] when a record cannot be read at all.
+/// scope, [`VoiceProfileError::VoiceRecordUnreadable`] when a record exists
+/// and cannot be read, and [`IoError::ReadFile`] when the profile directory
+/// itself cannot be inspected.
 pub fn resolve_voice_conditioning(
     root: &Path,
     profile_id: &str,
@@ -263,8 +265,8 @@ pub fn resolve_voice_conditioning(
     // non-digest out of every cache key downstream.
     profile.conditionals_blake3.parse().map_err(|_| {
         VoiceProfileError::VoiceChecksumMismatch {
-            profile_dir: dir.clone(),
-            path: dir.join("conditionals.pt"),
+            profile_id: profile_id.to_owned(),
+            record: "conditionals.pt",
         }
         .into()
     })
@@ -326,8 +328,8 @@ pub(crate) fn load_profile(dir: &Path, requested: VoiceUse) -> Result<VoiceProfi
 /// symlink, a directory, or anything else that is not a regular file. An
 /// absent record resolves successfully, because reporting it is the caller's
 /// job: [`VoiceProfileError::MissingVoiceRecord`] belongs to whichever reader
-/// discovers it. Otherwise [`IoError::ReadFile`] carries what the filesystem
-/// reported.
+/// discovers it. Otherwise [`VoiceProfileError::VoiceRecordUnreadable`]
+/// carries what the filesystem reported, named by record rather than by path.
 fn record_path(dir: &Path, record: &'static str) -> Result<PathBuf, BuildError> {
     let path = dir.join(record);
     match fs::symlink_metadata(&path) {
@@ -335,15 +337,34 @@ fn record_path(dir: &Path, record: &'static str) -> Result<PathBuf, BuildError> 
         // target's, which is what lets a planted link be seen at all.
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
             Err(VoiceProfileError::VoiceRecordNotRegularFile {
-                profile_dir: dir.to_path_buf(),
+                profile_id: profile_name(dir),
                 record,
             }
             .into())
         }
         Ok(_) => Ok(path),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(path),
-        Err(source) => Err(IoError::ReadFile { path, source }.into()),
+        Err(source) => Err(VoiceProfileError::VoiceRecordUnreadable {
+            profile_id: profile_name(dir),
+            record,
+            source,
+        }
+        .into()),
     }
+}
+
+/// The identity a profile directory carries, which is its name.
+///
+/// Every profile directory is `root.join(profile_id)` — `admit_voice_root`
+/// discovers profiles by that name and `resolve_voice_conditioning` joins it —
+/// so the name is the identity and nothing more needs threading through the
+/// readers. Lossy for the same reason `VoiceProfileNameNotUtf8` renders
+/// lossily: a refusal has to be printable, and a name this build cannot spell
+/// is refused by that gate before any reader runs.
+fn profile_name(dir: &Path) -> String {
+    dir.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Reads a required record, distinguishing "the policy requires this and it is
@@ -355,12 +376,17 @@ fn read_record(dir: &Path, record: &'static str) -> Result<Vec<u8>, BuildError> 
         Ok(bytes) => Ok(bytes),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             Err(VoiceProfileError::MissingVoiceRecord {
-                profile_dir: dir.to_path_buf(),
+                profile_id: profile_name(dir),
                 record,
             }
             .into())
         }
-        Err(source) => Err(IoError::ReadFile { path, source }.into()),
+        Err(source) => Err(VoiceProfileError::VoiceRecordUnreadable {
+            profile_id: profile_name(dir),
+            record,
+            source,
+        }
+        .into()),
     }
 }
 
@@ -377,22 +403,32 @@ fn verify_checksum(dir: &Path, record: &'static str, recorded: &str) -> Result<(
     // above, which is why `record_path` passes a missing record through. A
     // separate existence check would leave a window for the artifact to vanish
     // between the two and be reported as the wrong failure.
-    let computed = cache::hash_file(&path).map_err(|error| match &error {
+    let computed = cache::hash_file(&path).map_err(|error| match error {
         BuildError::Io(IoError::FileSystem { source, .. })
             if source.kind() == io::ErrorKind::NotFound =>
         {
             VoiceProfileError::MissingVoiceRecord {
-                profile_dir: dir.to_path_buf(),
+                profile_id: profile_name(dir),
                 record,
             }
             .into()
         }
-        _ => error,
+        // Any other failure names the record rather than the path the hasher
+        // failed on, for the reason `error/voice_profile.rs` gives at the top.
+        BuildError::Io(IoError::FileSystem { source, .. } | IoError::ReadFile { source, .. }) => {
+            VoiceProfileError::VoiceRecordUnreadable {
+                profile_id: profile_name(dir),
+                record,
+                source,
+            }
+            .into()
+        }
+        other => other,
     })?;
     if computed != recorded {
         return Err(VoiceProfileError::VoiceChecksumMismatch {
-            profile_dir: dir.to_path_buf(),
-            path,
+            profile_id: profile_name(dir),
+            record,
         }
         .into());
     }

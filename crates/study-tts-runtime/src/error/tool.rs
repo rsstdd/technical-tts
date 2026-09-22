@@ -23,6 +23,8 @@ pub enum ToolOutputStream {
 pub enum ToolOperation {
     /// Discover and record an executable version.
     VersionProbe,
+    /// Ask the host about itself — free space, core topology — for `doctor`.
+    HostProbe,
     /// Discover which encoders an FFmpeg build offers.
     EncoderProbe,
     /// Encode the canonical master as M4A.
@@ -47,6 +49,7 @@ impl fmt::Display for ToolOperation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::VersionProbe => formatter.write_str("version probe"),
+            Self::HostProbe => formatter.write_str("host probe"),
             Self::EncoderProbe => formatter.write_str("encoder probe"),
             Self::M4aEncode => formatter.write_str("M4A encode"),
             Self::M4aValidation => formatter.write_str("M4A validation"),

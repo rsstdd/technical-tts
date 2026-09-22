@@ -11,13 +11,26 @@
 //! The four that wait: ASR identities and the ASR thread budget are E4's, pool
 //! size above one is E5-S2's, and the end-to-end smoke render needs the
 //! governed model.
+//!
+//! A check is labeled with exactly what it examined. §14's "model and
+//! voice-profile checksums" is two findings here, each refused when its root
+//! was not given, because one label over two checks would let the model
+//! verifying read as the voices having been.
 
 use std::{
+    ffi::OsStr,
     fmt,
     path::{Path, PathBuf},
 };
 
-use crate::{BuildError, WORKER_LAUNCHER_PATH, WorkerLauncher, io_error, model_gate, tools};
+use study_tts_core::VoiceUse;
+
+use crate::{
+    BuildError, ToolInvocation, ToolOperation, WORKER_LAUNCHER_PATH, WorkerLauncher, io_error,
+    model_gate,
+    process::{self, VERSION_PROBE_POLICY},
+    tools, voice_gate,
+};
 
 /// Filesystem types that must not host durable state.
 ///
@@ -68,9 +81,10 @@ impl fmt::Display for Finding {
 /// Reports what this machine can do, without changing anything.
 ///
 /// Read-only by construction: every path is resolved rather than created, and
-/// the tools are identified by the preflight discipline `tools::inspect`
-/// already applies — resolved and version-probed before use, with the binary
-/// that answered recorded rather than the one requested.
+/// every binary — the five version probes, `df`, and `lscpu` — is resolved
+/// through `tools::resolve_executable` and run under `process::run`'s
+/// supervision, with the binary that answered recorded rather than the one
+/// requested.
 ///
 /// # Errors
 ///
@@ -82,6 +96,7 @@ pub fn diagnose(
     workspace: &Path,
     model_root: Option<&Path>,
     bundle_root: Option<&Path>,
+    voice_root: Option<&Path>,
 ) -> Result<Vec<Finding>, BuildError> {
     let mut findings = vec![host_finding(), architecture_finding()];
     findings.push(filesystem_finding(workspace)?);
@@ -89,12 +104,36 @@ pub fn diagnose(
     findings.push(disk_space_finding(workspace));
     findings.extend(tool_findings());
     findings.push(model_checksum_finding(model_root));
+    findings.push(voice_checksum_finding(voice_root));
     findings.push(worker_bundle_finding(bundle_root));
     findings.push(device_finding(bundle_root));
-    findings.push(core_budget_finding());
+    let (topology, available) = core_budget_finding();
+    findings.push(topology);
+    findings.push(thread_budget_finding(bundle_root, available));
     findings.push(offline_finding());
     findings.extend(blocked_findings());
     Ok(findings)
+}
+
+/// Runs one host tool under the supervision every external binary gets.
+///
+/// `df` and `lscpu` answer questions `std` cannot, and they are still spawns.
+/// `rust-production` gives every spawn a named deadline, its own process
+/// group, and a bounded capture, and `process::run` is where those live —
+/// a `df` hung on a stale network mount would otherwise hang `doctor` with it,
+/// which is the one command an operator runs *because* something hangs.
+fn probe(tool: &'static str, arguments: &[&OsStr]) -> Result<String, String> {
+    let resolved = tools::resolve_executable(Path::new(tool))
+        .ok_or_else(|| format!("`{tool}` is not on PATH"))?;
+    let mut command = std::process::Command::new(&resolved);
+    command.args(arguments);
+    let invocation = ToolInvocation::new(tool, ToolOperation::HostProbe, &resolved);
+    let output = process::run(invocation, command, VERSION_PROBE_POLICY)
+        .map_err(|error| format!("`{tool}` could not be run: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("`{tool}` exited {}", output.status));
+    }
+    String::from_utf8(output.stdout).map_err(|_| format!("`{tool}` reported non-UTF-8 output"))
 }
 
 /// WSL2, and the Ubuntu it is running.
@@ -148,6 +187,12 @@ fn architecture_finding() -> Finding {
 /// one that stops a build. The probe file is removed immediately, and a
 /// workspace that does not exist yet is reported rather than created — `doctor`
 /// answers questions and does not prepare the ground.
+///
+/// §14 lists "writable job, cache, model, and output directories". The first,
+/// second, and fourth are created beneath the workspace by the build, so one
+/// probe at the root they inherit from is the check; the model root is
+/// governed content this build reads and never writes, and a writable one
+/// would be the surprise, so it is deliberately not probed.
 fn writable_finding(workspace: &Path) -> Finding {
     const CHECK: &str = "the workspace is writable";
     if !workspace.is_dir() {
@@ -177,28 +222,19 @@ fn writable_finding(workspace: &Path) -> Finding {
 /// absent is reported rather than guessed around.
 fn disk_space_finding(workspace: &Path) -> Finding {
     const CHECK: &str = "free disk space";
-    let Some(resolved) = tools::resolve_executable(Path::new("df")) else {
-        return Finding {
-            check: CHECK,
-            verdict: Verdict::Refused("`df` is not on PATH, so free space is unknown".to_owned()),
-        };
-    };
-    let output = std::process::Command::new(resolved)
-        .arg("-h")
-        .arg("--output=avail,target")
-        .arg(workspace)
-        .output();
+    let arguments = [
+        OsStr::new("-h"),
+        OsStr::new("--output=avail,target"),
+        workspace.as_os_str(),
+    ];
     Finding {
         check: CHECK,
-        verdict: match output {
-            Ok(result) if result.status.success() => String::from_utf8(result.stdout)
-                .ok()
-                .and_then(|listing| listing.lines().nth(1).map(str::trim).map(ToOwned::to_owned))
-                .map_or_else(
-                    || Verdict::Refused("`df` reported nothing for this path".to_owned()),
-                    Verdict::Ok,
-                ),
-            _ => Verdict::Refused("`df` could not report free space".to_owned()),
+        verdict: match probe("df", &arguments) {
+            Ok(listing) => listing.lines().nth(1).map(str::trim).map_or_else(
+                || Verdict::Refused("`df` reported nothing for this path".to_owned()),
+                |line| Verdict::Ok(line.to_owned()),
+            ),
+            Err(why) => Verdict::Refused(why),
         },
     }
 }
@@ -287,7 +323,7 @@ fn offline_finding() -> Finding {
 /// Without `--model-root` the answer is refused rather than assumed: a check
 /// that silently skipped would read exactly like one that passed.
 fn model_checksum_finding(model_root: Option<&Path>) -> Finding {
-    const CHECK: &str = "model and voice-profile checksums";
+    const CHECK: &str = "model checksums";
     let Some(root) = model_root else {
         return Finding {
             check: CHECK,
@@ -303,6 +339,41 @@ fn model_checksum_finding(model_root: Option<&Path>) -> Finding {
                 "revision {}, artifacts {}",
                 proven.revision.as_str(),
                 proven.artifacts_hash.as_str()
+            )),
+            Err(error) => Verdict::Refused(error.to_string()),
+        },
+    }
+}
+
+/// Every profile beneath the voice root, through the gate a render passes.
+///
+/// The other half of §14's "model and voice-profile checksums", as its own
+/// finding: `admit_voice_root` is what `WorkerConfiguration::for_bundle` runs
+/// before a worker starts, so a profile this refuses is one a render refuses,
+/// and `doctor` answering from the same gate is the only way the two can
+/// agree. Checked at [`VoiceUse::PrivateSynthesis`] because that is the use a
+/// render asks for; a profile consented for qualification only is correctly
+/// reported as unusable here.
+///
+/// The refusal it prints names the profile and the record, never their path —
+/// `error/voice_profile.rs` keeps raw voice-reference paths out of every
+/// message, and `doctor`'s output is printed by default like any other.
+fn voice_checksum_finding(voice_root: Option<&Path>) -> Finding {
+    const CHECK: &str = "voice-profile checksums";
+    let Some(root) = voice_root else {
+        return Finding {
+            check: CHECK,
+            verdict: Verdict::Refused(
+                "not checked; pass `--voice-root` to verify the governed profiles".to_owned(),
+            ),
+        };
+    };
+    Finding {
+        check: CHECK,
+        verdict: match voice_gate::admit_voice_root(root, VoiceUse::PrivateSynthesis) {
+            Ok(()) => Verdict::Ok(format!(
+                "every profile under `{}` matches its record",
+                root.display()
             )),
             Err(error) => Verdict::Refused(error.to_string()),
         },
@@ -395,35 +466,33 @@ fn tool_findings() -> Vec<Finding> {
 /// "Obtains WSL-visible physical-core topology from `lscpu`. If topology is
 /// unavailable, it uses half the visible logical processors, with a minimum of
 /// one. It reserves one physical core when more than one is available."
-fn core_budget_finding() -> Finding {
+fn core_budget_finding() -> (Finding, usize) {
     const CHECK: &str = "physical-core topology and reserved-core policy";
     let (physical, source) = match physical_cores() {
-        Some(cores) => (cores, "lscpu"),
-        None => (
+        Ok(cores) => (cores, "lscpu".to_owned()),
+        Err(why) => (
             std::thread::available_parallelism().map_or(1, |logical| (logical.get() / 2).max(1)),
-            "half the visible logical processors, topology being unavailable",
+            format!("half the visible logical processors, topology being unavailable: {why}"),
         ),
     };
     let available = if physical > 1 { physical - 1 } else { physical };
-    Finding {
+    let finding = Finding {
         check: CHECK,
         verdict: Verdict::Ok(format!(
             "{physical} physical ({source}); {available} available after reserving one"
         )),
-    }
+    };
+    (finding, available)
 }
 
-/// Physical cores, from `lscpu -p=CORE`, or `None` when it cannot say.
-fn physical_cores() -> Option<usize> {
-    let resolved = tools::resolve_executable(Path::new("lscpu"))?;
-    let output = std::process::Command::new(resolved)
-        .arg("-p=CORE")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let listing = String::from_utf8(output.stdout).ok()?;
+/// Physical cores, from `lscpu -p=CORE`, or why it could not say.
+///
+/// The reason travels with the fallback rather than being dropped: §10.1
+/// permits "half the visible logical processors" when topology is unavailable,
+/// and a reader deciding whether to trust that number wants to know whether
+/// `lscpu` was absent, timed out, or answered nothing.
+fn physical_cores() -> Result<usize, String> {
+    let listing = probe("lscpu", &[OsStr::new("-p=CORE")])?;
     let mut cores: Vec<&str> = listing
         .lines()
         .filter(|line| !line.starts_with('#'))
@@ -432,7 +501,51 @@ fn physical_cores() -> Option<usize> {
         .collect();
     cores.sort_unstable();
     cores.dedup();
-    (!cores.is_empty()).then_some(cores.len())
+    if cores.is_empty() {
+        return Err("`lscpu` listed no cores".to_owned());
+    }
+    Ok(cores.len())
+}
+
+/// ADR-0001 §10.1's preflight rule for the launcher this bundle declares:
+/// `pool_size * threads_per_worker <= available_physical_cores`.
+///
+/// Pool size is one. §10.1 fixes the default and qualification size there,
+/// and the configurable pool is E5-S2's, which `blocked_findings` names — so
+/// the product is the launcher's own thread count, and the question is whether
+/// this machine hosts one worker at that width without oversubscribing. §14
+/// lists "per-worker threads" and "oversubscription result" beside topology;
+/// they are this finding rather than a line in the topology one, because a
+/// launcher that cannot be read refuses this check and not that one.
+fn thread_budget_finding(bundle_root: Option<&Path>, available: usize) -> Finding {
+    const CHECK: &str = "per-worker threads and oversubscription";
+    let Some(root) = bundle_root else {
+        return Finding {
+            check: CHECK,
+            verdict: Verdict::Refused(
+                "not checked; pass `--bundle-root` to read the launcher".to_owned(),
+            ),
+        };
+    };
+    Finding {
+        check: CHECK,
+        verdict: match WorkerLauncher::read(root) {
+            Ok(launcher) => {
+                let threads = usize::try_from(launcher.threads.get()).unwrap_or(usize::MAX);
+                if threads <= available {
+                    Verdict::Ok(format!(
+                        "{threads} per worker × 1 worker ≤ {available} available"
+                    ))
+                } else {
+                    Verdict::Refused(format!(
+                        "{threads} per worker × 1 worker exceeds {available} available; lower \
+                         `threads` in the launcher or reserve fewer cores"
+                    ))
+                }
+            }
+            Err(error) => Verdict::Refused(error.to_string()),
+        },
+    }
 }
 
 /// The checks this build cannot answer, and who will.

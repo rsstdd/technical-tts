@@ -63,7 +63,9 @@ pub use error::{
     WorkerLockfileLocus, WorkerRequirementFault,
 };
 pub use job_events::BuildStage;
-pub use job_repository::{FileSystemJobRepository, JobOwnership, JobRepository};
+pub use job_repository::{
+    FileSystemJobRepository, JobOwnership, JobRepository, retained_lesson_path,
+};
 pub use model_gate::{
     DECLARED_MODEL_ARTIFACTS, DeclaredArtifact, PINNED_MODEL_REVISION, ProvenModel,
     model_artifacts_hash, verify_model_artifacts,

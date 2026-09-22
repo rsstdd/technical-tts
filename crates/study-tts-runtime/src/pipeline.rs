@@ -222,6 +222,7 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`crate::VoiceProfileError::VoiceProfileIdMismatch`],
 /// [`crate::VoiceProfileError::MissingVoiceRecord`],
 /// [`crate::VoiceProfileError::VoiceRecordNotRegularFile`],
+/// [`crate::VoiceProfileError::VoiceRecordUnreadable`],
 /// [`crate::VoiceProfileError::VoiceChecksumMismatch`],
 /// [`study_tts_core::VoiceError::InvalidJson`],
 /// [`study_tts_core::VoiceError::UnsupportedSchema`],
@@ -418,7 +419,10 @@ impl std::fmt::Debug for PreviewServiceBundle<'_> {
 /// [`crate::DurableStateError::RetainedPlanSegmentCountExceeded`], and
 /// [`crate::DurableStateError::JobPlanHashMismatch`] are
 /// [`resume_preview`]'s alone: a build has its lesson and plan in hand rather
-/// than reading them back.
+/// than reading them back. [`crate::DurableStateError::NoJobToRetake`] is
+/// raised by no pipeline entry point at all: `retake` is a build over a lesson
+/// [`crate::retained_lesson_path`] located, and that lookup refuses before this
+/// function is reached.
 ///
 /// The approval refusals cannot be returned here, because a build neither
 /// reads nor writes an approval:
