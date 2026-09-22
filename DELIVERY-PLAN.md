@@ -715,6 +715,13 @@ only at M2 against the five-minute lesson that criterion names. Interface record
 - `t4_e2_prune_dry_run_mutates_nothing`
 - `t4_e2_publish_is_refused_with_named_missing_gates`
 
+**Open**
+
+- Issue #94: task 6's "explicit destructive confirmation" has nothing to confirm. `cache prune`
+  reports candidates and deletes nothing; the destructive mode, its per-key locking against a
+  concurrent build's reuse, and ADR-0001 §15.4's protections ship under #94, before E5-S4 task 5
+  exercises them. Decided by the project owner on 2026-09-21 at the #18 implementation review.
+
 ### Story E2-S6 — Immutable human review and approval record
 
 **Depends on:** E2-S3 and E2-S4. **Track:** T-CLI.
@@ -1280,7 +1287,7 @@ All four are recorded as `OQ-11` through `OQ-14` in
 `docs/governance/RISK-OPEN-QUESTIONS-DESCOPE.md`, which owns every open question: human review has
 no deputy, so a gate needing a listening judgment waits for the project owner and `OQ-10` stays
 unassigned; private preview carries no cache budget, and reclamation remains an explicit operator
-prune that E2-S5 will own; previews are written beneath the workspace `previews/` root and are not
+prune that issue #94 will own; previews are written beneath the workspace `previews/` root and are not
 backed up, because a lost preview is reproducible from its lesson and cache; and no second engineer
 is available, so every track is serial and the `Solo schedule overload` risk row prices the result.
 

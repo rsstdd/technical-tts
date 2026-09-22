@@ -7,8 +7,8 @@
 //! Report-only is the whole scope, and deliberately so. ADR-0001 §15.4 makes
 //! prune operations dry-run by default and says published outputs are never
 //! pruned by a cache command; `AGENTS.md` §Autonomy puts prune without
-//! `--dry-run` behind an explicit human decision. The `study-tts cache prune`
-//! command that acts on this report belongs to E2-S5.
+//! `--dry-run` behind an explicit human decision. `study-tts cache prune`
+//! (E2-S5) prints this report; the command that acts on it is issue #94's.
 //!
 //! # Compatibility limitation
 //!
