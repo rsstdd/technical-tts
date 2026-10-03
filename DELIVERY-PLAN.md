@@ -691,7 +691,16 @@ only at M2 against the five-minute lesson that criterion names. Interface record
 - `t4_e2_run_report_excludes_sensitive_fixture_content`
 - `t1_e2_run_report_units_and_missing_values_follow_schema`
 
-### Story E2-S5 — MVP CLI and diagnostics
+### Story E2-S5 — MVP CLI and diagnostics — Complete
+
+Issue #18, closed 2026-10-03. Gate M2/G3. Evidence: none; acceptance is the named tests below,
+every one of which exists and asserts the outcome it names. Interface record:
+`E2-S5-INTERFACE-CHANGE-001`, `Accepted` and signed 2026-10-03, which declares the thirteen
+published commands, the ADR-0001 §7.3 exit-code table, and the `--json` envelope as stable and
+versioned rather than published. Closed after an implementation review whose four blocking
+findings were remediated: a raw voice-reference path printed by default, the missing interface
+record, `doctor` reporting a voice-profile checksum check it never ran, and task 6's second
+obligation. No human listening review is owed — nothing in this story changes spoken output.
 
 **Depends on:** E2-S1 through E2-S4 and the approval contract defined by E2-S6.
 

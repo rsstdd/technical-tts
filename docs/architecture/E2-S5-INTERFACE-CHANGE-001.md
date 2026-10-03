@@ -3,8 +3,10 @@
 ## Identification
 
 - Record ID: `E2-S5-INTERFACE-CHANGE-001`
-- Status: **Proposed.** §Approval carries the rows a signature would fill. Until it is signed this
-  record authorizes nothing; it describes a change that is already on `main`, and says so.
+- Status: **Accepted, 2026-10-03.** §Approval records the decision each role made and the date it
+  was signed. The contract it declares was implemented before it was signed, which is the order
+  this record is explicit about: the commits are on `main` and the signature makes their published
+  surface effective rather than authorizing it after the fact.
 - Contract owner: T-CLI (the `study-tts` command surface)
 - Engineering owner: Engineering owner
 - Affected-track reviewers: T-CLI, T-CORE, T-AUDIO
@@ -163,13 +165,20 @@ gained a non-creating `resolved_roots`; both are behavioral fixes with no signat
 
 ## Approval
 
-Ross Todd holds every role listed. `docs/governance/PROJECT-EXECUTION-CHARTER.md` permits that for
-a personal project and requires each approval to name its role and accepted risk separately.
+**Every row below is signed.** Each records a decision a role made and the date it was made.
+
+Ross Todd holds every role listed. `docs/governance/PROJECT-EXECUTION-CHARTER.md:39` permits that
+for a personal project and requires each approval to name its role and accepted risk separately,
+which is why the rows stay separate for one signatory.
 
 | Role | Decision sought | Status |
 |---|---|---|
-| Project owner | Accept that `lesson validate`'s refusal exit moves from `1` to its §7.3 class, and the thirteen commands as the published E2-S5 surface | Proposed |
-| Contract owner (T-CLI) | Accept the exit-code table above, `--json` as a global flag, and the envelope as stable-and-versioned rather than published | Proposed |
-| Contract owner (T-CORE) | Accept the `VoiceProfileError` field change and `VoiceRecordUnreadable` as the price of keeping raw voice-reference paths out of default output | Proposed |
-| Contract owner (T-AUDIO) | Accept `takes accept` as the first writer of a takes document, at an unchanged `TAKES_SCHEMA_VERSION` | Proposed |
-| Engineering owner | Accept the limits recorded above, including that `cache prune`'s destructive mode is issue #94's | Proposed |
+| Project owner | Accept that `lesson validate`'s refusal exit moves from `1` to its §7.3 class, and the thirteen commands as the published E2-S5 surface | Accepted — Ross Todd, 2026-10-03 |
+| Contract owner (T-CLI) | Accept the exit-code table above, `--json` as a global flag, and the envelope as stable-and-versioned rather than published | Accepted — Ross Todd, 2026-10-03 |
+| Contract owner (T-CORE) | Accept the `VoiceProfileError` field change and `VoiceRecordUnreadable` as the price of keeping raw voice-reference paths out of default output | Accepted — Ross Todd, 2026-10-03 |
+| Contract owner (T-AUDIO) | Accept `takes accept` as the first writer of a takes document, at an unchanged `TAKES_SCHEMA_VERSION` | Accepted — Ross Todd, 2026-10-03 |
+| Engineering owner | Accept the limits recorded above, including that `cache prune`'s destructive mode is issue #94's | Accepted — Ross Todd, 2026-10-03 |
+
+**Effective version and date:** the `study-tts` command surface described above is effective
+2026-10-03. No contract version number moves, because a command surface carries none; the
+`G1-FREEZE-CHARTER.md` `lesson` / `3.1` row is the published document and is unchanged.
