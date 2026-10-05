@@ -3,8 +3,10 @@
 ## Identification
 
 - Record ID: `E3-S1-INTERFACE-CHANGE-001`
-- Status: **Proposed.** §Approval carries the rows a signature would fill. Until it is signed this
-  record authorizes nothing.
+- Status: **Accepted, 2026-10-05.** §Approval records the decision each role made and the date it
+  was signed. The contract it declares was implemented before it was signed, which this record is
+  explicit about: the signature makes the published surface effective rather than authorizing it
+  after the fact.
 - Contract owner: T-AUTHORING (the source-document surface)
 - Engineering owner: Engineering owner
 - Affected-track reviewers: T-AUTHORING, T-CORE, T-CLI
@@ -254,10 +256,21 @@ decision this record raises and does not take.
 Ross Todd holds every role listed. `docs/governance/PROJECT-EXECUTION-CHARTER.md:39` permits that
 for a personal project and requires each approval to name its role and accepted risk separately.
 
+**Every row below is signed.** Each records a decision a role made and the date it was made.
+
 | Role | Decision sought | Status |
 |---|---|---|
-| Project owner | Accept `lesson compile` as published surface, and that a compiled lesson is a draft an author must approve | Proposed |
-| Contract owner (T-AUTHORING) | Accept the table-linearization policy and the `pronounce` fenced-block directive syntax as the authored surface | Proposed |
-| Contract owner (T-CORE) | Accept the new `study-tts-core` API, `BuildError::Compile` reusing `BuildErrorClass::Lesson`, and that no schema or identity moves | Proposed |
-| Contract owner (T-CLI) | Accept §7.4 levels 1 and 5 as the field sources, with levels 2–4 left to issue #95 | Proposed |
-| Engineering owner | Accept `pulldown-cmark 0.13.4` and `unicase 2.9.0` with `cargo deny` clean, and the limits recorded above including the §8.2 conflict | Proposed |
+| Project owner | Accept `lesson compile` as published surface, and that a compiled lesson is a draft an author must approve | Accepted — Ross Todd, 2026-10-05 |
+| Contract owner (T-AUTHORING) | Accept the table-linearization policy and the `pronounce` fenced-block directive syntax as the authored surface | Accepted — Ross Todd, 2026-10-05 |
+| Contract owner (T-CORE) | Accept the new `study-tts-core` API, `BuildError::Compile` reusing `BuildErrorClass::Lesson`, and that no schema or identity moves | Accepted — Ross Todd, 2026-10-05 |
+| Contract owner (T-CLI) | Accept §7.4 levels 1 and 5 as the field sources, with levels 2–4 left to issue #95 | Accepted — Ross Todd, 2026-10-05 |
+| Engineering owner | Accept `pulldown-cmark 0.13.4` and `unicase 2.9.0` with `cargo deny` clean, and the limits recorded above | Accepted — Ross Todd, 2026-10-05 |
+
+**Effective version and date:** the `study-tts lesson compile` surface and the `study-tts-core`
+Markdown API described above are effective 2026-10-05. No contract version number moves: a command
+surface carries none, and the compiler emits lesson `3.1` unchanged.
+
+**The §8.2 conflict is not accepted here.** It is resolved separately by
+[`ADR-0001-D013`](../adr/deviations/ADR-0001-D013-draft-segments-validate-before-approval.md),
+because §8.2 is a ratified invariant list and an interface-change record cannot amend one — the
+same reading `ADR-0001-D011` states for §12.5's enumerated inputs.
