@@ -135,12 +135,26 @@ fn t4_e2_every_mvp_command_has_stable_structured_output() {
     let here = root.display().to_string();
     let digest = "a".repeat(64);
 
-    let invocations: [(&str, Vec<&str>); 13] = [
+    let invocations: [(&str, Vec<&str>); 14] = [
         (
             "lesson new",
             vec!["lesson", "new", "e2-s5-all", "--out", "new.json"],
         ),
         ("lesson validate", vec!["lesson", "validate", "new.json"]),
+        (
+            "lesson compile",
+            vec![
+                "lesson",
+                "compile",
+                "absent.md",
+                "--out",
+                "compiled.json",
+                "--lesson-id",
+                "e2-s5-all",
+                "--speaker",
+                "narrator=synthetic-test-voice-v1",
+            ],
+        ),
         ("publish", vec!["publish", "e2-s5-all"]),
         ("cache prune", vec!["cache", "prune", "--workspace", &here]),
         (
@@ -255,13 +269,38 @@ fn t4_e2_every_mvp_command_has_stable_structured_output() {
         .filter(|name| *name != "help")
         .collect();
     assert!(!listed.is_empty(), "`--help` lists the commands: {help}");
-    for command in listed {
+    for command in &listed {
         assert!(
             invocations
                 .iter()
-                .any(|(name, _)| *name == command || name.starts_with(&format!("{command} "))),
+                .any(|(name, _)| name == command || name.starts_with(&format!("{command} "))),
             "`{command}` is on the surface and absent from this table"
         );
+    }
+
+    // One level is not the surface. The check above walks the top-level
+    // commands, and `lesson new` in the table satisfies `lesson` — so
+    // `lesson compile` landed in E3-S1 without this test noticing, which is
+    // the same failure the `resume` omission was. Each command group is
+    // descended into, so a new subcommand is caught where a new command is.
+    for group in &listed {
+        let group_help = String::from_utf8(study_tts_in(root, &[group, "--help"]).stdout)
+            .expect("help is UTF-8");
+        let Some((_, body)) = group_help.split_once("Commands:\n") else {
+            continue;
+        };
+        for subcommand in body
+            .lines()
+            .take_while(|line| !line.trim().is_empty())
+            .filter_map(|line| line.split_whitespace().next())
+            .filter(|name| *name != "help")
+        {
+            let spelling = format!("{group} {subcommand}");
+            assert!(
+                invocations.iter().any(|(name, _)| *name == spelling),
+                "`{spelling}` is on the surface and absent from this table"
+            );
+        }
     }
 
     for (name, arguments) in invocations {

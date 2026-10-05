@@ -214,9 +214,9 @@ fn t4_e1_help_lists_only_the_implemented_lesson_commands() {
 
     assert_eq!(
         listed,
-        ["new", "validate", "help"],
-        "E1-S5 publishes exactly two lesson commands, and `DELIVERY-PLAN.md` E2-S5 owns \
-         everything an author might expect beside them"
+        ["new", "validate", "compile", "help"],
+        "E1-S5 published `new` and `validate`; E3-S1 adds `compile`, which ADR-0001 §7.3 \
+         spells. A fourth would need a story that owns it"
     );
 }
 
@@ -268,5 +268,271 @@ fn t4_e1_a_refusal_never_quotes_the_lesson_text_it_read() {
     assert!(
         rendered.contains("seg-0001"),
         "the refusal still locates the segment: {rendered}"
+    );
+}
+
+/// A compiled draft is a document the validator reads, and the only thing it
+/// still refuses is the review an author owes.
+///
+/// The end-to-end claim that matters: a compiler whose output the validator
+/// cannot read has produced nothing usable. It runs through the real binary
+/// and the real filesystem, because that is where the claim lives.
+///
+/// The refusal is the point rather than a disappointment. ADR-0001 §9.2 asks
+/// for "reviewable draft segments" and `ValidatedLesson` accepts only
+/// `approved`, so `lesson validate` tells the author exactly what remains —
+/// and the exit class is `2`, invalid input, which is the author's to fix.
+/// `compile_source` records why it tolerates that one refusal and no other.
+#[test]
+fn t4_e3_compile_writes_a_draft_whose_only_refusal_is_its_review() {
+    let workspace = TempDir::new().expect("create a workspace");
+    let source = workspace.path().join("lesson.md");
+    let out = workspace.path().join("lesson.json");
+    std::fs::write(
+        &source,
+        "# Caches\n\nA cache stores reusable work.\n\n- It is keyed by its inputs.\n",
+    )
+    .expect("write the source");
+
+    let compiled = study_tts(&[
+        "lesson",
+        "compile",
+        &source.display().to_string(),
+        "--out",
+        &out.display().to_string(),
+        "--lesson-id",
+        "e3-s1-compiled",
+        "--speaker",
+        "narrator=synthetic-test-voice-v1",
+    ]);
+    assert_eq!(
+        compiled.status.code(),
+        Some(0),
+        "compiling succeeds: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+
+    let validated = study_tts(&["lesson", "validate", &out.display().to_string()]);
+    assert_eq!(
+        validated.status.code(),
+        Some(2),
+        "a draft is refused as invalid input, not as something else"
+    );
+    let refusal = String::from_utf8_lossy(&validated.stderr).into_owned();
+    assert!(
+        refusal.contains("not approved for synthesis") && refusal.contains("review_status"),
+        "the refusal names the review the author owes: {refusal}"
+    );
+
+    // Everything else about the document is already valid, which is what makes
+    // the refusal above the *only* one: the compiler refuses to write a draft
+    // that fails for any other reason.
+    let written = std::fs::read_to_string(&out).expect("the draft is on disk");
+    let document: serde_json::Value = serde_json::from_str(&written).expect("the draft is JSON");
+    assert_eq!(document["schema_version"], "3.1");
+    assert_eq!(document["lesson_id"], "e3-s1-compiled");
+    assert_eq!(document["title"], "Caches");
+    assert!(
+        document["source"]["content_hash"].is_string(),
+        "the document the block references index is named"
+    );
+    for segment in document["segments"]
+        .as_array()
+        .expect("the draft has segments")
+    {
+        assert_eq!(segment["review_status"], "draft");
+        assert!(
+            segment["source_refs"]
+                .as_array()
+                .is_some_and(|refs| !refs.is_empty()),
+            "every compiled segment traces to a source block: {segment}"
+        );
+    }
+}
+
+/// An existing destination is never replaced by a compilation.
+#[test]
+fn t4_e3_compile_never_overwrites_an_existing_lesson() {
+    let workspace = TempDir::new().expect("create a workspace");
+    let source = workspace.path().join("lesson.md");
+    let out = workspace.path().join("taken.json");
+    std::fs::write(&source, "# Title\n\nProse.\n").expect("write the source");
+    std::fs::write(&out, b"author's own work").expect("occupy the destination");
+
+    let refused = study_tts(&[
+        "lesson",
+        "compile",
+        &source.display().to_string(),
+        "--out",
+        &out.display().to_string(),
+        "--lesson-id",
+        "e3-s1-taken",
+        "--speaker",
+        "narrator=synthetic-test-voice-v1",
+    ]);
+
+    assert_ne!(
+        refused.status.code(),
+        Some(0),
+        "an occupied name is refused"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&out).expect("read the destination back"),
+        "author's own work",
+        "the file an author wrote is untouched"
+    );
+}
+
+/// Two declared speakers and no `--voice` is refused, and nothing is written.
+///
+/// The refusal matters because the alternative is choosing a voice: a voice
+/// profile reaches every synthesis key under ADR-0001 §12.5, so a compiler
+/// that picked the first of two would silently decide whose voice a lesson
+/// speaks in, and every later artifact would carry that choice.
+///
+/// **The last assertion is the test.** A nonzero exit and a message naming
+/// `--voice` are both satisfiable by a command that complains and compiles
+/// anyway; the absence of the output file is what separates refusing from
+/// choosing. The version this replaces lived in `markdown.rs`, built a
+/// `CompileError::SpeakerNotChosen` by hand, and asserted its `Display` — so a
+/// CLI that never raised it passed unchanged.
+#[test]
+fn t4_e3_an_unchosen_speaker_among_several_is_refused_without_writing() {
+    let workspace = TempDir::new().expect("create a workspace");
+    let source = workspace.path().join("lesson.md");
+    let out = workspace.path().join("lesson.json");
+    std::fs::write(&source, "# Title\n\nProse.\n").expect("write the source");
+
+    let refused = study_tts(&[
+        "lesson",
+        "compile",
+        &source.display().to_string(),
+        "--out",
+        &out.display().to_string(),
+        "--lesson-id",
+        "e3-s1-ambiguous",
+        "--speaker",
+        "first=synthetic-test-voice-v1",
+        "--speaker",
+        "second=synthetic-test-voice-v2",
+    ]);
+
+    assert_eq!(
+        refused.status.code(),
+        Some(2),
+        "an ambiguous speaker is invalid input: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    let message = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(
+        message.contains("2 speakers") && message.contains("--voice"),
+        "the refusal counts them and names the remedy: {message}"
+    );
+    assert!(
+        !out.exists(),
+        "a refused compilation writes nothing, rather than choosing a voice"
+    );
+}
+
+/// Naming one of several speakers with `--voice` compiles.
+///
+/// The other half of the refusal above: the ambiguity is the problem, not the
+/// plurality, so a lesson with two declared voices and a chosen one is fine.
+#[test]
+fn t4_e3_several_speakers_compile_when_one_is_chosen() {
+    let workspace = TempDir::new().expect("create a workspace");
+    let source = workspace.path().join("lesson.md");
+    let out = workspace.path().join("lesson.json");
+    std::fs::write(&source, "# Title\n\nProse.\n").expect("write the source");
+
+    let compiled = study_tts(&[
+        "lesson",
+        "compile",
+        &source.display().to_string(),
+        "--out",
+        &out.display().to_string(),
+        "--lesson-id",
+        "e3-s1-chosen",
+        "--speaker",
+        "first=synthetic-test-voice-v1",
+        "--speaker",
+        "second=synthetic-test-voice-v2",
+        "--voice",
+        "second",
+    ]);
+
+    assert_eq!(
+        compiled.status.code(),
+        Some(0),
+        "a chosen speaker compiles: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).expect("the draft is on disk"))
+            .expect("the draft is JSON");
+    assert_eq!(
+        document["speakers"].as_object().map(serde_json::Map::len),
+        Some(2),
+        "both declared speakers reach the lesson"
+    );
+    for segment in document["segments"]
+        .as_array()
+        .expect("the draft has segments")
+    {
+        assert_eq!(
+            segment["speaker"], "second",
+            "every segment speaks as the chosen voice"
+        );
+    }
+}
+
+/// A speaker bound twice is refused, and nothing is written.
+///
+/// `study-tts-core` refuses a lesson document that declares one speaker twice —
+/// `LessonError::DuplicateSpeaker`, whose message says a repeated declaration
+/// "lets the voice this speaker is rendered with depend on which binding a
+/// parser keeps rather than on which one a reviewer approved". The command line
+/// is where that can happen first, and a `BTreeMap` collected from arguments
+/// keeps the last binding without a word.
+///
+/// The wrong implementation this rejects is the one that shipped and was found
+/// by running the built binary: `--speaker narrator=voice-ONE --speaker
+/// narrator=voice-TWO` exited `0` and recorded `voice-TWO`. The last assertion
+/// is what separates refusing from collapsing.
+#[test]
+fn t4_e3_a_speaker_bound_twice_is_refused_without_writing() {
+    let workspace = TempDir::new().expect("create a workspace");
+    let source = workspace.path().join("lesson.md");
+    let out = workspace.path().join("lesson.json");
+    std::fs::write(&source, "# Title\n\nProse.\n").expect("write the source");
+
+    let refused = study_tts(&[
+        "lesson",
+        "compile",
+        &source.display().to_string(),
+        "--out",
+        &out.display().to_string(),
+        "--lesson-id",
+        "e3-s1-duplicate",
+        "--speaker",
+        "narrator=synthetic-test-voice-v1",
+        "--speaker",
+        "narrator=synthetic-test-voice-v2",
+    ]);
+
+    assert_eq!(
+        refused.status.code(),
+        Some(2),
+        "a repeated binding is invalid input: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    let message = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(
+        message.contains("narrator") && message.contains("more than once"),
+        "the refusal names the speaker and what is wrong: {message}"
+    );
+    assert!(
+        !out.exists(),
+        "a refused compilation writes nothing, rather than keeping one binding"
     );
 }

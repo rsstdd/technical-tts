@@ -13,8 +13,8 @@
 use std::{collections::BTreeMap, path::Path};
 
 use study_tts_core::{
-    AuthoredLesson, DeliveryStyle, LessonSegment, ReviewStatus, SegmentRole, SpeakerDeclaration,
-    ValidatedLesson,
+    AuthoredLesson, CompileError, CompileRequest, DeliveryStyle, LessonError, LessonSegment,
+    ReviewStatus, SegmentRole, SpeakerDeclaration, ValidatedLesson,
 };
 
 use crate::{
@@ -144,6 +144,97 @@ pub fn scaffold_lesson(lesson_id: &str, destination: &Path) -> Result<(), BuildE
     }
 }
 
+/// Compiles a Markdown source document into a lesson beside it.
+///
+/// Here rather than in `study-tts-core` because this reads and writes files,
+/// which is the boundary [`scaffold_lesson`] and [`crate::load_lesson`] already
+/// sit on: `crates/AGENTS.md` §Routing table puts durable domain decisions in
+/// core and the operations around them here. The parse and the lesson assembly
+/// are core's — [`study_tts_core::compile_lesson`] — and this supplies the
+/// bytes, validates the result, and publishes it.
+///
+/// The compiled document is **validated before it is written**, on the bytes
+/// that are written, for the reason [`scaffold_lesson`] gives: serializing
+/// again after validating would leave the document that was checked and the
+/// document that landed as two artifacts nothing holds together.
+///
+/// # Why one refusal is tolerated and no other is
+///
+/// ADR-0001 §9.2 requires compilation to "split material into reviewable
+/// **draft** segments", and [`ValidatedLesson`] refuses any segment that is not
+/// `Approved` — a rule stricter than §8.2's own text, which bars unreviewed
+/// material from "a production build". A compiled draft therefore cannot be a
+/// [`ValidatedLesson`], and both ways to make it one are wrong: emitting
+/// `approved` asserts a review nobody performed, and loosening the gate would
+/// let an unapproved lesson reach a render.
+///
+/// So the draft is validated and exactly one outcome is accepted besides
+/// success — [`study_tts_core::LessonError::UnapprovedSegment`], which is the
+/// author's remaining work and what `study-tts lesson validate` tells them.
+/// Every other refusal is a defect in this compiler and refuses the write, so
+/// nothing malformed for any other reason reaches disk. The gate is not
+/// weakened; the compiler stops claiming its output has passed it.
+///
+/// An existing destination is never replaced, which is
+/// [`IoError::DestinationExists`] — a compiled lesson an author has since
+/// edited is not this command's to overwrite.
+///
+/// # Errors
+///
+/// [`IoError::ReadFile`] when the source cannot be read,
+/// [`IoError::LessonNotRegularFile`] when its name holds something else,
+/// [`study_tts_core::CompileError::SourceNotUtf8`] when it read but is not
+/// UTF-8,
+/// [`study_tts_core::LessonError::LessonJsonTooLarge`] when it exceeds the
+/// authored-document ceiling, whatever [`study_tts_core::compile_lesson`]
+/// reports as a [`study_tts_core::CompileError`], whatever
+/// [`ValidatedLesson::from_json`] reports about the compiled result **other
+/// than** [`study_tts_core::LessonError::UnapprovedSegment`], and
+/// [`IoError::DestinationExists`] when the destination is taken.
+pub fn compile_source(
+    source: &Path,
+    destination: &Path,
+    request: CompileRequest,
+) -> Result<(), BuildError> {
+    // The same bounded reader an authored lesson gets, and the same ceiling: a
+    // source document is operator input, and a file read into memory to
+    // discover it was too large has already cost what the ceiling refuses.
+    let bytes = crate::pipeline::read_lesson(source)?;
+    // `from_utf8` rather than `from_utf8_lossy`: a lossy conversion would
+    // replace the invalid bytes with U+FFFD and compile a lesson whose spoken
+    // text silently differs from the document the author wrote, and
+    // `source.content_hash` would then name a document that produces different
+    // text on a build that refused instead.
+    let document = String::from_utf8(bytes).map_err(|error| {
+        BuildError::Compile(Box::new(CompileError::SourceNotUtf8 {
+            offset: error.utf8_error().valid_up_to(),
+        }))
+    })?;
+
+    let compiled = study_tts_core::compile_lesson(&document, request)
+        .map_err(|error| BuildError::Compile(Box::new(error)))?;
+
+    let mut json = serde_json::to_vec_pretty(&compiled).map_err(|source| IoError::WriteJson {
+        path: destination.to_path_buf(),
+        source,
+    })?;
+    json.push(b'\n');
+
+    match ValidatedLesson::from_json(&destination.display().to_string(), &json) {
+        Ok(_) => {}
+        Err(diagnostic) if matches!(diagnostic.error(), LessonError::UnapprovedSegment(_)) => {}
+        Err(other) => return Err(other.into()),
+    }
+
+    match write_bytes_noreplace(&OsDurableFileSystem, destination, &json)? {
+        RenameOutcome::Published => Ok(()),
+        RenameOutcome::DestinationExists => Err(IoError::DestinationExists {
+            path: destination.to_path_buf(),
+        }
+        .into()),
+    }
+}
+
 /// The document [`scaffold_lesson`] publishes.
 ///
 /// Split out so the scaffold's validity is a unit test rather than a claim
@@ -200,6 +291,10 @@ fn scaffold(lesson_id: &str) -> AuthoredLesson {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use tempfile::TempDir;
+
     use study_tts_core::LessonError;
 
     use super::*;
@@ -237,6 +332,61 @@ mod tests {
         assert!(
             matches!(refusal.error(), LessonError::InvalidLessonId(_)),
             "expected an invalid-identifier refusal, got {refusal}"
+        );
+    }
+
+    /// A request naming one speaker, for the compile tests here.
+    fn compile_request() -> CompileRequest {
+        CompileRequest {
+            lesson_id: "e3-s1-encoding".to_owned(),
+            language: "en".to_owned(),
+            speakers: BTreeMap::from([(
+                "narrator".to_owned(),
+                SpeakerDeclaration {
+                    voice_profile: SCAFFOLD_VOICE_PROFILE.to_owned(),
+                },
+            )]),
+            speaker: "narrator".to_owned(),
+            role: SegmentRole::Explanation,
+            style: DeliveryStyle::CalmExplanatory,
+            pause_after_ms: 75,
+        }
+    }
+
+    /// A source document that is not UTF-8 is refused as a compile problem.
+    ///
+    /// The wrong implementation this rejects is the one that shipped: an
+    /// `IoError::ReadFile` carrying a hand-built `io::Error`, naming a file
+    /// that read without error. It sent an operator to check permissions and
+    /// paths for a document whose encoding is the fault.
+    ///
+    /// The offset is asserted because it is what locates the problem without
+    /// the message carrying the bytes — the rights constraint `markdown.rs`
+    /// states for every diagnostic in that module.
+    #[test]
+    fn t1_e3_a_source_document_that_is_not_utf8_is_refused_as_a_compile_problem() {
+        let workspace = TempDir::new().expect("create a workspace");
+        let source = workspace.path().join("lesson.md");
+        let destination = workspace.path().join("out.json");
+        // Valid Markdown, then a lone continuation byte, which no UTF-8
+        // sequence can begin with. It sits at byte 15.
+        std::fs::write(&source, b"# Title\n\nProse \xa0 here.\n").expect("write the source");
+
+        let error = compile_source(&source, &destination, compile_request())
+            .expect_err("a non-UTF-8 document cannot be compiled");
+
+        match error {
+            BuildError::Compile(compile) => match *compile {
+                CompileError::SourceNotUtf8 { offset } => {
+                    assert_eq!(offset, 15, "the refusal locates the first invalid byte");
+                }
+                other => panic!("the refusal is about the encoding, got {other:?}"),
+            },
+            other => panic!("a read that succeeded is not an I/O failure, got {other:?}"),
+        }
+        assert!(
+            !destination.exists(),
+            "a refused compilation writes nothing"
         );
     }
 }
