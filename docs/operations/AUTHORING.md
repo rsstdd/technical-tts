@@ -16,6 +16,10 @@ The two commands are `study-tts lesson new` and `study-tts lesson validate`. Bot
 study-tts lesson new <lesson-id> --out <path>
 ```
 
+Starting from Markdown instead? `study-tts lesson compile` is the other way in, and §1b below
+says what it does and does not give you. The rest of this guide applies to both: a compiled
+lesson is a draft you edit, review, and approve exactly as a scaffolded one is.
+
 The lesson ID is the lesson's stable identity and also names its output directory, so it must be
 a portable identifier: letters, digits, `_`, `-`, and `.`, starting with anything but a dot. A
 space is refused, and refused *before* anything is written.
@@ -46,6 +50,43 @@ alone; parent directories are not created, because choosing where a lesson lives
 decision this command should make for you. The scaffold is written owner-readable only (`0600`),
 through the same durable publication the rest of the build uses — staged, synchronized, renamed
 into place, and the directory synchronized after.
+
+## 1b. Compile from Markdown
+
+```
+study-tts lesson compile <source.md> --out <lesson.json> --lesson-id <id> \
+    --speaker <name>=<voice-profile>
+```
+
+ADR-0001 §9.2 bounds what this does: it is deterministic and it invents nothing. Headings, prose,
+list items, quotations, fenced code, inline code, links, tables, and pronunciation directives are
+parsed structurally, every block gets a `block-NNN` reference, and each prose block becomes one
+segment citing the block it came from. The document's own digest is recorded in `source`, so a
+reference names a position in a document you can identify.
+
+What it does **not** do, and why each matters to you:
+
+- **Nothing is normalized.** `spoken_text` is a copy of `display_text`. Numbers, acronyms,
+  identifiers, and URLs are read exactly as written until E3-S2 lands the normalizer, so a line
+  like `charCodeAt(0)` will be spoken as the characters it contains. Editing `spoken_text` by hand
+  is how you fix that today, and §3 is where you decide what it should say.
+- **Every segment is `draft`.** A compiler has reviewed nothing. `study-tts lesson validate` will
+  therefore **refuse** a freshly compiled lesson, naming `review_status` — that refusal is
+  expected, and §3 and §4 are the work it is pointing at.
+- **Headings are not spoken.** The first one becomes the lesson's `title`; the rest are recorded
+  and silent.
+- **Fenced code is not spoken.** It is preserved as its own block and traceable, because whether
+  code should be read literally or explained is a decision E3-S2 owns.
+- **Roles and styles are uniform.** Every segment arrives `explanation` and `calm_explanatory`,
+  because no Markdown structure implies which of the seventeen roles a passage is. Assigning the
+  real ones is §3's work and is the main reason a compiled lesson still needs you.
+- **An existing `--out` is never replaced.** Compile to a new name and diff, or move your edited
+  lesson aside first.
+
+A table is linearized row-major with each cell named by its column — `Source: charCodeAt(0),
+Context: API memorization, Spoken result: char code at, with index zero.` A cell with no value is
+refused rather than read as a column name followed by silence.
+`docs/architecture/E3-S1-INTERFACE-CHANGE-001.md` records that policy and the directive syntax.
 
 ## 2. Edit
 
@@ -134,7 +175,15 @@ changes what an accepted evidence record refers to.
 
 ## What this guide does not cover
 
-Parent-directory creation, interactive prompting, Markdown or prose compilation into lessons, a
-product preview or render command, `--json` output, and stable numeric exit classes. Every
-refusal exits `1` today; `DELIVERY-PLAN.md` E2-S5 owns the machine-readable surface, and giving
-it one here would be a contract that story did not choose.
+Parent-directory creation and interactive prompting.
+
+Three things this section used to exclude now exist, and this paragraph is corrected rather than
+left standing. `study-tts render` and the rest of the product surface landed with E2-S5, which
+also published `--json` on every command and the ADR-0001 §7.3 exit classes — a refusal exits `2`
+through `8` by what kind of failure it was, not `1`, and
+`docs/architecture/E2-S5-INTERFACE-CHANGE-001.md` carries the table. Markdown compilation landed
+with E3-S1 and is §1b above.
+
+Still absent: normalization of spoken text, a project lexicon, protected terms, and
+length-driven segmentation, which are E3-S2 through E3-S4. A compiled lesson is a draft, and the
+reading of it is yours.
