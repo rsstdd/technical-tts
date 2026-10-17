@@ -30,6 +30,7 @@ mod identity;
 mod job;
 mod language;
 mod lesson;
+mod markdown;
 mod plan;
 mod release;
 mod rights;
@@ -66,6 +67,10 @@ pub use lesson::{
     LessonError, LessonSegment, LessonSource, MAX_LESSON_JSON_BYTES, MAX_LESSON_SEGMENTS,
     MalformedSourceContentHash, ReviewStatus, SegmentRole, SourceContentHash, SpeakerDeclaration,
     ValidatedLesson, validate_lesson_id, validate_segment_id,
+};
+pub use markdown::{
+    CompileError, CompileRequest, MAX_SOURCE_BLOCKS, PRONUNCIATION_FENCE, SourceBlock,
+    SourceBlockKind, compile_lesson, parse_source,
 };
 pub use plan::{
     BASE_TAKE, CANONICAL_BITS_PER_SAMPLE, CANONICAL_CHANNELS, CANONICAL_SAMPLE_FORMAT,

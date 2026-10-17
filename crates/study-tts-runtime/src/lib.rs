@@ -47,7 +47,7 @@ pub use audio_edges::{
     MAX_SEGMENT_AUDIO_MS, MAX_TRANSITION_RAMP_MS, ProvisionalCalibration, REQUIRED_EDGE_SILENCE_MS,
     SilenceThreshold, assess_join, condition_edges, measure_edge_silence, samples_for,
 };
-pub use authoring::{SCAFFOLD_VOICE_PROFILE, scaffold_lesson};
+pub use authoring::{SCAFFOLD_VOICE_PROFILE, compile_source, scaffold_lesson};
 pub use cache::ValidatedCachedArtifact;
 pub use cache_port::{
     CACHE_PUBLICATION_CONTRACT_VERSION, CachePublisher, CacheResolveRequest,

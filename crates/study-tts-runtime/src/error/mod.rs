@@ -30,7 +30,9 @@
 use std::{io, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
-use study_tts_core::{LessonDiagnostic, PlanError, ReleaseError, TakesError, VoiceError};
+use study_tts_core::{
+    CompileError, LessonDiagnostic, PlanError, ReleaseError, TakesError, VoiceError,
+};
 use thiserror::Error;
 
 use crate::BackendError;
@@ -121,6 +123,21 @@ pub enum BuildError {
     /// lesson boundary already returns the box, so this is not a second one.
     #[error(transparent)]
     Lesson(#[from] Box<LessonDiagnostic>),
+    /// A source document could not be compiled into a lesson.
+    ///
+    /// Its own variant so a test can assert the exact refusal, and
+    /// [`BuildErrorClass::Lesson`] all the same: a Markdown document this
+    /// build cannot compile is invalid authored input, which is what that
+    /// class means and what ADR-0001 §7.3's `invalid input` exit code says to
+    /// do about it. A distinct class would have bought a seventeenth row in
+    /// every exhaustive table for a refusal the operator answers the same way.
+    ///
+    /// Boxed for the reason [`BuildError::Lesson`] is: the largest variant
+    /// carries an owned column name, and holding it inline would grow every
+    /// `BuildError` in the workspace past the baseline
+    /// `t1_e0_build_error_does_not_grow_during_category_refactor` holds.
+    #[error(transparent)]
+    Compile(#[from] Box<CompileError>),
     /// A takes document was unusable, or disagreed with the plan it selects.
     ///
     /// Boxed for the reason [`BuildError::Lesson`] is: the base-key refusal
@@ -190,7 +207,7 @@ impl BuildError {
     pub fn class(&self) -> BuildErrorClass {
         match self {
             Self::Io(_) => BuildErrorClass::Io,
-            Self::Lesson(_) => BuildErrorClass::Lesson,
+            Self::Lesson(_) | Self::Compile(_) => BuildErrorClass::Lesson,
             Self::Takes(_) => BuildErrorClass::Takes,
             Self::Plan(_) => BuildErrorClass::Plan,
             Self::Voice(_) => BuildErrorClass::Voice,
@@ -221,6 +238,7 @@ impl BuildError {
             // than claiming a row that does not exist.
             Self::Io(_)
             | Self::Lesson(_)
+            | Self::Compile(_)
             | Self::Plan(_)
             | Self::Synthesis(_)
             | Self::Takes(_)

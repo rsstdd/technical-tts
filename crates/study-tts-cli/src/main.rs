@@ -9,22 +9,25 @@
 //! `docs/operations/AUTHORING.md` documents the loop these two commands open.
 
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     process::ExitCode,
 };
 
 use clap::{Parser, Subcommand};
 use study_tts_core::{
-    ApprovalDisposition, LessonDiagnostic, MAX_TAKES_JSON_BYTES, ManifestDigest,
-    REQUIRED_PRODUCTION_GATES, ReleaseClaim, ReleaseError, ValidatedTakes, VoiceUse,
+    ApprovalDisposition, CompileError, CompileRequest, DeliveryStyle, LessonDiagnostic,
+    MAX_TAKES_JSON_BYTES, ManifestDigest, REQUIRED_PRODUCTION_GATES, ReleaseClaim, ReleaseError,
+    SegmentRole, SpeakerDeclaration, ValidatedTakes, VoiceUse,
 };
 use study_tts_runtime::{
     ApprovalRequest, BuildError, BuildRequest, BuildResult, DurableStateError,
     FileSystemCachePublisher, FileSystemJobRepository, FileSystemPackageWriter,
     HardwareEnvironmentId, JobRepository, PreviewServiceBundle, PublicationError, ResumeRequest,
     WorkerConfiguration, WorkerTtsExecutor, accept_current_takes, approve_preview,
-    build_preview_with_services, current_run_report, diagnose, live_cache_keys, load_lesson,
-    prune_candidates, resume_preview_with_services, retained_lesson_path, scaffold_lesson,
+    build_preview_with_services, compile_source, current_run_report, diagnose, live_cache_keys,
+    load_lesson, prune_candidates, resume_preview_with_services, retained_lesson_path,
+    scaffold_lesson,
 };
 
 mod exit;
@@ -287,6 +290,7 @@ impl Command {
         match self {
             Self::Lesson(LessonCommand::New { .. }) => "lesson new",
             Self::Lesson(LessonCommand::Validate { .. }) => "lesson validate",
+            Self::Lesson(LessonCommand::Compile { .. }) => "lesson compile",
             Self::Publish { .. } => "publish",
             Self::Cache(CacheCommand::Prune { .. }) => "cache prune",
             Self::Cache(CacheCommand::Verify { .. }) => "cache verify",
@@ -344,6 +348,57 @@ enum LessonCommand {
         /// The lesson document to check.
         path: PathBuf,
     },
+    /// Compile a Markdown source document into a draft lesson.
+    ///
+    /// ADR-0001 §7.3's `lesson compile`. Every segment it writes is
+    /// `review_status: draft`, because a compiler has performed no review and
+    /// §8.2 keeps unreviewed material out of a production build — an author
+    /// reads the result, assigns real roles, and approves what they have read.
+    ///
+    /// The options below are ADR-0001 §7.4 precedence level 1. Levels 2
+    /// through 4 — lesson profile, project configuration, user configuration —
+    /// are implemented nowhere in this build, so what Markdown cannot carry is
+    /// named here or takes a documented default.
+    Compile {
+        /// The Markdown document to compile.
+        source: PathBuf,
+        /// Where to write the lesson; an existing file is never replaced.
+        #[arg(long)]
+        out: PathBuf,
+        /// The stable lesson identity, which also names its output directory.
+        #[arg(long)]
+        lesson_id: String,
+        /// BCP 47 language tag for the compiled lesson.
+        #[arg(long, default_value = "en")]
+        language: String,
+        /// A speaker and the voice profile it binds, as `<name>=<profile>`.
+        ///
+        /// Repeatable, in the shape `--retake <segment-id>=<take>` already
+        /// takes. No default: a voice profile reaches every synthesis key
+        /// under ADR-0001 §12.5, so a compiler that chose one would be
+        /// choosing a voice.
+        #[arg(long = "speaker", value_parser = parse_speaker, required = true)]
+        speakers: Vec<(String, String)>,
+        /// Which declared speaker compiled segments are assigned to.
+        ///
+        /// Defaults to the only one when exactly one is declared, because
+        /// naming it twice is noise.
+        #[arg(long)]
+        voice: Option<String>,
+    },
+}
+
+/// Parses one `--speaker <name>=<voice-profile>` pair at argument time.
+fn parse_speaker(value: &str) -> Result<(String, String), String> {
+    let (name, profile) = value
+        .split_once('=')
+        .ok_or_else(|| format!("`--speaker` takes `<name>=<voice-profile>`, got `{value}`"))?;
+    if name.is_empty() || profile.is_empty() {
+        return Err(format!(
+            "`--speaker` needs a name and a voice profile, got `{value}`"
+        ));
+    }
+    Ok((name.to_owned(), profile.to_owned()))
 }
 
 fn main() -> ExitCode {
@@ -848,7 +903,99 @@ fn run_lesson(lesson: LessonCommand) -> Result<String, BuildError> {
             load_lesson(&path)?;
             Ok(format!("valid lesson: {}", path.display()))
         }
+        LessonCommand::Compile {
+            source,
+            out,
+            lesson_id,
+            language,
+            speakers,
+            voice,
+        } => compile_lesson_source(
+            &source,
+            &out,
+            &lesson_id,
+            &language,
+            &speakers,
+            voice.as_deref(),
+        ),
     }
+}
+
+/// Silence written after each compiled segment, ADR-0001 §7.4 level 5.
+///
+/// The value the committed lesson fixtures use, so compiled material pauses
+/// the way reviewed material does. An author overrides it per segment by
+/// editing the draft.
+const COMPILED_PAUSE_AFTER_MS: u32 = 75;
+
+/// Compiles one Markdown document, resolving §7.4 level 1 and level 5 values.
+///
+/// The role, style, and pause defaults are level 5 — "compiled safe default" —
+/// and they are deliberately uniform: the role vocabulary is seventeen closed
+/// values and no Markdown structure implies any of them, so a per-block guess
+/// would invent the review metadata an author is meant to assign.
+fn compile_lesson_source(
+    source: &Path,
+    out: &Path,
+    lesson_id: &str,
+    language: &str,
+    speakers: &[(String, String)],
+    voice: Option<&str>,
+) -> Result<String, BuildError> {
+    // Inserted one at a time rather than collected: a `BTreeMap` built from an
+    // iterator keeps the last binding for a repeated key, and `study-tts-core`
+    // refuses exactly that in a lesson document: `DuplicateSpeaker` says a
+    // repeated declaration "lets the voice this speaker is rendered with
+    // depend on which binding a parser keeps rather than on which one a
+    // reviewer approved". Collecting here would reintroduce it one layer
+    // above the document, where no document exists yet to be refused.
+    let mut declared: BTreeMap<String, SpeakerDeclaration> = BTreeMap::new();
+    for (name, profile) in speakers {
+        let binding = SpeakerDeclaration {
+            voice_profile: profile.clone(),
+        };
+        if declared.insert(name.clone(), binding).is_some() {
+            return Err(BuildError::Compile(Box::new(
+                CompileError::SpeakerDeclaredTwice {
+                    speaker: name.clone(),
+                },
+            )));
+        }
+    }
+
+    let speaker = match voice {
+        Some(named) => named.to_owned(),
+        None if declared.len() == 1 => declared
+            .keys()
+            .next()
+            .expect("a map of length one has a key")
+            .clone(),
+        // Named rather than borrowed from `IoError`: nothing failed to read,
+        // and reporting an argument problem as one told the operator their
+        // document was unreadable when it was not.
+        None => {
+            return Err(BuildError::Compile(Box::new(
+                CompileError::SpeakerNotChosen {
+                    count: declared.len(),
+                },
+            )));
+        }
+    };
+
+    compile_source(
+        source,
+        out,
+        CompileRequest {
+            lesson_id: lesson_id.to_owned(),
+            language: language.to_owned(),
+            speakers: declared,
+            speaker,
+            role: SegmentRole::Explanation,
+            style: DeliveryStyle::CalmExplanatory,
+            pause_after_ms: COMPILED_PAUSE_AFTER_MS,
+        },
+    )?;
+    Ok(format!("compiled draft lesson: {}", out.display()))
 }
 
 /// Reads every accepted takes document a prune must treat as a retention root.
