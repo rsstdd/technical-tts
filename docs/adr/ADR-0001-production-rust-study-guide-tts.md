@@ -538,7 +538,9 @@ JSON is the canonical intermediate representation because it is explicit, diffab
 - speaker, role, style, and voice profile are declared;
 - pause values remain within policy unless an override is annotated;
 - recall prompts include a deliberate response interval;
-- no segment marked unreviewed can enter a production build;
+- no segment marked unreviewed can enter a production build, enforced where synthesis or a
+  production claim is attempted rather than at every parse of a lesson document, so that §9.2's
+  "reviewable draft segments" can exist and be read (ADR-0001-D013);
 - canonical serialization produces a stable byte representation for hashing;
 - unknown fields follow the declared minor-version compatibility policy.
 

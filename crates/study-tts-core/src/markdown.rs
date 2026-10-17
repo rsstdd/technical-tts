@@ -138,6 +138,9 @@ pub const PRONUNCIATION_FENCE: &str = "pronounce";
 /// §Storage and access excludes source text from logs, and a refusal is
 /// printed by default, so a diagnostic locates a problem by block reference
 /// and byte offset and leaves the reading of it to the author's own editor.
+/// That policy's §Enforcement table names this module in return, against
+/// `t2_e3_arbitrary_unicode_markdown_never_panics`, which is the test that
+/// asserts a refusal reports an offset rather than the text it refused.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CompileError {
     /// The document holds a structure this build cannot transform safely.
