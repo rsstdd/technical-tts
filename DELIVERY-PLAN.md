@@ -759,7 +759,26 @@ obligation. No human listening review is owed — nothing in this story changes 
 
 **Goal:** replace hand-authored canonical JSON with deterministic, reviewable Markdown compilation without introducing facts.
 
-### Story E3-S1 — Structural Markdown parsing
+### Story E3-S1 — Structural Markdown parsing — Complete
+
+Issue #21, closed 2026-10-17. Gate M3/G4. Evidence: none; acceptance is the named tests below,
+every one of which exists, is not ignored, and asserts the outcome it names. Interface record:
+`E3-S1-INTERFACE-CHANGE-001`, `Accepted` and signed 2026-10-05, which publishes
+`study-tts lesson compile` and the `study-tts-core` Markdown surface, and answers the four
+readings ADR-0001 §9 leaves open: a heading supplies the title and emits no spoken segment, a
+table linearizes row-major with each cell named by its column, a pronunciation directive is a
+fenced block whose info string is `pronounce`, and the fields Markdown cannot carry come from
+§7.4 levels 1 and 5 only. No schema, identity, or version constant moves. No human listening
+review is owed — compilation renders no audio; the owed listen attaches to the first package
+built from a compiled lesson.
+
+Closed after eight review passes that found seven defects, and the pattern is worth carrying
+rather than rediscovering: four of the seven were a property asserted in a doc comment or an ADR
+section whose test used a fixture that could not exercise the case. The code was never the weak
+part. The last of them was a residual of the fix made one pass earlier — a container and its
+child sharing a start byte, where the first ordering fix fell back to fold order and renumbered
+the child first. E3-S2 is a story made almost entirely of fixtures, which is where this failure
+mode is cheapest to design against and most expensive to inherit.
 
 **Depends on:** M2.
 
@@ -778,6 +797,20 @@ obligation. No human listening review is owed — nothing in this story changes 
 - `t1_e3_fenced_code_is_never_merged_into_prose`
 - `t2_e3_source_references_are_stable_across_recompilation`
 - `t1_e3_unsupported_structure_is_reported_not_dropped`
+
+**Open**
+
+- `ADR-0001-D013` resolved the §8.2 conflict this story raised — §9.2 requires "reviewable draft
+  segments" while `ValidatedLesson` refused any segment that is not `approved`, so a compiled
+  draft could not be a valid lesson at all. The deviation moves enforcement to the synthesis and
+  publication boundaries, **and its approval is conditional**: the project-owner row accepts the
+  risk only on a synthesis-boundary test landing with the relocation — a build pointed at a draft
+  lesson must raise the gate's own refusal with `worker.synthesis_count() == 0`. Until then
+  `compile_source` works around the conflict at one call site by tolerating exactly
+  `LessonError::UnapprovedSegment` and returning every other refusal. Whichever of E3-S2 or E3-S3
+  first renders compiled material moves the gate, deletes that workaround, and owes the test.
+- Issue #95: ADR-0001 §7.4 levels 2 through 4 are unimplemented. E3-S1 was the first story to want
+  a configuration hierarchy and uses levels 1 and 5 only.
 
 ### Story E3-S2 — Golden technical-speech normalization
 
